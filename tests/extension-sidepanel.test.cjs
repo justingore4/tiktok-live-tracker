@@ -58,7 +58,9 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
 
   assert.deepEqual(resourcePaths, [
     "sidepanel.css",
+    "../shared/reconciliation.js",
     "inventory-view-model.js",
+    "mapping-workflow.js",
     "sidepanel.js",
   ]);
   assert.ok(
@@ -69,7 +71,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
   assert.doesNotMatch(html, /<script(?![^>]+src=)[^>]*>/i);
 });
 
-test("side panel exposes accessible search and clearly labels demo data", () => {
+test("side panel exposes accessible mapping controls and clearly labels demo data", () => {
   const html = fs.readFileSync(
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
@@ -78,9 +80,33 @@ test("side panel exposes accessible search and clearly labels demo data", () => 
   assert.match(html, /<label[^>]+for="inventory-search"/);
   assert.match(html, /id="result-count"[^>]+aria-live="polite"/);
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
+  assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
+  assert.match(html, /<button class="inventory-card"[^>]+aria-pressed="false"/);
+  assert.match(html, /id="pending-mapping"/);
+  assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
+  assert.match(html, />Waiting for payment</);
   assert.match(html, />Demo data</);
-  assert.match(html, /Preview only/);
-  assert.doesNotMatch(html, /reconciliation\.js/);
+  assert.match(html, /Sold-out entries[\s\S]+cannot be selected/);
+});
+
+test("tagger UI disables sold-out cards and stays inside mapping-only scope", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const workflowSource = fs.readFileSync(
+    path.join(taggerDirectory, "mapping-workflow.js"),
+    "utf8",
+  );
+  const mappingSource = `${panelSource}\n${workflowSource}`;
+
+  assert.match(panelSource, /button\.disabled = stock\.state === "sold_out"/);
+  assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
+  assert.doesNotMatch(
+    mappingSource,
+    /recordPaymentComplete|markUnpaid|undoMarkUnpaid|chrome\.storage|sendMessage|\bfetch\s*\(/,
+  );
 });
 
 test("existing dashboard capture scripts remain configured", () => {

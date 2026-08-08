@@ -28,6 +28,32 @@
         <span class="demo-badge">Demo data</span>
       </section>
 
+      <section
+        id="pending-mapping"
+        class="pending-mapping"
+        aria-labelledby="pending-mapping-title"
+        hidden
+      >
+        <div class="pending-heading">
+          <div>
+            <p class="eyebrow">Just tagged</p>
+            <h2 id="pending-mapping-title">
+              Variation <span data-field="mapped-variation">#203</span>
+            </h2>
+          </div>
+          <button id="change-mapping" class="change-mapping" type="button">
+            Change item
+          </button>
+        </div>
+        <div class="pending-card">
+          <p id="mapped-item" class="mapped-item"></p>
+          <p class="pending-status">
+            <span class="pending-status-dot" aria-hidden="true"></span>
+            <span data-field="mapping-status">Waiting for payment</span>
+          </p>
+        </div>
+      </section>
+
       <section class="inventory-section" aria-labelledby="inventory-title">
         <div class="section-heading">
           <div>
@@ -54,8 +80,9 @@
           </button>
         </div>
 
-        <p class="preview-note">
-          Preview only — item selection will be enabled in the next development step.
+        <p class="selection-note">
+          Select one inventory entry to tag demo variation #203. Sold-out entries
+          cannot be selected.
         </p>
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>
@@ -69,28 +96,41 @@
 
       <footer class="app-footer">
         <span class="status-dot" aria-hidden="true"></span>
-        <span>Offline UI prototype</span>
+        <span>Offline mapping demo</span>
       </footer>
+
+      <p
+        id="mapping-announcement"
+        class="visually-hidden"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      ></p>
     </main>
 
     <template id="inventory-card-template">
-      <article class="inventory-card" role="listitem">
-        <div class="card-heading">
-          <h3>
-            <span data-field="item"></span>
-            <span class="item-separator" aria-hidden="true">—</span>
-            <span data-field="style"></span>
-          </h3>
-          <span class="stock-indicator" aria-hidden="true"></span>
-        </div>
-        <div class="card-meta">
-          <span class="size-label">Size <strong data-field="size"></strong></span>
-          <span class="stock-label" data-field="stock"></span>
-        </div>
-      </article>
+      <div class="inventory-card-wrapper" role="listitem">
+        <button class="inventory-card" type="button" aria-pressed="false">
+          <span class="card-heading">
+            <span class="card-title">
+              <span data-field="item"></span>
+              <span class="item-separator" aria-hidden="true">-</span>
+              <span data-field="style"></span>
+            </span>
+            <span class="selected-label" data-field="selected" hidden>Selected</span>
+            <span class="stock-indicator" aria-hidden="true"></span>
+          </span>
+          <span class="card-meta">
+            <span class="size-label">Size <strong data-field="size"></strong></span>
+            <span class="stock-label" data-field="stock"></span>
+          </span>
+        </button>
+      </div>
     </template>
 
+    <script src="../shared/reconciliation.js"></script>
     <script src="inventory-view-model.js"></script>
+    <script src="mapping-workflow.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

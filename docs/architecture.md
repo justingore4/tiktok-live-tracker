@@ -110,7 +110,8 @@ and surfaces a conflict for review.
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
-rules module. It is not connected to the browser interface or capture probe yet.
+rules module. The offline tagger demo now uses its mapping operation, but payment events
+from the capture probe are not connected yet.
 
 Implemented behavior includes:
 
@@ -210,34 +211,37 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — foundation implemented
+## 5. Employee tagger — mapping demo implemented
 
-The tagger will be a browser-extension interface based on the current mockup. The
-employee should never type a variation number or interact with the hidden SKU.
+The tagger is a Chrome side-panel interface based on the current mockup. The employee
+should never type a variation number or interact with the hidden SKU.
 
-The current Chrome side-panel foundation includes:
+The current Chrome side-panel mapping demo includes:
 
 - A clearly labeled simulated variation number.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Remaining-quantity, low-stock, and sold-out visual states.
-- Accessible labels, keyboard search controls, and a no-results state.
+- One-click mapping and correction of the simulated variation.
+- A selected-card state and **Waiting for payment** summary.
+- Disabled sold-out entries, accessible buttons, keyboard search controls, and a
+  no-results state.
 
-The cards are intentionally display-only in this first UI step. Planned behavior for the
-next two tagger steps includes:
+The demo mapping exists only while the side panel remains loaded. It uses mock inventory
+and does not receive the real current variation, persist state, record payment, calculate
+profit, or decrement inventory.
+
+Planned tagger behavior includes:
 
 - Show the current variation and a queue of variations needing attention.
-- Search inventory by employee-facing item, style, and size.
-- Display remaining quantity and disable or clearly mark sold-out entries.
-- Map one click to one physical unit.
-- Show **Waiting for payment** until TikTok confirms payment.
 - Display final price and gross profit only after the sale commits.
 - Allow remapping after a misclick, including after commit.
 - Allow **Mark unpaid** only after the payment buffer and provide undo.
 - Surface completed-but-unmapped sales and inventory/conflict warnings.
 
-The tagger is intentionally a queue rather than a blocking modal so an employee can
-catch up when multiple variations need attention.
+The production tagger is planned as a queue rather than a blocking modal so an employee
+can catch up when multiple variations need attention. The current demo holds one fixed
+variation only.
 
 ## 6. Storage and sync — planned
 
@@ -336,7 +340,7 @@ Browser support beyond Chrome is a later decision.
 
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** offline reconciliation engine and automated tests.
-3. **In progress:** tagger foundation completed; mapping workflow and lifecycle controls
+3. **In progress:** tagger foundation and mapping workflow completed; lifecycle controls
    are next.
 4. Persistent browser storage and recovery.
 5. Capture-to-engine-to-tagger integration.

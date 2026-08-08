@@ -84,11 +84,14 @@ button {
 .brand-copy h1,
 .section-heading h2,
 .current-auction h2,
-.inventory-card h3,
+.pending-heading h2,
+.mapped-item,
+.pending-status,
+.card-title,
 .empty-state h3,
 .eyebrow,
 .current-auction-label,
-.preview-note,
+.selection-note,
 .result-count,
 .empty-state p {
   margin: 0;
@@ -193,6 +196,86 @@ button {
   color: #b9f9ec;
   background: rgb(39 211 180 / 15%);
   box-shadow: inset 0 0 0 1px rgb(39 211 180 / 28%);
+}
+
+.pending-mapping {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid rgb(39 211 180 / 28%);
+  border-radius: var(--radius-medium);
+  background: linear-gradient(145deg, rgb(39 211 180 / 9%), transparent 70%),
+    var(--surface);
+}
+
+.pending-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pending-heading h2 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.change-mapping {
+  flex: none;
+  padding: 7px 10px;
+  border: 1px solid rgb(72 165 255 / 38%);
+  border-radius: 9px;
+  color: var(--blue-bright);
+  background: rgb(72 165 255 / 8%);
+  font-size: 11px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.change-mapping:hover {
+  background: rgb(72 165 255 / 15%);
+}
+
+.change-mapping:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.pending-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgb(42 52 66 / 72%);
+}
+
+.mapped-item {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 680;
+  line-height: 1.4;
+}
+
+.pending-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: #b9f9ec;
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.pending-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgb(244 189 80 / 11%);
 }
 
 .inventory-section {
@@ -305,7 +388,7 @@ button {
   outline-offset: 1px;
 }
 
-.preview-note {
+.selection-note {
   margin-top: 9px;
   color: var(--text-subtle);
   font-size: 11px;
@@ -319,7 +402,13 @@ button {
   margin-top: 17px;
 }
 
+.inventory-card-wrapper {
+  min-width: 0;
+}
+
 .inventory-card {
+  position: relative;
+  width: 100%;
   min-width: 0;
   min-height: 112px;
   padding: 15px;
@@ -329,6 +418,33 @@ button {
     linear-gradient(145deg, rgb(255 255 255 / 2.5%), transparent 58%),
     var(--surface-raised);
   box-shadow: 0 8px 20px rgb(0 0 0 / 13%);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease,
+    background-color 140ms ease;
+}
+
+.inventory-card:not(:disabled):hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.inventory-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.inventory-card[aria-pressed="true"] {
+  border-color: var(--cyan);
+  background:
+    linear-gradient(145deg, rgb(39 211 180 / 11%), transparent 62%),
+    var(--surface-raised);
+  box-shadow:
+    0 0 0 2px rgb(39 211 180 / 14%),
+    0 10px 25px rgb(0 0 0 / 18%);
 }
 
 .card-heading {
@@ -338,7 +454,8 @@ button {
   align-items: start;
 }
 
-.inventory-card h3 {
+.card-title {
+  display: block;
   min-width: 0;
   font-size: 14px;
   font-weight: 700;
@@ -386,6 +503,21 @@ button {
   white-space: nowrap;
 }
 
+.selected-label {
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #07110f;
+  background: var(--cyan);
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.inventory-card[aria-pressed="true"] .stock-indicator {
+  display: none;
+}
+
 .inventory-card[data-stock-state="low_stock"] .stock-indicator {
   background: var(--amber);
   box-shadow: 0 0 0 4px rgb(244 189 80 / 10%);
@@ -400,9 +532,11 @@ button {
   border-color: #29313c;
   background: #11151c;
   box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
-.inventory-card[data-stock-state="sold_out"] h3,
+.inventory-card[data-stock-state="sold_out"] .card-title,
 .inventory-card[data-stock-state="sold_out"] [data-field="style"] {
   color: #aeb9c7;
 }
@@ -524,6 +658,12 @@ button {
 
   .inventory-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pending-card {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
   }
 
   .inventory-card {
