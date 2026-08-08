@@ -2,7 +2,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  OBSERVED_PAYMENT_STATUSES,
   ReconciliationError,
+  STATE_VERSION,
   calculateSummary,
   createReconciliationState,
   getAuction,
@@ -10,6 +12,8 @@ const {
   hydrateReconciliationState,
   mapVariation,
   markUnpaid,
+  observePaymentStatuses,
+  observeVariations,
   recordPaymentComplete,
   unmapVariation,
   undoMarkUnpaid,
@@ -62,6 +66,316 @@ function assertErrorCode(action, code) {
     (error) => error instanceof ReconciliationError && error.code === code,
   );
 }
+
+test("observes a batch without changing inventory or financial totals", () => {
+  const state = createState();
+  const inventoryBefore = JSON.parse(JSON.stringify(state.inventory));
+
+  const result = observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [37, 38, 39],
+  });
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.deepEqual(result, {
+    status: "observed",
+    observedCount: 3,
+    newlyObservedCount: 3,
+  });
+  assert.deepEqual(state.inventory, inventoryBefore);
+  assert.equal(summary.totals.auctionCount, 3);
+  assert.equal(summary.totals.completedPaymentCount, 0);
+  assert.equal(summary.totals.completedGmvCents, 0);
+  assert.equal(summary.totals.committedSalesCount, 0);
+  assert.equal(summary.totals.profitCents, 0);
+  assert.deepEqual(
+    summary.auctions.map((auction) => ({
+      variationNumber: auction.variationNumber,
+      status: auction.status,
+      sku: auction.sku,
+      soldPriceCents: auction.soldPriceCents,
+    })),
+    [
+      { variationNumber: 37, status: "unmapped", sku: null, soldPriceCents: null },
+      { variationNumber: 38, status: "unmapped", sku: null, soldPriceCents: null },
+      { variationNumber: 39, status: "unmapped", sku: null, soldPriceCents: null },
+    ],
+  );
+});
+
+test("repeated observations are idempotent and never regress completed truth", () => {
+  const state = createState();
+
+  observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [40, 41],
+  });
+  recordPaymentComplete(state, auctionInput(40, { soldPriceCents: 7000 }));
+  const beforeRetry = JSON.parse(JSON.stringify(state));
+  const repeated = observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [40, 41],
+  });
+
+  assert.deepEqual(repeated, {
+    status: "already_observed",
+    observedCount: 2,
+    newlyObservedCount: 0,
+  });
+  assert.deepEqual(state, beforeRetry);
+  assert.equal(getAuction(state, auctionInput(40)).paymentStatus, "payment_complete");
+  assert.equal(getAuction(state, auctionInput(40)).soldPriceCents, 7000);
+});
+
+test("invalid observation batches are rejected atomically", () => {
+  const state = createState();
+
+  for (const variationNumbers of [[], [1, 1], [1, 0], [1, 2.5]]) {
+    assertErrorCode(
+      () =>
+        observeVariations(state, {
+          streamId: STREAM_ONE,
+          variationNumbers,
+        }),
+      "INVALID_ARGUMENT",
+    );
+  }
+
+  assert.deepEqual(state.streams, []);
+});
+
+test("observes independent payment statuses without inventory or money effects", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(50, { sku: "BLACK-TEE-M" }));
+  const beforeSummary = calculateSummary(state, { streamId: STREAM_ONE });
+  const beforeAvailability = getInventoryAvailability(state, {
+    sku: "BLACK-TEE-M",
+  });
+  const result = observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 50,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+      {
+        variationNumber: 51,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+      {
+        variationNumber: 52,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+      {
+        variationNumber: 53,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 54,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+      },
+    ],
+  });
+  const afterSummary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.deepEqual(result, {
+    status: "observed",
+    observedCount: 5,
+    updatedCount: 5,
+    ignoredCount: 0,
+  });
+  assert.equal(state.version, STATE_VERSION);
+  assert.equal(
+    getAuction(state, auctionInput(50)).observedPaymentStatus,
+    "payment_processing",
+  );
+  assert.equal(getAuction(state, auctionInput(50)).sku, "BLACK-TEE-M");
+  assert.equal(getAuction(state, auctionInput(51)).paymentStatus, "unknown");
+  assert.equal(getAuction(state, auctionInput(51)).soldPriceCents, null);
+  assert.equal(
+    getAuction(state, auctionInput(53)).observedPaymentStatus,
+    "canceled",
+  );
+  assert.equal(getAuction(state, auctionInput(53)).paymentStatus, "unknown");
+  assert.deepEqual(
+    getInventoryAvailability(state, { sku: "BLACK-TEE-M" }),
+    beforeAvailability,
+  );
+  assert.deepEqual(afterSummary.inventory, beforeSummary.inventory);
+  assert.deepEqual(afterSummary.itemPerformance, beforeSummary.itemPerformance);
+  assert.equal(afterSummary.totals.committedSalesCount, 0);
+  assert.equal(afterSummary.totals.completedGmvCents, 0);
+  assert.equal(afterSummary.totals.profitCents, 0);
+  assert.deepEqual(
+    hydrateReconciliationState(JSON.parse(JSON.stringify(state))),
+    state,
+  );
+});
+
+test("payment status retries are idempotent and noncomplete states are flexible", () => {
+  const state = createState();
+  const observation = (observedPaymentStatus) =>
+    observePaymentStatuses(state, {
+      streamId: STREAM_ONE,
+      statuses: [{ variationNumber: 60, observedPaymentStatus }],
+    });
+
+  for (const observedPaymentStatus of [
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+    OBSERVED_PAYMENT_STATUSES.CANCELED,
+    OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+  ]) {
+    assert.equal(observation(observedPaymentStatus).updatedCount, 1);
+    assert.equal(
+      getAuction(state, auctionInput(60)).observedPaymentStatus,
+      observedPaymentStatus,
+    );
+  }
+
+  const beforeRetry = JSON.parse(JSON.stringify(state));
+  const retry = observation(OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING);
+
+  assert.deepEqual(retry, {
+    status: "already_observed",
+    observedCount: 1,
+    updatedCount: 0,
+    ignoredCount: 0,
+  });
+  assert.deepEqual(state, beforeRetry);
+});
+
+test("observed completion does not create a canonical sale without its price", () => {
+  const state = createState();
+
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 61,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+      },
+    ],
+  });
+  const auction = getAuction(state, auctionInput(61));
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(auction.observedPaymentStatus, "payment_complete");
+  assert.equal(auction.paymentStatus, "unknown");
+  assert.equal(auction.soldPriceCents, null);
+  assert.equal(summary.totals.completedPaymentCount, 0);
+  assert.equal(summary.totals.completedGmvCents, 0);
+  assert.deepEqual(
+    hydrateReconciliationState(JSON.parse(JSON.stringify(state))),
+    state,
+  );
+});
+
+test("canonical completion sets observed completion and ignores later statuses", () => {
+  const state = createState();
+
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 62,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+  });
+  const completed = recordPaymentComplete(
+    state,
+    auctionInput(62, { soldPriceCents: 2500 }),
+  );
+  const beforeLateStatuses = JSON.parse(JSON.stringify(state));
+  const ignored = observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 62,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+    ],
+  });
+
+  assert.equal(completed.observedPaymentStatus, "payment_complete");
+  assert.deepEqual(ignored, {
+    status: "already_observed",
+    observedCount: 1,
+    updatedCount: 0,
+    ignoredCount: 1,
+  });
+  assert.deepEqual(state, beforeLateStatuses);
+  assert.equal(getAuction(state, auctionInput(62)).soldPriceCents, 2500);
+});
+
+test("invalid payment-status batches are rejected atomically", () => {
+  const invalidStatuses = [
+    [],
+    [
+      {
+        variationNumber: 1,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
+      },
+    ],
+    [{ variationNumber: 1, observedPaymentStatus: "payment_pending" }],
+    [
+      {
+        variationNumber: 1,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+      {
+        variationNumber: 1,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+    [
+      {
+        variationNumber: 0,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+    [
+      {
+        variationNumber: 1,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+        extra: true,
+      },
+    ],
+  ];
+
+  for (const statuses of invalidStatuses) {
+    const state = createState();
+
+    assertErrorCode(
+      () => observePaymentStatuses(state, { streamId: STREAM_ONE, statuses }),
+      "INVALID_ARGUMENT",
+    );
+    assert.deepEqual(state.streams, []);
+  }
+
+  const oversizedState = createState();
+  const oversized = Array.from({ length: 1001 }, (_, index) => ({
+    variationNumber: index + 1,
+    observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+  }));
+
+  assertErrorCode(
+    () =>
+      observePaymentStatuses(oversizedState, {
+        streamId: STREAM_ONE,
+        statuses: oversized,
+      }),
+    "INVALID_ARGUMENT",
+  );
+  assert.deepEqual(oversizedState.streams, []);
+});
 
 test("commits a mapped variation only after payment completes", () => {
   const state = createState();
@@ -688,9 +1002,97 @@ test("hydrates a detached state after a JSON storage round trip", () => {
   assert.equal(serializedState.inventory[0].name, "Black Tee");
 });
 
+test("strictly migrates detached legacy v1 auctions into canonical v2", () => {
+  const state = createState();
+
+  observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [70],
+  });
+  mapVariation(state, auctionInput(71, { sku: "BLACK-TEE-M" }));
+  recordPaymentComplete(
+    state,
+    auctionInput(71, { soldPriceCents: 4800 }),
+  );
+  const legacy = JSON.parse(JSON.stringify(state));
+  legacy.version = 1;
+  legacy.streams.forEach((stream) => {
+    stream.variations.forEach((auction) => {
+      delete auction.observedPaymentStatus;
+    });
+  });
+
+  const migrated = hydrateReconciliationState(legacy);
+
+  assert.equal(migrated.version, STATE_VERSION);
+  assert.deepEqual(
+    migrated.streams[0].variations.map((auction) => ({
+      variationNumber: auction.variationNumber,
+      paymentStatus: auction.paymentStatus,
+      observedPaymentStatus: auction.observedPaymentStatus,
+    })),
+    [
+      {
+        variationNumber: 70,
+        paymentStatus: "unknown",
+        observedPaymentStatus: "not_observed",
+      },
+      {
+        variationNumber: 71,
+        paymentStatus: "payment_complete",
+        observedPaymentStatus: "payment_complete",
+      },
+    ],
+  );
+  assert.notEqual(migrated, legacy);
+  assert.notEqual(migrated.streams, legacy.streams);
+
+  migrated.streams[0].variations[0].observedPaymentStatus = "payment_failed";
+  assert.equal(legacy.streams[0].variations[0].observedPaymentStatus, undefined);
+});
+
+test("keeps legacy v1 and canonical v2 auction shapes strict", () => {
+  const state = createState();
+
+  observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [72],
+  });
+  const legacyWithV2Field = JSON.parse(JSON.stringify(state));
+  legacyWithV2Field.version = 1;
+  const missingV2Field = JSON.parse(JSON.stringify(state));
+  delete missingV2Field.streams[0].variations[0].observedPaymentStatus;
+  const unsupportedObservedStatus = JSON.parse(JSON.stringify(state));
+  unsupportedObservedStatus.streams[0].variations[0].observedPaymentStatus =
+    "payment_pending";
+  const legacyWithUnknownStatus = JSON.parse(JSON.stringify(state));
+  legacyWithUnknownStatus.version = 1;
+  delete legacyWithUnknownStatus.streams[0].variations[0]
+    .observedPaymentStatus;
+  legacyWithUnknownStatus.streams[0].variations[0].paymentStatus =
+    "payment_pending";
+
+  assertErrorCode(
+    () => hydrateReconciliationState(legacyWithV2Field),
+    "INVALID_STATE",
+  );
+  assertErrorCode(
+    () => hydrateReconciliationState(missingV2Field),
+    "INVALID_STATE",
+  );
+  assertErrorCode(
+    () => hydrateReconciliationState(unsupportedObservedStatus),
+    "INVALID_STATE",
+  );
+  assertErrorCode(
+    () => hydrateReconciliationState(legacyWithUnknownStatus),
+    "INVALID_STATE",
+  );
+});
+
 test("rejects unsupported and malformed persisted state", () => {
   const unsupportedState = createState();
-  unsupportedState.version = 2;
+  unsupportedState.version = 3;
 
   assertErrorCode(
     () => hydrateReconciliationState(unsupportedState),

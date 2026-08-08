@@ -16,6 +16,8 @@
       ],
       "js": [
         "shared/sale-parser.js",
+        "shared/capture-protocol.js",
+        "capture/capture-client.js",
         "capture/sale-candidate-locator.js",
         "capture/capture-event-registry.js",
         "capture/capture-scheduler.js",

@@ -7,6 +7,7 @@ const {
 } = require("../extension/tagger/inventory-view-model.js");
 const {
   createMappingSession,
+  getObservedPaymentStatusLabel,
 } = require("../extension/tagger/mapping-workflow.js");
 
 const STREAM_ID = "demo-stream";
@@ -41,6 +42,136 @@ function inventoryEntry(view, sku) {
   return view.inventory.find((entry) => entry.sku === sku);
 }
 
+test("uses friendly labels for every observed TikTok payment status", () => {
+  assert.deepEqual(
+    Object.values(reconciliation.OBSERVED_PAYMENT_STATUSES).map((status) => [
+      status,
+      getObservedPaymentStatusLabel(status),
+    ]),
+    [
+      ["not_observed", "Payment not yet observed"],
+      ["payment_processing", "Payment processing"],
+      ["payment_fixing", "Payment fixing"],
+      ["payment_failed", "Payment failed"],
+      ["canceled", "Canceled"],
+      ["payment_complete", "Payment complete"],
+      ["unrecognized", "Unrecognized payment status"],
+    ],
+  );
+  assert.equal(
+    getObservedPaymentStatusLabel("future_payment_status"),
+    "Payment status unavailable",
+  );
+  assert.equal(
+    getObservedPaymentStatusLabel(undefined),
+    "Payment status unavailable",
+  );
+});
+
+test("keeps failed and canceled distinct without changing pending inventory semantics", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: 202,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 201,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+  });
+  const session = createSession({
+    state,
+    variationNumber: 202,
+    variationNumbers: [202, 201],
+  });
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  const view = session.getViewState();
+  const canceledOption = view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+  const failedOption = view.variations.find(
+    (variation) => variation.variationNumber === 201,
+  );
+
+  assert.equal(view.selectedVariationNumber, 202);
+  assert.equal(view.auction.observedPaymentStatus, "canceled");
+  assert.equal(view.auction.observedPaymentStatusLabel, "Canceled");
+  assert.equal(view.auction.paymentStatus, "unknown");
+  assert.equal(view.auction.status, "pending");
+  assert.equal(canceledOption.observedPaymentStatusLabel, "Canceled");
+  assert.equal(canceledOption.status, "pending");
+  assert.equal(failedOption.observedPaymentStatusLabel, "Payment failed");
+  assert.equal(failedOption.status, "unmapped");
+  assert.equal(
+    inventoryEntry(view, "STUSSY-TEE-BLACK-L").reservedQuantity,
+    1,
+  );
+  assert.equal(view.totals.completedPaymentCount, 0);
+  assert.equal(view.totals.committedSalesCount, 0);
+  assert.equal(view.totals.profitCents, 0);
+});
+
+test("projects observed payment labels and captured prices without an inventory mapping", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: 202,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+    ],
+  });
+  const session = createSession({
+    state,
+    variationNumbers: [203, 202],
+  });
+
+  session.selectVariation(202);
+  let view = session.getViewState();
+  let option = view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+
+  assert.equal(view.auction.observedPaymentStatus, "payment_fixing");
+  assert.equal(view.auction.observedPaymentStatusLabel, "Payment fixing");
+  assert.equal(option.observedPaymentStatus, "payment_fixing");
+  assert.equal(option.observedPaymentStatusLabel, "Payment fixing");
+  assert.equal(option.soldPriceCents, null);
+  assert.deepEqual(option.conflicts, []);
+
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    soldPriceCents: 700,
+  });
+  view = session.getViewState();
+  option = view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+
+  assert.equal(view.mapping, null);
+  assert.equal(view.auction.observedPaymentStatus, "payment_complete");
+  assert.equal(view.auction.observedPaymentStatusLabel, "Payment complete");
+  assert.equal(view.auction.soldPriceCents, 700);
+  assert.equal(option.observedPaymentStatusLabel, "Payment complete");
+  assert.equal(option.soldPriceCents, 700);
+});
+
 test("initializes an isolated mapping session without creating an auction", () => {
   const inventoryBefore = clone(MOCK_INVENTORY);
   const session = createSession();
@@ -61,6 +192,10 @@ test("navigates explicit variation history without changing reconciliation state
     initialView.variations.map((variation) => variation.variationNumber),
     [203, 201],
   );
+  assert.deepEqual(
+    initialView.variations.map((variation) => variation.recorded),
+    [false, false],
+  );
   assert.equal(initialView.currentVariationNumber, 203);
   assert.equal(initialView.selectedVariationNumber, 203);
   assert.equal(initialView.isReviewingHistory, false);
@@ -80,6 +215,34 @@ test("navigates explicit variation history without changing reconciliation state
   assert.equal(unknown.code, "UNKNOWN_VARIATION");
   assert.equal(unknown.view.selectedVariationNumber, 201);
   assert.deepEqual(session.getStateSnapshot(), stateBefore);
+});
+
+test("marks only canonical variation records as recorded", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [202],
+  });
+  const session = createSession({
+    state,
+    variationNumbers: [203, 202, 201],
+  });
+  const options = session.getViewState().variations;
+
+  assert.deepEqual(
+    options.map(({ variationNumber, recorded }) => ({
+      variationNumber,
+      recorded,
+    })),
+    [
+      { variationNumber: 203, recorded: false },
+      { variationNumber: 202, recorded: true },
+      { variationNumber: 201, recorded: false },
+    ],
+  );
 });
 
 test("multiple variations share inventory while keeping their mappings distinct", () => {

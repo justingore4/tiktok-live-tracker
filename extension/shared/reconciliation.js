@@ -11,7 +11,22 @@
   function createReconciliationModule() {
     "use strict";
 
-    const STATE_VERSION = 1;
+    const STATE_VERSION = 2;
+    const LEGACY_STATE_VERSION = 1;
+    const MAX_OBSERVED_VARIATIONS = 1000;
+    const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
+    const OBSERVED_PAYMENT_STATUSES = Object.freeze({
+      NOT_OBSERVED: "not_observed",
+      PAYMENT_PROCESSING: "payment_processing",
+      PAYMENT_FIXING: "payment_fixing",
+      PAYMENT_FAILED: "payment_failed",
+      CANCELED: "canceled",
+      PAYMENT_COMPLETE: "payment_complete",
+      UNRECOGNIZED: "unrecognized",
+    });
+    const OBSERVED_PAYMENT_STATUS_VALUES = new Set(
+      Object.values(OBSERVED_PAYMENT_STATUSES),
+    );
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -176,8 +191,9 @@
       path,
       parentStreamId,
       inventoryBySku,
+      stateVersion,
     ) {
-      requirePersistedRecord(auction, path, [
+      const expectedKeys = [
         "committedUnitCostCents",
         "conflicts",
         "mappingStatus",
@@ -186,7 +202,13 @@
         "soldPriceCents",
         "streamId",
         "variationNumber",
-      ]);
+      ];
+
+      if (stateVersion === STATE_VERSION) {
+        expectedKeys.push("observedPaymentStatus");
+      }
+
+      requirePersistedRecord(auction, path, expectedKeys);
       const streamId = requirePersistedString(
         auction.streamId,
         `${path}.streamId`,
@@ -222,6 +244,29 @@
         "unknown",
       ].includes(auction.paymentStatus)) {
         failInvalidState(`${path}.paymentStatus is not supported.`);
+      }
+
+      const observedPaymentStatus =
+        stateVersion === LEGACY_STATE_VERSION
+          ? auction.paymentStatus === "payment_complete"
+            ? OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+            : OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED
+          : requirePersistedString(
+              auction.observedPaymentStatus,
+              `${path}.observedPaymentStatus`,
+            );
+
+      if (!OBSERVED_PAYMENT_STATUS_VALUES.has(observedPaymentStatus)) {
+        failInvalidState(`${path}.observedPaymentStatus is not supported.`);
+      }
+
+      if (
+        auction.paymentStatus === "payment_complete" &&
+        observedPaymentStatus !== OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+      ) {
+        failInvalidState(
+          `${path}.observedPaymentStatus must reflect its completed payment.`,
+        );
       }
 
       if (
@@ -282,6 +327,7 @@
         sku,
         mappingStatus: auction.mappingStatus,
         paymentStatus: auction.paymentStatus,
+        observedPaymentStatus,
         soldPriceCents,
         committedUnitCostCents,
         conflicts: [],
@@ -338,7 +384,10 @@
           failInvalidState("state.version must be a safe integer.");
         }
 
-        if (candidate.version !== STATE_VERSION) {
+        if (
+          candidate.version !== LEGACY_STATE_VERSION &&
+          candidate.version !== STATE_VERSION
+        ) {
           fail(
             "UNSUPPORTED_STATE_VERSION",
             `Reconciliation state version ${candidate.version} is not supported.`,
@@ -417,6 +466,7 @@
               `${path}.variations[${auctionIndex}]`,
               streamId,
               inventoryBySku,
+              candidate.version,
             );
 
             if (variationNumbers.has(hydratedAuction.variationNumber)) {
@@ -539,6 +589,7 @@
           sku: null,
           mappingStatus: "unmapped",
           paymentStatus: "unknown",
+          observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
           soldPriceCents: null,
           committedUnitCostCents: null,
           conflicts: [],
@@ -715,6 +766,7 @@
         sku: auction.sku,
         mappingStatus: auction.mappingStatus,
         paymentStatus: auction.paymentStatus,
+        observedPaymentStatus: auction.observedPaymentStatus,
         soldPriceCents: auction.soldPriceCents,
         committedUnitCostCents: auction.committedUnitCostCents,
         profitCents: committed
@@ -771,6 +823,163 @@
       return createAuctionView(state, auction);
     }
 
+    function observeVariations(state, input) {
+      requireState(state);
+
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        fail("INVALID_ARGUMENT", "An observed-variations input is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+
+      if (
+        !Array.isArray(input.variationNumbers) ||
+        input.variationNumbers.length === 0 ||
+        input.variationNumbers.length > MAX_OBSERVED_VARIATIONS
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          `variationNumbers must contain between 1 and ${MAX_OBSERVED_VARIATIONS} variation numbers.`,
+        );
+      }
+
+      const seenVariationNumbers = new Set();
+      const variationNumbers = input.variationNumbers.map(
+        (variationNumber, index) => {
+          const normalizedVariationNumber = requireSafeInteger(
+            variationNumber,
+            `variationNumbers[${index}]`,
+            1,
+          );
+
+          if (seenVariationNumbers.has(normalizedVariationNumber)) {
+            fail(
+              "INVALID_ARGUMENT",
+              "variationNumbers must not contain duplicates.",
+            );
+          }
+
+          seenVariationNumbers.add(normalizedVariationNumber);
+          return normalizedVariationNumber;
+        },
+      );
+      let newlyObservedCount = 0;
+
+      variationNumbers.forEach((variationNumber) => {
+        if (findAuction(state, streamId, variationNumber) === null) {
+          getOrCreateAuction(state, streamId, variationNumber);
+          newlyObservedCount += 1;
+        }
+      });
+
+      return {
+        status: newlyObservedCount === 0 ? "already_observed" : "observed",
+        observedCount: variationNumbers.length,
+        newlyObservedCount,
+      };
+    }
+
+    function observePaymentStatuses(state, input) {
+      requireState(state);
+
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        fail(
+          "INVALID_ARGUMENT",
+          "An observed-payment-statuses input is required.",
+        );
+      }
+
+      const streamId = requireStreamId(input.streamId);
+
+      if (
+        !Array.isArray(input.statuses) ||
+        input.statuses.length === 0 ||
+        input.statuses.length > MAX_OBSERVED_PAYMENT_STATUSES
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          `statuses must contain between 1 and ${MAX_OBSERVED_PAYMENT_STATUSES} payment statuses.`,
+        );
+      }
+
+      const seenVariationNumbers = new Set();
+      const statuses = input.statuses.map((status, index) => {
+        if (!isPlainRecord(status)) {
+          fail("INVALID_ARGUMENT", `statuses[${index}] must be an object.`);
+        }
+
+        const keys = Object.keys(status).sort();
+
+        if (
+          keys.length !== 2 ||
+          keys[0] !== "observedPaymentStatus" ||
+          keys[1] !== "variationNumber"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            `statuses[${index}] must contain exactly observedPaymentStatus and variationNumber.`,
+          );
+        }
+
+        const variationNumber = requireVariationNumber(
+          status.variationNumber,
+        );
+        const observedPaymentStatus = status.observedPaymentStatus;
+
+        if (
+          !OBSERVED_PAYMENT_STATUS_VALUES.has(observedPaymentStatus) ||
+          observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            `statuses[${index}].observedPaymentStatus is not observable.`,
+          );
+        }
+
+        if (seenVariationNumbers.has(variationNumber)) {
+          fail(
+            "INVALID_ARGUMENT",
+            "statuses must not contain duplicate variation numbers.",
+          );
+        }
+
+        seenVariationNumbers.add(variationNumber);
+        return { variationNumber, observedPaymentStatus };
+      });
+      let updatedCount = 0;
+      let ignoredCount = 0;
+
+      statuses.forEach(({ variationNumber, observedPaymentStatus }) => {
+        const auction = getOrCreateAuction(
+          state,
+          streamId,
+          variationNumber,
+        );
+
+        if (
+          auction.paymentStatus === "payment_complete" &&
+          observedPaymentStatus !== OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+        ) {
+          ignoredCount += 1;
+          return;
+        }
+
+        if (auction.observedPaymentStatus === observedPaymentStatus) {
+          return;
+        }
+
+        auction.observedPaymentStatus = observedPaymentStatus;
+        updatedCount += 1;
+      });
+
+      return {
+        status: updatedCount === 0 ? "already_observed" : "observed",
+        observedCount: statuses.length,
+        updatedCount,
+        ignoredCount,
+      };
+    }
+
     function unmapVariation(state, input) {
       requireState(state);
       const key = validateAuctionKey(input);
@@ -809,6 +1018,9 @@
       );
 
       if (auction.paymentStatus === "payment_complete") {
+        auction.observedPaymentStatus =
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
+
         if (auction.soldPriceCents !== soldPriceCents) {
           addConflict(auction, {
             code: "conflicting_sold_price",
@@ -827,6 +1039,8 @@
       }
 
       auction.paymentStatus = "payment_complete";
+      auction.observedPaymentStatus =
+        OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
       auction.soldPriceCents = soldPriceCents;
       snapshotCommittedCost(state, auction);
 
@@ -1032,10 +1246,15 @@
     }
 
     return {
+      MAX_OBSERVED_PAYMENT_STATUSES,
+      OBSERVED_PAYMENT_STATUSES,
       ReconciliationError,
+      STATE_VERSION,
       createReconciliationState,
       hydrateReconciliationState,
       getInventoryAvailability,
+      observePaymentStatuses,
+      observeVariations,
       mapVariation,
       unmapVariation,
       recordPaymentComplete,

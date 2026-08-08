@@ -17,6 +17,8 @@
     const COMMAND_TYPES = Object.freeze({
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
+      OBSERVE_VARIATIONS: "observe_variations",
+      OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
@@ -26,6 +28,16 @@
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STATE]: ["type"],
       [COMMAND_TYPES.INITIALIZE_STATE]: ["inventory", "type"],
+      [COMMAND_TYPES.OBSERVE_VARIATIONS]: [
+        "streamId",
+        "type",
+        "variationNumbers",
+      ],
+      [COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES]: [
+        "statuses",
+        "streamId",
+        "type",
+      ],
       [COMMAND_TYPES.MAP_VARIATION]: [
         "sku",
         "streamId",
@@ -59,10 +71,20 @@
       "hydrateReconciliationState",
       "mapVariation",
       "markUnpaid",
+      "observePaymentStatuses",
+      "observeVariations",
       "recordPaymentComplete",
       "unmapVariation",
       "undoMarkUnpaid",
     ];
+    const OBSERVABLE_PAYMENT_STATUSES = new Set([
+      "payment_processing",
+      "payment_fixing",
+      "payment_failed",
+      "canceled",
+      "payment_complete",
+      "unrecognized",
+    ]);
 
     class ReconciliationCoordinatorError extends Error {
       constructor(code, message) {
@@ -147,6 +169,64 @@
           "INVALID_COMMAND",
           "initialize_state inventory must contain at least one entry.",
         );
+      }
+
+      if (command.type === COMMAND_TYPES.OBSERVE_VARIATIONS) {
+        if (
+          typeof command.streamId !== "string" ||
+          command.streamId.trim() === "" ||
+          !Array.isArray(command.variationNumbers) ||
+          command.variationNumbers.length === 0 ||
+          command.variationNumbers.length > 1000 ||
+          command.variationNumbers.some(
+            (variationNumber) =>
+              !Number.isSafeInteger(variationNumber) || variationNumber < 1,
+          ) ||
+          new Set(command.variationNumbers).size !==
+            command.variationNumbers.length
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "observe_variations requires a stream and 1 to 1000 unique positive variation numbers.",
+          );
+        }
+      }
+
+      if (command.type === COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES) {
+        const statusesAreValid =
+          typeof command.streamId === "string" &&
+          command.streamId.trim() !== "" &&
+          Array.isArray(command.statuses) &&
+          command.statuses.length > 0 &&
+          command.statuses.length <= 1000 &&
+          command.statuses.every((status) => {
+            if (!isPlainRecord(status)) {
+              return false;
+            }
+
+            const keys = Object.keys(status).sort();
+
+            return (
+              keys.length === 2 &&
+              keys[0] === "observedPaymentStatus" &&
+              keys[1] === "variationNumber" &&
+              Number.isSafeInteger(status.variationNumber) &&
+              status.variationNumber >= 1 &&
+              OBSERVABLE_PAYMENT_STATUSES.has(
+                status.observedPaymentStatus,
+              )
+            );
+          }) &&
+          new Set(
+            command.statuses.map((status) => status.variationNumber),
+          ).size === command.statuses.length;
+
+        if (!statusesAreValid) {
+          fail(
+            "INVALID_COMMAND",
+            "observe_payment_statuses requires a stream and 1 to 1000 unique observable payment statuses.",
+          );
+        }
       }
 
       return command.type;
@@ -244,6 +324,10 @@
         const candidate = cloneCanonicalState();
         const result = operation(candidate);
 
+        if (JSON.stringify(candidate) === JSON.stringify(canonicalState)) {
+          return createResponse(result);
+        }
+
         await stateStore.saveState(candidate);
         canonicalState = candidate;
 
@@ -260,6 +344,20 @@
             return createResponse();
           case COMMAND_TYPES.INITIALIZE_STATE:
             return initializeState(command);
+          case COMMAND_TYPES.OBSERVE_VARIATIONS:
+            return mutateState((state) =>
+              reconciliation.observeVariations(state, {
+                streamId: command.streamId,
+                variationNumbers: command.variationNumbers,
+              }),
+            );
+          case COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES:
+            return mutateState((state) =>
+              reconciliation.observePaymentStatuses(state, {
+                streamId: command.streamId,
+                statuses: command.statuses,
+              }),
+            );
           case COMMAND_TYPES.MAP_VARIATION:
             return mutateState((state) =>
               reconciliation.mapVariation(state, {

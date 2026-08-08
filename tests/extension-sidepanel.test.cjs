@@ -32,6 +32,11 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeReconciliationError extends Error {}
   class FakeStorageError extends Error {}
   class FakeCoordinatorError extends Error {}
+  class FakeStreamError extends Error {}
+  class FakeStreamStorageError extends Error {}
+  class FakeStreamCoordinatorError extends Error {}
+  class FakeCaptureProtocolError extends Error {}
+  class FakeCaptureIntegrationError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -47,12 +52,48 @@ test("service worker opens the side panel from the toolbar action", () => {
       MESSAGE_CHANNEL: "tiktok-live-tracker.reconciliation",
       MESSAGE_VERSION: 1,
       COMMAND_TYPES: {
+        OBSERVE_VARIATIONS: "observe_variations",
         RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       },
       ReconciliationCoordinatorError: FakeCoordinatorError,
       createReconciliationCoordinator() {
         return { dispatch: () => Promise.resolve({}) };
       },
+    },
+    TikTokLiveTrackerStreamSession: {
+      StreamSessionError: FakeStreamError,
+    },
+    TikTokLiveTrackerStreamSessionStorage: {
+      StreamSessionStorageError: FakeStreamStorageError,
+      createStreamSessionStateStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerStreamSessionCoordinator: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.stream-session",
+      MESSAGE_VERSION: 1,
+      COMMAND_TYPES: {
+        GET_STREAM_SESSION: "get_stream_session",
+        START_STREAM: "start_stream",
+        END_STREAM: "end_stream",
+      },
+      StreamSessionCoordinatorError: FakeStreamCoordinatorError,
+      createStreamSessionCoordinator() {
+        return { dispatch: () => Promise.resolve({}) };
+      },
+    },
+    TikTokLiveTrackerCaptureProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.capture",
+      CaptureProtocolError: FakeCaptureProtocolError,
+    },
+    TikTokLiveTrackerCaptureIntegration: {
+      CaptureIntegrationError: FakeCaptureIntegrationError,
+      createCaptureIntegration() {
+        return { dispatch: () => Promise.resolve({ status: "accepted" }) };
+      },
+    },
+    crypto: {
+      randomUUID: () => "11111111-1111-4111-8111-111111111111",
     },
     chrome: {
       storage: {
@@ -98,7 +139,10 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/sale-parser.js",
     "../shared/reconciliation.js",
     "../shared/reconciliation-coordinator.js",
+    "../shared/stream-session-coordinator.js",
     "reconciliation-client.js",
+    "stream-session-client.js",
+    "stream-session-controller.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
@@ -135,6 +179,26 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(
     html,
+    /id="stream-session-panel"[\s\S]+aria-busy="true"/,
+  );
+  assert.match(
+    html,
+    /id="stream-session-status"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
+  );
+  assert.match(
+    html,
+    /id="stream-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
+  );
+  assert.match(html, /id="start-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="resume-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="end-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
+  assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
+  assert.match(html, /Waiting for a variation to appear in Sold Items/);
+  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
+  assert.match(
+    html,
     /id="saved-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
   );
   assert.match(html, /id="retry-saved-session"[^>]+type="button"/);
@@ -159,7 +223,16 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
   assert.match(html, /id="state-warning"[^>]+role="status"/);
-  assert.match(html, />Waiting for payment</);
+  assert.match(html, /id="auction-status"[^>]+tabindex="-1"/);
+  assert.match(html, /<dt>TikTok payment<\/dt>/);
+  assert.match(
+    html,
+    /id="tiktok-payment-status"[\s\S]+data-payment-status="not_observed"/,
+  );
+  assert.match(html, /data-field="observed-payment-status"[\s\S]+Payment not yet observed/);
+  assert.match(html, /id="payment-price"[^>]+hidden/);
+  assert.match(html, /<dt>Inventory tag<\/dt>/);
+  assert.match(html, /data-field="mapping-status"[\s\S]+No item selected/);
   assert.match(html, /<label[^>]+for="sold-price"/);
   assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
   assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
@@ -175,7 +248,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(html, />\s*Undo simulated payment\s*</);
   assert.match(html, /data-field="gross-profit"/);
-  assert.match(html, />Saved session</);
+  assert.match(html, />\s*Live session\s*</);
   assert.match(html, /Offline demo/);
   assert.match(html, /do not change TikTok/);
   assert.doesNotMatch(html, /id="change-mapping"/);
@@ -192,9 +265,16 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     path.join(taggerDirectory, "mapping-workflow.js"),
     "utf8",
   );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
   const mappingSource = `${panelSource}\n${workflowSource}`;
 
-  assert.match(panelSource, /button\.disabled = !entry\.selectionAllowed/);
+  assert.match(
+    panelSource,
+    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+  );
   assert.match(panelSource, /function renderVariationNavigation\(view\)/);
   assert.match(
     panelSource,
@@ -202,7 +282,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(
     panelSource,
-    /returnToCurrentButton\.addEventListener\("click",[\s\S]+persistentController\.selectVariation\([\s\S]*?DEMO_CURRENT_VARIATION_NUMBER[\s\S]+getDemoSession\(\)\.selectVariation/,
+    /returnToCurrentButton\.addEventListener\("click",[\s\S]+activeMode === "saved_session"[\s\S]+getDemoSession\(\)\.selectVariation/,
   );
   assert.match(panelSource, /view\.selectedVariationNumber/);
   assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);
@@ -247,9 +327,29 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(panelSource, /persistentController\.markSelectedUnpaid/);
   assert.match(panelSource, /persistentController\.undoSelectedUnpaid/);
-  assert.match(panelSource, /persistentController\.start\(\)/);
+  assert.match(panelSource, /const mountedController = persistentController/);
+  assert.match(panelSource, /mountedController\.start\(\)/);
   assert.match(panelSource, /persistentController\.retry\(\)/);
-  assert.match(panelSource, /persistentController\.subscribe\(renderSavedSnapshot\)/);
+  assert.match(panelSource, /mountedController\.subscribe\(renderSavedSnapshot\)/);
+  assert.match(
+    panelSource,
+    /streamId: activeSession\.streamId/,
+  );
+  assert.match(
+    panelSource,
+    /streamSessionController\.subscribe\(renderStreamSnapshot\)/,
+  );
+  assert.match(panelSource, /streamSessionController\.startNewStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.retry\(\)/);
+  assert.match(panelSource, /getInventoryBlockingVariations\(\)/);
+  assert.match(panelSource, /variation\.status === "pending"/);
+  assert.match(panelSource, /getRecordedVariations\(view\)/);
+  assert.match(panelSource, /variation\.recorded/);
+  assert.match(panelSource, /Waiting for Sold Items variations/);
+  assert.match(panelSource, /Wait for a Sold Items variation before tagging/);
+  assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
   assert.match(
     panelSource,
     /savedModeButton\.addEventListener\("click",[\s\S]+selectMode\("saved_session"\)/,
@@ -258,7 +358,17 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\("offline_demo"\)/,
   );
-  assert.match(panelSource, /trackerWorkspace\.toggleAttribute\("inert", busy\)/);
+  assert.match(
+    panelSource,
+    /trackerWorkspace\.toggleAttribute\("inert", shouldBeInert\)/,
+  );
+  assert.match(panelSource, /savedSnapshot\?\.phase === "error"/);
+  assert.match(panelSource, /savedSnapshot\?\.phase === "error" \|\| endConfirmationOpen/);
+  assert.match(panelSource, /persistentController === null \|\| savedSnapshot\?\.phase !== "ready"/);
+  assert.match(
+    panelSource,
+    /retryStreamSessionButton\.addEventListener\("click",[\s\S]+streamSessionStatus\.hidden = false;[\s\S]+streamSessionError\.hidden = true;[\s\S]+streamSessionStatus\.focus\(\)/,
+  );
   assert.match(panelSource, /savedSessionError\.focus\(\)/);
   assert.match(panelSource, /pendingSavedAction \|\| savedSnapshot\?\.busy/);
   assert.match(panelSource, /activeMode !== "offline_demo"/);
@@ -271,6 +381,34 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.doesNotMatch(panelSource, /changeMappingButton|#change-mapping/);
   assert.match(panelSource, /auctionEyebrow\.textContent/);
+  assert.match(panelSource, /function renderOrderStatuses\(auction\)/);
+  assert.match(panelSource, /observedPaymentStatus\.textContent = observedLabel/);
+  assert.match(
+    panelSource,
+    /tiktokPaymentStatus\.dataset\.paymentStatus = safeObservedStatus/,
+  );
+  assert.match(panelSource, /paymentPrice\.hidden = !hasCapturedPrice/);
+  assert.match(panelSource, /mappingStatus\.textContent = getInventoryTagLabel\(auction\)/);
+  assert.match(
+    panelSource,
+    /auction\.paymentStatus === "payment_complete"/,
+  );
+  assert.match(workflowSource, /"Payment status unavailable"/);
+  assert.match(panelSource, /"Sale assigned"/);
+  assert.match(panelSource, /"Item reserved"/);
+  assert.match(
+    workflowSource,
+    /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
+  );
+  assert.match(panelSource, /"payment_failed",[\s\S]+"canceled",/);
+  assert.match(
+    styleSource,
+    /data-payment-status="payment_fixing"\],[\s\S]+data-payment-status="payment_failed"\][\s\S]+color: #ffd88a/,
+  );
+  assert.match(
+    styleSource,
+    /data-payment-status="canceled"\][\s\S]+color: #ffb1b7[\s\S]+data-payment-status="canceled"\] \.pending-status-dot[\s\S]+background: #ff737e/,
+  );
   assert.match(panelSource, /stateWarning\.textContent !== warning/);
   assert.doesNotMatch(panelSource, /this pending mapping/);
   assert.doesNotMatch(mappingSource, /undoPaymentComplete/);
@@ -278,6 +416,83 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     mappingSource,
     /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
   );
+});
+
+test("tagger refreshes canonical Sold Items state from strict worker invalidations", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+
+  assert.match(
+    panelSource,
+    /CAPTURE_STATE_NOTIFICATION_CHANNEL\s*=\s*\n?\s*"tiktok-live-tracker\.capture-state"/,
+  );
+  assert.match(panelSource, /CAPTURE_STATE_NOTIFICATION_VERSION = 1/);
+  assert.match(
+    panelSource,
+    /CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed"/,
+  );
+  assert.match(panelSource, /CAPTURE_REFRESH_DELAY_MS = 150/);
+  assert.match(
+    panelSource,
+    /hasExactKeys\(message, \["channel", "version", "event"\]\)/,
+  );
+  assert.match(panelSource, /hasExactKeys\(message\.event, \["type"\]\)/);
+  assert.match(panelSource, /sender\?\.id === chrome\.runtime\.id/);
+  assert.match(panelSource, /sender\.tab === undefined/);
+  assert.match(
+    panelSource,
+    /chrome\.runtime\.onMessage\.addListener\(handleCaptureStateChanged\)/,
+  );
+  assert.match(panelSource, /scheduledController\.refresh\(\)/);
+  assert.match(panelSource, /scheduledController !== persistentController/);
+  assert.match(panelSource, /scheduledStreamId !== mountedStreamId/);
+  assert.match(panelSource, /window\.setTimeout\([\s\S]+CAPTURE_REFRESH_DELAY_MS/);
+  assert.match(panelSource, /clearCaptureRefreshTimer\(\)/);
+  assert.match(
+    panelSource,
+    /pagehide[\s\S]+removeListener\(handleCaptureStateChanged\)/,
+  );
+  assert.match(panelSource, /getFocusedInventorySku\(\)/);
+  assert.match(panelSource, /captureRefreshFocusSku[\s\S]+focusOptions\.focusSku/);
+  assert.match(panelSource, /Checking live Sold Items/);
+  assert.match(panelSource, /Live Sold Items updated/);
+  assert.match(panelSource, /Retry live update/);
+  assert.match(panelSource, /Captured variation #/);
+  assert.match(
+    panelSource,
+    /Captured variation #\$\{added\[0\]\} from Sold Items\. \$\{paymentDetail\} It is selected and ready to tag\./,
+  );
+  assert.match(panelSource, /variation\.observedPaymentStatus/);
+  assert.match(panelSource, /variation\.soldPriceCents/);
+  assert.match(panelSource, /variation\.conflicts/);
+  assert.match(panelSource, /Payment complete captured for variation #/);
+  assert.match(panelSource, /Payment price conflict for variation #/);
+  assert.match(panelSource, /payment_completed_after_marked_unpaid/);
+  assert.match(
+    panelSource,
+    /#\$\{option\.variationNumber\} - \$\{option\.observedPaymentStatusLabel\} - \$\{item\}/,
+  );
+  assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
+  assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
+  assert.match(panelSource, /Captured earlier variation/);
+  assert.match(panelSource, /captureRefreshHadVariationFocus/);
+  assert.match(panelSource, /pendingMapping\.contains\(document\.activeElement\)/);
+  assert.match(panelSource, /focusOptions\.focusVariation = true/);
+  assert.match(
+    panelSource,
+    /Now showing variation #\$\{view\.selectedVariationNumber\}\./,
+  );
+  assert.match(
+    panelSource,
+    /A newly captured variation will open automatically\./,
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /available in the variation menu now/,
+  );
+  assert.doesNotMatch(panelSource, /message\.state|message\.streamId/);
 });
 
 test("capture scripts load across the TikTok shop SPA and gate themselves at runtime", () => {
@@ -288,6 +503,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.ok(dashboardScript);
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
+    "shared/capture-protocol.js",
+    "capture/capture-client.js",
     "capture/sale-candidate-locator.js",
     "capture/capture-event-registry.js",
     "capture/capture-scheduler.js",
@@ -303,6 +520,10 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
     path.join(extensionDirectory, "capture", "capture-scheduler.js"),
     "utf8",
   );
+  const captureClientSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "capture-client.js"),
+    "utf8",
+  );
   const locatorSource = fs.readFileSync(
     path.join(extensionDirectory, "capture", "sale-candidate-locator.js"),
     "utf8",
@@ -315,12 +536,15 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.match(captureSource, /TikTokLiveTrackerCaptureScheduler/);
   assert.match(captureSource, /TikTokLiveTrackerSaleCandidateLocator/);
   assert.match(captureSource, /TikTokLiveTrackerCaptureEventRegistry/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureProtocol/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureClient/);
+  assert.match(captureClientSource, /trustedRuntime\.sendMessage/);
   assert.match(captureSource, /const QUIET_SCAN_DELAY_MS = 150/);
   assert.match(captureSource, /const MAX_SCAN_WAIT_MS = 1000/);
   assert.match(captureSource, /quietDelayMs:\s*QUIET_SCAN_DELAY_MS/);
   assert.match(captureSource, /maxWaitMs:\s*MAX_SCAN_WAIT_MS/);
   assert.match(captureSource, /https:\/\/shop\.tiktok\.com/);
-  assert.match(captureSource, /\/streamer\/live\/event\/dashboard/);
+  assert.match(captureSource, /\/streamer\/live\/product\/dashboard/);
   assert.doesNotMatch(
     `${captureSource}\n${locatorSource}\n${registrySource}\n${schedulerSource}`,
     /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,

@@ -22,6 +22,7 @@
     });
     const OPERATIONS = Object.freeze({
       LOAD: "load",
+      REFRESH: "refresh",
       INITIALIZE: "initialize",
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
@@ -247,11 +248,15 @@
           ? error.code
           : scope === "load"
             ? "SESSION_LOAD_FAILED"
+            : scope === "refresh"
+              ? "SESSION_REFRESH_FAILED"
             : "SESSION_SAVE_FAILED",
         message: knownCode && knownMessage
           ? error.message
           : scope === "load"
             ? "Saved tracker data could not be restored. Nothing was changed."
+            : scope === "refresh"
+              ? "New saved tracker data could not be loaded. The last saved view is still shown."
             : "The change could not be saved. The previous saved view is still shown.",
       };
     }
@@ -277,8 +282,10 @@
       let view = null;
       let projectionSession = null;
       let selectedVariationNumber = currentVariationNumber;
+      let followedVariationHighWaterMark = null;
       let started = false;
       let activePromise = null;
+      let queuedRefresh = null;
       let retryDescriptor = null;
 
       function createSnapshot() {
@@ -312,6 +319,9 @@
       function buildProjection(candidateState, preferredVariationNumber) {
         const canonicalState =
           reconciliation.hydrateReconciliationState(candidateState);
+        const recordedVariationNumbers = canonicalState.streams
+          .find((stream) => stream.streamId === streamId)
+          ?.variations.map((variation) => variation.variationNumber) ?? [];
         const candidateSession = mappingWorkflow.createMappingSession({
           inventory,
           reconciliation,
@@ -321,17 +331,23 @@
           state: canonicalState,
         });
         let candidateView = candidateSession.getViewState();
-        const canRestoreSelection = candidateView.variations.some(
+        const preferredVariation = candidateView.variations.find(
           (variation) =>
             variation.variationNumber === preferredVariationNumber,
         );
+        const firstRecordedVariation = candidateView.variations.find(
+          (variation) => variation.recorded,
+        );
+        const selectionTarget = preferredVariation?.recorded
+          ? preferredVariation
+          : firstRecordedVariation ?? preferredVariation;
 
         if (
-          canRestoreSelection &&
-          preferredVariationNumber !== currentVariationNumber
+          selectionTarget &&
+          selectionTarget.variationNumber !== currentVariationNumber
         ) {
           const selection = candidateSession.selectVariation(
-            preferredVariationNumber,
+            selectionTarget.variationNumber,
           );
 
           if (selection.ok) {
@@ -340,21 +356,70 @@
         }
 
         return {
+          newestRecordedVariationNumber:
+            recordedVariationNumbers.length === 0
+              ? null
+              : Math.max(...recordedVariationNumbers),
           session: candidateSession,
           selectedVariationNumber: candidateView.selectedVariationNumber,
           view: candidateView,
         };
       }
 
-      function acceptCanonicalState(candidateState) {
+      function acceptCanonicalState(candidateState, options = {}) {
         const projection = buildProjection(
           candidateState,
           selectedVariationNumber,
         );
+        const newestRecordedVariationNumber =
+          projection.newestRecordedVariationNumber;
+        const shouldFollowNewVariation =
+          (
+            options.resetFollowBaseline === true ||
+            options.followNewVariation === true
+          ) &&
+          newestRecordedVariationNumber !== null &&
+          (
+            options.resetFollowBaseline === true ||
+            followedVariationHighWaterMark === null ||
+            newestRecordedVariationNumber > followedVariationHighWaterMark
+          );
+
+        if (
+          shouldFollowNewVariation &&
+          projection.selectedVariationNumber !== newestRecordedVariationNumber
+        ) {
+          const selection = projection.session.selectVariation(
+            newestRecordedVariationNumber,
+          );
+
+          if (!selection.ok) {
+            fail(
+              "INVALID_CANONICAL_PROJECTION",
+              "The newest saved variation could not be displayed.",
+            );
+          }
+
+          projection.selectedVariationNumber =
+            selection.view.selectedVariationNumber;
+          projection.view = selection.view;
+        }
 
         projectionSession = projection.session;
         selectedVariationNumber = projection.selectedVariationNumber;
         view = projection.view;
+
+        if (options.resetFollowBaseline === true) {
+          followedVariationHighWaterMark = newestRecordedVariationNumber;
+        } else if (options.followNewVariation === true) {
+          followedVariationHighWaterMark =
+            newestRecordedVariationNumber === null
+              ? followedVariationHighWaterMark
+              : Math.max(
+                  followedVariationHighWaterMark ?? 0,
+                  newestRecordedVariationNumber,
+                );
+        }
       }
 
       function failOperation(scope, failedOperation, failure, retry) {
@@ -384,7 +449,9 @@
           }
 
           selectedVariationNumber = currentVariationNumber;
-          acceptCanonicalState(response.state);
+          acceptCanonicalState(response.state, {
+            resetFollowBaseline: true,
+          });
           retryDescriptor = null;
           transition(PHASES.READY, completedOperation);
           return createSnapshot();
@@ -398,6 +465,28 @@
         }
       }
 
+      async function performRefresh() {
+        transition(PHASES.LOADING, OPERATIONS.REFRESH);
+
+        try {
+          const response = requireClientResponse(await client.getState(), false);
+
+          acceptCanonicalState(response.state, {
+            followNewVariation: true,
+          });
+          retryDescriptor = null;
+          transition(PHASES.READY, OPERATIONS.REFRESH);
+          return createSnapshot();
+        } catch (failure) {
+          return failOperation(
+            "refresh",
+            OPERATIONS.REFRESH,
+            failure,
+            { scope: "refresh" },
+          );
+        }
+      }
+
       async function performMutation(descriptor) {
         transition(PHASES.SAVING, descriptor.operation);
 
@@ -407,7 +496,9 @@
             false,
           );
 
-          acceptCanonicalState(response.state);
+          acceptCanonicalState(response.state, {
+            followNewVariation: true,
+          });
           retryDescriptor = null;
           transition(PHASES.READY, descriptor.operation);
           return createSnapshot();
@@ -421,6 +512,38 @@
         }
       }
 
+      function createQueuedRefresh() {
+        let resolve;
+        let reject;
+        const promise = new Promise((resolvePromise, rejectPromise) => {
+          resolve = resolvePromise;
+          reject = rejectPromise;
+        });
+
+        return { promise, reject, resolve };
+      }
+
+      function drainQueuedRefresh() {
+        if (!queuedRefresh) {
+          return;
+        }
+
+        const queued = queuedRefresh;
+        queuedRefresh = null;
+
+        if (
+          phase === PHASES.ERROR &&
+          retryDescriptor?.scope !== "refresh"
+        ) {
+          queued.resolve(createSnapshot());
+          return;
+        }
+
+        const refreshPromise = begin(performRefresh);
+
+        refreshPromise.then(queued.resolve, queued.reject);
+      }
+
       function begin(task) {
         if (activePromise) {
           return activePromise;
@@ -430,6 +553,7 @@
         const tracked = running.finally(() => {
           if (activePromise === tracked) {
             activePromise = null;
+            drainQueuedRefresh();
           }
         });
 
@@ -446,6 +570,30 @@
         return begin(performLoad);
       }
 
+      function refresh() {
+        if (!started) {
+          return start();
+        }
+
+        if (
+          !activePromise &&
+          phase === PHASES.ERROR &&
+          retryDescriptor?.scope !== "refresh"
+        ) {
+          return Promise.resolve(createSnapshot());
+        }
+
+        if (!activePromise) {
+          return begin(performRefresh);
+        }
+
+        if (!queuedRefresh) {
+          queuedRefresh = createQueuedRefresh();
+        }
+
+        return queuedRefresh.promise;
+      }
+
       function retry() {
         if (activePromise || !retryDescriptor) {
           return activePromise ?? Promise.resolve(createSnapshot());
@@ -453,6 +601,10 @@
 
         if (retryDescriptor.scope === "load") {
           return begin(performLoad);
+        }
+
+        if (retryDescriptor.scope === "refresh") {
+          return begin(performRefresh);
         }
 
         return begin(() => performMutation(retryDescriptor));
@@ -577,6 +729,7 @@
         getSnapshot: createSnapshot,
         mapSelectedSku,
         markSelectedUnpaid,
+        refresh,
         retry,
         selectVariation,
         start,

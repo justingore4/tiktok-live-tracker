@@ -30,6 +30,23 @@
       unmapped: "Not tagged",
       unmapped_completed: "Payment complete - item needed",
     });
+    const OBSERVED_PAYMENT_STATUS_LABELS = Object.freeze({
+      not_observed: "Payment not yet observed",
+      payment_processing: "Payment processing",
+      payment_fixing: "Payment fixing",
+      payment_failed: "Payment failed",
+      canceled: "Canceled",
+      payment_complete: "Payment complete",
+      unrecognized: "Unrecognized payment status",
+    });
+    const PAYMENT_STATUS_UNAVAILABLE_LABEL = "Payment status unavailable";
+
+    function getObservedPaymentStatusLabel(value) {
+      return (
+        OBSERVED_PAYMENT_STATUS_LABELS[value] ??
+        PAYMENT_STATUS_UNAVAILABLE_LABEL
+      );
+    }
 
     function requireNonEmptyString(value, fieldName) {
       if (typeof value !== "string" || value.trim() === "") {
@@ -246,6 +263,9 @@
           style: displayEntry?.style ?? "",
           size: displayEntry?.size ?? canonicalEntry?.size ?? "",
           inventory: canonicalEntry ? { ...canonicalEntry } : null,
+          observedPaymentStatusLabel: getObservedPaymentStatusLabel(
+            auction.observedPaymentStatus,
+          ),
           statusLabel: STATUS_LABELS[auction.status] ?? auction.status,
         };
       }
@@ -256,10 +276,19 @@
 
           return {
             variationNumber,
+            recorded: auction !== null,
             current: variationNumber === currentVariationNumber,
             selected: variationNumber === selectedVariationNumber,
             status: auction?.status ?? "unmapped",
             statusLabel: auction?.statusLabel ?? STATUS_LABELS.unmapped,
+            observedPaymentStatus: auction?.observedPaymentStatus ?? null,
+            observedPaymentStatusLabel:
+              auction?.observedPaymentStatusLabel ??
+              PAYMENT_STATUS_UNAVAILABLE_LABEL,
+            soldPriceCents: auction?.soldPriceCents ?? null,
+            conflicts: auction?.conflicts?.map((conflict) => ({
+              ...conflict,
+            })) ?? [],
             item: auction?.item ?? null,
             style: auction?.style ?? "",
             size: auction?.size ?? "",
@@ -700,6 +729,7 @@
 
     return {
       createMappingSession,
+      getObservedPaymentStatusLabel,
     };
   },
 );

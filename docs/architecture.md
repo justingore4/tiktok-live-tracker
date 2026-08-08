@@ -49,16 +49,24 @@ which physical inventory entry was shown. These are separate state axes.
 
 ### TikTok payment state
 
-| State | Meaning | Current evidence |
-| --- | --- | --- |
-| `bidding` | The auction is active and its bid may change | Current-auction card observed visually; DOM selector not captured yet |
-| `payment_issue` | TikTok gives the buyer time to repair payment | Yellow warning observed; exact DOM text and structure not captured yet |
-| `payment_complete` | TikTok shows a green badge and frozen final price | Completed row inspected; parser and capture probe implemented |
-| `not_completed` | The auction never reaches payment complete | Employee can eventually mark it unpaid locally; automatic detection is not implemented |
+The model deliberately keeps the latest sanitized Sold Items badge separate from
+canonical sale truth:
 
-The current reconciliation engine represents TikTok payment as `unknown` or
-`payment_complete`. Yellow-state capture will be added only after its live DOM is
-verified.
+| Observed status | Visible meaning |
+| --- | --- |
+| `not_observed` | No row-local payment badge has been captured yet |
+| `payment_processing` | TikTok shows `Payment processing` |
+| `payment_fixing` | TikTok shows `Payment fixing` |
+| `payment_failed` | TikTok shows `Payment failed` during its correction buffer |
+| `canceled` | TikTok shows `Canceled` after the correction window expires |
+| `payment_complete` | TikTok shows `Payment complete` |
+| `unrecognized` | A nonempty tag was present but was not allowlisted; raw text is discarded |
+
+Canonical `paymentStatus` remains `unknown` or `payment_complete`. Only a completed badge
+with a parsed final price promotes it to `payment_complete`; that canonical transition is
+sticky and drives GMV, inventory, and profit. Processing, fixing, failed, canceled, and unrecognized
+are displayed as observed TikTok UI states but currently carry no inferred cancellation,
+timeout, or inventory-release semantics.
 
 ### Employee mapping state
 
@@ -120,9 +128,9 @@ and surfaces a conflict for review.
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
 rules module. The saved tagger uses its read model while the service-worker coordinator
-owns persistent mapping, mark-unpaid, and undo-unpaid operations. The separate offline
-demo also uses its payment-complete operation, but payment events from the capture probe
-are not connected yet. Simulated-payment undo is a private demo-session checkpoint, not a
+owns persistent mapping, mark-unpaid, undo-unpaid, capture-observation, and captured
+payment-status/payment-complete operations. The separate offline demo also uses its
+payment-complete operation. Simulated-payment undo is a private demo-session checkpoint, not a
 reconciliation-engine operation.
 
 The module also exposes a strict hydration boundary for data read from persistence. It
@@ -135,6 +143,8 @@ Implemented behavior includes:
 - Creating validated inventory state from unique SKUs, starting quantities, and unit
   costs.
 - Accepting employee mapping and completed-payment events in either order.
+- Persisting the latest sanitized observed payment status without changing inventory or
+  money for non-complete labels.
 - Using `(streamId, variationNumber)` to keep auctions distinct.
 - Ignoring an identical repeated payment event.
 - Retaining the first completed price and warning about a later conflicting price.
@@ -187,7 +197,7 @@ one.
 
 ### Confirmed completed-sale source
 
-The current completed-sale source is the left-side **LIVE auction items → Sold items**
+The current completed-sale source is the left-side **LIVE auctions → Sold items**
 panel. The right-side Chat panel mixes unrelated chat, join, and bid activity and is not
 used for completed-sale parsing.
 
@@ -199,85 +209,98 @@ Variation: #250
 Payment complete
 ```
 
-### Current capture probe — implemented
+### Current capture pipeline — implemented
 
 The extension makes its isolated content script available only on the exact
 `https://shop.tiktok.com` host so it is already present when TikTok changes views without
-reloading the document. Capture remains inactive on every route except the exact
-`/streamer/live/event/dashboard` path. It uses a bounded, coalesced `MutationObserver`
-scheduler, an SPA lifecycle controller, a sale-candidate locator, a scoped event
-registry, and a pure text parser. It:
+reloading the document. Capture remains inactive on every route except
+`/streamer/live/product/dashboard`.
 
-1. reconciles the active route and document body at startup, on route or page-resume
-   signals, and with a 250 ms fallback check;
-2. starts capture only on the exact dashboard path, attaches its observer, and then scans
-   rendered payment-tag candidates;
-3. disconnects the observer and disposes its scheduler when the route is left, then
-   restarts them once when the dashboard is re-entered or its body is replaced;
-4. watches page text and child-node changes, rejecting mutation batches that cannot
-   affect a sale candidate before they reach the scheduler;
-5. scans 150 ms after a relevant quiet moment while a
-   non-resetting 1-second maximum wait prevents constant dashboard updates from starving
-   capture;
-6. accepts only `[data-tid="m4b_tag"]` elements whose own whitespace-normalized text is
-   exactly `Payment complete`, ignoring case;
-7. searches at most 12 ancestors for the smallest parsed row, never parsing, accepting,
-   or crossing the active capture boundary;
-8. logs normalized variation, price-in-cents, payment status, and explicit identity
-   metadata; and
-9. deduplicates identical completed events in an unverified page-load scope, including
-   route exits and re-entry within that document.
+Live inspection found one visible `[data-tid="m4b_space"]` element containing the
+left-side Sold Items history. The runtime now requires exactly one visible match. Zero,
+multiple, or unsafe matches stop the capture session and are retried by the lifecycle
+controller; the code never falls back to scanning the dashboard body for sale data.
+Consequently, the video and current-auction card, right-side Chat, and analytics are
+outside the capture boundary. Sold Items rows can contain incidental buyer and product
+text, but capture never selects those values as fields, logs the raw row, transmits them,
+or persists them.
 
-It does not click TikTok controls, modify TikTok data, persist a sale, update inventory,
-or contact Google Sheets. The wider same-host script availability adds no new extension
-API permission, and the DOM observer and capture scheduler remain disconnected outside
-the exact dashboard path.
+Within that root, capture:
 
-The candidate locator uses `textContent`, the one inspected `data-tid`, exact badge text,
-and parser invariants rather than generated class names, headings, or positional DOM
-assumptions. Mutation filtering recognizes relevant tag subtrees, tag descendants, and
-related row text changes; malformed or unsafe DOM inspection requests a scan instead of
-silently suppressing it. The initial scan still examines the full active boundary.
+1. finds `span` elements whose complete whitespace-normalized text matches
+   `Variation: #N` and records each positive integer variation;
+2. associates an exact `[data-tid="m4b_tag"]` with one row-local variation label and
+   maps its whole normalized text to an allowlisted status code or `unrecognized`;
+3. climbs at most 12 ancestors without crossing the Sold Items root; canonical completion
+   additionally requires the parser to find the same variation and one US-dollar price;
+4. performs an immediate backfill scan, then coalesces root text and child-node changes
+   with a 150 ms quiet delay and a non-resetting 1-second maximum wait;
+5. observes only the Sold Items root for sale changes, while route, page-resume, body,
+   and root-identity checks run separately so TikTok SPA replacement can rebind capture;
+6. queues variation observations before sanitized payment-status and completed-price
+   updates and marks them delivered only after the worker acknowledges them; and
+7. requeues transient failures with a capped backoff while the same root remains active.
+   A replacement root is scanned from scratch, and canonical persistence makes repeated
+   scans and worker restarts idempotent.
 
-The scheduler clears each batch before scanning, coalesces quiet and maximum-wait timers
-into one run, and remains usable after a scan error. Route and resume signals provide
-prompt lifecycle checks, while the 250 ms fallback catches history changes that do not
-emit those signals. Browser suspension can still delay JavaScript timers. The dashboard
-body remains the provisional capture boundary until live validation identifies a unique,
-stable Sold items container.
+The page-to-worker protocol has only three event shapes:
 
-### Capture identity and deduplication
+```text
+{ type: "observe_variations", variationNumbers: [37, 38, ...] }
+{ type: "observe_payment_statuses", statuses: [
+    { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
+] }
+{ type: "payment_complete", variationNumber: 37, soldPriceCents: 700 }
+```
 
-`capture/capture-event-registry.js` is a pure, tested registry with two explicit scope
-types:
+The content script does not send a stream ID, raw badge text, buyer data, product text,
+observation timestamp, source HTML, or any other DOM content. It also cannot read
+extension storage.
+The service worker accepts these messages only from the extension's top frame on the
+exact product-dashboard URL. It resolves the active `local-stream:<uuid>` itself, then
+submits an `observe_variations`, `observe_payment_statuses`, or
+`record_payment_complete` command through the same
+serialized, save-before-publish reconciliation boundary used by the tagger.
 
-- a verified-stream scope supplied with an opaque, externally verified TikTok stream ID;
-  and
-- an unverified page scope that never exposes or implies a stream ID.
+If no local tracker stream is active, or active-stream/reconciliation storage cannot be
+verified, no canonical capture write occurs. The content script retains the current
+root's undelivered facts and retries. The latest sanitized badge status is stored with no
+inventory or profit effect. An exact green completion with a parsed price upgrades that
+same `(local stream ID, variation number)` record; inventory and gross profit commit only
+after an employee mapping also exists. An unpriced completed badge stays provisional and
+can still be followed by another observed status. A repeated event is a no-op, while a
+conflicting completed price preserves the first price and records a conflict.
 
-The registry independently records accepted events, exact duplicates, new conflicts, and
-repeated conflicts for each scope. It proves that identical variation numbers can remain
-separate when different verified stream IDs are eventually available; it does not find,
-generate, or validate those IDs.
+Capture remains read-only with respect to TikTok. It does not click controls, alter the
+page, infer payment failure, or contact Google Sheets.
 
-The current content script therefore uses only a page scope. Its emitted event includes
-`streamId: null`, `streamIdentityStatus: "unverified"`, and
-`dedupeScope: "page_load"`, and it logs the identity limitation once. These events remain
-diagnostic and must not be treated as canonical stream sales or sent to the reconciliation
-engine until TikTok stream identity is verified during a real stream.
+### Local identity, page boundaries, and diagnostic deduplication
 
-### Target capture events
+The worker-generated local tracker stream is the current canonical partition, not a
+verified TikTok room ID. The page deliberately supplies no identity. One local tracker
+stream must therefore correspond to one real TikTok LIVE. Keep it active through the
+expected payment transitions and delivery retries. Before the next LIVE, reload the
+dashboard, verify that Sold Items no longer shows the prior stream's rows, and only then
+start the next local tracker stream. Reusing rendered old rows under a new local stream
+can otherwise assign them to the wrong session.
 
-| Target event | Intended action | Status |
+`capture/capture-event-registry.js` still provides page-load and future verified-stream
+scopes for console diagnostics and conflict warnings. It is not the persistence
+authority. Canonical deduplication occurs in reconciliation storage under
+`(streamId, variationNumber)`, so a full refresh can safely backfill visible rows while
+the same local tracker stream remains active. A stable TikTok-provided stream identity
+and automatic page-to-session association remain later identity work.
+
+### Capture events and remaining live signals
+
+| Dashboard fact | Current action | Status |
 | --- | --- | --- |
-| Current variation becomes active | Add it to the employee tagging queue | Requires live DOM inspection |
-| Yellow payment warning appears | Keep the mapping pending and eventually expose **Mark unpaid** | Requires live DOM inspection |
-| Sold row turns green | Read the final price and record payment complete | Probe implemented; real transition still needs live validation |
-
-Processing must eventually be persistent and idempotent: seeing the same
-`(streamId, variationNumber)` again must update its existing record rather than deduct
-inventory twice. The registry supports that key once a verified ID is supplied, but the
-runtime currently retains variation fingerprints only within its in-memory page scope.
+| Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
+| Exact allowlisted payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; non-complete labels have no inferred inventory effect |
+| Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
+| A Sold Items variation or payment update is persisted | Invalidate and refetch the open tagger's canonical view; select a newly recorded variation while retaining selection for status-only updates | Implemented; no additional dashboard source |
+| Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; these observations do not change inventory by themselves |
+| A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
 
 ### Planned end-of-stream reconciliation
 
@@ -299,35 +322,38 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — saved session and offline demo implemented
+## 5. Employee tagger — live session and offline demo implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
 The Chrome side panel has two explicit modes:
 
-- **Saved session** is the default employee workspace. It restores the last durable
-  reconciliation state, persists mapping and unpaid corrections, and displays loading,
-  saving, success, and retryable error states.
+- **Live session** is the default employee workspace. It requires a persistent local
+  active stream, restores the last durable reconciliation state, persists mapping and
+  unpaid corrections, and displays loading, saving, success, and retryable error states.
 - **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
   isolated state, sends no persistent commands, and resets when recreated or reloaded.
 
 Shared tagger behavior includes:
 
-- A clearly labeled current variation and native dropdown for seeded previous variations.
-- Separate on-screen and selected variation identity, so reviewing history never labels
-  an older auction as live.
+- A native variation dropdown. Live-session mode shows only canonical Sold Items records;
+  the isolated Offline demo retains its clearly labeled prototype history.
+- Stable variation identity with automatic selection of a newly captured higher number;
+  status-only changes keep the existing selection.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Engine-derived available, pending-reservation, remaining, and sold-out states.
 - One-click mapping and correction of the selected current or previous variation;
   clicking the selected inventory card again removes that mapping.
-- **Waiting for payment**, **Payment complete**, and **Marked unpaid** states.
+- A separate visible **TikTok payment** row for processing, fixing, failed, complete,
+  unrecognized, or not-yet-observed state, independent of the **Inventory tag** row.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
 - Clearly labeled offline-demo controls that simulate a completed payment and expired
   payment buffer without acting on TikTok or saved data.
-- Final price, unit cost, gross profit/loss, and remaining inventory after completion.
+- A captured final price as soon as payment completes, even while unmapped; unit cost,
+  gross profit/loss, and remaining inventory appear only when an item is assigned.
 - **Undo simulated payment**, which restores only the selected variation's isolated demo
   payment state while preserving later mapping corrections and edits to other variations,
   removes that simulated revenue/profit deduction, and returns focus to item selection.
@@ -343,11 +369,23 @@ Shared tagger behavior includes:
   produce a shortage.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-Saved mode initializes the current mock inventory only when storage is confirmed absent.
-It never seeds fake completed payments. It restores persisted variations, merges them
-with the temporary prototype variation list for navigation, and defaults back to the
-prototype on-screen variation when the panel is reopened. Selection navigation itself is
-local UI state and does not write to storage.
+Live-session mode first requires a persistent local tracker stream. Start asks the
+service worker to create and durably save a `local-stream:<uuid>` identity; reopening the
+panel offers Resume for that same identity. End clears only the active-session pointer
+after confirmation. It does not delete reconciliation history and does not start or end
+TikTok LIVE. Because ended streams cannot yet be reopened in the tagger, End is blocked
+while a variation still reserves inventory. Completed-but-unmapped capture records do
+not reserve inventory and remain saved, but the employee should still wait for expected
+Sold Items payment transitions and capture retries before ending.
+
+After Start or Resume, live-session mode initializes the current mock inventory only when
+reconciliation storage is confirmed absent. It never seeds fake auctions or completed
+payments. Its selector lists only persisted variations for the active local stream and
+keeps mapping unavailable until at least one such record exists. If the controller still
+holds its internal unrecorded startup placeholder, the first canonical view selects the
+newest recorded variation. Later refetches automatically select the newest newly recorded
+variation, while payment/status-only updates preserve the employee's current selection.
+Selection navigation itself is local UI state and does not write to storage.
 
 The demo exists only while the side panel remains loaded. It uses mock inventory, treats
 `#203` as on screen, and seeds previous variations `#202`, `#201`, and `#200` with example
@@ -355,22 +393,32 @@ completed, pending, and unpaid states. Navigation does not create or mutate auct
 records; every demo variation shares one isolated reconciliation state so corrections
 immediately recalculate shared inventory and profit. Reloading resets changes to those
 demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
-reverse a TikTok event or modify the saved session.
+reverse a TikTok event or modify the live session.
 
-The current variation and stream identifiers are still prototype constants. The tagger
-does not yet receive them or completed-payment events from the capture probe.
+Capture adds Sold Items variations, sanitized payment states, and completed prices to
+durable reconciliation state under the worker-generated local stream ID. Once a capture
+write succeeds, its data-free
+invalidation causes an open Live session panel to refetch and render that canonical
+record. The employee does not need to refresh TikTok, reopen the panel, or Resume again.
+The panel does not call the newest row TikTok's current auction. It does auto-follow a
+newly persisted higher variation number for faster tagging, while the local ID remains
+distinct from a verified TikTok room ID.
 
-Planned tagger behavior includes:
+Next tagger work includes:
 
-- Replace seeded history with a live, capture-fed queue of variations needing attention.
-- Queue completed-but-unmapped sales and capture-generated conflicts when real capture is
-  connected.
+- Turn the live-refreshed variation history into a prioritized queue of records needing
+  attention.
+- Prioritize completed-but-unmapped sales and capture-generated conflicts as they arrive.
+- Display capture connection/delivery state and extend newest-variation auto-follow into a
+  prioritized queue without reading the video card, Chat, analytics, or another dashboard
+  surface.
 
 The production tagger is planned as a queue rather than a blocking modal so an employee
-can catch up when multiple variations need attention. The current dropdown proves
-multi-variation navigation and correction, but its variation list is still demo data.
+can catch up when multiple variations need attention. The current dropdown updates from
+durable capture state and proves multi-variation navigation and correction, but it is not
+yet a prioritized work queue.
 
-## 6. Storage and sync — tagger persistence integrated
+## 6. Storage and sync — tagger and capture persistence integrated
 
 ### Browser storage
 
@@ -391,13 +439,41 @@ hydrates and validates every read, returns `null` only when the key is truly abs
 reports malformed, unsupported, or failed reads and writes as typed errors. It never
 silently clears or replaces corrupt or future-version data.
 
+Reconciliation state is currently version 2 because each auction now includes
+`observedPaymentStatus`. The storage envelope remains schema version 1. Strict version-1
+snapshots are migrated in memory to detached version-2 state (`unknown` becomes
+`not_observed`, completed becomes `payment_complete`); malformed v1 and future versions
+still fail closed. The next real mutation persists version 2.
+
+Active-stream lifecycle is deliberately stored separately beneath
+`tiktokLiveTracker.streamSession`:
+
+```text
+{
+  schemaVersion: 1,
+  sessionState: {
+    version: 1,
+    activeSession: null | {
+      streamId: "local-stream:<uuid>",
+      startedAt: "<UTC ISO timestamp>",
+      identitySource: "local_session"
+    }
+  }
+}
+```
+
+Keeping this pointer outside reconciliation state avoids coupling stream lifecycle to
+auction-state migrations. Missing active-session storage means no tracker stream is
+active; malformed or future data fails closed and is never replaced automatically.
+
 The extension service worker now creates the adapter with `chrome.storage.local` and is
-the sole canonical-state command owner. Its coordinator:
+the sole canonical-state command owner. Its reconciliation coordinator:
 
 - lazily loads saved state once per worker lifetime;
 - represents a missing key as explicitly uninitialized rather than inventing inventory;
 - accepts one-time nonempty inventory initialization and explicit mapping, unmapping,
-  and unpaid commands;
+  unpaid commands, worker-authorized variation/payment-status observations, and
+  completed payments;
 - serializes reads and mutations through one FIFO Promise queue;
 - applies every mutation to a detached working copy;
 - waits for that copy to save successfully before publishing it in memory; and
@@ -407,32 +483,60 @@ This ordering prevents simultaneous commands from overwriting one another and pr
 memory from getting ahead of disk. When an MV3 worker is suspended and later restarted,
 the next command reloads the last durable snapshot.
 
-Worker messages use a strict versioned envelope and return plain success or error data.
-Only the exact extension side-panel page is currently authorized to issue employee/read
-commands. Although the pure coordinator supports `record_payment_complete`, the worker
-does not authorize the side panel to create payment truth, and the capture probe is not
-connected yet.
+A second FIFO coordinator owns `get_stream_session`, `start_stream`, and `end_stream`.
+Only the worker can generate the UUID and timestamp. Start is idempotent when a session
+already exists, and End includes the expected active ID so a stale panel cannot close a
+newer session. It saves before publishing exactly like the reconciliation coordinator.
+
+Worker messages use strict versioned envelopes and return plain success or error data.
+Only the exact extension side-panel page is authorized to issue employee/read commands;
+it is explicitly forbidden from issuing variation, payment-status, or payment-complete
+truth.
+The separate capture envelope is accepted only from the extension content script in the
+top frame of the exact TikTok product-dashboard URL. The worker, not the page, supplies
+the active local stream ID. A shared outer FIFO orders stream lifecycle, capture, and
+tagger messages before their dedicated coordinators run.
+
+After an accepted capture command has completed its persistence boundary, the worker
+sends a best-effort, data-free `capture_state_changed` invalidation. It contains no
+canonical state, stream ID, variation number, price, buyer information, or DOM content.
+The side panel accepts only the exact versioned invalidation from the extension service
+worker, coalesces bursts, and issues a fresh canonical-state GET. The notification is a
+refetch signal, never a second source of truth; failure to deliver it cannot turn an
+already-successful capture write into a failure.
 
 Local storage is restricted to trusted extension contexts so the dashboard content
 script cannot read or write the canonical snapshot directly. State changes must pass
 through the worker's validated command boundary.
 
-The side panel uses a dedicated runtime client and persistent tagger controller. On open,
-it requests canonical state and initializes inventory only when the worker explicitly
-reports that the storage key is absent. Malformed, corrupt, future-version, and failed
-reads never trigger initialization or replacement.
+The side panel first uses a dedicated stream-session client/controller. With no active
+session it offers Start; after a panel or browser restart it offers Resume; while resumed
+it offers an inline-confirmed End. Only a started or resumed session mounts the persistent
+tagger controller. On mount, that controller requests canonical state and initializes
+inventory only when the worker explicitly reports that the reconciliation key is absent.
+Malformed, corrupt, future-version, and failed reads never trigger initialization or
+replacement.
 
 Mapping, unmapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the
 selected `(streamId, variationNumber)`. The UI keeps its last good view while a command
 is saving, publishes only the worker's successfully persisted response, and offers retry
-after safe errors. Reopening the panel rebuilds its view from the durable snapshot. The
-tagger never calls `chrome.storage` directly.
+after safe errors. Capture invalidations use the same GET boundary, are serialized with
+employee changes, and retain the last good view on refresh failure. Repeated notices are
+coalesced, and one trailing refresh catches changes that arrive during a load or save.
+A newly persisted variation becomes the selected tagger view automatically, so the
+employee does not have to reopen the variation menu for each auction. A payment or status
+change to an existing variation does not change the selection. Reopening the panel still
+rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
+directly.
 
-The runtime client deliberately exposes no payment-complete command. Offline-demo actions
-send no runtime messages, and their simulations remain detached from canonical state.
-The saved controller may still finish loading in the background while the demo is open.
-The capture probe sends no coordinator messages; captured-event persistence and the
-outbound Google Sheets sync queue belong to later stages.
+The tagger runtime client deliberately exposes no payment-complete command. Offline-demo
+actions send no runtime messages, and their simulations remain detached from canonical
+state. An already-mounted live controller may finish loading in the background while the
+demo is open. The capture runtime client has the inverse narrow authority: it may submit
+only observed variation numbers, sanitized payment-status codes, and completed
+variation/price facts, never mappings, stream lifecycle commands, raw badge text, or
+arbitrary state. Outbound Google Sheets sync belongs to a
+later stage.
 
 Offline simulation checkpoints and resets must never overwrite captured or persisted
 canonical state. Production refunds or cancellations require their own authoritative
@@ -475,7 +579,8 @@ currency values to integer cents for the engine.
 | `stream_id` | Verified TikTok session identifier; export remains blocked while it is unknown |
 | `variation_no` | TikTok's `Variation: #N` value |
 | `sold_price` | Final price from a payment-complete row |
-| `payment_status` | `unknown` or `payment_complete` |
+| `payment_status` | Canonical `unknown` or `payment_complete` sale truth |
+| `observed_payment_status` | Latest sanitized Sold Items status: not observed, processing, fixing, failed, complete, or unrecognized |
 | `mapping_status` | `unmapped`, `mapped`, or `marked_unpaid` |
 | `status` | Derived engine status such as `pending`, `unmapped_completed`, or `committed` |
 | `sku` | Employee-selected inventory key; blank while unmapped |
@@ -505,22 +610,27 @@ Two valid future approaches are:
 No Google credentials are currently used. `config/.env.example` is a backend placeholder
 and should not be populated until this decision is made.
 
-## 9. Live-validation questions
+## 9. Remaining live-validation questions
 
-The next real stream must answer the following blocking questions. Offline fixtures do
-not complete this validation:
+One live stream established the current product-dashboard route, exact variation labels,
+and unique visible `[data-tid="m4b_space"]` Sold Items boundary. Later streams must still
+answer these questions; offline fixtures alone cannot complete the validation:
 
-- What is the stable DOM structure for the current variation while bidding?
-- What exact text and structure represent the yellow payment-warning state?
-- Which non-generated attribute or ARIA relationship uniquely identifies the Sold items
-  container, and does it exclude Chat, the current auction, and analytics?
-- Is the Sold items list virtualized or replaced as it grows?
+- Do `Payment processing` and `Payment fixing`
+  exactly match production text across accounts/locales, and what transitions are valid?
+- What business action, if any, should each non-complete label trigger after live
+  validation? Current code deliberately treats them as display-only observations.
+- Does the observed `m4b_space` Sold Items identity remain unique across different
+  accounts, streams, modes, scrolling states, and TikTok deployments?
+- Is the Sold Items list virtualized or replaced as it grows, and can every earlier row
+  be recovered by the initial/backfill scan?
 - Does any relevant content live inside an iframe or shadow root?
 - What stable TikTok-provided value identifies one stream, survives route re-entry and a
   full refresh, and differs across two streams?
-- Does the implemented route/body recovery remain reliable under TikTok's live rendering?
-- What happens to stream identity and deduplication across a full refresh and a second
-  stream?
+- Does the implemented route/body/root recovery remain reliable under TikTok's live
+  rendering?
+- Can a verified TikTok ID safely automate the local-session boundary across a full
+  refresh and a second stream?
 - Do auctions with no bids appear in any trackable list?
 - Can every completed sale be recovered for an end-of-stream sweep?
 
@@ -533,10 +643,16 @@ Browser support beyond Chrome is a later decision.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
-5. **Offline hardening completed:** bounded scheduling, SPA lifecycle recovery, exact
-   badge and ancestor-boundary targeting, mutation relevance filtering, and scoped event
-   registry tests. Canonical stream identity and Sold items root narrowing remain blocked
-   on real-stream validation.
-6. Capture-to-engine-to-tagger integration.
+5. **Capture hardening completed:** bounded scheduling, SPA lifecycle recovery, exact
+   variation and badge targeting, unique visible Sold Items root narrowing, and scoped
+   event-registry tests. Verified TikTok identity remains open.
+6. Capture-to-engine-to-tagger integration in three stages:
+   1. **Completed:** persistent local active-stream sessions and Start/Resume/End UI;
+   2. **Completed:** persist Sold Items variation observations and payment facts under the
+      worker-resolved active local stream;
+   3. **Completed:** data-free invalidations refresh the open tagger in real time,
+      auto-follow new higher variations, and visibly update sanitized payment status.
+      A prioritized work queue, visible capture state, TikTok identity, and broader live
+      validation remain next.
 7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.
