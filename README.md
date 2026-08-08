@@ -5,10 +5,10 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early browser prototype. The completed-sale parser, read-only
-> dashboard capture probe, reconciliation engine, tagger lifecycle demo, and local
-> saved-session recovery are implemented and tested. Employee mappings and unpaid
-> corrections persist through the service worker; TikTok payment capture and Google
-> Sheets are not connected yet.
+> dashboard capture probe with SPA lifecycle recovery, reconciliation engine, tagger
+> lifecycle demo, and local saved-session recovery are implemented and tested. Employee
+> mappings and unpaid corrections persist through the service worker; TikTok payment
+> capture and Google Sheets are not connected yet.
 
 ## How it works
 
@@ -40,7 +40,9 @@ the item is auctioned again, the employee maps its new variation number.
 
 ### Implemented and tested
 
-- A Manifest V3 Chrome extension that loads on the TikTok LIVE dashboard.
+- A Manifest V3 Chrome extension whose isolated capture script is available only on the
+  exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
+  dashboard path.
 - A responsive Chrome side-panel prototype with mock inventory, search, reservations,
   sold-out states, one-click item mapping and unmapping, and a current/previous
   variation selector.
@@ -57,6 +59,9 @@ the item is auctioned again, the employee maps its new variation number.
   a simulated completed payment.
 - A read-only `MutationObserver` capture probe with bounded scheduling so ordinary
   dashboard updates cannot indefinitely postpone scans while the page is executing.
+- SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
+  fallback check, and cleans up or restarts the observer and scheduler when the route or
+  document body changes.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
   - accepts employee mapping and payment events in either order;
@@ -105,8 +110,8 @@ the item is auctioned again, the employee maps its new variation number.
       worker;
    3. **Completed:** connect the tagger to saved state and verify refresh/restart
       recovery.
-3. **In progress:** bounded capture scheduling is implemented; harden SPA behavior and
-   live-validate stream identity and dashboard selectors.
+3. **In progress:** bounded capture scheduling and SPA lifecycle recovery are
+   implemented; stream identity, selector narrowing, and real-stream validation remain.
 4. Connect captured TikTok events to the reconciliation engine and tagger.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
@@ -118,7 +123,7 @@ the item is auctioned again, the employee maps its new variation number.
 | --- | --- | --- |
 | `extension/manifest.json` | Extension configuration and dashboard entry point | Implemented |
 | `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Coordinator implemented |
-| `extension/capture/` | Read-only TikTok dashboard observation | Probe implemented |
+| `extension/capture/` | Read-only TikTok dashboard observation | Scheduling and SPA recovery implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
@@ -184,12 +189,17 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
 16. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
     unpaid**. Switch back to **Saved session** and confirm none of the demo-only payment
     changes altered the saved data.
-17. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
+17. Open `https://shop.tiktok.com/streamer/live/event/dashboard`.
 18. Open DevTools and confirm the Console contains:
 
    ```text
    [TikTok Live Tracker] Capture probe active
    ```
+
+19. Use TikTok's own navigation to leave the dashboard and return without reloading the
+    tab; confirm capture becomes active again without duplicate completed-sale events.
+20. Put the tab in the background, return to it, and confirm capture remains active. Body
+    replacement and repeated re-entry are also covered by the offline capture tests.
 
 On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale

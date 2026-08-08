@@ -25,15 +25,22 @@ The current-auction and yellow-warning DOM structures remain unknown.
 
 The extension content script:
 
-1. loads only on the confirmed TikTok dashboard route;
-2. performs an initial scan of rendered payment-tag candidates;
-3. watches text and child-node changes with a bounded, coalesced
+1. is available only on the exact `https://shop.tiktok.com` host but remains inactive
+   outside the exact `/streamer/live/event/dashboard` path;
+2. checks its route and document body at startup, on route and page-resume signals, and
+   with a 250 ms fallback;
+3. starts once on the dashboard, attaches its observer, and then performs an initial scan
+   of rendered payment-tag candidates;
+4. disconnects its observer and disposes its scheduler when the route is left, restarting
+   them when the dashboard is re-entered or the document body is replaced;
+5. watches text and child-node changes with a bounded, coalesced
    `MutationObserver` scheduler;
-4. validates candidate rows with the pure shared parser;
-5. logs a normalized event only when variation number, final price, and the exact text
+6. validates candidate rows with the pure shared parser;
+7. logs a normalized event only when variation number, final price, and the exact text
    `Payment complete` are present;
-6. ignores an identical event already seen during the current page load; and
-7. warns instead of replacing the first price if the same variation later appears with
+8. ignores an identical event already seen during the current page load, including a
+   route exit and re-entry in that document; and
+9. warns instead of replacing the first price if the same variation later appears with
    a different completed price.
 
 The scheduler waits 150 ms for a quiet moment so a short burst produces one scan. A
@@ -41,8 +48,16 @@ non-resetting 1-second maximum wait also forces a scan while chat, viewer counts
 dashboard elements keep changing continuously. Either timer closes the same batch, so it
 cannot double-scan. The initial scan still runs immediately after observation begins.
 
-It does not modify the TikTok page, click TikTok controls, decrement inventory, persist
-sales, connect to the reconciliation engine, or contact Google Sheets.
+TikTok can change routes with its History API without reloading the page or emitting a
+single dependable browser event. Route and resume signals therefore provide immediate
+checks when available, while the 250 ms fallback catches silent history changes and body
+replacement. Repeated checks are idempotent: one body has at most one active capture
+observer and scheduler. This recovery uses ordinary content-script browser APIs and adds
+no extension permission.
+
+It remains disconnected outside the dashboard path. It does not modify the TikTok page,
+click TikTok controls, decrement inventory, persist sales, connect to the reconciliation
+engine, or contact Google Sheets.
 
 ## Load the probe in Chrome
 
@@ -61,9 +76,12 @@ sales, connect to the reconciliation engine, or contact Google Sheets.
 On a blank offline dashboard, the startup message without a completed-sale event is the
 expected result.
 
-After changing extension code, reload the unpacked extension and refresh the dashboard
-tab. Load and verify the extension before the next live stream; refreshing a historical
-stream after it has ended may replace the old dashboard contents with a blank page.
+After changing extension code, reload the unpacked extension. A tab that was already open
+before that extension reload must be refreshed once to receive the new content script.
+Afterward, navigating away from and back to the dashboard as an SPA no longer requires a
+refresh. Load and verify the extension before the next live stream; refreshing a
+historical stream after it has ended may replace the old dashboard contents with a blank
+page.
 
 ## Run the offline tests
 
@@ -84,6 +102,22 @@ node --test .\tests\reconciliation.test.cjs
 
 These tests use fixtures and sample inventory. They do not require TikTok, Google Sheets,
 or a live stream.
+
+## SPA lifecycle manual check
+
+1. Start on the dashboard and confirm the capture-active Console message.
+2. Use TikTok's own navigation to leave the dashboard, then return without refreshing.
+3. Run the optional capture simulation with a new variation and confirm exactly one
+   completed-sale event after re-entry.
+4. Repeat the navigation cycle and confirm capture restarts without duplicate observers
+   or duplicate events. Automated tests also exercise document-body replacement; do not
+   force a body replacement during a live sale.
+5. Put the dashboard tab in the background, return to it, and confirm a new simulated or
+   real completed row is still detected.
+
+These checks verify lifecycle recovery, not stream identity. Variation-only deduplication
+still lasts only for the current document and is addressed in the next capture-hardening
+stage.
 
 ## Optional offline capture simulation
 
@@ -138,10 +172,11 @@ test variation number or refresh before repeating the simulation.
   The current tracker probe makes no network requests, so those errors are not produced
   by its capture code.
 - If the tracker startup message is missing, reload the extension and then refresh the
-  dashboard.
-- TikTok may navigate between views as a single-page application (SPA), meaning the URL
-  changes without a full page reload. A static content script may not be injected after
-  that type of navigation; refresh the dashboard route during development.
+  tab once so the updated content script is installed in that document.
+- TikTok may navigate between views as a single-page application (SPA). Capture now stops
+  off-route and restarts after dashboard re-entry without a refresh. If it does not,
+  record the before/after URLs and tracker Console messages for diagnosis rather than
+  relying on refresh as the normal workaround.
 
 ## Live-stream validation checklist
 
@@ -153,7 +188,8 @@ The next real stream must verify:
 - a narrower, stable Sold items container for observation;
 - whether rows are virtualized, replaced, or placed in an iframe/shadow root;
 - a reliable TikTok stream/session identifier;
-- behavior across SPA navigation, dashboard refresh, and a second stream;
+- real-stream validation of route exit/re-entry, page resume, and any body replacement;
+- stream identity and deduplication behavior across dashboard refresh and a second stream;
 - whether auctions with no bids appear in a trackable location; and
 - whether every completed row remains recoverable for an end-of-stream pass.
 

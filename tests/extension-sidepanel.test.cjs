@@ -280,13 +280,12 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
 });
 
-test("existing dashboard capture scripts remain configured", () => {
+test("capture scripts load across the TikTok shop SPA and gate themselves at runtime", () => {
   const dashboardScript = manifest.content_scripts.find((script) =>
-    script.matches.includes(
-      "https://shop.tiktok.com/streamer/live/event/dashboard*",
-    ),
+    script.matches.includes("https://shop.tiktok.com/*"),
   );
 
+  assert.ok(dashboardScript);
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
     "capture/capture-scheduler.js",
@@ -308,6 +307,8 @@ test("existing dashboard capture scripts remain configured", () => {
   assert.match(captureSource, /const MAX_SCAN_WAIT_MS = 1000/);
   assert.match(captureSource, /quietDelayMs:\s*QUIET_SCAN_DELAY_MS/);
   assert.match(captureSource, /maxWaitMs:\s*MAX_SCAN_WAIT_MS/);
+  assert.match(captureSource, /https:\/\/shop\.tiktok\.com/);
+  assert.match(captureSource, /\/streamer\/live\/event\/dashboard/);
   assert.doesNotMatch(
     `${captureSource}\n${schedulerSource}`,
     /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,

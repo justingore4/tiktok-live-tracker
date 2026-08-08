@@ -10,6 +10,13 @@ const contentSource = fs.readFileSync(
   "utf8",
 );
 
+const DASHBOARD_ORIGIN = "https://shop.tiktok.com";
+const DASHBOARD_PATH = "/streamer/live/event/dashboard";
+
+function createBody(name = "body") {
+  return { name };
+}
+
 function createSaleRow(text) {
   const row = {
     innerText: text,
@@ -25,93 +32,230 @@ function createSaleRow(text) {
   return { row, statusTag };
 }
 
+function createEventTarget(calls, prefix) {
+  const listeners = new Map();
+
+  function addEventListener(type, callback) {
+    const callbacks = listeners.get(type) || [];
+    callbacks.push(callback);
+    listeners.set(type, callbacks);
+    calls.push(`${prefix}:add-listener:${type}`);
+  }
+
+  function removeEventListener(type, callback) {
+    const callbacks = listeners.get(type) || [];
+    listeners.set(
+      type,
+      callbacks.filter((candidate) => candidate !== callback),
+    );
+    calls.push(`${prefix}:remove-listener:${type}`);
+  }
+
+  function dispatch(type) {
+    calls.push(`${prefix}:dispatch:${type}`);
+    [...(listeners.get(type) || [])].forEach((callback) =>
+      callback({ type }),
+    );
+  }
+
+  return {
+    addEventListener,
+    dispatch,
+    listenerCount(type) {
+      return (listeners.get(type) || []).length;
+    },
+    removeEventListener,
+  };
+}
+
 function createHarness({
-  pathname = "/streamer/live/event/dashboard",
+  origin = DASHBOARD_ORIGIN,
+  pathname = DASHBOARD_PATH,
+  body = createBody(),
   schedulerAvailable = true,
   rows = [],
   scanOnRequest = false,
+  schedulerCreateFailures = 0,
+  bodyObserveFailures = 0,
+  schedulerRunNowFailures = 0,
+  schedulerRequestFailures = 0,
+  schedulerDisposeFailures = 0,
+  bodyDisconnectFailures = 0,
+  autoRun = true,
 } = {}) {
   const calls = [];
   const infos = [];
   const warnings = [];
   const errors = [];
-  const body = {};
   const observerInstances = [];
-  let schedulerOptions;
-  let schedulerCreateCount = 0;
-  let schedulerRequestCount = 0;
+  const schedulerSessions = [];
+  const documentElement = { name: "documentElement" };
+  const location = { origin, pathname };
+  const intervals = new Map();
+  const windowEvents = createEventTarget(calls, "window");
+  const documentEvents = createEventTarget(calls, "document");
+  let currentBody = body;
+  let currentRows = rows;
   let queryCount = 0;
+  let nextIntervalId = 1;
+  let nextTimeoutId = 1000;
+  let schedulerCreateCount = 0;
+  let remainingSchedulerCreateFailures = schedulerCreateFailures;
+  let remainingBodyObserveFailures = bodyObserveFailures;
+  let remainingSchedulerRunNowFailures = schedulerRunNowFailures;
+  let remainingSchedulerRequestFailures = schedulerRequestFailures;
+  let remainingSchedulerDisposeFailures = schedulerDisposeFailures;
+  let remainingBodyDisconnectFailures = bodyDisconnectFailures;
 
   const schedulerModule = schedulerAvailable
     ? {
         createCaptureScheduler(options) {
           schedulerCreateCount += 1;
-          schedulerOptions = options;
           calls.push("scheduler:create");
 
-          return {
+          if (remainingSchedulerCreateFailures > 0) {
+            remainingSchedulerCreateFailures -= 1;
+            throw new Error("scheduler creation failed");
+          }
+
+          const session = {
+            id: schedulerSessions.length + 1,
+            options,
+            requestCount: 0,
+            runNowCount: 0,
+            disposeCount: 0,
+            disposed: false,
             request() {
-              schedulerRequestCount += 1;
-              calls.push("scheduler:request");
+              session.requestCount += 1;
+              calls.push(`scheduler:${session.id}:request`);
+
+              if (remainingSchedulerRequestFailures > 0) {
+                remainingSchedulerRequestFailures -= 1;
+                throw new Error("scheduler request failed");
+              }
+
+              if (session.disposed) {
+                return false;
+              }
 
               if (scanOnRequest) {
                 options.scan();
               }
+
+              return true;
             },
             runNow() {
-              calls.push("scheduler:run-now");
+              session.runNowCount += 1;
+              calls.push(`scheduler:${session.id}:run-now`);
+
+              if (remainingSchedulerRunNowFailures > 0) {
+                remainingSchedulerRunNowFailures -= 1;
+                throw new Error("scheduler initial scan failed");
+              }
+
               options.scan();
+              return true;
             },
             dispose() {
-              calls.push("scheduler:dispose");
+              session.disposeCount += 1;
+              session.disposed = true;
+              calls.push(`scheduler:${session.id}:dispose`);
+
+              if (remainingSchedulerDisposeFailures > 0) {
+                remainingSchedulerDisposeFailures -= 1;
+                throw new Error("scheduler disposal failed");
+              }
+
+              return session.disposeCount === 1;
             },
           };
+
+          schedulerSessions.push(session);
+          return session;
         },
       }
     : undefined;
 
   class FakeMutationObserver {
     constructor(callback) {
+      this.id = observerInstances.length + 1;
       this.callback = callback;
       this.observeCalls = [];
+      this.disconnectCount = 0;
+      this.connected = false;
       observerInstances.push(this);
-      calls.push("observer:create");
+      calls.push(`observer:${this.id}:create`);
     }
 
     observe(target, options) {
       this.observeCalls.push({ target, options });
-      calls.push("observer:observe");
+      this.target = target;
+      calls.push(`observer:${this.id}:observe`);
+
+      if (target !== documentElement && remainingBodyObserveFailures > 0) {
+        remainingBodyObserveFailures -= 1;
+        throw new Error("capture observer failed to observe body");
+      }
+
+      this.connected = true;
+    }
+
+    disconnect() {
+      this.disconnectCount += 1;
+      this.connected = false;
+      calls.push(`observer:${this.id}:disconnect`);
+
+      if (this.target !== documentElement && remainingBodyDisconnectFailures > 0) {
+        remainingBodyDisconnectFailures -= 1;
+        throw new Error("capture observer failed to disconnect");
+      }
+    }
+
+    trigger(records = [{ type: "childList" }]) {
+      return this.callback(records, this);
     }
   }
+
+  const document = {
+    documentElement,
+    get body() {
+      return currentBody;
+    },
+    querySelectorAll(selector) {
+      queryCount += 1;
+      calls.push("document:query");
+      assert.equal(selector, '[data-tid="m4b_tag"]');
+      return currentRows.map(({ statusTag }) => statusTag);
+    },
+    addEventListener: documentEvents.addEventListener,
+    removeEventListener: documentEvents.removeEventListener,
+  };
 
   const context = {
     TikTokLiveTrackerSaleParser: parser,
     TikTokLiveTrackerCaptureScheduler: schedulerModule,
-    location: {
-      origin: "https://shop.tiktok.com",
-      pathname,
-    },
-    document: {
-      body,
-      querySelectorAll(selector) {
-        queryCount += 1;
-        calls.push("document:query");
-        assert.equal(selector, '[data-tid="m4b_tag"]');
-        return rows.map(({ statusTag }) => statusTag);
-      },
-      addEventListener() {
-        calls.push("document:add-listener");
-      },
-    },
+    location,
+    document,
     MutationObserver: FakeMutationObserver,
-    window: {
-      setTimeout() {
-        throw new Error("The scheduler stub should own timer behavior.");
-      },
-      clearTimeout() {
-        throw new Error("The scheduler stub should own timer behavior.");
-      },
+    setTimeout() {
+      const timerId = nextTimeoutId;
+      nextTimeoutId += 1;
+      return timerId;
     },
+    clearTimeout() {},
+    setInterval(callback, delayMs) {
+      const intervalId = nextIntervalId;
+      nextIntervalId += 1;
+      intervals.set(intervalId, { callback, delayMs });
+      calls.push(`window:set-interval:${delayMs}`);
+      return intervalId;
+    },
+    clearInterval(intervalId) {
+      intervals.delete(intervalId);
+      calls.push(`window:clear-interval:${intervalId}`);
+    },
+    addEventListener: windowEvents.addEventListener,
+    removeEventListener: windowEvents.removeEventListener,
     console: {
       info(...args) {
         infos.push(args);
@@ -124,150 +268,457 @@ function createHarness({
       },
     },
   };
+  context.window = context;
+  const vmContext = vm.createContext(context);
 
-  vm.runInNewContext(contentSource, context, {
-    filename: "extension/capture/content.js",
-  });
+  function runContent() {
+    vm.runInContext(contentSource, vmContext, {
+      filename: "extension/capture/content.js",
+    });
+  }
 
-  return {
-    body,
+  function observersForTarget(target) {
+    return observerInstances.filter((observer) =>
+      observer.observeCalls.some((call) => call.target === target),
+    );
+  }
+
+  const harness = {
     calls,
+    documentElement,
     errors,
     infos,
+    intervals,
+    location,
     observerInstances,
+    schedulerSessions,
     warnings,
+    completedSaleLogs() {
+      return infos.filter(
+        ([message]) =>
+          message === "[TikTok Live Tracker] Completed sale detected",
+      );
+    },
+    currentBody() {
+      return currentBody;
+    },
+    captureObservers() {
+      return observerInstances.filter(
+        (observer) =>
+          observer.observeCalls.length > 0 &&
+          observer.observeCalls.some((call) => call.target !== documentElement),
+      );
+    },
+    dispatchDocument(type) {
+      documentEvents.dispatch(type);
+    },
+    dispatchWindow(type) {
+      windowEvents.dispatch(type);
+    },
+    lifecycleObservers() {
+      return observersForTarget(documentElement);
+    },
+    listenerCount(target, type) {
+      return target === "window"
+        ? windowEvents.listenerCount(type)
+        : documentEvents.listenerCount(type);
+    },
+    runContent,
+    setBody(nextBody) {
+      currentBody = nextBody;
+    },
+    setOrigin(nextOrigin) {
+      location.origin = nextOrigin;
+    },
+    setPathname(nextPathname) {
+      location.pathname = nextPathname;
+    },
+    setRows(nextRows) {
+      currentRows = nextRows;
+    },
+    tickIntervals() {
+      [...intervals.values()].forEach(({ callback }) => callback());
+    },
     get queryCount() {
       return queryCount;
     },
     get schedulerCreateCount() {
       return schedulerCreateCount;
     },
-    get schedulerOptions() {
-      return schedulerOptions;
-    },
-    get schedulerRequestCount() {
-      return schedulerRequestCount;
-    },
   };
+
+  if (autoRun) {
+    runContent();
+  }
+
+  return harness;
 }
 
-function completedSaleLogs(harness) {
-  return harness.infos.filter(
-    ([message]) => message === "[TikTok Live Tracker] Completed sale detected",
-  );
+function latestCaptureObserver(harness) {
+  return harness.captureObservers().at(-1);
 }
 
-test("requires the capture scheduler on the dashboard route", () => {
+test("requires the capture scheduler before installing lifecycle watchers", () => {
   const harness = createHarness({ schedulerAvailable: false });
 
   assert.equal(harness.schedulerCreateCount, 0);
   assert.equal(harness.observerInstances.length, 0);
+  assert.equal(harness.intervals.size, 0);
   assert.deepEqual(harness.errors, [
     ["[TikTok Live Tracker] Capture scheduler failed to load."],
   ]);
 });
 
-test("does not start capture outside the exact dashboard route", () => {
-  const harness = createHarness({ pathname: "/streamer/live/event/dashboard/history" });
+test("stays dormant outside the exact dashboard path", () => {
+  const harness = createHarness({ pathname: `${DASHBOARD_PATH}/history` });
 
-  assert.equal(harness.schedulerCreateCount, 0);
+  assert.equal(harness.schedulerSessions.length, 0);
+  assert.equal(harness.captureObservers().length, 0);
+  assert.equal(harness.queryCount, 0);
+  assert.equal(harness.lifecycleObservers().length, 1);
+  assert.equal(harness.intervals.size, 1);
+  assert.deepEqual(harness.errors, []);
+  assert.equal(harness.completedSaleLogs().length, 0);
+});
+
+test("does not install lifecycle monitoring on another origin", () => {
+  const harness = createHarness({ origin: "https://seller.example.com" });
+
+  assert.equal(harness.schedulerSessions.length, 0);
   assert.equal(harness.observerInstances.length, 0);
+  assert.equal(harness.intervals.size, 0);
   assert.equal(harness.queryCount, 0);
   assert.deepEqual(harness.errors, []);
 });
 
-test("observes the dashboard before running the initial scan", () => {
+test("starts one capture session on the exact dashboard and installs lifecycle signals", () => {
   const harness = createHarness();
+  const [session] = harness.schedulerSessions;
+  const [captureObserver] = harness.captureObservers();
+  const [lifecycleObserver] = harness.lifecycleObservers();
 
-  assert.equal(harness.schedulerCreateCount, 1);
-  assert.ok(
-    harness.calls.indexOf("observer:observe") <
-      harness.calls.indexOf("scheduler:run-now"),
-  );
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(session.runNowCount, 1);
   assert.equal(harness.queryCount, 1);
-  assert.equal(harness.schedulerOptions.quietDelayMs, 150);
-  assert.equal(harness.schedulerOptions.maxWaitMs, 1000);
-  assert.equal(typeof harness.schedulerOptions.setTimeoutFn, "function");
-  assert.equal(typeof harness.schedulerOptions.clearTimeoutFn, "function");
-
-  const [observer] = harness.observerInstances;
-  assert.equal(observer.observeCalls.length, 1);
-  assert.equal(observer.observeCalls[0].target, harness.body);
+  assert.equal(captureObserver.observeCalls[0].target, harness.currentBody());
   assert.deepEqual(
-    JSON.parse(JSON.stringify(observer.observeCalls[0].options)),
-    {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    },
+    JSON.parse(JSON.stringify(captureObserver.observeCalls[0].options)),
+    { childList: true, subtree: true, characterData: true },
   );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(lifecycleObserver.observeCalls[0].options)),
+    { childList: true },
+  );
+  assert.ok(
+    harness.calls.indexOf(`observer:${captureObserver.id}:observe`) <
+      harness.calls.indexOf("scheduler:1:run-now"),
+  );
+  assert.equal(session.options.quietDelayMs, 150);
+  assert.equal(session.options.maxWaitMs, 1000);
+  assert.equal(typeof session.options.setTimeoutFn, "function");
+  assert.equal(typeof session.options.clearTimeoutFn, "function");
+  assert.deepEqual(
+    [...harness.intervals.values()].map(({ delayMs }) => delayMs),
+    [250],
+  );
+  assert.equal(harness.listenerCount("window", "popstate"), 1);
+  assert.equal(harness.listenerCount("window", "hashchange"), 1);
+  assert.equal(harness.listenerCount("window", "pageshow"), 1);
+  assert.equal(harness.listenerCount("document", "visibilitychange"), 1);
 });
 
-test("forwards dashboard mutations to the capture scheduler", () => {
+test("a silent URL change enters capture on the polling fallback and stays idempotent", () => {
+  const harness = createHarness({ pathname: "/streamer/live/event/list" });
+
+  assert.equal(harness.schedulerSessions.length, 0);
+  harness.setPathname(DASHBOARD_PATH);
+  harness.tickIntervals();
+
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.schedulerSessions[0].runNowCount, 1);
+
+  harness.tickIntervals();
+  harness.lifecycleObservers()[0].trigger();
+  harness.dispatchWindow("pageshow");
+  harness.dispatchDocument("visibilitychange");
+
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.captureObservers().length, 1);
+  assert.equal(harness.schedulerSessions[0].runNowCount, 1);
+});
+
+test("each lifecycle event can stop and restart capture without duplicate sessions", () => {
   const harness = createHarness();
-  const [observer] = harness.observerInstances;
+  const signals = [
+    () => harness.dispatchWindow("popstate"),
+    () => harness.dispatchWindow("hashchange"),
+    () => harness.dispatchWindow("pageshow"),
+    () => harness.dispatchDocument("visibilitychange"),
+  ];
 
-  observer.callback([{ type: "childList" }], observer);
-  observer.callback([{ type: "characterData" }], observer);
+  signals.forEach((signal, index) => {
+    const activeSession = harness.schedulerSessions.at(-1);
+    const activeObserver = latestCaptureObserver(harness);
 
-  assert.equal(harness.schedulerRequestCount, 2);
-  assert.equal(harness.queryCount, 1);
+    harness.setPathname("/streamer/live/event/list");
+    signal();
+
+    assert.equal(activeSession.disposeCount, 1);
+    assert.equal(activeObserver.disconnectCount, 1);
+    assert.equal(activeObserver.connected, false);
+
+    signal();
+    assert.equal(activeSession.disposeCount, 1);
+    assert.equal(activeObserver.disconnectCount, 1);
+
+    harness.setPathname(DASHBOARD_PATH);
+    signal();
+
+    assert.equal(harness.schedulerSessions.length, index + 2);
+    assert.equal(harness.schedulerSessions.at(-1).runNowCount, 1);
+
+    signal();
+    assert.equal(harness.schedulerSessions.length, index + 2);
+  });
 });
 
-test("reports scheduled scan errors through the tracker logger", () => {
-  const harness = createHarness();
-  const failure = new Error("temporary DOM failure");
+test("waits for a body, cleans up when it disappears, and starts on its replacement", () => {
+  const harness = createHarness({ body: null });
+  const [lifecycleObserver] = harness.lifecycleObservers();
+  const firstBody = createBody("first");
+  const secondBody = createBody("second");
 
-  harness.schedulerOptions.onError(failure);
+  assert.equal(harness.schedulerSessions.length, 0);
 
-  assert.deepEqual(harness.errors, [
-    ["[TikTok Live Tracker] Capture scan failed.", failure],
-  ]);
+  harness.setBody(firstBody);
+  lifecycleObserver.trigger();
+  const firstSession = harness.schedulerSessions[0];
+  const firstCaptureObserver = latestCaptureObserver(harness);
+
+  assert.equal(firstCaptureObserver.observeCalls[0].target, firstBody);
+
+  harness.setBody(null);
+  lifecycleObserver.trigger();
+
+  assert.equal(firstSession.disposeCount, 1);
+  assert.equal(firstCaptureObserver.disconnectCount, 1);
+
+  harness.setBody(secondBody);
+  lifecycleObserver.trigger();
+
+  assert.equal(harness.schedulerSessions.length, 2);
+  assert.equal(latestCaptureObserver(harness).observeCalls[0].target, secondBody);
 });
 
-test("emits a pending row once when it turns green and preserves deduplication", () => {
+test("replaces a detached body session once and ignores its stale mutation callback", () => {
+  const firstBody = createBody("first");
+  const secondBody = createBody("second");
+  const harness = createHarness({ body: firstBody, scanOnRequest: true });
+  const [lifecycleObserver] = harness.lifecycleObservers();
+  const firstSession = harness.schedulerSessions[0];
+  const firstCaptureObserver = latestCaptureObserver(harness);
+
+  harness.setBody(secondBody);
+  lifecycleObserver.trigger();
+
+  assert.equal(firstSession.disposeCount, 1);
+  assert.equal(firstCaptureObserver.disconnectCount, 1);
+  assert.equal(harness.schedulerSessions.length, 2);
+  assert.equal(latestCaptureObserver(harness).observeCalls[0].target, secondBody);
+
+  lifecycleObserver.trigger();
+  assert.equal(harness.schedulerSessions.length, 2);
+
+  const requestCountBeforeStaleCallback = firstSession.requestCount;
+  const queryCountBeforeStaleCallback = harness.queryCount;
+  assert.doesNotThrow(() => firstCaptureObserver.trigger());
+  assert.equal(firstSession.requestCount, requestCountBeforeStaleCallback);
+  assert.equal(harness.queryCount, queryCountBeforeStaleCallback);
+});
+
+test("keeps completed-sale deduplication for the lifetime of the SPA document", () => {
+  const firstBody = createBody("first");
+  const secondBody = createBody("second");
+  const sale = createSaleRow(
+    "Example Buyer has won: $48.00 Variation: #250 Payment complete",
+  );
+  const harness = createHarness({ body: firstBody, rows: [sale], scanOnRequest: true });
+  const [lifecycleObserver] = harness.lifecycleObservers();
+
+  assert.equal(harness.completedSaleLogs().length, 1);
+
+  harness.setBody(secondBody);
+  lifecycleObserver.trigger();
+  assert.equal(harness.completedSaleLogs().length, 1);
+
+  harness.setPathname("/streamer/live/event/list");
+  harness.dispatchWindow("popstate");
+  harness.setPathname(DASHBOARD_PATH);
+  harness.dispatchWindow("popstate");
+  assert.equal(harness.completedSaleLogs().length, 1);
+
+  sale.row.innerText =
+    "Another Buyer has won: $20.00 Variation: #251 Payment complete";
+  sale.row.textContent = sale.row.innerText;
+  latestCaptureObserver(harness).trigger([{ type: "characterData" }]);
+
+  assert.equal(harness.completedSaleLogs().length, 2);
+  assert.equal(harness.completedSaleLogs()[1][1].variationNumber, 251);
+});
+
+test("emits a pending row once when it turns green and preserves price conflicts", () => {
   const sale = createSaleRow(
     "Example Buyer has won: $48.00 Variation: #250 Awaiting payment",
   );
   const harness = createHarness({ rows: [sale], scanOnRequest: true });
-  const [observer] = harness.observerInstances;
+  const captureObserver = latestCaptureObserver(harness);
 
-  assert.equal(completedSaleLogs(harness).length, 0);
+  assert.equal(harness.completedSaleLogs().length, 0);
 
   sale.row.innerText =
     "Example Buyer has won: $48.00 Variation: #250 Payment complete";
   sale.row.textContent = sale.row.innerText;
-  observer.callback([{ type: "characterData" }], observer);
+  captureObserver.trigger([{ type: "characterData" }]);
 
-  const firstCompletedLogs = completedSaleLogs(harness);
+  const firstCompletedLogs = harness.completedSaleLogs();
   assert.equal(firstCompletedLogs.length, 1);
   assert.equal(firstCompletedLogs[0][1].type, "completed_sale_detected");
   assert.equal(firstCompletedLogs[0][1].source, "sold_items_dom_probe");
   assert.equal(
     firstCompletedLogs[0][1].page,
-    "https://shop.tiktok.com/streamer/live/event/dashboard",
+    `${DASHBOARD_ORIGIN}${DASHBOARD_PATH}`,
   );
   assert.equal(firstCompletedLogs[0][1].variationNumber, 250);
   assert.equal(firstCompletedLogs[0][1].soldPriceCents, 4800);
   assert.equal(firstCompletedLogs[0][1].paymentStatus, "payment_complete");
   assert.equal(typeof firstCompletedLogs[0][1].observedAt, "string");
 
-  observer.callback([{ type: "childList" }], observer);
-
-  assert.equal(completedSaleLogs(harness).length, 1);
-  assert.equal(harness.warnings.length, 0);
+  captureObserver.trigger();
+  assert.equal(harness.completedSaleLogs().length, 1);
 
   sale.row.innerText =
     "Example Buyer has won: $49.00 Variation: #250 Payment complete";
   sale.row.textContent = sale.row.innerText;
-  observer.callback([{ type: "characterData" }], observer);
+  captureObserver.trigger([{ type: "characterData" }]);
 
-  assert.equal(completedSaleLogs(harness).length, 1);
+  assert.equal(harness.completedSaleLogs().length, 1);
   assert.deepEqual(harness.warnings, [
     [
       "[TikTok Live Tracker] Conflicting completed price detected for variation #250.",
     ],
   ]);
+});
+
+test("duplicate content-script execution reuses one active lifecycle singleton", () => {
+  const harness = createHarness({ autoRun: false });
+
+  harness.runContent();
+  harness.runContent();
+
+  assert.equal(harness.lifecycleObservers().length, 1);
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.captureObservers().length, 1);
+  assert.equal(harness.schedulerSessions[0].runNowCount, 1);
+  assert.equal(harness.intervals.size, 1);
+  assert.equal(harness.listenerCount("window", "popstate"), 1);
+  assert.equal(harness.listenerCount("document", "visibilitychange"), 1);
+});
+
+test("duplicate dormant execution still creates only one session after SPA entry", () => {
+  const harness = createHarness({
+    autoRun: false,
+    pathname: "/streamer/live/event/list",
+  });
+
+  harness.runContent();
+  harness.runContent();
+  harness.setPathname(DASHBOARD_PATH);
+  harness.tickIntervals();
+
+  assert.equal(harness.lifecycleObservers().length, 1);
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.captureObservers().length, 1);
+  assert.equal(harness.intervals.size, 1);
+});
+
+test("failed scheduler creation leaves no partial session and retries", () => {
+  const harness = createHarness({ schedulerCreateFailures: 1 });
+
+  assert.equal(harness.schedulerCreateCount, 1);
+  assert.equal(harness.schedulerSessions.length, 0);
+  assert.equal(harness.captureObservers().length, 0);
+  assert.ok(harness.errors.length >= 1);
+
+  assert.doesNotThrow(() => harness.tickIntervals());
+  assert.equal(harness.schedulerCreateCount, 2);
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.captureObservers().length, 1);
+});
+
+test("failed observer setup disposes the scheduler and retries cleanly", () => {
+  const harness = createHarness({ bodyObserveFailures: 1 });
+  const [failedSession] = harness.schedulerSessions;
+  const [failedObserver] = harness.captureObservers();
+
+  assert.equal(failedSession.disposeCount, 1);
+  assert.equal(failedObserver.connected, false);
+  assert.ok(harness.errors.length >= 1);
+
+  assert.doesNotThrow(() => harness.tickIntervals());
+  assert.equal(harness.schedulerSessions.length, 2);
+  assert.equal(harness.schedulerSessions[1].runNowCount, 1);
+  assert.equal(latestCaptureObserver(harness).connected, true);
+});
+
+test("failed initial scan cleans up its partial session and retries", () => {
+  const harness = createHarness({ schedulerRunNowFailures: 1 });
+  const [failedSession] = harness.schedulerSessions;
+  const [failedObserver] = harness.captureObservers();
+
+  assert.equal(failedSession.disposeCount, 1);
+  assert.equal(failedObserver.disconnectCount, 1);
+  assert.ok(harness.errors.length >= 1);
+
+  assert.doesNotThrow(() => harness.tickIntervals());
+  assert.equal(harness.schedulerSessions.length, 2);
+  assert.equal(harness.schedulerSessions[1].runNowCount, 1);
+});
+
+test("mutation request failures are contained without disabling capture", () => {
+  const harness = createHarness({
+    schedulerRequestFailures: 1,
+    scanOnRequest: true,
+  });
+  const [session] = harness.schedulerSessions;
+  const captureObserver = latestCaptureObserver(harness);
+
+  assert.doesNotThrow(() => captureObserver.trigger());
+  assert.equal(session.requestCount, 1);
+  assert.ok(harness.errors.length >= 1);
+
+  assert.doesNotThrow(() => captureObserver.trigger());
+  assert.equal(session.requestCount, 2);
+  assert.equal(harness.schedulerSessions.length, 1);
+});
+
+test("cleanup failures cannot prevent a later dashboard session", () => {
+  const harness = createHarness({
+    bodyDisconnectFailures: 1,
+    schedulerDisposeFailures: 1,
+  });
+  const [firstSession] = harness.schedulerSessions;
+  const firstObserver = latestCaptureObserver(harness);
+
+  harness.setPathname("/streamer/live/event/list");
+  assert.doesNotThrow(() => harness.dispatchWindow("popstate"));
+  assert.equal(firstObserver.disconnectCount, 1);
+  assert.equal(firstSession.disposeCount, 1);
+  assert.ok(harness.errors.length >= 1);
+
+  harness.setPathname(DASHBOARD_PATH);
+  assert.doesNotThrow(() => harness.dispatchWindow("popstate"));
+  assert.equal(harness.schedulerSessions.length, 2);
+  assert.equal(harness.schedulerSessions[1].runNowCount, 1);
 });
 
 test("capture remains read-only and does not send data", () => {

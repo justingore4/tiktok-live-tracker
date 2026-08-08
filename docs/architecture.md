@@ -201,25 +201,38 @@ Payment complete
 
 ### Current capture probe — implemented
 
-The extension uses an isolated content script with a bounded, coalesced
-`MutationObserver` scheduler and a pure text parser. It:
+The extension makes its isolated content script available only on the exact
+`https://shop.tiktok.com` host so it is already present when TikTok changes views without
+reloading the document. Capture remains inactive on every route except the exact
+`/streamer/live/event/dashboard` path. It uses a bounded, coalesced `MutationObserver`
+scheduler, an SPA lifecycle controller, and a pure text parser. It:
 
-1. scans rendered payment-tag candidates when the page loads;
-2. watches page text and child-node changes, scanning 150 ms after a quiet moment while a
+1. reconciles the active route and document body at startup, on route or page-resume
+   signals, and with a 250 ms fallback check;
+2. starts capture only on the exact dashboard path, attaches its observer, and then scans
+   rendered payment-tag candidates;
+3. disconnects the observer and disposes its scheduler when the route is left, then
+   restarts them once when the dashboard is re-entered or its body is replaced;
+4. watches page text and child-node changes, scanning 150 ms after a quiet moment while a
    non-resetting 1-second maximum wait prevents constant dashboard updates from starving
    capture;
-3. finds the smallest ancestor containing exactly one variation and one final price;
-4. emits only rows containing the exact text `Payment complete`;
-5. logs normalized variation, price-in-cents, and payment status;
-6. deduplicates identical completed events in memory for the current page load.
+5. finds the smallest ancestor containing exactly one variation and one final price;
+6. emits only rows containing the exact text `Payment complete`;
+7. logs normalized variation, price-in-cents, and payment status; and
+8. deduplicates identical completed events in memory for the current page load, including
+   route exits and re-entry within that document.
 
 It does not click TikTok controls, modify TikTok data, persist a sale, update inventory,
-or contact Google Sheets.
+or contact Google Sheets. The wider same-host script availability adds no new extension
+API permission, and the DOM observer and capture scheduler remain disconnected outside
+the exact dashboard path.
 
 The scheduler clears each batch before scanning, coalesces quiet and maximum-wait timers
-into one run, and remains usable after a scan error. Browser suspension can still delay
-JavaScript timers. The page-wide observer and selector remain provisional until live
-validation identifies the stable Sold items container.
+into one run, and remains usable after a scan error. Route and resume signals provide
+prompt lifecycle checks, while the 250 ms fallback catches history changes that do not
+emit those signals. Browser suspension can still delay JavaScript timers. The page-wide
+observer and selector remain provisional until live validation identifies the stable
+Sold items container.
 
 ### Target capture events
 
@@ -469,7 +482,9 @@ The next real stream must answer:
 - Is the Sold items list virtualized or replaced as it grows?
 - Does any relevant content live inside an iframe or shadow root?
 - What stable value can identify the stream?
-- What happens across client-side navigation, refresh, and a second stream?
+- Does the implemented route/body recovery remain reliable under TikTok's live rendering?
+- What happens to stream identity and deduplication across a full refresh and a second
+  stream?
 - Do auctions with no bids appear in any trackable list?
 - Can every completed sale be recovered for an end-of-stream sweep?
 
@@ -482,8 +497,8 @@ Browser support beyond Chrome is a later decision.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
-5. **In progress:** bounded capture scheduling completed; SPA recovery, stream identity,
-   and live-stream selector/session validation remain.
+5. **In progress:** bounded capture scheduling and SPA lifecycle recovery completed;
+   stream identity, selector narrowing, and real-stream session validation remain.
 6. Capture-to-engine-to-tagger integration.
 7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.
