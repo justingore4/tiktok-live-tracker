@@ -3,8 +3,12 @@
   "name": "TikTok Live Tracker",
   "version": "0.1.0",
   "description": "Tag live-stream items as they sell and reconcile them against TikTok payment confirmations.",
-  "permissions": ["storage"],
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "sidePanel"],
   "host_permissions": [],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -18,7 +22,10 @@
       "world": "ISOLATED"
     }
   ],
+  "side_panel": {
+    "default_path": "tagger/sidepanel.html"
+  },
   "action": {
-    "default_title": "TikTok Live Tracker"
+    "default_title": "Open TikTok Live Tracker"
   }
 }

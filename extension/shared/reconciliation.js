@@ -221,15 +221,98 @@
       );
     }
 
+    function countReservedUnits(state, sku) {
+      return state.streams.reduce(
+        (streamTotal, stream) =>
+          streamTotal +
+          stream.variations.filter(
+            (auction) =>
+              auction.sku === sku &&
+              auction.paymentStatus !== "payment_complete" &&
+              auction.mappingStatus === "mapped",
+          ).length,
+        0,
+      );
+    }
+
+    function getInventoryAvailability(state, input) {
+      requireState(state);
+
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        fail("INVALID_ARGUMENT", "An inventory availability input is required.");
+      }
+
+      const sku = requireNonEmptyString(input.sku, "sku");
+      const inventoryItem = findInventoryItem(state, sku);
+
+      if (!inventoryItem) {
+        fail("UNKNOWN_SKU", `Inventory does not contain SKU ${sku}.`);
+      }
+
+      const hasStreamId = input.streamId !== undefined;
+      const hasVariationNumber = input.variationNumber !== undefined;
+
+      if (hasStreamId !== hasVariationNumber) {
+        fail(
+          "INVALID_ARGUMENT",
+          "streamId and variationNumber must be provided together.",
+        );
+      }
+
+      const currentAuction = hasStreamId
+        ? findAuction(
+            state,
+            requireStreamId(input.streamId),
+            requireVariationNumber(input.variationNumber),
+          )
+        : null;
+      const soldQuantity = countCommittedUnits(state, sku);
+      const reservedQuantity = countReservedUnits(state, sku);
+      const remainingQuantity = inventoryItem.quantityReceived - soldQuantity;
+      const availableToTagQuantity = remainingQuantity - reservedQuantity;
+      const oversoldQuantity = Math.max(0, -remainingQuantity);
+      const reservationShortfallQuantity = Math.max(
+        0,
+        reservedQuantity - Math.max(0, remainingQuantity),
+      );
+      let currentAllocation = "none";
+
+      if (currentAuction?.sku === sku) {
+        if (currentAuction.paymentStatus === "payment_complete") {
+          currentAllocation = "sold";
+        } else if (currentAuction.mappingStatus === "mapped") {
+          currentAllocation = "reserved";
+        }
+      }
+
+      return {
+        sku,
+        quantityReceived: inventoryItem.quantityReceived,
+        soldQuantity,
+        reservedQuantity,
+        remainingQuantity,
+        availableToTagQuantity,
+        availableForCurrentAuctionQuantity:
+          availableToTagQuantity + (currentAllocation === "none" ? 0 : 1),
+        oversoldQuantity,
+        reservationShortfallQuantity,
+        currentAllocation,
+      };
+    }
+
     function createAuctionView(state, auction) {
       const status = deriveAuctionStatus(auction);
       const committed = status === "committed";
       const warnings = [];
 
       if (status === "pending") {
-        const inventoryItem = findInventoryItem(state, auction.sku);
+        const availability = getInventoryAvailability(state, {
+          sku: auction.sku,
+          streamId: auction.streamId,
+          variationNumber: auction.variationNumber,
+        });
         const availableQuantity =
-          inventoryItem.quantityReceived - countCommittedUnits(state, auction.sku);
+          availability.availableForCurrentAuctionQuantity;
 
         if (availableQuantity <= 0) {
           warnings.push({
@@ -423,12 +506,20 @@
             left.variationNumber - right.variationNumber,
         );
 
-      const inventory = state.inventory.map((item) => ({
-        ...item,
-        soldQuantity: 0,
-        remainingQuantity: item.quantityReceived,
-        oversoldQuantity: 0,
-      }));
+      const inventory = state.inventory.map((item) => {
+        const availability = getInventoryAvailability(state, { sku: item.sku });
+
+        return {
+          ...item,
+          soldQuantity: availability.soldQuantity,
+          reservedQuantity: availability.reservedQuantity,
+          remainingQuantity: availability.remainingQuantity,
+          availableToTagQuantity: availability.availableToTagQuantity,
+          oversoldQuantity: availability.oversoldQuantity,
+          reservationShortfallQuantity:
+            availability.reservationShortfallQuantity,
+        };
+      });
       const itemPerformance = state.inventory.map((item) => ({
         sku: item.sku,
         name: item.name,
@@ -511,18 +602,7 @@
         totals.profitCents += profitCents;
       });
 
-      allAuctions.forEach((auction) => {
-        if (!auction.committed) {
-          return;
-        }
-
-        inventory.find((item) => item.sku === auction.sku).soldQuantity += 1;
-      });
-
       inventory.forEach((item) => {
-        item.remainingQuantity = item.quantityReceived - item.soldQuantity;
-        item.oversoldQuantity = Math.max(0, -item.remainingQuantity);
-
         if (item.oversoldQuantity > 0) {
           warnings.push({
             code: "negative_inventory",
@@ -546,6 +626,7 @@
     return {
       ReconciliationError,
       createReconciliationState,
+      getInventoryAvailability,
       mapVariation,
       recordPaymentComplete,
       markUnpaid,

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>TikTok Live Tracker</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-mark" aria-hidden="true">T</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Seller tool</p>
+          <h1>TikTok Live Tracker</h1>
+        </div>
+        <span class="prototype-badge">Prototype</span>
+      </header>
+
+      <section class="current-auction" aria-labelledby="current-auction-title">
+        <div>
+          <p class="current-auction-label">On screen now</p>
+          <h2 id="current-auction-title">
+            Variation <span class="variation-number">#203</span>
+          </h2>
+        </div>
+        <span class="demo-badge">Demo data</span>
+      </section>
+
+      <section
+        id="pending-mapping"
+        class="pending-mapping"
+        aria-labelledby="pending-mapping-title"
+        hidden
+      >
+        <div class="pending-heading">
+          <div>
+            <p id="auction-eyebrow" class="eyebrow">Auction status</p>
+            <h2 id="pending-mapping-title">
+              Variation <span data-field="mapped-variation">#203</span>
+            </h2>
+          </div>
+          <button id="change-mapping" class="change-mapping" type="button">
+            Change item
+          </button>
+        </div>
+        <div class="pending-card">
+          <p id="mapped-item" class="mapped-item"></p>
+          <p id="auction-status" class="pending-status" tabindex="-1">
+            <span class="pending-status-dot" aria-hidden="true"></span>
+            <span data-field="mapping-status">Waiting for payment</span>
+          </p>
+        </div>
+
+        <div id="sale-results" class="sale-results" hidden>
+          <dl>
+            <div>
+              <dt>Sold for</dt>
+              <dd data-field="sold-price"></dd>
+            </div>
+            <div>
+              <dt>Unit cost</dt>
+              <dd data-field="unit-cost"></dd>
+            </div>
+            <div>
+              <dt>Gross profit</dt>
+              <dd data-field="gross-profit"></dd>
+            </div>
+            <div>
+              <dt>Inventory</dt>
+              <dd data-field="remaining-inventory"></dd>
+            </div>
+          </dl>
+          <p>Gross profit excludes platform fees, shipping, refunds, and taxes.</p>
+        </div>
+
+        <p id="state-warning" class="state-warning" role="status" hidden></p>
+
+        <fieldset id="lifecycle-controls" class="lifecycle-controls">
+          <legend>Offline test controls</legend>
+          <p class="demo-controls-note">
+            These controls simulate TikTok events locally and do not act on TikTok.
+          </p>
+
+          <form id="complete-payment-form" novalidate>
+            <label for="sold-price">Final sold price</label>
+            <div class="price-input">
+              <span aria-hidden="true">$</span>
+              <input
+                id="sold-price"
+                name="sold-price"
+                type="text"
+                inputmode="decimal"
+                value="48.00"
+                autocomplete="off"
+                aria-describedby="sold-price-help sold-price-error"
+              >
+            </div>
+            <p id="sold-price-help" class="field-help">
+              Enter the final green-badge price for this offline simulation.
+            </p>
+            <p id="sold-price-error" class="field-error" role="alert" hidden></p>
+            <button class="primary-action" type="submit">
+              Simulate payment complete
+            </button>
+          </form>
+
+          <button id="simulate-buffer-expiry" class="secondary-action" type="button">
+            Simulate payment buffer expired
+          </button>
+          <p id="buffer-expired-note" class="buffer-expired-note" hidden>
+            Payment buffer expired in this demo. You can now mark the auction unpaid.
+          </p>
+          <button id="mark-unpaid" class="danger-action" type="button" hidden>
+            Mark unpaid after buffer
+          </button>
+          <p id="unpaid-note" class="unpaid-note" hidden>
+            This auction did not sell. Remaining inventory and profit stay
+            unchanged, and its pending reservation is released.
+          </p>
+          <button id="undo-unpaid" class="secondary-action" type="button" hidden>
+            Undo unpaid
+          </button>
+          <p id="undo-payment-note" class="demo-controls-note" hidden>
+            Offline demo only. Return this sale to Waiting for payment, keep
+            the selected item reserved, and do not change TikTok.
+          </p>
+          <button
+            id="undo-simulated-payment"
+            class="secondary-action"
+            type="button"
+            aria-describedby="undo-payment-note"
+            hidden
+          >
+            Undo simulated payment
+          </button>
+        </fieldset>
+      </section>
+
+      <section class="inventory-section" aria-labelledby="inventory-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Inventory</p>
+            <h2 id="inventory-title">Find the item on screen</h2>
+          </div>
+          <p id="result-count" class="result-count" aria-live="polite"></p>
+        </div>
+
+        <div class="search-field">
+          <span class="search-icon" aria-hidden="true"></span>
+          <label class="visually-hidden" for="inventory-search">
+            Search inventory by item, style, or size
+          </label>
+          <input
+            id="inventory-search"
+            type="search"
+            placeholder="Search item, style, or size"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button id="clear-search" class="clear-search" type="button" hidden>
+            Clear
+          </button>
+        </div>
+
+        <p class="selection-note">
+          Available counts reserve pending tags. Only completed payments reduce
+          remaining inventory.
+        </p>
+
+        <div id="inventory-grid" class="inventory-grid" role="list"></div>
+
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-state-icon" aria-hidden="true"></div>
+          <h3>No inventory matches <strong id="empty-query"></strong></h3>
+          <p>Try a different item, style, or size.</p>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Offline lifecycle demo</span>
+      </footer>
+
+      <p
+        id="mapping-announcement"
+        class="visually-hidden"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      ></p>
+    </main>
+
+    <template id="inventory-card-template">
+      <div class="inventory-card-wrapper" role="listitem">
+        <button class="inventory-card" type="button" aria-pressed="false">
+          <span class="card-heading">
+            <span class="card-title">
+              <span data-field="item"></span>
+              <span class="item-separator" aria-hidden="true">-</span>
+              <span data-field="style"></span>
+            </span>
+            <span class="selected-label" data-field="selected" hidden>Selected</span>
+            <span class="stock-indicator" aria-hidden="true"></span>
+          </span>
+          <span class="card-meta">
+            <span class="size-label">Size <strong data-field="size"></strong></span>
+            <span class="stock-label" data-field="stock"></span>
+          </span>
+        </button>
+      </div>
+    </template>
+
+    <script src="../shared/sale-parser.js"></script>
+    <script src="../shared/reconciliation.js"></script>
+    <script src="inventory-view-model.js"></script>
+    <script src="mapping-workflow.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

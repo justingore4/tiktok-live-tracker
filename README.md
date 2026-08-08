@@ -5,8 +5,9 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early offline prototype. The completed-sale parser, read-only
-> dashboard capture probe, and reconciliation engine are implemented and tested. They
-> are not connected to a tagger interface, persistent storage, or Google Sheets yet.
+> dashboard capture probe, reconciliation engine, and in-memory tagger lifecycle demo
+> are implemented and tested. Captured payment events, persistence, and Google Sheets
+> are not connected yet.
 
 ## How it works
 
@@ -24,29 +25,43 @@ The tracker counts the sale only after TikTok shows the final price with the gre
 > A sale counts, gross profit is recorded, and stock decreases **only when TikTok shows
 > payment complete and the variation is mapped to an inventory item**.
 
+A real TikTok `Payment complete` event is authoritative and cannot be undone by this
+extension. Employees can correct the mapped inventory item, but they cannot reverse
+TikTok's payment state.
+
 If payment permanently fails after TikTok's payment buffer, the employee can mark the
-variation unpaid. Inventory remains unchanged because that auction never counted as a
-sale. If the item is auctioned again, the employee maps its new variation number.
+variation unpaid. Remaining inventory stays unchanged because that auction never counted
+as a sale, while its pending reservation is released so the item can be tagged again. If
+the item is auctioned again, the employee maps its new variation number.
 
 ## Current implementation
 
 ### Implemented and tested
 
 - A Manifest V3 Chrome extension that loads on the TikTok LIVE dashboard.
+- A responsive Chrome side-panel prototype with mock inventory, search, reservations,
+  sold-out states, and one-click item mapping.
+- An in-memory lifecycle demo for variation `#203` that can simulate payment completion,
+  undo that simulated completion, payment-buffer expiry, **Mark unpaid**, **Undo unpaid**,
+  and mapping correction.
+- Engine-derived final price, unit cost, gross profit/loss, and inventory results after
+  a simulated completed payment.
 - A read-only `MutationObserver` capture probe for rendered completed-sale rows.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, completed GMV, and gross profit;
-  - supports mapping corrections, **Mark unpaid**, and undo;
+  - reserves pending units separately from completed sales;
+  - supports mapping corrections, **Mark unpaid**, and undoing the local unpaid mark;
   - surfaces unmapped sales, conflicting prices, and inventory shortages;
   - keeps auctions distinct by `(streamId, variationNumber)`.
-- Automated parser and reconciliation tests using Node's built-in test runner.
+- Automated parser, reconciliation, and tagger tests using Node's built-in test runner.
 
 ### Not implemented yet
 
-- The employee-facing tagger interface.
+- Real TikTok payment events driving the tagger interface.
+- A multi-variation employee queue instead of the fixed demo variation.
 - Automatic detection of the current variation while bidding.
 - Detection of TikTok's yellow payment-warning state.
 - Persistent browser storage or recovery after a refresh/crash.
@@ -57,15 +72,14 @@ sale. If the item is auctioned again, the employee maps its new variation number
 ## Development roadmap
 
 1. Build the offline tagger interface in three focused stages:
-   1. interface foundation;
-   2. item-mapping workflow;
-   3. payment lifecycle controls and testing.
+   1. **Completed:** interface foundation;
+   2. **Completed:** item-mapping workflow;
+   3. **Completed:** payment lifecycle controls and testing.
 2. Persist canonical stream state in browser storage.
-3. Connect captured TikTok events to the reconciliation engine and tagger.
-4. Create the Google Sheet template and choose the authentication approach.
-5. Import inventory from Google Sheets and export reconciled results.
-6. Validate current-auction, yellow-warning, and completed-sale behavior during a live
-   stream.
+3. Harden and live-validate capture scheduling, stream identity, and dashboard selectors.
+4. Connect captured TikTok events to the reconciliation engine and tagger.
+5. Create the Google Sheet template and choose the authentication approach.
+6. Import inventory from Google Sheets and export reconciled results.
 7. Add end-of-stream reconciliation and analytics reporting.
 
 ## Project layout
@@ -76,11 +90,11 @@ sale. If the item is auctioned again, the employee maps its new variation number
 | `extension/capture/` | Read-only TikTok dashboard observation | Probe implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
-| `extension/tagger/` | Employee queue and inventory picker | Planned |
+| `extension/tagger/` | Employee queue and inventory picker | In-memory lifecycle demo implemented |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
-| `tests/` | Offline parser and reconciliation tests | Implemented |
+| `tests/` | Offline parser, reconciliation, and tagger tests | Implemented |
 
 The first version is intended to remain browser-only if secure Google OAuth is
 sufficient. The optional backend is reserved for needs such as server-managed
@@ -107,14 +121,27 @@ npm.cmd test
 
 PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper.
 
-### Load the capture probe in Chrome
+### Load the extension in Chrome
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
-5. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
-6. Open DevTools and confirm the Console contains:
+5. Click the extension's toolbar icon to open the demo tagger side panel.
+6. Select `Stussy tee - black, L` and confirm it shows **Selected**, **Waiting for
+   payment**, and `4 available · 1 pending`.
+7. Leave the simulated price at `$48.00` and select **Simulate payment complete**.
+8. Confirm the result shows `$48.00`, `+$36.00 profit`, and `4 remaining`.
+9. Select **Undo simulated payment** and confirm the result disappears, **Waiting for
+   payment** returns, and the item shows `4 available · 1 pending`.
+10. Simulate payment again, select **Change item**, choose another entry, and confirm the
+   old inventory count is restored while the new count and profit are recalculated.
+11. Reload the extension to reset the in-memory demo, map an item, then test **Simulate
+   payment buffer expired**, **Mark unpaid after buffer**, and **Undo unpaid**.
+12. While marked unpaid, use **Simulate payment complete** to confirm a late TikTok
+   payment still counts and displays a conflict warning.
+13. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
+14. Open DevTools and confirm the Console contains:
 
    ```text
    [TikTok Live Tracker] Capture probe active
@@ -123,6 +150,13 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
 On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale
 test and the remaining live-stream checks.
+
+Closing or reloading the side panel resets all demo mappings and results because browser
+storage is not implemented yet.
+
+**Undo simulated payment** only restores the private, in-memory offline demo. **Undo
+unpaid** only removes the employee's local unpaid mark. Neither control acts on TikTok or
+can reverse a captured completed payment.
 
 ## Credentials and privacy
 
