@@ -299,24 +299,25 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — saved session and offline demo implemented
+## 5. Employee tagger — live session and offline demo implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
 The Chrome side panel has two explicit modes:
 
-- **Saved session** is the default employee workspace. It restores the last durable
-  reconciliation state, persists mapping and unpaid corrections, and displays loading,
-  saving, success, and retryable error states.
+- **Live session** is the default employee workspace. It requires a persistent local
+  active stream, restores the last durable reconciliation state, persists mapping and
+  unpaid corrections, and displays loading, saving, success, and retryable error states.
 - **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
   isolated state, sends no persistent commands, and resets when recreated or reloaded.
 
 Shared tagger behavior includes:
 
-- A clearly labeled current variation and native dropdown for seeded previous variations.
-- Separate on-screen and selected variation identity, so reviewing history never labels
-  an older auction as live.
+- A clearly labeled prototype current variation and native dropdown for seeded previous
+  variations until capture supplies the actual live number.
+- Separate prototype-current and selected variation identity, so reviewing history never
+  labels an older auction as current.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Engine-derived available, pending-reservation, remaining, and sold-out states.
@@ -343,11 +344,20 @@ Shared tagger behavior includes:
   produce a shortage.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-Saved mode initializes the current mock inventory only when storage is confirmed absent.
-It never seeds fake completed payments. It restores persisted variations, merges them
-with the temporary prototype variation list for navigation, and defaults back to the
-prototype on-screen variation when the panel is reopened. Selection navigation itself is
-local UI state and does not write to storage.
+Live-session mode first requires a persistent local tracker stream. Start asks the
+service worker to create and durably save a `local-stream:<uuid>` identity; reopening the
+panel offers Resume for that same identity. End clears only the active-session pointer
+after confirmation. It does not delete reconciliation history and does not start or end
+TikTok LIVE. Because ended streams cannot yet be reopened in the tagger, End is blocked
+while a variation is waiting for payment or has completed payment but still needs an
+item.
+
+After Start or Resume, live-session mode initializes the current mock inventory only when
+reconciliation storage is confirmed absent. It never seeds fake completed payments. It
+restores persisted variations for the active local stream, merges them with the temporary
+prototype variation list for navigation, and defaults back to the prototype on-screen
+variation when the panel is reopened. Selection navigation itself is local UI state and
+does not write to storage.
 
 The demo exists only while the side panel remains loaded. It uses mock inventory, treats
 `#203` as on screen, and seeds previous variations `#202`, `#201`, and `#200` with example
@@ -355,10 +365,12 @@ completed, pending, and unpaid states. Navigation does not create or mutate auct
 records; every demo variation shares one isolated reconciliation state so corrections
 immediately recalculate shared inventory and profit. Reloading resets changes to those
 demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
-reverse a TikTok event or modify the saved session.
+reverse a TikTok event or modify the live session.
 
-The current variation and stream identifiers are still prototype constants. The tagger
-does not yet receive them or completed-payment events from the capture probe.
+The current variation is still the prototype constant `#203`. The live tagger now uses a
+durable worker-generated local stream identifier, but that identifier is not a verified
+TikTok room ID. The tagger does not yet receive current-variation or completed-payment
+events from the capture probe.
 
 Planned tagger behavior includes:
 
@@ -391,6 +403,27 @@ hydrates and validates every read, returns `null` only when the key is truly abs
 reports malformed, unsupported, or failed reads and writes as typed errors. It never
 silently clears or replaces corrupt or future-version data.
 
+Active-stream lifecycle is deliberately stored separately beneath
+`tiktokLiveTracker.streamSession`:
+
+```text
+{
+  schemaVersion: 1,
+  sessionState: {
+    version: 1,
+    activeSession: null | {
+      streamId: "local-stream:<uuid>",
+      startedAt: "<UTC ISO timestamp>",
+      identitySource: "local_session"
+    }
+  }
+}
+```
+
+Keeping this pointer outside reconciliation state avoids changing or weakening its v1
+schema. Missing active-session storage means no tracker stream is active; malformed or
+future data fails closed and is never replaced automatically.
+
 The extension service worker now creates the adapter with `chrome.storage.local` and is
 the sole canonical-state command owner. Its coordinator:
 
@@ -407,6 +440,11 @@ This ordering prevents simultaneous commands from overwriting one another and pr
 memory from getting ahead of disk. When an MV3 worker is suspended and later restarted,
 the next command reloads the last durable snapshot.
 
+A second FIFO coordinator owns `get_stream_session`, `start_stream`, and `end_stream`.
+Only the worker can generate the UUID and timestamp. Start is idempotent when a session
+already exists, and End includes the expected active ID so a stale panel cannot close a
+newer session. It saves before publishing exactly like the reconciliation coordinator.
+
 Worker messages use a strict versioned envelope and return plain success or error data.
 Only the exact extension side-panel page is currently authorized to issue employee/read
 commands. Although the pure coordinator supports `record_payment_complete`, the worker
@@ -417,10 +455,13 @@ Local storage is restricted to trusted extension contexts so the dashboard conte
 script cannot read or write the canonical snapshot directly. State changes must pass
 through the worker's validated command boundary.
 
-The side panel uses a dedicated runtime client and persistent tagger controller. On open,
-it requests canonical state and initializes inventory only when the worker explicitly
-reports that the storage key is absent. Malformed, corrupt, future-version, and failed
-reads never trigger initialization or replacement.
+The side panel first uses a dedicated stream-session client/controller. With no active
+session it offers Start; after a panel or browser restart it offers Resume; while resumed
+it offers an inline-confirmed End. Only a started or resumed session mounts the persistent
+tagger controller. On mount, that controller requests canonical state and initializes
+inventory only when the worker explicitly reports that the reconciliation key is absent.
+Malformed, corrupt, future-version, and failed reads never trigger initialization or
+replacement.
 
 Mapping, unmapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the
 selected `(streamId, variationNumber)`. The UI keeps its last good view while a command
@@ -430,7 +471,8 @@ tagger never calls `chrome.storage` directly.
 
 The runtime client deliberately exposes no payment-complete command. Offline-demo actions
 send no runtime messages, and their simulations remain detached from canonical state.
-The saved controller may still finish loading in the background while the demo is open.
+An already-mounted live controller may finish loading in the background while the demo
+is open.
 The capture probe sends no coordinator messages; captured-event persistence and the
 outbound Google Sheets sync queue belong to later stages.
 
@@ -537,6 +579,11 @@ Browser support beyond Chrome is a later decision.
    badge and ancestor-boundary targeting, mutation relevance filtering, and scoped event
    registry tests. Canonical stream identity and Sold items root narrowing remain blocked
    on real-stream validation.
-6. Capture-to-engine-to-tagger integration.
+6. Capture-to-engine-to-tagger integration in three stages:
+   1. **Completed:** persistent local active-stream sessions and Start/Resume/End UI;
+   2. attach captured completed-payment events to the active local stream through the
+      worker;
+   3. feed captured variations into the live tagger queue and validate the end-to-end
+      local workflow.
 7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.

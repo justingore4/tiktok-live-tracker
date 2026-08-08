@@ -7,8 +7,9 @@ tracker combines those facts to calculate inventory and gross profit.
 > **Project status:** early browser prototype. The completed-sale parser, read-only
 > dashboard capture probe with SPA recovery and offline-safe candidate targeting,
 > reconciliation engine, tagger lifecycle demo, and local saved-session recovery are
-> implemented and tested. Employee mappings and unpaid corrections persist through the
-> service worker; TikTok payment capture and Google Sheets are not connected yet.
+> implemented and tested. The service worker now owns persistent local tracker-stream
+> sessions as well as employee mappings and unpaid corrections. TikTok payment capture
+> and Google Sheets are not connected yet.
 
 ## How it works
 
@@ -46,8 +47,11 @@ the item is auctioned again, the employee maps its new variation number.
 - A responsive Chrome side-panel prototype with mock inventory, search, reservations,
   sold-out states, one-click item mapping and unmapping, and a current/previous
   variation selector.
-- A **Saved session** mode that restores mappings, unpaid decisions, reservations, and
-  prior variation records after the side panel or browser is reopened.
+- A **Live session** mode with explicit Start, Resume, and End controls. Its worker-made
+  local stream ID survives side-panel, browser, and service-worker restarts, while End
+  keeps reconciliation history and does not act on TikTok LIVE.
+- Restoration of mappings, unpaid decisions, reservations, and prior variation records
+  after the side panel or browser is reopened.
 - Loading, saving, retry, and fail-closed error states that keep the last successfully
   saved view visible when a command fails.
 - An in-memory lifecycle demo for variations `#200` through `#203`. It keeps on-screen
@@ -86,6 +90,9 @@ the item is auctioned again, the employee maps its new variation number.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails.
+- A separate versioned active-stream record and coordinator. The worker generates its
+  `local-stream:<uuid>` identity, saves it before reporting Start, restores it for Resume,
+  and requires the expected ID before End so a stale panel cannot end a newer session.
 - A strict tagger runtime client and controller that send only mapping, unmapping,
   mark-unpaid, and undo-unpaid commands through that coordinator. The tagger never
   accesses browser storage directly and cannot create authoritative payment-complete
@@ -100,8 +107,8 @@ the item is auctioned again, the employee maps its new variation number.
   variations only.
 - Automatic detection of the current variation while bidding.
 - Detection of TikTok's yellow payment-warning state.
-- Persistent stream identity and automatic creation of a fresh saved session for each
-  real TikTok LIVE.
+- A verified TikTok room/session identity and automatic association of the local tracker
+  stream with the correct real TikTok LIVE.
 - A live-validated, stable Sold items container selector; the current read-only boundary
   remains the dashboard body.
 - Google Sheets inventory import and results export.
@@ -124,7 +131,14 @@ the item is auctioned again, the employee maps its new variation number.
    candidate validation, mutation filtering, and scoped event-registry tests are
    implemented. Verified stream identity, Sold items root narrowing, and real-stream
    validation remain blocking live checks.
-4. Connect captured TikTok events to the reconciliation engine and tagger.
+4. Connect captured TikTok events to the reconciliation engine and tagger in three
+   focused stages:
+   1. **Completed:** create persistent local active-stream sessions with Start, Resume,
+      and End controls;
+   2. **Next:** attach read-only capture events to the active local stream and persist
+      payment completion through the worker;
+   3. Feed captured variations into the tagger queue and validate the complete local
+      live-stream workflow.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
 7. Add end-of-stream reconciliation and analytics reporting.
@@ -140,7 +154,8 @@ the item is auctioned again, the employee maps its new variation number.
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
-| `extension/tagger/` | Employee queue, inventory picker, and saved-session controller | Persistence connected; live capture pending |
+| `extension/shared/stream-session*.js` | Versioned active-stream state, storage, and serialized lifecycle commands | Implemented in service worker |
+| `extension/tagger/` | Employee queue, inventory picker, active-stream controls, and persistence clients | Active-stream persistence connected; live capture pending |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
@@ -178,9 +193,18 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
 5. Click the extension's toolbar icon to open the tagger side panel.
-6. In **Saved session**, wait for the status to say **Saved locally**.
+
+If this Chrome profile previously used the old saved `demo-stream` prototype, its test
+mappings still exist by design and can affect shared inventory. Before the first real
+stream test, remove the unpacked extension from `chrome://extensions` and load it again,
+or clear its local extension storage, only if you intentionally want to discard that
+prototype data. There is no silent reset.
+
+6. In **Live session**, select **Start stream**. Confirm the tracker says the local stream
+   is active; this does not start TikTok LIVE.
 7. Select `Stussy tee - black, L` for variation `#203`; wait for the save to finish.
-8. Close and reopen the side panel. Confirm `#203` is still mapped and shows one pending
+8. Close and reopen the side panel. Select **Resume active stream**, then confirm `#203`
+   is still mapped and shows one pending
    reservation.
 9. Select another available inventory card, wait for it to save, then reopen the panel
    once more and confirm the correction was restored.
@@ -199,25 +223,31 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
     `4 remaining`; then use **Undo simulated payment** and confirm the pending state
     returns.
 16. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
-    unpaid**. Switch back to **Saved session** and confirm none of the demo-only payment
+    unpaid**. Switch back to **Live session** and confirm none of the demo-only payment
     changes altered the saved data.
-17. Open `https://shop.tiktok.com/streamer/live/event/dashboard`.
-18. Open DevTools and confirm the Console contains:
+17. In **Live session**, resolve any **Waiting for payment** test mapping by marking it
+    unpaid. Then choose **End stream**, cancel once, and confirm End. Verify the UI
+    returns to Start, the prior order history remains stored, and TikTok LIVE is
+    unaffected. Start a new tracker stream and confirm its prototype variation `#203`
+    begins without the prior stream's mapping.
+18. Open `https://shop.tiktok.com/streamer/live/event/dashboard`.
+19. Open DevTools and confirm the Console contains:
 
    ```text
    [TikTok Live Tracker] Capture probe active
    ```
 
-19. Use TikTok's own navigation to leave the dashboard and return without reloading the
+20. Use TikTok's own navigation to leave the dashboard and return without reloading the
     tab; confirm capture becomes active again without duplicate completed-sale events.
-20. Put the tab in the background, return to it, and confirm capture remains active. Body
+21. Put the tab in the background, return to it, and confirm capture remains active. Body
     replacement and repeated re-entry are also covered by the offline capture tests.
 
 On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale
 test and the remaining live-stream checks.
 
-Saved-session employee changes survive side-panel reloads and service-worker restarts.
+Live-session identity and employee changes survive side-panel reloads and service-worker
+restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID.
 Offline-demo changes still reset when that disposable demo is recreated or the panel is
 reloaded.
 

@@ -69,6 +69,12 @@ different streams, but the registry does not discover or invent an ID. The live 
 uses an unverified page scope, warns once about that limitation, and emits
 `streamIdentityStatus: "unverified"` with `dedupeScope: "page_load"`.
 
+The side panel now has a separate persistent local tracker session with a worker-generated
+`local-stream:<uuid>` ID. That ID survives panel and browser restarts and safely separates
+employee mappings between tracker sessions, but the content script cannot read or use it
+yet. It must not be described as a verified TikTok stream ID. Connecting read-only
+capture events to that active local session is the next integration prompt.
+
 TikTok can change routes with its History API without reloading the page or emitting a
 single dependable browser event. Route and resume signals therefore provide immediate
 checks when available, while the 250 ms fallback catches silent history changes and body
@@ -86,9 +92,11 @@ engine, or contact Google Sheets.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
-5. Open the TikTok LIVE dashboard.
-6. Refresh the dashboard if it was already open.
-7. Open DevTools → **Console** and look for:
+5. Open the side panel, choose **Live session**, and Start or Resume the local tracker
+   stream. These controls do not start TikTok LIVE.
+6. Open the TikTok LIVE dashboard.
+7. Refresh the dashboard if it was already open.
+8. Open DevTools → **Console** and look for:
 
    ```text
    [TikTok Live Tracker] Capture probe active on /streamer/live/event/dashboard.
@@ -121,6 +129,11 @@ node --test .\tests\capture-event-registry.test.cjs
 node --test .\tests\capture-scheduler.test.cjs
 node --test .\tests\capture-content.test.cjs
 node --test .\tests\reconciliation.test.cjs
+node --test .\tests\stream-session.test.cjs
+node --test .\tests\stream-session-storage.test.cjs
+node --test .\tests\stream-session-coordinator.test.cjs
+node --test .\tests\stream-session-client.test.cjs
+node --test .\tests\stream-session-controller.test.cjs
 ```
 
 These tests use fixtures and sample inventory. They do not require TikTok, Google Sheets,
@@ -236,6 +249,8 @@ items root narrowing is implemented:
 - Verified-stream registry behavior is tested, but no TikTok stream ID has been observed
   or validated. Runtime deduplication remains in memory for one page load and is not safe
   across multiple streams by itself.
+- A durable local tracker stream now exists, but capture remains console-only and is not
+  authorized to attach events to it until the next integration stage.
 - The confirmed payment-tag candidate rules are implemented, but the page-wide dashboard
   body remains a provisional boundary until the live checklist proves a narrower root.
 - Mutation relevance currently covers added nodes and character-data changes. The actual

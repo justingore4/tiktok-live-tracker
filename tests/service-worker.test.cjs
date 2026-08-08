@@ -13,6 +13,7 @@ function createWorkerHarness(options = {}) {
   const imports = [];
   const listeners = [];
   const dispatchCalls = [];
+  const streamDispatchCalls = [];
   const consoleErrors = [];
   let requestedStorageAccess = null;
   const storageArea = {
@@ -27,12 +28,15 @@ function createWorkerHarness(options = {}) {
     },
   };
   const stateStore = {};
+  const streamStateStore = {};
   const extensionId = "test-extension-id";
   const sidePanelUrl =
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
   let requestedPanelBehavior = null;
   let storeOptions = null;
   let coordinatorOptions = null;
+  let streamStoreOptions = null;
+  let streamCoordinatorOptions = null;
 
   class FakeReconciliationError extends Error {
     constructor(code, message) {
@@ -49,6 +53,27 @@ function createWorkerHarness(options = {}) {
   }
 
   class FakeCoordinatorError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamSessionError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamCoordinatorError extends Error {
     constructor(code, message) {
       super(message);
       this.code = code;
@@ -93,6 +118,51 @@ function createWorkerHarness(options = {}) {
       return coordinator;
     },
   };
+  const streamSession = {
+    StreamSessionError: FakeStreamSessionError,
+  };
+  const streamStorageModule = {
+    StreamSessionStorageError: FakeStreamStorageError,
+    createStreamSessionStateStore(receivedOptions) {
+      streamStoreOptions = receivedOptions;
+      return streamStateStore;
+    },
+  };
+  const streamCoordinator = {
+    async dispatch(command) {
+      streamDispatchCalls.push(command);
+
+      if (options.streamDispatchError === "known") {
+        throw new FakeStreamStorageError(
+          "STORAGE_WRITE_FAILED",
+          "Could not save stream.",
+        );
+      }
+
+      if (options.streamDispatchError === "unexpected") {
+        throw new Error("sensitive stream failure details");
+      }
+
+      return options.streamDispatchResult ?? {
+        state: { version: 1, activeSession: null },
+        result: null,
+      };
+    },
+  };
+  const streamCoordinatorModule = {
+    MESSAGE_CHANNEL: "tiktok-live-tracker.stream-session",
+    MESSAGE_VERSION: 1,
+    COMMAND_TYPES: {
+      GET_STREAM_SESSION: "get_stream_session",
+      START_STREAM: "start_stream",
+      END_STREAM: "end_stream",
+    },
+    StreamSessionCoordinatorError: FakeStreamCoordinatorError,
+    createStreamSessionCoordinator(receivedOptions) {
+      streamCoordinatorOptions = receivedOptions;
+      return streamCoordinator;
+    },
+  };
   const sandbox = {
     importScripts(...relativePaths) {
       imports.push(...relativePaths);
@@ -100,6 +170,14 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerReconciliation: reconciliation,
     TikTokLiveTrackerReconciliationStorage: storageModule,
     TikTokLiveTrackerReconciliationCoordinator: coordinatorModule,
+    TikTokLiveTrackerStreamSession: streamSession,
+    TikTokLiveTrackerStreamSessionStorage: streamStorageModule,
+    TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
+    crypto: {
+      randomUUID() {
+        return "11111111-1111-4111-8111-111111111111";
+      },
+    },
     chrome: {
       storage: { local: storageArea },
       runtime: {
@@ -146,6 +224,15 @@ function createWorkerHarness(options = {}) {
     };
   }
 
+  function createStreamMessage(command, overrides = {}) {
+    return {
+      channel: streamCoordinatorModule.MESSAGE_CHANNEL,
+      version: streamCoordinatorModule.MESSAGE_VERSION,
+      command,
+      ...overrides,
+    };
+  }
+
   function send(message, sender = createSender()) {
     let responseCount = 0;
     let resolveResponse;
@@ -168,20 +255,28 @@ function createWorkerHarness(options = {}) {
     consoleErrors,
     coordinator,
     coordinatorModule,
+    createStreamMessage,
     createMessage,
     createSender,
     dispatchCalls,
+    streamDispatchCalls,
     extensionId,
     getCoordinatorOptions: () => coordinatorOptions,
     getPanelBehavior: () => requestedPanelBehavior,
     getStorageAccess: () => requestedStorageAccess,
     getStoreOptions: () => storeOptions,
+    getStreamCoordinatorOptions: () => streamCoordinatorOptions,
+    getStreamStoreOptions: () => streamStoreOptions,
     imports,
     listeners,
     reconciliation,
     send,
     sidePanelUrl,
     stateStore,
+    streamCoordinator,
+    streamCoordinatorModule,
+    streamSession,
+    streamStateStore,
     storageArea,
   };
 }
@@ -193,6 +288,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/reconciliation.js",
     "shared/reconciliation-storage.js",
     "shared/reconciliation-coordinator.js",
+    "shared/stream-session.js",
+    "shared/stream-session-storage.js",
+    "shared/stream-session-coordinator.js",
   ]);
   assert.ok(
     harness.imports.every((relativePath) =>
@@ -213,6 +311,30 @@ test("loads state dependencies and wires the canonical coordinator", () => {
   assert.equal(
     harness.getCoordinatorOptions().stateStore,
     harness.stateStore,
+  );
+  assert.equal(
+    harness.getStreamStoreOptions().storageArea,
+    harness.storageArea,
+  );
+  assert.equal(
+    harness.getStreamStoreOptions().streamSession,
+    harness.streamSession,
+  );
+  assert.equal(
+    harness.getStreamCoordinatorOptions().streamSession,
+    harness.streamSession,
+  );
+  assert.equal(
+    harness.getStreamCoordinatorOptions().stateStore,
+    harness.streamStateStore,
+  );
+  assert.equal(
+    harness.getStreamCoordinatorOptions().createId(),
+    "local-stream:11111111-1111-4111-8111-111111111111",
+  );
+  assert.match(
+    harness.getStreamCoordinatorOptions().now(),
+    /^\d{4}-\d{2}-\d{2}T/,
   );
   assert.equal(harness.listeners.length, 1);
   assert.equal(harness.getPanelBehavior().openPanelOnActionClick, true);
@@ -235,6 +357,64 @@ test("keeps the async response channel open and returns plain success data", asy
   assert.deepEqual(await request.response, { ok: true, data: expectedData });
   assert.equal(request.getResponseCount(), 1);
   assert.deepEqual(harness.dispatchCalls, [command]);
+});
+
+test("routes active-stream commands through their separate trusted boundary", async () => {
+  const expectedData = {
+    state: { version: 1, activeSession: null },
+    result: null,
+  };
+  const harness = createWorkerHarness({ streamDispatchResult: expectedData });
+  const command = {
+    type: harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+  };
+  const request = harness.send(harness.createStreamMessage(command));
+
+  assert.equal(request.returnValue, true);
+  assert.deepEqual(await request.response, { ok: true, data: expectedData });
+  assert.deepEqual(harness.streamDispatchCalls, [command]);
+  assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("rejects stream-session commands from the dashboard content script", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+    harness.createSender({
+      url: "https://shop.tiktok.com/streamer/live/event/dashboard",
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message: "This extension context cannot issue stream-session commands.",
+    },
+  });
+  assert.equal(harness.streamDispatchCalls.length, 0);
+});
+
+test("serializes active-stream storage failures without exposing internals", async () => {
+  const harness = createWorkerHarness({ streamDispatchError: "known" });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+  const response = await request.response;
+
+  assert.deepEqual(response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not save stream.",
+    },
+  });
+  assert.equal("stack" in response.error, false);
+  assert.equal("cause" in response.error, false);
 });
 
 test("ignores unrelated runtime messages", async () => {

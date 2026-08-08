@@ -32,7 +32,7 @@
               aria-pressed="true"
               aria-describedby="mode-description"
             >
-              Saved session
+              Live session
             </button>
             <button
               id="offline-demo-mode"
@@ -46,9 +46,135 @@
           </div>
         </div>
         <p id="mode-description" class="mode-description">
-          Mappings and unpaid changes are saved locally and restored when this
-          panel reopens.
+          Start or resume a local tracker stream. Mappings and unpaid changes
+          are saved and restored when this panel reopens.
         </p>
+      </section>
+
+      <section
+        id="stream-session-panel"
+        class="stream-session-panel"
+        aria-labelledby="stream-session-title"
+        aria-busy="true"
+      >
+        <div class="stream-session-heading">
+          <div>
+            <p class="eyebrow">Local stream session</p>
+            <h2 id="stream-session-title">Tracker stream</h2>
+          </div>
+          <span
+            id="stream-session-badge"
+            class="stream-session-badge"
+            data-state="checking"
+          >
+            Checking
+          </span>
+        </div>
+
+        <div
+          id="stream-session-status"
+          class="stream-session-status"
+          role="status"
+          tabindex="-1"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span class="stream-session-status-dot" aria-hidden="true"></span>
+          <div>
+            <h3 id="stream-session-status-title">Checking saved stream...</h3>
+            <p id="stream-session-status-message">
+              Looking for an active tracker stream that can be resumed.
+            </p>
+          </div>
+        </div>
+
+        <p id="stream-session-safety-note" class="stream-session-safety-note">
+          These controls affect only this tracker's local session. They do not
+          start or end TikTok LIVE.
+        </p>
+
+        <div id="stream-session-actions" class="stream-session-actions" hidden>
+          <button
+            id="start-stream"
+            class="primary-action"
+            type="button"
+            aria-describedby="stream-session-safety-note"
+            hidden
+          >
+            Start stream
+          </button>
+          <button
+            id="resume-stream"
+            class="primary-action"
+            type="button"
+            aria-describedby="stream-session-safety-note"
+            hidden
+          >
+            Resume active stream
+          </button>
+          <button
+            id="end-stream"
+            class="danger-action"
+            type="button"
+            aria-describedby="stream-session-safety-note"
+            hidden
+          >
+            End stream
+          </button>
+        </div>
+
+        <div
+          id="stream-session-end-confirmation"
+          class="stream-session-end-confirmation"
+          role="group"
+          aria-labelledby="stream-session-end-title"
+          hidden
+        >
+          <h3 id="stream-session-end-title">End this tracker stream?</h3>
+          <p>
+            Resolve every waiting or item-needed variation first. History will
+            remain saved, but ended streams cannot be reopened in this prototype.
+            TikTok LIVE will keep running.
+          </p>
+          <div class="stream-session-confirm-actions">
+            <button
+              id="cancel-end-stream"
+              class="secondary-action"
+              type="button"
+            >
+              Keep stream active
+            </button>
+            <button
+              id="confirm-end-stream"
+              class="danger-action"
+              type="button"
+            >
+              End stream now
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="stream-session-error"
+          class="stream-session-error"
+          role="alert"
+          tabindex="-1"
+          hidden
+        >
+          <div>
+            <h3 id="stream-session-error-title">Tracker stream unavailable</h3>
+            <p id="stream-session-error-message">
+              The tracker could not check the saved stream. Nothing was changed.
+            </p>
+          </div>
+          <button
+            id="retry-stream-session"
+            class="secondary-action"
+            type="button"
+          >
+            Retry
+          </button>
+        </div>
       </section>
 
       <section
@@ -59,7 +185,7 @@
         aria-atomic="true"
       >
         <span class="session-message-dot" aria-hidden="true"></span>
-        <span id="saved-session-status-text">Restoring saved session...</span>
+        <span id="saved-session-status-text">Restoring live session data...</span>
       </section>
 
       <section
@@ -70,7 +196,7 @@
         hidden
       >
         <div>
-          <h2 id="saved-session-error-title">Saved session unavailable</h2>
+          <h2 id="saved-session-error-title">Live session data unavailable</h2>
           <p id="saved-session-error-message">
             Your saved data was not changed. Try connecting again.
           </p>
@@ -90,7 +216,7 @@
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="current-auction-label">
-            On screen now
+            Prototype variation - capture not connected
           </p>
           <div class="variation-picker">
             <h2 id="current-auction-title">Variation</h2>
@@ -105,10 +231,10 @@
             </span>
           </div>
           <button id="return-to-current" class="return-to-current" type="button" hidden>
-            Return to on-screen variation #203
+            Return to prototype variation #203
           </button>
         </div>
-        <span id="data-mode-badge" class="demo-badge">Saved session</span>
+        <span id="data-mode-badge" class="demo-badge">Live session</span>
       </section>
 
       <section
@@ -223,7 +349,7 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">Inventory</p>
-            <h2 id="inventory-title">Find the item on screen</h2>
+            <h2 id="inventory-title">Tag prototype variation #203</h2>
           </div>
           <p id="result-count" class="result-count" aria-live="polite"></p>
         </div>
@@ -297,7 +423,10 @@
     <script src="../shared/sale-parser.js"></script>
     <script src="../shared/reconciliation.js"></script>
     <script src="../shared/reconciliation-coordinator.js"></script>
+    <script src="../shared/stream-session-coordinator.js"></script>
     <script src="reconciliation-client.js"></script>
+    <script src="stream-session-client.js"></script>
+    <script src="stream-session-controller.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>

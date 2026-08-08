@@ -32,6 +32,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeReconciliationError extends Error {}
   class FakeStorageError extends Error {}
   class FakeCoordinatorError extends Error {}
+  class FakeStreamError extends Error {}
+  class FakeStreamStorageError extends Error {}
+  class FakeStreamCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -53,6 +56,31 @@ test("service worker opens the side panel from the toolbar action", () => {
       createReconciliationCoordinator() {
         return { dispatch: () => Promise.resolve({}) };
       },
+    },
+    TikTokLiveTrackerStreamSession: {
+      StreamSessionError: FakeStreamError,
+    },
+    TikTokLiveTrackerStreamSessionStorage: {
+      StreamSessionStorageError: FakeStreamStorageError,
+      createStreamSessionStateStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerStreamSessionCoordinator: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.stream-session",
+      MESSAGE_VERSION: 1,
+      COMMAND_TYPES: {
+        GET_STREAM_SESSION: "get_stream_session",
+        START_STREAM: "start_stream",
+        END_STREAM: "end_stream",
+      },
+      StreamSessionCoordinatorError: FakeStreamCoordinatorError,
+      createStreamSessionCoordinator() {
+        return { dispatch: () => Promise.resolve({}) };
+      },
+    },
+    crypto: {
+      randomUUID: () => "11111111-1111-4111-8111-111111111111",
     },
     chrome: {
       storage: {
@@ -98,7 +126,10 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/sale-parser.js",
     "../shared/reconciliation.js",
     "../shared/reconciliation-coordinator.js",
+    "../shared/stream-session-coordinator.js",
     "reconciliation-client.js",
+    "stream-session-client.js",
+    "stream-session-controller.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
@@ -133,6 +164,26 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     html,
     /id="saved-session-status"[\s\S]+role="status"[\s\S]+aria-live="polite"/,
   );
+  assert.match(
+    html,
+    /id="stream-session-panel"[\s\S]+aria-busy="true"/,
+  );
+  assert.match(
+    html,
+    /id="stream-session-status"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
+  );
+  assert.match(
+    html,
+    /id="stream-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
+  );
+  assert.match(html, /id="start-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="resume-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="end-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
+  assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
+  assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
+  assert.match(html, /Prototype variation - capture not connected/);
+  assert.match(html, /ended streams cannot be reopened in this prototype/i);
   assert.match(
     html,
     /id="saved-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
@@ -175,7 +226,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(html, />\s*Undo simulated payment\s*</);
   assert.match(html, /data-field="gross-profit"/);
-  assert.match(html, />Saved session</);
+  assert.match(html, />\s*Live session\s*</);
   assert.match(html, /Offline demo/);
   assert.match(html, /do not change TikTok/);
   assert.doesNotMatch(html, /id="change-mapping"/);
@@ -247,9 +298,25 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(panelSource, /persistentController\.markSelectedUnpaid/);
   assert.match(panelSource, /persistentController\.undoSelectedUnpaid/);
-  assert.match(panelSource, /persistentController\.start\(\)/);
+  assert.match(panelSource, /const mountedController = persistentController/);
+  assert.match(panelSource, /mountedController\.start\(\)/);
   assert.match(panelSource, /persistentController\.retry\(\)/);
-  assert.match(panelSource, /persistentController\.subscribe\(renderSavedSnapshot\)/);
+  assert.match(panelSource, /mountedController\.subscribe\(renderSavedSnapshot\)/);
+  assert.match(
+    panelSource,
+    /streamId: activeSession\.streamId/,
+  );
+  assert.match(
+    panelSource,
+    /streamSessionController\.subscribe\(renderStreamSnapshot\)/,
+  );
+  assert.match(panelSource, /streamSessionController\.startNewStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
+  assert.match(panelSource, /streamSessionController\.retry\(\)/);
+  assert.match(panelSource, /getUnresolvedLiveVariations\(\)/);
+  assert.match(panelSource, /Prototype current/);
+  assert.match(panelSource, /capture not connected/);
   assert.match(
     panelSource,
     /savedModeButton\.addEventListener\("click",[\s\S]+selectMode\("saved_session"\)/,
@@ -258,7 +325,17 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\("offline_demo"\)/,
   );
-  assert.match(panelSource, /trackerWorkspace\.toggleAttribute\("inert", busy\)/);
+  assert.match(
+    panelSource,
+    /trackerWorkspace\.toggleAttribute\("inert", shouldBeInert\)/,
+  );
+  assert.match(panelSource, /savedSnapshot\?\.phase === "error"/);
+  assert.match(panelSource, /savedSnapshot\?\.phase === "error" \|\| endConfirmationOpen/);
+  assert.match(panelSource, /persistentController === null \|\| savedSnapshot\?\.phase !== "ready"/);
+  assert.match(
+    panelSource,
+    /retryStreamSessionButton\.addEventListener\("click",[\s\S]+streamSessionStatus\.hidden = false;[\s\S]+streamSessionError\.hidden = true;[\s\S]+streamSessionStatus\.focus\(\)/,
+  );
   assert.match(panelSource, /savedSessionError\.focus\(\)/);
   assert.match(panelSource, /pendingSavedAction \|\| savedSnapshot\?\.busy/);
   assert.match(panelSource, /activeMode !== "offline_demo"/);

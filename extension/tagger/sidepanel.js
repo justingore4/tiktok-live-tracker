@@ -33,6 +33,12 @@
     globalThis.TikTokLiveTrackerReconciliationCoordinator;
   const reconciliationClientModule =
     globalThis.TikTokLiveTrackerReconciliationClient;
+  const streamSessionProtocol =
+    globalThis.TikTokLiveTrackerStreamSessionCoordinator;
+  const streamSessionClientModule =
+    globalThis.TikTokLiveTrackerStreamSessionClient;
+  const streamSessionControllerModule =
+    globalThis.TikTokLiveTrackerStreamSessionController;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
@@ -52,6 +58,38 @@
   );
   const retrySavedSessionButton = document.querySelector(
     "#retry-saved-session",
+  );
+  const streamSessionPanel = document.querySelector("#stream-session-panel");
+  const streamSessionBadge = document.querySelector("#stream-session-badge");
+  const streamSessionStatus = document.querySelector("#stream-session-status");
+  const streamSessionStatusTitle = document.querySelector(
+    "#stream-session-status-title",
+  );
+  const streamSessionStatusMessage = document.querySelector(
+    "#stream-session-status-message",
+  );
+  const streamSessionActions = document.querySelector(
+    "#stream-session-actions",
+  );
+  const startStreamButton = document.querySelector("#start-stream");
+  const resumeStreamButton = document.querySelector("#resume-stream");
+  const endStreamButton = document.querySelector("#end-stream");
+  const streamSessionEndConfirmation = document.querySelector(
+    "#stream-session-end-confirmation",
+  );
+  const cancelEndStreamButton = document.querySelector("#cancel-end-stream");
+  const confirmEndStreamButton = document.querySelector(
+    "#confirm-end-stream",
+  );
+  const streamSessionError = document.querySelector("#stream-session-error");
+  const streamSessionErrorTitle = document.querySelector(
+    "#stream-session-error-title",
+  );
+  const streamSessionErrorMessage = document.querySelector(
+    "#stream-session-error-message",
+  );
+  const retryStreamSessionButton = document.querySelector(
+    "#retry-stream-session",
   );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const dataModeBadge = document.querySelector("#data-mode-badge");
@@ -116,6 +154,9 @@
     !reconciliation ||
     !reconciliationProtocol ||
     !reconciliationClientModule ||
+    !streamSessionProtocol ||
+    !streamSessionClientModule ||
+    !streamSessionControllerModule ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule
   ) {
@@ -134,23 +175,34 @@
       runtime: chrome.runtime,
       protocol: reconciliationProtocol,
     });
-  const persistentController =
-    persistentTaggerControllerModule.createPersistentTaggerController({
-      client: persistentClient,
-      reconciliation,
-      mappingWorkflow,
-      inventory: viewModel.MOCK_INVENTORY,
-      streamId: DEMO_STREAM_ID,
-      currentVariationNumber: DEMO_CURRENT_VARIATION_NUMBER,
-      variationNumbers: DEMO_VARIATION_NUMBERS,
+  const streamSessionClient =
+    streamSessionClientModule.createStreamSessionClient({
+      runtime: chrome.runtime,
+      protocol: streamSessionProtocol,
+    });
+  const streamSessionController =
+    streamSessionControllerModule.createStreamSessionController({
+      client: streamSessionClient,
     });
   let activeMode = "saved_session";
   let demoSession = null;
-  let savedSnapshot = persistentController.getSnapshot();
+  let persistentController = null;
+  let unsubscribePersistentController = null;
+  let mountedStreamId = null;
+  let streamSnapshot = streamSessionController.getSnapshot();
+  let savedSnapshot = {
+    phase: "idle",
+    operation: null,
+    busy: false,
+    error: null,
+    view: null,
+  };
   let previousSavedPhase = null;
   let pendingSavedAction = null;
   let hasFocusedSavedError = false;
   let focusSavedWorkspaceAfterRetry = false;
+  let hasFocusedStreamError = false;
+  let endConfirmationOpen = false;
 
   function createDemoSession() {
     const nextSession = mappingWorkflow.createMappingSession({
@@ -180,9 +232,89 @@
       : savedSnapshot?.view ?? null;
   }
 
+  function createEmptySavedSnapshot() {
+    return {
+      phase: "idle",
+      operation: null,
+      busy: false,
+      error: null,
+      view: null,
+    };
+  }
+
+  function unmountPersistentController() {
+    unsubscribePersistentController?.();
+    unsubscribePersistentController = null;
+    persistentController = null;
+    mountedStreamId = null;
+    savedSnapshot = createEmptySavedSnapshot();
+    previousSavedPhase = null;
+    pendingSavedAction = null;
+    savedSessionStatus.hidden = true;
+    savedSessionError.hidden = true;
+    trackerWorkspace.hidden = true;
+    trackerWorkspace.toggleAttribute("inert", true);
+  }
+
+  function mountPersistentController(activeSession) {
+    if (mountedStreamId === activeSession.streamId && persistentController) {
+      return;
+    }
+
+    unmountPersistentController();
+    mountedStreamId = activeSession.streamId;
+    persistentController =
+      persistentTaggerControllerModule.createPersistentTaggerController({
+        client: persistentClient,
+        reconciliation,
+        mappingWorkflow,
+        inventory: viewModel.MOCK_INVENTORY,
+        streamId: activeSession.streamId,
+        currentVariationNumber: DEMO_CURRENT_VARIATION_NUMBER,
+        variationNumbers: DEMO_VARIATION_NUMBERS,
+      });
+    const mountedController = persistentController;
+
+    savedSnapshot = mountedController.getSnapshot();
+    unsubscribePersistentController =
+      mountedController.subscribe(renderSavedSnapshot);
+    Promise.resolve()
+      .then(() => mountedController.start())
+      .catch((error) => {
+        console.error(
+          "[TikTok Live Tracker] Unexpected live-session startup failure.",
+          error,
+        );
+      });
+  }
+
   function setWorkspaceBusy(busy) {
-    trackerWorkspace.setAttribute("aria-busy", String(busy));
-    trackerWorkspace.toggleAttribute("inert", busy);
+    const streamUnavailable =
+      activeMode === "saved_session" &&
+      (!streamSnapshot.resumed || streamSnapshot.activeSession === null);
+    const shouldBeBusy =
+      Boolean(busy) ||
+      (activeMode === "saved_session" && streamSnapshot.busy) ||
+      streamUnavailable;
+    const shouldBeInert =
+      shouldBeBusy ||
+      (activeMode === "saved_session" &&
+        (savedSnapshot?.phase === "error" || endConfirmationOpen));
+
+    trackerWorkspace.setAttribute("aria-busy", String(shouldBeBusy));
+    trackerWorkspace.toggleAttribute("inert", shouldBeInert);
+  }
+
+  function isSavedWorkspaceUnavailable() {
+    return (
+      persistentController === null || savedSnapshot?.phase !== "ready"
+    );
+  }
+
+  function getUnresolvedLiveVariations() {
+    return (savedSnapshot?.view?.variations ?? []).filter((variation) =>
+      ["pending", "unmapped_completed"].includes(variation.status),
+    );
   }
 
   function updateModeControls() {
@@ -191,19 +323,24 @@
     savedModeButton.setAttribute("aria-pressed", String(savedMode));
     demoModeButton.setAttribute("aria-pressed", String(!savedMode));
     demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
+    streamSessionPanel.hidden = !savedMode;
     modeDescription.textContent = savedMode
-      ? "Mappings and unpaid changes are saved locally and restored when this panel reopens."
-      : "Temporary simulator. Demo actions are not saved, sent to the service worker, or applied to TikTok.";
-    dataModeBadge.textContent = savedMode ? "Saved session" : "Demo data";
+      ? "Start or resume a local tracker stream. Mappings and unpaid changes are saved and restored when this panel reopens."
+      : `Temporary simulator. Demo actions are not saved or applied to TikTok.${streamSnapshot.activeSession ? " Your live tracker stream remains active in the background." : ""}`;
+    dataModeBadge.textContent = savedMode ? "Live session" : "Demo data";
     sessionFooterLabel.textContent = !savedMode
       ? "Offline demo - not saved"
+      : !streamSnapshot.activeSession
+        ? "No active tracker stream"
+        : !streamSnapshot.resumed
+          ? "Tracker stream ready to resume"
       : {
-          idle: "Restoring saved session",
-          loading: "Restoring saved session",
+          idle: "Restoring live session data",
+          loading: "Restoring live session data",
           saving: "Saving locally",
-          error: "Saved session needs attention",
+          error: "Live session data needs attention",
           ready: "Saved locally",
-        }[savedSnapshot?.phase] ?? "Saved session";
+        }[savedSnapshot?.phase] ?? "Live session";
   }
 
   function requireDemoSeedResult(result, action) {
@@ -330,7 +467,11 @@
   }
 
   function formatVariationOption(option) {
-    const context = option.current ? "On screen now" : "Previous";
+    const context = option.current
+      ? activeMode === "saved_session"
+        ? "Prototype current"
+        : "On screen now"
+      : "Previous";
     const item = option.item
       ? `${formatItemName(option)}, size ${option.size}`
       : "No item selected";
@@ -353,14 +494,21 @@
     variationSelector.replaceChildren(fragment);
     variationSelector.value = String(view.selectedVariationNumber);
     variationContext.textContent = view.isReviewingHistory
-      ? "Reviewing previous variation"
-      : "On screen now";
+      ? activeMode === "saved_session"
+        ? "Reviewing previous prototype variation"
+        : "Reviewing previous variation"
+      : activeMode === "saved_session"
+        ? "Prototype variation - capture not connected"
+        : "On screen now";
     returnToCurrentButton.hidden = !view.isReviewingHistory;
-    returnToCurrentButton.textContent =
-      `Return to on-screen variation #${view.currentVariationNumber}`;
+    returnToCurrentButton.textContent = activeMode === "saved_session"
+      ? `Return to prototype variation #${view.currentVariationNumber}`
+      : `Return to on-screen variation #${view.currentVariationNumber}`;
     inventoryTitle.textContent = view.isReviewingHistory
       ? `Review or correct variation #${view.selectedVariationNumber}`
-      : `Find the item for variation #${view.currentVariationNumber}`;
+      : activeMode === "saved_session"
+        ? `Tag prototype variation #${view.currentVariationNumber}`
+        : `Find the item for variation #${view.currentVariationNumber}`;
   }
 
   function renderInventory(view, focusSku = null) {
@@ -653,8 +801,8 @@
   function getSavedStatusText(snapshot) {
     if (snapshot.phase === "idle" || snapshot.phase === "loading") {
       return snapshot.operation === "initialize"
-        ? "Preparing saved session..."
-        : "Restoring saved session...";
+        ? "Preparing live session data..."
+        : "Restoring live session data...";
     }
 
     if (snapshot.phase === "saving") {
@@ -662,8 +810,151 @@
     }
 
     return snapshot.operation === "load" || snapshot.operation === "initialize"
-      ? "Saved session restored"
+      ? "Live session data restored"
       : "Saved locally";
+  }
+
+  function formatStreamStart(startedAt) {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(startedAt));
+    } catch (_error) {
+      return "an earlier time";
+    }
+  }
+
+  function renderStreamSnapshot(snapshot) {
+    streamSnapshot = snapshot;
+    updateModeControls();
+
+    if (activeMode !== "saved_session") {
+      return;
+    }
+
+    const failed = snapshot.phase === "error";
+    const busy = snapshot.busy === true;
+    const checking = snapshot.phase === "idle" || snapshot.phase === "loading";
+    const activeSession = snapshot.activeSession;
+    const resumeAvailable = activeSession !== null && !snapshot.resumed;
+    const active = activeSession !== null && snapshot.resumed;
+    const dataState = failed
+      ? "error"
+      : checking || busy
+        ? "checking"
+        : active
+          ? "active"
+          : resumeAvailable
+            ? "resume"
+            : "inactive";
+
+    streamSessionPanel.dataset.state = dataState;
+    streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
+    streamSessionBadge.dataset.state = dataState;
+    streamSessionStatus.hidden = failed;
+    streamSessionError.hidden = !failed;
+    streamSessionActions.hidden = failed || checking || busy;
+    startStreamButton.hidden = true;
+    resumeStreamButton.hidden = true;
+    endStreamButton.hidden = true;
+    startStreamButton.disabled = busy;
+    resumeStreamButton.disabled = busy;
+    endStreamButton.disabled = busy || isSavedWorkspaceUnavailable();
+    confirmEndStreamButton.disabled = busy || isSavedWorkspaceUnavailable();
+    cancelEndStreamButton.disabled = busy;
+
+    if (failed) {
+      endConfirmationOpen = false;
+      streamSessionEndConfirmation.hidden = true;
+      streamSessionBadge.textContent = "Needs attention";
+      streamSessionErrorTitle.textContent =
+        snapshot.error?.scope === "load"
+          ? "Tracker stream unavailable"
+          : "Stream change was not saved";
+      streamSessionErrorMessage.textContent = snapshot.error?.message
+        ? `${snapshot.error.message} Nothing was changed.`
+        : "The tracker stream could not be updated. Nothing was changed.";
+      retryStreamSessionButton.textContent =
+        snapshot.error?.scope === "load" ? "Retry loading" : "Retry change";
+
+      if (!hasFocusedStreamError) {
+        streamSessionError.focus();
+        hasFocusedStreamError = true;
+      }
+
+      if (!active) {
+        unmountPersistentController();
+      } else {
+        setWorkspaceBusy(false);
+      }
+
+      return;
+    }
+
+    hasFocusedStreamError = false;
+
+    if (checking || busy) {
+      streamSessionBadge.textContent =
+        checking
+          ? "Checking"
+          : snapshot.operation === "end"
+            ? "Ending"
+            : "Saving";
+      streamSessionStatusTitle.textContent =
+        snapshot.operation === "end"
+          ? "Ending tracker stream..."
+          : snapshot.operation === "start"
+            ? "Starting tracker stream..."
+            : "Checking saved stream...";
+      streamSessionStatusMessage.textContent =
+        checking
+          ? "Looking for an active tracker stream that can be resumed."
+          : "Waiting for the local session change to finish safely.";
+      if (!persistentController) {
+        savedSessionStatus.hidden = true;
+        savedSessionError.hidden = true;
+        trackerWorkspace.hidden = true;
+      }
+      setWorkspaceBusy(true);
+      return;
+    }
+
+    streamSessionActions.hidden = false;
+
+    if (activeSession === null) {
+      endConfirmationOpen = false;
+      streamSessionEndConfirmation.hidden = true;
+      streamSessionBadge.textContent = "Not started";
+      streamSessionStatusTitle.textContent = "No active tracker stream";
+      streamSessionStatusMessage.textContent =
+        "Start a local stream before tagging live variations.";
+      startStreamButton.hidden = false;
+      unmountPersistentController();
+      return;
+    }
+
+    const startedLabel = formatStreamStart(activeSession.startedAt);
+
+    if (resumeAvailable) {
+      streamSessionBadge.textContent = "Ready to resume";
+      streamSessionStatusTitle.textContent = "Active stream found";
+      streamSessionStatusMessage.textContent =
+        `Started ${startedLabel}. Resume it to continue tagging.`;
+      resumeStreamButton.hidden = false;
+      streamSessionEndConfirmation.hidden = true;
+      unmountPersistentController();
+      return;
+    }
+
+    streamSessionBadge.textContent = "Active";
+    streamSessionStatusTitle.textContent = "Tracker stream active";
+    streamSessionStatusMessage.textContent =
+      `Started ${startedLabel}. This local identity will survive panel and browser restarts.`;
+    endStreamButton.hidden = endConfirmationOpen;
+    streamSessionEndConfirmation.hidden = !endConfirmationOpen;
+    mountPersistentController(activeSession);
+    setWorkspaceBusy(savedSnapshot?.busy === true);
   }
 
   function announceSavedAction(action, view) {
@@ -691,10 +982,19 @@
     savedSnapshot = snapshot;
     updateModeControls();
 
-    if (activeMode !== "saved_session") {
+    if (
+      activeMode !== "saved_session" ||
+      !streamSnapshot.resumed ||
+      streamSnapshot.activeSession === null
+    ) {
       previousSavedPhase = snapshot.phase;
       return;
     }
+
+    endStreamButton.disabled =
+      isSavedWorkspaceUnavailable() || streamSnapshot.busy;
+    confirmEndStreamButton.disabled =
+      isSavedWorkspaceUnavailable() || streamSnapshot.busy;
 
     const failed = snapshot.phase === "error";
     const hasView = snapshot.view !== null;
@@ -709,7 +1009,7 @@
       setWorkspaceBusy(false);
       trackerWorkspace.toggleAttribute("inert", true);
       savedSessionErrorTitle.textContent = loadFailure
-        ? "Saved session unavailable"
+        ? "Live session data unavailable"
         : "Change was not saved";
       savedSessionErrorMessage.textContent = snapshot.error?.message
         ? `${snapshot.error.message} Your last saved data was not changed.`
@@ -755,10 +1055,10 @@
         focusSavedWorkspaceAfterRetry = false;
         variationSelector.focus();
         mappingAnnouncement.textContent =
-          "Saved session restored. You can continue with the selected variation.";
+          "Live session data restored. You can continue with the selected prototype variation.";
       } else if (priorPhase === "loading") {
         mappingAnnouncement.textContent =
-          "Saved session restored from local browser storage.";
+          "Live session data restored from local browser storage.";
       }
     }
 
@@ -766,6 +1066,16 @@
   }
 
   function runSavedMutation(action, pendingAction) {
+    if (
+      !persistentController ||
+      !streamSnapshot.resumed ||
+      streamSnapshot.activeSession === null
+    ) {
+      mappingAnnouncement.textContent =
+        "Start or resume a tracker stream before saving live changes.";
+      return;
+    }
+
     if (pendingSavedAction || savedSnapshot?.busy) {
       mappingAnnouncement.textContent =
         "Wait for the current saved-session change to finish.";
@@ -798,6 +1108,8 @@
     }
 
     activeMode = mode;
+    endConfirmationOpen = false;
+    streamSessionEndConfirmation.hidden = true;
     clearPriceError();
     searchInput.value = "";
     soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
@@ -817,13 +1129,26 @@
     }
 
     hasFocusedSavedError = false;
-    renderSavedSnapshot(persistentController.getSnapshot());
+    hasFocusedStreamError = false;
+    renderStreamSnapshot(streamSessionController.getSnapshot());
+    if (streamSnapshot.resumed && persistentController) {
+      renderSavedSnapshot(persistentController.getSnapshot());
+    }
 
-    if (savedSnapshot.phase === "ready" && savedSnapshot.view) {
+    if (
+      streamSnapshot.resumed &&
+      persistentController &&
+      savedSnapshot.phase === "ready" &&
+      savedSnapshot.view
+    ) {
       focusSavedWorkspaceAfterRetry = false;
       variationSelector.focus();
       mappingAnnouncement.textContent =
-        `Returned to saved ${describeSelectedVariation(savedSnapshot.view)}.`;
+        `Returned to live ${describeSelectedVariation(savedSnapshot.view)}.`;
+    } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
+      resumeStreamButton.focus();
+    } else if (!streamSnapshot.activeSession && streamSnapshot.phase === "ready") {
+      startStreamButton.focus();
     }
   }
 
@@ -840,7 +1165,7 @@
 
         mappingAnnouncement.textContent = view.isReviewingHistory
           ? `Reviewing previous ${describeSelectedVariation(view)}. Select an inventory card to tag or correct this variation.`
-          : `Returned to on-screen ${describeSelectedVariation(view)}.`;
+          : `Returned to prototype ${describeSelectedVariation(view)}. Capture is not connected yet.`;
       } catch (error) {
         mappingAnnouncement.textContent =
           error?.message ?? "That variation could not be selected.";
@@ -879,10 +1204,10 @@
 
         variationSelector.focus();
         mappingAnnouncement.textContent =
-          `Returned to on-screen ${describeSelectedVariation(snapshot.view)}.`;
+          `Returned to prototype ${describeSelectedVariation(snapshot.view)}. Capture is not connected yet.`;
       } catch (error) {
         mappingAnnouncement.textContent =
-          error?.message ?? "The on-screen variation could not be selected.";
+          error?.message ?? "The prototype variation could not be selected.";
       }
 
       return;
@@ -1093,7 +1418,133 @@
     selectMode("offline_demo");
   });
 
+  startStreamButton.addEventListener("click", () => {
+    focusSavedWorkspaceAfterRetry = true;
+    streamSessionStatus.focus();
+    Promise.resolve()
+      .then(() => streamSessionController.startNewStream())
+      .then((snapshot) => {
+        if (snapshot.phase === "ready" && snapshot.resumed) {
+          mappingAnnouncement.textContent =
+            "Local tracker stream started. Saved inventory is loading.";
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[TikTok Live Tracker] Unexpected stream-start failure.",
+          error,
+        );
+      });
+  });
+
+  resumeStreamButton.addEventListener("click", () => {
+    focusSavedWorkspaceAfterRetry = true;
+    streamSessionStatus.focus();
+
+    try {
+      streamSessionController.resumeActiveStream();
+      mappingAnnouncement.textContent =
+        "Active tracker stream resumed. Saved inventory is loading.";
+    } catch (error) {
+      mappingAnnouncement.textContent =
+        error?.message ?? "The tracker stream could not be resumed.";
+    }
+  });
+
+  endStreamButton.addEventListener("click", () => {
+    if (isSavedWorkspaceUnavailable() || streamSnapshot.busy) {
+      mappingAnnouncement.textContent =
+        "Restore or finish loading the saved workspace before ending the tracker stream.";
+      return;
+    }
+
+    const unresolvedVariations = getUnresolvedLiveVariations();
+
+    if (unresolvedVariations.length > 0) {
+      const variationList = unresolvedVariations
+        .map((variation) => `#${variation.variationNumber}`)
+        .join(", ");
+
+      streamSessionStatusMessage.textContent =
+        `Resolve waiting or item-needed ${variationList} before ending this tracker stream.`;
+      mappingAnnouncement.textContent =
+        `Tracker stream not ended. Resolve ${unresolvedVariations.length} unfinished variation${unresolvedVariations.length === 1 ? "" : "s"} first.`;
+      variationSelector.focus();
+      return;
+    }
+
+    endConfirmationOpen = true;
+    renderStreamSnapshot(streamSessionController.getSnapshot());
+    cancelEndStreamButton.focus();
+  });
+
+  cancelEndStreamButton.addEventListener("click", () => {
+    endConfirmationOpen = false;
+    renderStreamSnapshot(streamSessionController.getSnapshot());
+    endStreamButton.focus();
+  });
+
+  confirmEndStreamButton.addEventListener("click", () => {
+    if (isSavedWorkspaceUnavailable() || streamSnapshot.busy) {
+      mappingAnnouncement.textContent =
+        "Restore or finish loading the saved workspace before ending the tracker stream.";
+      return;
+    }
+
+    endConfirmationOpen = false;
+    streamSessionEndConfirmation.hidden = true;
+    streamSessionStatus.focus();
+    Promise.resolve()
+      .then(() => streamSessionController.endActiveStream())
+      .then((snapshot) => {
+        if (snapshot.phase === "ready" && snapshot.activeSession === null) {
+          startStreamButton.focus();
+          mappingAnnouncement.textContent =
+            "Tracker stream ended locally. TikTok LIVE was not changed, and saved order history was kept.";
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[TikTok Live Tracker] Unexpected stream-end failure.",
+          error,
+        );
+      });
+  });
+
+  retryStreamSessionButton.addEventListener("click", () => {
+    hasFocusedStreamError = false;
+    streamSessionStatus.hidden = false;
+    streamSessionError.hidden = true;
+    streamSessionStatusTitle.textContent = "Retrying tracker stream...";
+    streamSessionStatusMessage.textContent =
+      "Checking the saved local stream before allowing more changes.";
+    streamSessionStatus.focus();
+    Promise.resolve()
+      .then(() => streamSessionController.retry())
+      .then((snapshot) => {
+        if (snapshot.phase !== "ready") {
+          return;
+        }
+
+        if (snapshot.activeSession === null) {
+          startStreamButton.focus();
+        } else if (!snapshot.resumed) {
+          resumeStreamButton.focus();
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[TikTok Live Tracker] Unexpected stream-session retry failure.",
+          error,
+        );
+      });
+  });
+
   retrySavedSessionButton.addEventListener("click", () => {
+    if (!persistentController) {
+      return;
+    }
+
     hasFocusedSavedError = false;
     focusSavedWorkspaceAfterRetry =
       savedSnapshot.error?.scope === "load" || savedSnapshot.view === null;
@@ -1105,10 +1556,10 @@
     });
   });
 
-  persistentController.subscribe(renderSavedSnapshot);
-  Promise.resolve().then(() => persistentController.start()).catch((error) => {
+  streamSessionController.subscribe(renderStreamSnapshot);
+  Promise.resolve().then(() => streamSessionController.start()).catch((error) => {
     console.error(
-      "[TikTok Live Tracker] Unexpected saved-session startup failure.",
+      "[TikTok Live Tracker] Unexpected stream-session startup failure.",
       error,
     );
   });
