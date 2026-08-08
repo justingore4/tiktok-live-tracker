@@ -85,6 +85,7 @@ function createWorkerHarness(options = {}) {
     MESSAGE_VERSION: 1,
     COMMAND_TYPES: {
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
+      UNMAP_VARIATION: "unmap_variation",
     },
     ReconciliationCoordinatorError: FakeCoordinatorError,
     createReconciliationCoordinator(receivedOptions) {
@@ -326,6 +327,22 @@ test("keeps captured payment commands disconnected from the side panel", async (
     },
   });
   assert.equal(harness.dispatchCalls.length, 0);
+});
+
+test("forwards an employee unmap command without changing it", async () => {
+  const harness = createWorkerHarness();
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.UNMAP_VARIATION,
+    streamId: "stream-1",
+    variationNumber: 203,
+  };
+  const request = harness.send(harness.createMessage(command));
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { state: null, result: null },
+  });
+  assert.deepEqual(harness.dispatchCalls, [command]);
 });
 
 test("serializes known failures without exposing Error internals", async () => {

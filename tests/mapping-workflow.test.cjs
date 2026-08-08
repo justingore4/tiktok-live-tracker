@@ -410,16 +410,123 @@ test("maps a payment-complete variation that arrived before employee tagging", (
   assert.deepEqual(session.getStateSnapshot(), stateBeforeRejectedUndo);
 });
 
-test("reselecting the same entry is idempotent", () => {
+test("selecting the pending entry again unmaps it and releases its reservation", () => {
   const session = createSession();
 
   session.selectSku("STUSSY-TEE-BLACK-L");
-  const stateBefore = session.getStateSnapshot();
   const result = session.selectSku("STUSSY-TEE-BLACK-L");
+  const inventory = inventoryEntry(result.view, "STUSSY-TEE-BLACK-L");
 
   assert.equal(result.ok, true);
-  assert.equal(result.action, "unchanged");
-  assert.deepEqual(session.getStateSnapshot(), stateBefore);
+  assert.equal(result.action, "unmapped");
+  assert.equal(result.previousStatus, "pending");
+  assert.equal(result.unmappedSku, "STUSSY-TEE-BLACK-L");
+  assert.equal(result.mapping, null);
+  assert.equal(result.view.auction.status, "unmapped");
+  assert.equal(result.view.auction.sku, null);
+  assert.equal(inventory.selected, false);
+  assert.equal(inventory.reservedQuantity, 0);
+  assert.equal(inventory.availableToTagQuantity, 5);
+});
+
+test("unmapping a completed demo sale keeps payment truth and its undo checkpoint", () => {
+  const session = createSession();
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.completePayment(4800);
+  const unmapped = session.selectSku("STUSSY-TEE-BLACK-L");
+  const inventory = inventoryEntry(unmapped.view, "STUSSY-TEE-BLACK-L");
+
+  assert.equal(unmapped.action, "unmapped");
+  assert.equal(unmapped.previousStatus, "committed");
+  assert.equal(unmapped.mapping, null);
+  assert.equal(unmapped.view.auction.status, "unmapped_completed");
+  assert.equal(unmapped.view.auction.paymentStatus, "payment_complete");
+  assert.equal(unmapped.view.auction.soldPriceCents, 4800);
+  assert.equal(unmapped.view.totals.completedPaymentCount, 1);
+  assert.equal(unmapped.view.totals.completedGmvCents, 4800);
+  assert.equal(unmapped.view.totals.committedSalesCount, 0);
+  assert.equal(unmapped.view.totals.committedRevenueCents, 0);
+  assert.equal(unmapped.view.totals.profitCents, 0);
+  assert.equal(inventory.soldQuantity, 0);
+  assert.equal(inventory.remainingQuantity, 5);
+  assert.equal(unmapped.view.controls.canUndoSimulatedPayment, true);
+  assert.ok(
+    unmapped.view.warnings.some(
+      (warning) => warning.code === "unmapped_completed_sale",
+    ),
+  );
+
+  const undone = session.undoSimulatedPayment();
+
+  assert.equal(undone.ok, true);
+  assert.equal(undone.mapping, null);
+  assert.equal(undone.view.auction.status, "unmapped");
+  assert.equal(undone.view.auction.paymentStatus, "unknown");
+  assert.equal(undone.view.totals.completedGmvCents, 0);
+  assert.equal(undone.view.controls.canUndoSimulatedPayment, false);
+});
+
+test("unmapping an unpaid variation keeps the unpaid decision until undo", () => {
+  const session = createSession();
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.simulatePaymentBufferExpired();
+  session.markUnpaid();
+  const unmapped = session.selectSku("STUSSY-TEE-BLACK-L");
+
+  assert.equal(unmapped.action, "unmapped");
+  assert.equal(unmapped.previousStatus, "marked_unpaid");
+  assert.equal(unmapped.mapping, null);
+  assert.equal(unmapped.view.auction.status, "marked_unpaid");
+  assert.equal(unmapped.view.auction.mappingStatus, "marked_unpaid");
+  assert.equal(unmapped.view.controls.canCompletePayment, false);
+  assert.equal(unmapped.view.controls.canUndoUnpaid, true);
+  assert.equal(
+    inventoryEntry(unmapped.view, "STUSSY-TEE-BLACK-L").reservedQuantity,
+    0,
+  );
+
+  const restored = session.undoMarkUnpaid();
+
+  assert.equal(restored.ok, true);
+  assert.equal(restored.mapping, null);
+  assert.equal(restored.view.auction.status, "unmapped");
+  assert.equal(restored.view.controls.canUndoUnpaid, false);
+});
+
+test("mapping an unselected unpaid variation keeps its unpaid status", () => {
+  const session = createSession();
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.simulatePaymentBufferExpired();
+  session.markUnpaid();
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  const remapped = session.selectSku("NIKE-HOODIE-GREY-XL");
+
+  assert.equal(remapped.ok, true);
+  assert.equal(remapped.action, "unpaid_mapping_corrected");
+  assert.equal(remapped.mapping.sku, "NIKE-HOODIE-GREY-XL");
+  assert.equal(remapped.mapping.status, "marked_unpaid");
+  assert.equal(remapped.view.controls.canCompletePayment, true);
+  assert.equal(remapped.view.controls.canUndoUnpaid, true);
+});
+
+test("unmapping a previous variation leaves the on-screen mapping intact", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  const currentBefore = session.getCurrentMapping();
+  session.selectVariation(202);
+  session.selectSku("NIKE-HOODIE-GREY-XL");
+  const unmapped = session.selectSku("NIKE-HOODIE-GREY-XL");
+
+  assert.equal(unmapped.action, "unmapped");
+  assert.equal(unmapped.view.selectedVariationNumber, 202);
+  assert.equal(unmapped.view.mapping, null);
+  assert.equal(unmapped.view.auction.status, "unmapped");
+  assert.equal(session.getCurrentMapping().sku, currentBefore.sku);
+  assert.equal(session.getCurrentMapping().variationNumber, 203);
 });
 
 test("selecting another entry corrects the same variation mapping", () => {
@@ -547,7 +654,15 @@ test("prevents two sessions from reserving the same final unit", () => {
     }),
     null,
   );
-  assert.equal(firstSession.selectSku("NIKE-HOODIE-GREY-L").action, "unchanged");
+  const released = firstSession.selectSku("NIKE-HOODIE-GREY-L");
+
+  assert.equal(released.action, "unmapped");
+  assert.equal(
+    inventoryEntry(released.view, "NIKE-HOODIE-GREY-L")
+      .availableToTagQuantity,
+    1,
+  );
+  assert.equal(secondSession.selectSku("NIKE-HOODIE-GREY-L").ok, true);
 });
 
 test("completes payment once and derives profit and inventory from the engine", () => {

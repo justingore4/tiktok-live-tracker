@@ -20,6 +20,7 @@
       "mapVariation",
       "markUnpaid",
       "recordPaymentComplete",
+      "unmapVariation",
       "undoMarkUnpaid",
     ];
     const STATUS_LABELS = Object.freeze({
@@ -332,7 +333,9 @@
           },
           controls: {
             canCompletePayment:
-              offlineSimulationEnabled && (isPending || isMarkedUnpaid),
+              offlineSimulationEnabled &&
+              auction?.sku !== null &&
+              (isPending || isMarkedUnpaid),
             canSimulateBufferExpiry:
               offlineSimulationEnabled &&
               isPending &&
@@ -341,7 +344,7 @@
             canUndoSimulatedPayment:
               offlineSimulationEnabled &&
               simulatedPaymentCheckpoint !== null &&
-              auction?.status === "committed",
+              auction?.paymentStatus === "payment_complete",
             canUndoUnpaid: isMarkedUnpaid,
           },
         };
@@ -408,6 +411,24 @@
 
         const previousAuction = reconciliation.getAuction(state, auctionKey());
         const sameSku = previousAuction?.sku === sku;
+        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
+
+        if (sameSku) {
+          reconciliation.unmapVariation(state, auctionKey());
+
+          if (simulatedPaymentCheckpoint) {
+            reconciliation.unmapVariation(
+              simulatedPaymentCheckpoint.state,
+              auctionKey(),
+            );
+          }
+
+          return createResult(true, "unmapped", {
+            previousStatus: previousAuction.status,
+            unmappedSku: sku,
+          });
+        }
+
         const historicalCorrection =
           previousAuction?.paymentStatus === "payment_complete" ||
           previousAuction?.mappingStatus === "marked_unpaid";
@@ -433,9 +454,7 @@
 
         reconciliation.mapVariation(state, auctionKey({ sku }));
 
-        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
-
-        if (simulatedPaymentCheckpoint && !sameSku) {
+        if (simulatedPaymentCheckpoint) {
           reconciliation.mapVariation(
             simulatedPaymentCheckpoint.state,
             auctionKey({ sku }),
@@ -444,18 +463,16 @@
 
         let action = "mapped";
 
-        if (sameSku) {
-          action = "unchanged";
-        } else if (
+        if (
           previousAuction?.paymentStatus === "payment_complete" &&
           !previousAuction.sku
         ) {
           action = "completed_sale_mapped";
+        } else if (previousAuction?.mappingStatus === "marked_unpaid") {
+          action = "unpaid_mapping_corrected";
         } else if (previousAuction?.sku) {
           if (previousAuction.paymentStatus === "payment_complete") {
             action = "committed_mapping_corrected";
-          } else if (previousAuction.mappingStatus === "marked_unpaid") {
-            action = "unpaid_mapping_corrected";
           } else {
             action = "remapped";
           }
@@ -526,7 +543,7 @@
         if (
           !offlineSimulationEnabled ||
           !simulatedPaymentCheckpoint ||
-          auction?.status !== "committed"
+          auction?.paymentStatus !== "payment_complete"
         ) {
           return createRejectedResult(
             "SIMULATED_PAYMENT_NOT_UNDOABLE",

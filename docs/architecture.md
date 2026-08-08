@@ -97,6 +97,10 @@ Consequences:
 5. Canonical TikTok payment state is monotonic: `unknown → payment_complete`. There is no
    canonical transition back to unknown or unpaid. A future refund or cancellation must
    be represented as a separate authoritative event.
+6. Clicking an already-selected inventory item removes only the mapping. A pending
+   reservation is released; a completed auction keeps its final price and completed GMV
+   but becomes `unmapped_completed` until it is tagged again. An existing unpaid decision
+   is preserved and can still be undone.
 
 ### Permanent payment failure and re-auction
 
@@ -135,6 +139,8 @@ Implemented behavior includes:
 - Ignoring an identical repeated payment event.
 - Retaining the first completed price and warning about a later conflicting price.
 - Allowing a mapping to be corrected before or after a sale commits.
+- Allowing a mapping to be removed without erasing the variation or its authoritative
+  payment data.
 - Replacing the committed cost snapshot when a committed sale is corrected to a
   different SKU.
 - Leaving remaining inventory and profit unchanged for pending and marked-unpaid records.
@@ -195,11 +201,13 @@ Payment complete
 
 ### Current capture probe — implemented
 
-The extension uses an isolated content script with a debounced `MutationObserver` and a
-pure text parser. It:
+The extension uses an isolated content script with a bounded, coalesced
+`MutationObserver` scheduler and a pure text parser. It:
 
 1. scans rendered payment-tag candidates when the page loads;
-2. watches page text and child-node changes;
+2. watches page text and child-node changes, scanning 150 ms after a quiet moment while a
+   non-resetting 1-second maximum wait prevents constant dashboard updates from starving
+   capture;
 3. finds the smallest ancestor containing exactly one variation and one final price;
 4. emits only rows containing the exact text `Payment complete`;
 5. logs normalized variation, price-in-cents, and payment status;
@@ -207,6 +215,11 @@ pure text parser. It:
 
 It does not click TikTok controls, modify TikTok data, persist a sale, update inventory,
 or contact Google Sheets.
+
+The scheduler clears each batch before scanning, coalesces quiet and maximum-wait timers
+into one run, and remains usable after a scan error. Browser suspension can still delay
+JavaScript timers. The page-wide observer and selector remain provisional until live
+validation identifies the stable Sold items container.
 
 ### Target capture events
 
@@ -262,7 +275,8 @@ Shared tagger behavior includes:
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Engine-derived available, pending-reservation, remaining, and sold-out states.
-- One-click mapping and correction of the selected current or previous variation.
+- One-click mapping and correction of the selected current or previous variation;
+  clicking the selected inventory card again removes that mapping.
 - **Waiting for payment**, **Payment complete**, and **Marked unpaid** states.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
@@ -274,6 +288,8 @@ Shared tagger behavior includes:
   removes that simulated revenue/profit deduction, and returns focus to item selection.
 - **Mark unpaid after buffer** and **Undo unpaid** behavior that leaves remaining inventory
   and profit unchanged; marking unpaid releases the reservation and undo restores it.
+- Unmapping that releases pending reservations, preserves an unpaid decision, and returns
+  a completed sale to the item-needed exception without changing its payment or GMV.
 - Mapping correction after completion, with inventory and profit recalculated by the
   reconciliation engine.
 - An inventory warning when a truthful historical correction produces negative stock.
@@ -335,8 +351,8 @@ the sole canonical-state command owner. Its coordinator:
 
 - lazily loads saved state once per worker lifetime;
 - represents a missing key as explicitly uninitialized rather than inventing inventory;
-- accepts one-time nonempty inventory initialization and explicit mapping/unpaid
-  commands;
+- accepts one-time nonempty inventory initialization and explicit mapping, unmapping,
+  and unpaid commands;
 - serializes reads and mutations through one FIFO Promise queue;
 - applies every mutation to a detached working copy;
 - waits for that copy to save successfully before publishing it in memory; and
@@ -361,11 +377,11 @@ it requests canonical state and initializes inventory only when the worker expli
 reports that the storage key is absent. Malformed, corrupt, future-version, and failed
 reads never trigger initialization or replacement.
 
-Mapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the selected
-`(streamId, variationNumber)`. The UI keeps its last good view while a command is saving,
-publishes only the worker's successfully persisted response, and offers retry after safe
-errors. Reopening the panel rebuilds its view from the durable snapshot. The tagger never
-calls `chrome.storage` directly.
+Mapping, unmapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the
+selected `(streamId, variationNumber)`. The UI keeps its last good view while a command
+is saving, publishes only the worker's successfully persisted response, and offers retry
+after safe errors. Reopening the panel rebuilds its view from the durable snapshot. The
+tagger never calls `chrome.storage` directly.
 
 The runtime client deliberately exposes no payment-complete command. Offline-demo actions
 send no runtime messages, and their simulations remain detached from canonical state.
@@ -466,7 +482,8 @@ Browser support beyond Chrome is a later decision.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
-5. Capture hardening and live-stream selector/session validation.
+5. **In progress:** bounded capture scheduling completed; SPA recovery, stream identity,
+   and live-stream selector/session validation remain.
 6. Capture-to-engine-to-tagger integration.
 7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.

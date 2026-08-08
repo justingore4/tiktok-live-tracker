@@ -27,13 +27,19 @@ The extension content script:
 
 1. loads only on the confirmed TikTok dashboard route;
 2. performs an initial scan of rendered payment-tag candidates;
-3. watches text and child-node changes with a debounced `MutationObserver`;
+3. watches text and child-node changes with a bounded, coalesced
+   `MutationObserver` scheduler;
 4. validates candidate rows with the pure shared parser;
 5. logs a normalized event only when variation number, final price, and the exact text
    `Payment complete` are present;
 6. ignores an identical event already seen during the current page load; and
 7. warns instead of replacing the first price if the same variation later appears with
    a different completed price.
+
+The scheduler waits 150 ms for a quiet moment so a short burst produces one scan. A
+non-resetting 1-second maximum wait also forces a scan while chat, viewer counts, or other
+dashboard elements keep changing continuously. Either timer closes the same batch, so it
+cannot double-scan. The initial scan still runs immediately after observation begins.
 
 It does not modify the TikTok page, click TikTok controls, decrement inventory, persist
 sales, connect to the reconciliation engine, or contact Google Sheets.
@@ -71,6 +77,8 @@ Run one area by itself:
 
 ```powershell
 node --test .\tests\sale-parser.test.cjs
+node --test .\tests\capture-scheduler.test.cjs
+node --test .\tests\capture-content.test.cjs
 node --test .\tests\reconciliation.test.cjs
 ```
 
@@ -159,3 +167,5 @@ The next real stream must verify:
   is not safe across multiple streams by itself.
 - The page-wide observer and payment-tag candidate selector are provisional until the
   live checklist is complete.
+- The bounded scheduler prevents ordinary mutation traffic from starving capture, but
+  browsers may still delay timers when a tab or process is suspended.

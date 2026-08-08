@@ -16,6 +16,7 @@
       ],
       "js": [
         "shared/sale-parser.js",
+        "capture/capture-scheduler.js",
         "capture/content.js"
       ],
       "run_at": "document_idle",

@@ -11,6 +11,7 @@ const {
   mapVariation,
   markUnpaid,
   recordPaymentComplete,
+  unmapVariation,
   undoMarkUnpaid,
 } = require("../extension/shared/reconciliation.js");
 
@@ -174,6 +175,65 @@ test("pending remapping releases one reservation and creates another", () => {
   assert.equal(inventoryItem(summary, "BLACK-TEE-M").availableToTagQuantity, 2);
   assert.equal(inventoryItem(summary, "BLACK-TEE-L").reservedQuantity, 1);
   assert.equal(inventoryItem(summary, "BLACK-TEE-L").availableToTagQuantity, 0);
+});
+
+test("unmapping a pending variation releases its reservation and is idempotent", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(3, { sku: "BLACK-TEE-M" }));
+  const unmapped = unmapVariation(state, auctionInput(3));
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(unmapped.status, "unmapped");
+  assert.equal(unmapped.mappingStatus, "unmapped");
+  assert.equal(unmapped.sku, null);
+  assert.equal(unmapped.committedUnitCostCents, null);
+  assert.equal(summary.totals.pendingMappedCount, 0);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-M").reservedQuantity, 0);
+  assert.equal(
+    inventoryItem(summary, "BLACK-TEE-M").availableToTagQuantity,
+    2,
+  );
+
+  const stateAfterFirstUnmap = JSON.parse(JSON.stringify(state));
+  const repeated = unmapVariation(state, auctionInput(3));
+
+  assert.equal(repeated.status, "unmapped");
+  assert.deepEqual(state, stateAfterFirstUnmap);
+});
+
+test("unmapping a completed payment preserves GMV but removes item attribution", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(4, { sku: "BLACK-TEE-M" }));
+  recordPaymentComplete(
+    state,
+    auctionInput(4, { soldPriceCents: 4800 }),
+  );
+  const unmapped = unmapVariation(state, auctionInput(4));
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(unmapped.status, "unmapped_completed");
+  assert.equal(unmapped.paymentStatus, "payment_complete");
+  assert.equal(unmapped.soldPriceCents, 4800);
+  assert.equal(unmapped.sku, null);
+  assert.equal(unmapped.committedUnitCostCents, null);
+  assert.equal(unmapped.profitCents, null);
+  assert.equal(summary.totals.completedPaymentCount, 1);
+  assert.equal(summary.totals.completedGmvCents, 4800);
+  assert.equal(summary.totals.committedSalesCount, 0);
+  assert.equal(summary.totals.committedRevenueCents, 0);
+  assert.equal(summary.totals.costOfGoodsCents, 0);
+  assert.equal(summary.totals.profitCents, 0);
+  assert.equal(summary.totals.unmappedCompletedCount, 1);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-M").soldQuantity, 0);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-M").remainingQuantity, 2);
+  assert.deepEqual(summary.warnings, [
+    {
+      code: "unmapped_completed_sale",
+      eventKey: `${STREAM_ONE}:4`,
+    },
+  ]);
 });
 
 test("pending reservations aggregate across streams with repeated variation numbers", () => {
@@ -391,6 +451,30 @@ test("marking a mapped variation unpaid never changes inventory or profit", () =
   );
 });
 
+test("unmapping preserves an unpaid decision across storage hydration", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(21, { sku: "BLACK-TEE-M" }));
+  markUnpaid(state, auctionInput(21));
+  const unmapped = unmapVariation(state, auctionInput(21));
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(unmapped.status, "marked_unpaid");
+  assert.equal(unmapped.mappingStatus, "marked_unpaid");
+  assert.equal(unmapped.sku, null);
+  assert.equal(summary.totals.markedUnpaidCount, 1);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-M").reservedQuantity, 0);
+
+  const restoredState = hydrateReconciliationState(
+    JSON.parse(JSON.stringify(state)),
+  );
+  const restoredAuction = getAuction(restoredState, auctionInput(21));
+
+  assert.equal(restoredAuction.status, "marked_unpaid");
+  assert.equal(restoredAuction.sku, null);
+  assert.equal(undoMarkUnpaid(restoredState, auctionInput(21)).status, "unmapped");
+});
+
 test("a re-auction under a new variation deducts stock only when it sells", () => {
   const state = createState();
 
@@ -427,6 +511,64 @@ test("TikTok payment completion wins after a local unpaid mark and raises a conf
   assert.equal(summary.totals.committedSalesCount, 1);
   assert.equal(summary.totals.conflictCount, 1);
   assert.equal(inventoryItem(summary, "BLACK-TEE-L").remainingQuantity, 0);
+});
+
+test("unmapping a late completed payment preserves its unpaid conflict", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(42, { sku: "BLACK-TEE-L" }));
+  markUnpaid(state, auctionInput(42));
+  recordPaymentComplete(
+    state,
+    auctionInput(42, { soldPriceCents: 3500 }),
+  );
+  const unmapped = unmapVariation(state, auctionInput(42));
+
+  assert.equal(unmapped.status, "unmapped_completed");
+  assert.equal(unmapped.mappingStatus, "marked_unpaid");
+  assert.equal(unmapped.sku, null);
+  assert.equal(unmapped.soldPriceCents, 3500);
+  assert.equal(unmapped.committedUnitCostCents, null);
+  assert.deepEqual(unmapped.conflicts, [
+    { code: "payment_completed_after_marked_unpaid" },
+  ]);
+
+  const restoredState = hydrateReconciliationState(
+    JSON.parse(JSON.stringify(state)),
+  );
+  const restored = getAuction(restoredState, auctionInput(42));
+  const summary = calculateSummary(restoredState, { streamId: STREAM_ONE });
+
+  assert.deepEqual(restored.conflicts, unmapped.conflicts);
+  assert.equal(summary.totals.completedPaymentCount, 1);
+  assert.equal(summary.totals.completedGmvCents, 3500);
+  assert.equal(summary.totals.committedSalesCount, 0);
+  assert.equal(summary.totals.conflictCount, 1);
+});
+
+test("a late payment remains authoritative after an unpaid item was unmapped", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(43, { sku: "BLACK-TEE-L" }));
+  markUnpaid(state, auctionInput(43));
+  unmapVariation(state, auctionInput(43));
+  const completed = recordPaymentComplete(
+    state,
+    auctionInput(43, { soldPriceCents: 3500 }),
+  );
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(completed.status, "unmapped_completed");
+  assert.equal(completed.mappingStatus, "marked_unpaid");
+  assert.equal(completed.sku, null);
+  assert.equal(completed.soldPriceCents, 3500);
+  assert.deepEqual(completed.conflicts, [
+    { code: "payment_completed_after_marked_unpaid" },
+  ]);
+  assert.equal(summary.totals.completedPaymentCount, 1);
+  assert.equal(summary.totals.completedGmvCents, 3500);
+  assert.equal(summary.totals.committedSalesCount, 0);
+  assert.equal(summary.totals.conflictCount, 1);
 });
 
 test("cannot locally mark a completed TikTok payment as unpaid", () => {
@@ -483,6 +625,16 @@ test("rejects an unknown SKU without creating a partial auction", () => {
   );
 
   assert.equal(getAuction(state, auctionInput(60)), null);
+  assert.equal(state.streams.length, 0);
+});
+
+test("rejects unmapping an unknown variation without creating state", () => {
+  const state = createState();
+
+  assertErrorCode(
+    () => unmapVariation(state, auctionInput(61)),
+    "UNKNOWN_VARIATION",
+  );
   assert.equal(state.streams.length, 0);
 });
 

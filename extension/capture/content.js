@@ -2,15 +2,22 @@
   "use strict";
 
   const LOG_PREFIX = "[TikTok Live Tracker]";
-  const SCAN_DELAY_MS = 150;
+  const QUIET_SCAN_DELAY_MS = 150;
+  const MAX_SCAN_WAIT_MS = 1000;
   const parser = globalThis.TikTokLiveTrackerSaleParser;
+  const schedulerModule = globalThis.TikTokLiveTrackerCaptureScheduler;
   const emittedSales = new Map();
 
   let observer;
-  let scanTimer;
+  let scheduler;
 
   if (!parser) {
     console.error(`${LOG_PREFIX} Sale parser failed to load.`);
+    return;
+  }
+
+  if (!schedulerModule?.createCaptureScheduler) {
+    console.error(`${LOG_PREFIX} Capture scheduler failed to load.`);
     return;
   }
 
@@ -92,24 +99,30 @@
     });
   }
 
-  function scheduleScan() {
-    window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(scanSoldItems, SCAN_DELAY_MS);
-  }
-
   function start() {
     if (!document.body) {
       return;
     }
 
-    scanSoldItems();
+    scheduler = schedulerModule.createCaptureScheduler({
+      scan: scanSoldItems,
+      setTimeoutFn: window.setTimeout.bind(window),
+      clearTimeoutFn: window.clearTimeout.bind(window),
+      onError(error) {
+        console.error(`${LOG_PREFIX} Capture scan failed.`, error);
+      },
+      quietDelayMs: QUIET_SCAN_DELAY_MS,
+      maxWaitMs: MAX_SCAN_WAIT_MS,
+    });
 
-    observer = new MutationObserver(scheduleScan);
+    observer = new MutationObserver(() => scheduler.request());
     observer.observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true,
     });
+
+    scheduler.runNow();
 
     console.info(
       `${LOG_PREFIX} Capture probe active on ${location.pathname}.`,
