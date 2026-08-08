@@ -38,8 +38,8 @@
   }
 
   if (
-    !candidateLocator?.locateCompletedSales ||
     !candidateLocator?.locateObservedVariations ||
+    !candidateLocator?.locatePaymentStatuses ||
     !candidateLocator?.locateUniqueVisibleSoldItemsRoot
   ) {
     console.error(`${LOG_PREFIX} Sale candidate locator failed to load.`);
@@ -154,6 +154,67 @@
     return `${sale.variationNumber}:${sale.soldPriceCents}`;
   }
 
+  function isCompletedStatus(status) {
+    return status.observedPaymentStatus === "payment_complete";
+  }
+
+  function queueLatestPaymentStatus(session, status) {
+    const variationNumber = status.variationNumber;
+
+    if (
+      !isCompletedStatus(status) &&
+      session.stickyCompletedVariations.has(variationNumber)
+    ) {
+      return false;
+    }
+
+    session.latestObservedPaymentStatuses.set(
+      variationNumber,
+      status.observedPaymentStatus,
+    );
+
+    const queued = session.queuedPaymentStatuses.get(variationNumber);
+
+    if (queued?.observedPaymentStatus === status.observedPaymentStatus) {
+      return false;
+    }
+
+    if (
+      session.deliveredPaymentStatuses.get(variationNumber) ===
+      status.observedPaymentStatus
+    ) {
+      session.queuedPaymentStatuses.delete(variationNumber);
+      return false;
+    }
+
+    session.queuedPaymentStatuses.set(variationNumber, status);
+    return true;
+  }
+
+  function requeuePaymentStatusUnlessNewer(session, status) {
+    if (
+      !isCompletedStatus(status) &&
+      session.stickyCompletedVariations.has(status.variationNumber)
+    ) {
+      return;
+    }
+
+    if (
+      session.latestObservedPaymentStatuses.get(status.variationNumber) !==
+      status.observedPaymentStatus
+    ) {
+      return;
+    }
+
+    if (
+      !session.queuedPaymentStatuses.has(status.variationNumber) &&
+      session.deliveredPaymentStatuses.get(status.variationNumber) !==
+        status.observedPaymentStatus
+    ) {
+      session.queuedPaymentStatuses.set(status.variationNumber, status);
+    }
+  }
+
   function reportDeliveryError(session, message, error) {
     const code =
       typeof error?.code === "string"
@@ -248,6 +309,7 @@
 
         if (
           session.queuedVariations.size === 0 &&
+          session.queuedPaymentStatuses.size === 0 &&
           session.queuedPayments.size === 0
         ) {
           return;
@@ -282,6 +344,7 @@
       while (
         isCurrentSession(session) &&
         (session.queuedVariations.size > 0 ||
+          session.queuedPaymentStatuses.size > 0 ||
           session.queuedPayments.size > 0)
       ) {
         const variationNumbers = [...session.queuedVariations].filter(
@@ -292,8 +355,16 @@
           (sale) =>
             !session.deliveredPayments.has(paymentFingerprint(sale)),
         );
+        const paymentStatuses = [
+          ...session.queuedPaymentStatuses.values(),
+        ].filter(
+          (status) =>
+            session.deliveredPaymentStatuses.get(status.variationNumber) !==
+            status.observedPaymentStatus,
+        );
 
         session.queuedVariations.clear();
+        session.queuedPaymentStatuses.clear();
         session.queuedPayments.clear();
 
         let observationsDelivered = true;
@@ -319,6 +390,9 @@
             completedSales.forEach((sale) => {
               session.queuedPayments.set(paymentFingerprint(sale), sale);
             });
+            paymentStatuses.forEach((status) => {
+              requeuePaymentStatusUnlessNewer(session, status);
+            });
             reportDeliveryError(
               session,
               "Variation observation delivery failed.",
@@ -329,6 +403,49 @@
         }
 
         if (!observationsDelivered || !isCurrentSession(session)) {
+          return;
+        }
+
+        let statusesDelivered = true;
+
+        if (paymentStatuses.length > 0) {
+          try {
+            await captureClient.observePaymentStatuses(
+              paymentStatuses.map((status) => ({
+                variationNumber: status.variationNumber,
+                observedPaymentStatus: status.observedPaymentStatus,
+              })),
+            );
+
+            if (!isCurrentSession(session)) {
+              return;
+            }
+
+            paymentStatuses.forEach((status) => {
+              session.deliveredPaymentStatuses.set(
+                status.variationNumber,
+                status.observedPaymentStatus,
+              );
+            });
+            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+          } catch (error) {
+            statusesDelivered = false;
+            paymentStatuses.forEach((status) => {
+              requeuePaymentStatusUnlessNewer(session, status);
+            });
+            completedSales.forEach((sale) => {
+              session.queuedPayments.set(paymentFingerprint(sale), sale);
+            });
+            reportDeliveryError(
+              session,
+              "Payment status delivery failed.",
+              error,
+            );
+            scheduleDeliveryRetry(session);
+          }
+        }
+
+        if (!statusesDelivered || !isCurrentSession(session)) {
           return;
         }
 
@@ -350,6 +467,16 @@
             }
 
             session.deliveredPayments.add(fingerprint);
+            session.deliveredPaymentStatuses.set(
+              sale.variationNumber,
+              "payment_complete",
+            );
+            session.stickyCompletedVariations.add(sale.variationNumber);
+            session.latestObservedPaymentStatuses.set(
+              sale.variationNumber,
+              "payment_complete",
+            );
+            session.queuedPaymentStatuses.delete(sale.variationNumber);
             session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
           } catch (error) {
             session.queuedPayments.set(fingerprint, sale);
@@ -367,7 +494,12 @@
     }
   }
 
-  function queueCaptureBatch(session, variationNumbers, completedSales) {
+  function queueCaptureBatch(
+    session,
+    variationNumbers,
+    paymentStatuses,
+    completedSales,
+  ) {
     if (!isCurrentSession(session)) {
       return false;
     }
@@ -381,9 +513,18 @@
     completedSales.forEach((sale) => {
       const fingerprint = paymentFingerprint(sale);
 
+      session.latestObservedPaymentStatuses.set(
+        sale.variationNumber,
+        "payment_complete",
+      );
+
       if (!session.deliveredPayments.has(fingerprint)) {
         session.queuedPayments.set(fingerprint, sale);
       }
+    });
+
+    paymentStatuses.forEach((status) => {
+      queueLatestPaymentStatus(session, status);
     });
 
     if (session.deliveryRunning) {
@@ -480,13 +621,31 @@
     const observedVariations = candidateLocator.locateObservedVariations(
       session.root,
     );
-    const completedSales = candidateLocator
-      .locateCompletedSales(session.root, parser)
-      .map(({ sale }) =>
+    const locatedPaymentStatuses = candidateLocator.locatePaymentStatuses(
+      session.root,
+      parser,
+    );
+    const completedSales = locatedPaymentStatuses
+      .filter(
+        (status) =>
+          isCompletedStatus(status) && status.soldPriceCents !== null,
+      )
+      .map((status) =>
         Object.freeze({
-          paymentStatus: sale.paymentStatus,
-          soldPriceCents: sale.soldPriceCents,
-          variationNumber: sale.variationNumber,
+          paymentStatus: "payment_complete",
+          soldPriceCents: status.soldPriceCents,
+          variationNumber: status.variationNumber,
+        }),
+      );
+    const paymentStatuses = locatedPaymentStatuses
+      .filter(
+        (status) =>
+          !isCompletedStatus(status) || status.soldPriceCents === null,
+      )
+      .map((status) =>
+        Object.freeze({
+          variationNumber: status.variationNumber,
+          observedPaymentStatus: status.observedPaymentStatus,
         }),
       );
     const variationNumbers = [];
@@ -508,7 +667,19 @@
       emitCompletedSale(sale);
     });
 
-    queueCaptureBatch(session, variationNumbers, completedSales);
+    paymentStatuses.forEach(({ variationNumber }) => {
+      if (!seenVariations.has(variationNumber)) {
+        seenVariations.add(variationNumber);
+        variationNumbers.push(variationNumber);
+      }
+    });
+
+    queueCaptureBatch(
+      session,
+      variationNumbers,
+      paymentStatuses,
+      completedSales,
+    );
   }
 
   function hasScopedCaptureMutation(records, root) {
@@ -598,16 +769,20 @@
       session = {
         body,
         deliveredPayments: new Set(),
+        deliveredPaymentStatuses: new Map(),
         deliveredVariations: new Set(),
         deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
         deliveryRetryTimerId: null,
         deliveryRunning: false,
+        latestObservedPaymentStatuses: new Map(),
         observer,
         queuedPayments: new Map(),
+        queuedPaymentStatuses: new Map(),
         queuedVariations: new Set(),
         reportedDeliveryErrorCodes: new Set(),
         root,
         scheduler,
+        stickyCompletedVariations: new Set(),
       };
       captureSession = session;
 

@@ -169,6 +169,13 @@ test("captured Sold Items observations survive worker restart under the active s
     variationNumbers: [37, 38],
   });
   await firstCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses: [
+      { variationNumber: 37, observedPaymentStatus: "payment_complete" },
+      { variationNumber: 38, observedPaymentStatus: "payment_failed" },
+    ],
+  });
+  await firstCapture.dispatch({
     type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
     variationNumber: 37,
     soldPriceCents: 700,
@@ -193,6 +200,13 @@ test("captured Sold Items observations survive worker restart under the active s
     variationNumbers: [37, 38],
   });
   await restartedCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses: [
+      { variationNumber: 37, observedPaymentStatus: "payment_complete" },
+      { variationNumber: 38, observedPaymentStatus: "canceled" },
+    ],
+  });
+  await restartedCapture.dispatch({
     type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
     variationNumber: 37,
     soldPriceCents: 700,
@@ -207,17 +221,20 @@ test("captured Sold Items observations survive worker restart under the active s
 
   assert.deepEqual(
     summary.auctions.map((auction) => ({
+      observedPaymentStatus: auction.observedPaymentStatus,
       paymentStatus: auction.paymentStatus,
       status: auction.status,
       variationNumber: auction.variationNumber,
     })),
     [
       {
+        observedPaymentStatus: "payment_complete",
         paymentStatus: "payment_complete",
         status: "unmapped_completed",
         variationNumber: 37,
       },
       {
+        observedPaymentStatus: "canceled",
         paymentStatus: "unknown",
         status: "unmapped",
         variationNumber: 38,

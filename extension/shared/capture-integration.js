@@ -65,6 +65,8 @@
         !reconciliationCoordinator.COMMAND_TYPES ||
         reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS !==
           "observe_variations" ||
+        reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES !==
+          "observe_payment_statuses" ||
         reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE !==
           "record_payment_complete"
       ) {
@@ -163,6 +165,15 @@
                 reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
               streamId,
               variationNumbers: event.variationNumbers,
+            };
+            break;
+          case captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES:
+            command = {
+              type:
+                reconciliationCoordinator.COMMAND_TYPES
+                  .OBSERVE_PAYMENT_STATUSES,
+              streamId,
+              statuses: event.statuses.map((status) => ({ ...status })),
             };
             break;
           case captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE:

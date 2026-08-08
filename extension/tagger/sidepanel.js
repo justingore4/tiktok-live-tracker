@@ -31,6 +31,15 @@
   const CAPTURE_STATE_NOTIFICATION_VERSION = 1;
   const CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed";
   const CAPTURE_REFRESH_DELAY_MS = 150;
+  const OBSERVED_PAYMENT_STATUSES = new Set([
+    "not_observed",
+    "payment_processing",
+    "payment_fixing",
+    "payment_failed",
+    "canceled",
+    "payment_complete",
+    "unrecognized",
+  ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -116,6 +125,13 @@
   const mappedItem = document.querySelector("#mapped-item");
   const auctionEyebrow = document.querySelector("#auction-eyebrow");
   const auctionStatus = document.querySelector("#auction-status");
+  const tiktokPaymentStatus = document.querySelector(
+    "#tiktok-payment-status",
+  );
+  const observedPaymentStatus = document.querySelector(
+    '[data-field="observed-payment-status"]',
+  );
+  const paymentPrice = document.querySelector("#payment-price");
   const mappingStatus = document.querySelector('[data-field="mapping-status"]');
   const saleResults = document.querySelector("#sale-results");
   const soldPriceResult = document.querySelector('[data-field="sold-price"]');
@@ -252,12 +268,63 @@
         variation.variationNumber,
         JSON.stringify([
           variation.status,
+          variation.observedPaymentStatus,
+          variation.soldPriceCents,
+          variation.conflicts?.map((conflict) => [
+            conflict.code,
+            conflict.retainedSoldPriceCents ?? null,
+            conflict.observedSoldPriceCents ?? null,
+          ]) ?? [],
           variation.item,
           variation.style,
           variation.size,
         ]),
       ]),
     );
+  }
+
+  function findVariationOption(view, variationNumber) {
+    return view?.variations?.find(
+      (variation) => variation.variationNumber === variationNumber,
+    ) ?? null;
+  }
+
+  function getSafeObservedPaymentStatus(value) {
+    return OBSERVED_PAYMENT_STATUSES.has(value) ? value : "unavailable";
+  }
+
+  function getObservedPaymentStatusLabel(value) {
+    return mappingWorkflow.getObservedPaymentStatusLabel(value);
+  }
+
+  function getCapturedPriceText(variation) {
+    return variation?.observedPaymentStatus === "payment_complete" &&
+      Number.isSafeInteger(variation.soldPriceCents)
+      ? `, sold for ${viewModel.formatUsdCents(variation.soldPriceCents)}`
+      : "";
+  }
+
+  function describeObservedPaymentUpdate(variation) {
+    const priceConflict = variation?.conflicts?.find(
+      (candidate) => candidate.code === "conflicting_sold_price",
+    );
+    const completedAfterUnpaid = variation?.conflicts?.some(
+      (candidate) => candidate.code === "payment_completed_after_marked_unpaid",
+    );
+
+    if (priceConflict) {
+      return `Payment price conflict for variation #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
+    }
+
+    if (variation?.observedPaymentStatus === "payment_complete") {
+      const reviewDetail = completedAfterUnpaid
+        ? " It was previously marked unpaid; review the warning."
+        : "";
+
+      return `Payment complete captured for variation #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
+    }
+
+    return `Variation #${variation.variationNumber} TikTok payment status: ${variation?.observedPaymentStatusLabel ?? getObservedPaymentStatusLabel(undefined)}.`;
   }
 
   function describeLiveRefresh(previous, view, includeExistingUpdates = true) {
@@ -272,9 +339,15 @@
       : [];
 
     if (added.length === 1 && updated.length === 0) {
+      const addedVariation = findVariationOption(view, added[0]);
+      const paymentDetail =
+        addedVariation?.observedPaymentStatus === "payment_complete"
+          ? `${addedVariation.observedPaymentStatusLabel}${getCapturedPriceText(addedVariation)}.`
+          : `TikTok payment: ${addedVariation?.observedPaymentStatusLabel ?? getObservedPaymentStatusLabel(undefined)}.`;
+
       return added[0] === view.selectedVariationNumber
-        ? `Captured variation #${added[0]} from Sold Items. It is selected and ready to tag.`
-        : `Captured earlier variation #${added[0]} from Sold Items. Variation #${view.selectedVariationNumber} remains selected.`;
+        ? `Captured variation #${added[0]} from Sold Items. ${paymentDetail} It is selected and ready to tag.`
+        : `Captured earlier variation #${added[0]} from Sold Items. ${paymentDetail} Variation #${view.selectedVariationNumber} remains selected.`;
     }
 
     if (added.length > 1 && updated.length === 0) {
@@ -282,7 +355,9 @@
     }
 
     if (added.length === 0 && updated.length === 1) {
-      return `Sold Items updated variation #${updated[0]}.`;
+      return describeObservedPaymentUpdate(
+        findVariationOption(view, updated[0]),
+      );
     }
 
     if (added.length > 0 || updated.length > 0) {
@@ -652,16 +727,11 @@
   }
 
   function formatVariationOption(option) {
-    const context = activeMode === "saved_session"
-      ? "Sold Items"
-      : option.current
-        ? "On screen now"
-        : "Previous";
     const item = option.item
       ? `${formatItemName(option)}, size ${option.size}`
       : "No item selected";
 
-    return `#${option.variationNumber} - ${context} - ${option.statusLabel} - ${item}`;
+    return `#${option.variationNumber} - ${option.observedPaymentStatusLabel} - ${item}`;
   }
 
   function renderVariationNavigation(view) {
@@ -852,6 +922,42 @@
       : "Inventory unavailable";
   }
 
+  function getInventoryTagLabel(auction) {
+    if (auction.paymentStatus === "payment_complete") {
+      return auction.sku ? "Sale assigned" : "No item selected";
+    }
+
+    if (auction.mappingStatus === "marked_unpaid") {
+      return "Marked unpaid locally";
+    }
+
+    if (!auction.sku) {
+      return "No item selected";
+    }
+
+    return "Item reserved";
+  }
+
+  function renderOrderStatuses(auction) {
+    const safeObservedStatus = getSafeObservedPaymentStatus(
+      auction.observedPaymentStatus,
+    );
+    const observedLabel = getObservedPaymentStatusLabel(
+      auction.observedPaymentStatus,
+    );
+    const hasCapturedPrice =
+      auction.observedPaymentStatus === "payment_complete" &&
+      Number.isSafeInteger(auction.soldPriceCents);
+
+    observedPaymentStatus.textContent = observedLabel;
+    tiktokPaymentStatus.dataset.paymentStatus = safeObservedStatus;
+    paymentPrice.hidden = !hasCapturedPrice;
+    paymentPrice.textContent = hasCapturedPrice
+      ? `(${viewModel.formatUsdCents(auction.soldPriceCents)} captured)`
+      : "";
+    mappingStatus.textContent = getInventoryTagLabel(auction);
+  }
+
   function renderLifecycleControls(view) {
     const committed = view.auction?.status === "committed";
     const markedUnpaid = view.auction?.status === "marked_unpaid";
@@ -906,14 +1012,10 @@
     mappedItem.textContent = auction.sku
       ? `${formatItemName(auction)}, size ${auction.size}`
       : "No item selected. Select the matching inventory entry below.";
-    auctionEyebrow.textContent =
-      {
-        committed: "Sale result",
-        marked_unpaid: "Unpaid auction",
-        pending: "Just tagged",
-        unmapped_completed: "Needs item",
-      }[auction.status] ?? "Auction status";
-    mappingStatus.textContent = auction.statusLabel;
+    auctionEyebrow.textContent = activeMode === "offline_demo"
+      ? "Demo order status"
+      : "Live order status";
+    renderOrderStatuses(auction);
     auctionStatus.dataset.status = auction.status;
     pendingMapping.dataset.status = auction.status;
     pendingMapping.hidden = false;
@@ -977,6 +1079,9 @@
 
     const mapping = result.mapping;
     const itemDescription = `${formatItemName(mapping)}, size ${mapping.size}`;
+    const paymentLabel =
+      result.view.auction?.observedPaymentStatusLabel ??
+      getObservedPaymentStatusLabel(undefined);
 
     if (result.action === "completed_sale_mapped") {
       const profit = viewModel.getProfitDisplay(mapping.profitCents);
@@ -987,11 +1092,11 @@
     } else if (result.action === "unpaid_mapping_corrected") {
       mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
     } else if (result.action === "remapped") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} changed to ${itemDescription}. Waiting for payment.`;
+      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} changed to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
     } else if (result.action === "unchanged") {
       mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} is already mapped to ${itemDescription}.`;
     } else {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} mapped to ${itemDescription}. Waiting for payment.`;
+      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} mapped to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
     }
   }
 
@@ -1006,7 +1111,7 @@
       ? `, ${formatItemName(selected)}, size ${selected.size}`
       : ", no item selected";
 
-    return `Variation ${selected.variationNumber}, ${selected.statusLabel}${item}`;
+    return `Variation ${selected.variationNumber}, TikTok payment: ${selected.observedPaymentStatusLabel}${item}`;
   }
 
   function getSavedStatusText(snapshot) {
@@ -1191,7 +1296,7 @@
         `Variation ${variationNumber} marked unpaid and saved locally. Its pending reservation was released.`;
     } else if (action.type === "undo_mark_unpaid") {
       mappingAnnouncement.textContent =
-        `Unpaid mark removed from variation ${variationNumber} and saved locally. It is waiting for payment.`;
+        `Unpaid mark removed from variation ${variationNumber} and saved locally. Its TikTok payment status is unchanged.`;
     }
   }
 

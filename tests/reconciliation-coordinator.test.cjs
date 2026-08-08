@@ -141,6 +141,17 @@ function observeCommand(variationNumbers, streamId = "stream-1") {
   };
 }
 
+function observePaymentStatusesCommand(
+  statuses,
+  streamId = "stream-1",
+) {
+  return {
+    type: COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+    streamId,
+    statuses,
+  };
+}
+
 function unmapCommand(variationNumber) {
   return {
     type: COMMAND_TYPES.UNMAP_VARIATION,
@@ -306,6 +317,150 @@ test("observations never regress existing mappings or completed payments", async
     "payment_complete",
   );
   assert.equal(response.state.streams[0].variations[0].soldPriceCents, 7000);
+});
+
+test("persists payment-status batches once and skips identical retries", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  reconciliation.mapVariation(storedState, {
+    streamId: "stream-1",
+    variationNumber: 44,
+    sku: "BLACK-TEE-M",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+  const statuses = [
+    {
+      variationNumber: 44,
+      observedPaymentStatus: "payment_processing",
+    },
+    {
+      variationNumber: 45,
+      observedPaymentStatus: "payment_failed",
+    },
+    {
+      variationNumber: 46,
+      observedPaymentStatus: "canceled",
+    },
+  ];
+
+  const observed = await coordinator.dispatch(
+    observePaymentStatusesCommand(statuses),
+  );
+  const repeated = await coordinator.dispatch(
+    observePaymentStatusesCommand(clone(statuses)),
+  );
+
+  assert.deepEqual(observed.result, {
+    status: "observed",
+    observedCount: 3,
+    updatedCount: 3,
+    ignoredCount: 0,
+  });
+  assert.deepEqual(repeated.result, {
+    status: "already_observed",
+    observedCount: 3,
+    updatedCount: 0,
+    ignoredCount: 0,
+  });
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.equal(observed.state.streams[0].variations[0].sku, "BLACK-TEE-M");
+  assert.equal(
+    observed.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_processing",
+  );
+  assert.equal(observed.state.streams[0].variations[0].paymentStatus, "unknown");
+  assert.equal(observed.state.streams[0].variations[0].soldPriceCents, null);
+  assert.equal(
+    observed.state.streams[0].variations[1].observedPaymentStatus,
+    "payment_failed",
+  );
+  assert.equal(
+    observed.state.streams[0].variations[2].observedPaymentStatus,
+    "canceled",
+  );
+  assert.equal(observed.state.streams[0].variations[2].paymentStatus, "unknown");
+});
+
+test("serializes flexible statuses while canonical completion stays sticky", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const processing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "payment_processing",
+      },
+    ]),
+  );
+  const fixing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "payment_fixing",
+      },
+    ]),
+  );
+  const failed = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "payment_failed",
+      },
+    ]),
+  );
+  const canceled = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "canceled",
+      },
+    ]),
+  );
+  const completed = await coordinator.dispatch(paymentCommand(46, 3200));
+  const writesBeforeLateStatus = memoryStore.calls.save.length;
+  const lateFailure = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "payment_failed",
+      },
+    ]),
+  );
+
+  assert.equal(
+    processing.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_processing",
+  );
+  assert.equal(
+    fixing.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_fixing",
+  );
+  assert.equal(
+    failed.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_failed",
+  );
+  assert.equal(
+    canceled.state.streams[0].variations[0].observedPaymentStatus,
+    "canceled",
+  );
+  assert.equal(
+    completed.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_complete",
+  );
+  assert.equal(completed.state.streams[0].variations[0].soldPriceCents, 3200);
+  assert.deepEqual(lateFailure.result, {
+    status: "already_observed",
+    observedCount: 1,
+    updatedCount: 0,
+    ignoredCount: 1,
+  });
+  assert.equal(memoryStore.calls.save.length, writesBeforeLateStatus);
+  assert.equal(
+    lateFailure.state.streams[0].variations[0].observedPaymentStatus,
+    "payment_complete",
+  );
 });
 
 test("identical completed-payment retries do not write again", async () => {
@@ -674,6 +829,63 @@ test("rejects malformed and unknown commands before storage access", async () =>
     ReconciliationCoordinatorError,
   );
 
+  for (const statuses of [
+    [],
+    [
+      {
+        variationNumber: 1,
+        observedPaymentStatus: "not_observed",
+      },
+    ],
+    [{ variationNumber: 1, observedPaymentStatus: "payment_pending" }],
+    [
+      { variationNumber: 1, observedPaymentStatus: "payment_processing" },
+      { variationNumber: 1, observedPaymentStatus: "payment_failed" },
+    ],
+    [
+      {
+        variationNumber: 1,
+        observedPaymentStatus: "payment_failed",
+        extra: true,
+      },
+    ],
+  ]) {
+    await assertErrorCode(
+      () => coordinator.dispatch(observePaymentStatusesCommand(statuses)),
+      "INVALID_COMMAND",
+      ReconciliationCoordinatorError,
+    );
+  }
+
+  await assertErrorCode(
+    () =>
+      coordinator.dispatch({
+        ...observePaymentStatusesCommand([
+          {
+            variationNumber: 1,
+            observedPaymentStatus: "payment_processing",
+          },
+        ]),
+        extra: true,
+      }),
+    "INVALID_COMMAND",
+    ReconciliationCoordinatorError,
+  );
+
+  await assertErrorCode(
+    () =>
+      coordinator.dispatch(
+        observePaymentStatusesCommand(
+          Array.from({ length: 1001 }, (_, index) => ({
+            variationNumber: index + 1,
+            observedPaymentStatus: "payment_processing",
+          })),
+        ),
+      ),
+    "INVALID_COMMAND",
+    ReconciliationCoordinatorError,
+  );
+
   assert.equal(memoryStore.calls.load, 0);
   assert.equal(memoryStore.calls.save.length, 0);
 });
@@ -703,6 +915,17 @@ test("validates coordinator dependencies immediately", () => {
   assert.throws(() => createReconciliationCoordinator(), TypeError);
   assert.throws(
     () => createReconciliationCoordinator({ reconciliation, stateStore: {} }),
+    TypeError,
+  );
+  const missingPaymentStatusObserver = { ...reconciliation };
+  delete missingPaymentStatusObserver.observePaymentStatuses;
+
+  assert.throws(
+    () =>
+      createReconciliationCoordinator({
+        reconciliation: missingPaymentStatusObserver,
+        stateStore: createMemoryStateStore().stateStore,
+      }),
     TypeError,
   );
 });

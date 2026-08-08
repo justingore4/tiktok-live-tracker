@@ -279,22 +279,45 @@ test("older backfill and later payment updates do not steal the live selection",
     ),
   );
 
-  const paymentState = memory.getState();
-  reconciliation.recordPaymentComplete(paymentState, {
+  const processingState = memory.getState();
+  reconciliation.observePaymentStatuses(processingState, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: 43,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  });
+  memory.setState(processingState);
+
+  const processingUpdated = await controller.refresh();
+  const processingOption = processingUpdated.view.variations.find(
+    (variation) => variation.variationNumber === 43,
+  );
+
+  assert.equal(processingUpdated.view.selectedVariationNumber, 45);
+  assert.equal(processingOption.observedPaymentStatus, "payment_processing");
+  assert.equal(processingOption.observedPaymentStatusLabel, "Payment processing");
+
+  const completedState = memory.getState();
+  reconciliation.recordPaymentComplete(completedState, {
     streamId: STREAM_ID,
     variationNumber: 43,
     soldPriceCents: 1800,
   });
-  memory.setState(paymentState);
+  memory.setState(completedState);
 
   const paymentUpdated = await controller.refresh();
-  assert.equal(paymentUpdated.view.selectedVariationNumber, 45);
-  assert.equal(
-    paymentUpdated.view.variations.find(
-      (variation) => variation.variationNumber === 43,
-    ).status,
-    "unmapped_completed",
+  const completedOption = paymentUpdated.view.variations.find(
+    (variation) => variation.variationNumber === 43,
   );
+
+  assert.equal(paymentUpdated.view.selectedVariationNumber, 45);
+  assert.equal(completedOption.status, "unmapped_completed");
+  assert.equal(completedOption.observedPaymentStatus, "payment_complete");
+  assert.equal(completedOption.observedPaymentStatusLabel, "Payment complete");
+  assert.equal(completedOption.soldPriceCents, 1800);
 });
 
 test("selects the newest recorded variation when only a prototype placeholder was selected", async () => {

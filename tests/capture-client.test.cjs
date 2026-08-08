@@ -77,7 +77,56 @@ test("sends only variation and price for a completed payment", async () => {
   assert.equal(Object.hasOwn(runtime.calls[0].event, "buyer"), false);
 });
 
-test("serializes observation before payment even while the first send waits", async () => {
+test("sends only sanitized detached payment-status facts", async () => {
+  const runtime = createRuntime();
+  const client = createCaptureClient({ protocol, runtime });
+  const statuses = [
+    {
+      variationNumber: 44,
+      observedPaymentStatus:
+        protocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    },
+    {
+      variationNumber: 43,
+      observedPaymentStatus:
+        protocol.OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+    },
+    {
+      variationNumber: 42,
+      observedPaymentStatus:
+        protocol.OBSERVED_PAYMENT_STATUSES.CANCELED,
+    },
+  ];
+  const request = client.observePaymentStatuses(statuses);
+
+  statuses[0].variationNumber = 999;
+  statuses[0].observedPaymentStatus = "private raw text";
+
+  assert.deepEqual(await request, { status: "accepted" });
+  assert.deepEqual(runtime.calls[0].event, {
+    type: "observe_payment_statuses",
+    statuses: [
+      {
+        variationNumber: 44,
+        observedPaymentStatus: "payment_processing",
+      },
+      {
+        variationNumber: 43,
+        observedPaymentStatus: "unrecognized",
+      },
+      {
+        variationNumber: 42,
+        observedPaymentStatus: "canceled",
+      },
+    ],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(runtime.calls[0]),
+    /private raw text|statusText|buyer|title|element|selector/i,
+  );
+});
+
+test("serializes variation, status, then payment while the first send waits", async () => {
   const first = deferred();
   const runtime = createRuntime((_message, index) =>
     index === 0 ? first.promise : ACCEPTED,
@@ -85,6 +134,13 @@ test("serializes observation before payment even while the first send waits", as
   const client = createCaptureClient({ protocol, runtime });
 
   const observation = client.observeVariations([44]);
+  const statusObservation = client.observePaymentStatuses([
+    {
+      variationNumber: 44,
+      observedPaymentStatus:
+        protocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    },
+  ]);
   const payment = client.recordPaymentComplete({
     variationNumber: 44,
     soldPriceCents: 700,
@@ -96,11 +152,16 @@ test("serializes observation before payment even while the first send waits", as
 
   first.resolve(ACCEPTED);
   await observation;
+  await statusObservation;
   await payment;
 
   assert.deepEqual(
     runtime.calls.map(({ event }) => event.type),
-    ["observe_variations", "payment_complete"],
+    [
+      "observe_variations",
+      "observe_payment_statuses",
+      "payment_complete",
+    ],
   );
 });
 
@@ -173,6 +234,13 @@ test("fails before runtime delivery when event input is invalid", () => {
 
   assert.throws(() => client.observeVariations([]), /between 1 and 1000/i);
   assert.throws(() => client.observeVariations([44, 44]), /unique/i);
+  assert.throws(
+    () =>
+      client.observePaymentStatuses([
+        { variationNumber: 44, observedPaymentStatus: "Payment complete" },
+      ]),
+    /not supported for capture/i,
+  );
   assert.throws(
     () => client.recordPaymentComplete({ variationNumber: 0, soldPriceCents: 1 }),
     /positive safe integer/i,

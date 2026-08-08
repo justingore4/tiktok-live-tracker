@@ -130,6 +130,7 @@ function createWorkerHarness(options = {}) {
     MESSAGE_CHANNEL: "tiktok-live-tracker.reconciliation",
     MESSAGE_VERSION: 1,
     COMMAND_TYPES: {
+      OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       UNMAP_VARIATION: "unmap_variation",
@@ -592,6 +593,35 @@ test("accepts completed payments through the capture boundary", async () => {
   ]);
 });
 
+test("accepts sanitized payment-status changes through the capture boundary", async () => {
+  const harness = createWorkerHarness();
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses: [
+      { variationNumber: 44, observedPaymentStatus: "payment_fixing" },
+      { variationNumber: 43, observedPaymentStatus: "payment_processing" },
+      { variationNumber: 42, observedPaymentStatus: "canceled" },
+    ],
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+});
+
 test("keeps accepted capture responses independent of notification delivery", async () => {
   for (const options of [
     { runtimeSendMessageError: new Error("no receiver") },
@@ -967,6 +997,19 @@ test("keeps capture-owned reconciliation commands disconnected from the side pan
         type: harness.coordinatorModule.COMMAND_TYPES.OBSERVE_VARIATIONS,
         streamId: "stream-1",
         variationNumbers: [1],
+      }),
+    ),
+    harness.send(
+      harness.createMessage({
+        type:
+          harness.coordinatorModule.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+        streamId: "stream-1",
+        statuses: [
+          {
+            variationNumber: 1,
+            observedPaymentStatus: "payment_processing",
+          },
+        ],
       }),
     ),
   ];

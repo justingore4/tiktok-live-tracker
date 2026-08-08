@@ -255,10 +255,28 @@
         </div>
         <div class="pending-card">
           <p id="mapped-item" class="mapped-item"></p>
-          <p id="auction-status" class="pending-status" tabindex="-1">
-            <span class="pending-status-dot" aria-hidden="true"></span>
-            <span data-field="mapping-status">Waiting for payment</span>
-          </p>
+          <dl id="auction-status" class="order-statuses" tabindex="-1">
+            <div class="order-status-row">
+              <dt>TikTok payment</dt>
+              <dd
+                id="tiktok-payment-status"
+                class="pending-status"
+                data-payment-status="not_observed"
+              >
+                <span class="pending-status-dot" aria-hidden="true"></span>
+                <span data-field="observed-payment-status">
+                  Payment not yet observed
+                </span>
+                <span id="payment-price" class="payment-price" hidden></span>
+              </dd>
+            </div>
+            <div class="order-status-row">
+              <dt>Inventory tag</dt>
+              <dd class="inventory-tag-status" data-field="mapping-status">
+                No item selected
+              </dd>
+            </div>
+          </dl>
         </div>
 
         <div id="sale-results" class="sale-results" hidden>

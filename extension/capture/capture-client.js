@@ -45,6 +45,7 @@
         typeof protocol !== "object" ||
         typeof protocol.createCaptureMessage !== "function" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_VARIATIONS !== "string" ||
+        typeof protocol.EVENT_TYPES?.OBSERVE_PAYMENT_STATUSES !== "string" ||
         typeof protocol.EVENT_TYPES?.PAYMENT_COMPLETE !== "string"
       ) {
         throw new TypeError("A valid capture protocol is required.");
@@ -131,6 +132,15 @@
         });
       }
 
+      function observePaymentStatuses(statuses) {
+        return enqueue({
+          type: trustedProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+          statuses: Array.isArray(statuses)
+            ? statuses.map((status) => ({ ...status }))
+            : statuses,
+        });
+      }
+
       function recordPaymentComplete({ variationNumber, soldPriceCents } = {}) {
         return enqueue({
           type: trustedProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
@@ -139,7 +149,11 @@
         });
       }
 
-      return Object.freeze({ observeVariations, recordPaymentComplete });
+      return Object.freeze({
+        observePaymentStatuses,
+        observeVariations,
+        recordPaymentComplete,
+      });
     }
 
     return Object.freeze({ CaptureClientError, createCaptureClient });

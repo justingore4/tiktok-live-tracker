@@ -14,12 +14,32 @@
     const MESSAGE_CHANNEL = "tiktok-live-tracker.capture";
     const MESSAGE_VERSION = 1;
     const MAX_OBSERVED_VARIATIONS = 1000;
+    const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
+    const OBSERVED_PAYMENT_STATUSES = Object.freeze({
+      NOT_OBSERVED: "not_observed",
+      PAYMENT_PROCESSING: "payment_processing",
+      PAYMENT_FIXING: "payment_fixing",
+      PAYMENT_FAILED: "payment_failed",
+      CANCELED: "canceled",
+      PAYMENT_COMPLETE: "payment_complete",
+      UNRECOGNIZED: "unrecognized",
+    });
+    const OUTBOUND_PAYMENT_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      OBSERVED_PAYMENT_STATUSES.CANCELED,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+      OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+    ]);
     const EVENT_TYPES = Object.freeze({
       OBSERVE_VARIATIONS: "observe_variations",
+      OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       PAYMENT_COMPLETE: "payment_complete",
     });
     const EVENT_KEYS = Object.freeze({
       [EVENT_TYPES.OBSERVE_VARIATIONS]: ["type", "variationNumbers"],
+      [EVENT_TYPES.OBSERVE_PAYMENT_STATUSES]: ["statuses", "type"],
       [EVENT_TYPES.PAYMENT_COMPLETE]: [
         "soldPriceCents",
         "type",
@@ -120,6 +140,54 @@
 
           seenVariationNumbers.add(variationNumber);
         });
+      } else if (event.type === EVENT_TYPES.OBSERVE_PAYMENT_STATUSES) {
+        if (
+          !Array.isArray(event.statuses) ||
+          event.statuses.length === 0 ||
+          event.statuses.length > MAX_OBSERVED_PAYMENT_STATUSES
+        ) {
+          fail(
+            "INVALID_CAPTURE_MESSAGE",
+            `statuses must contain between 1 and ${MAX_OBSERVED_PAYMENT_STATUSES} entries.`,
+          );
+        }
+
+        const seenVariationNumbers = new Set();
+
+        event.statuses.forEach((status, index) => {
+          if (!isPlainRecord(status)) {
+            fail(
+              "INVALID_CAPTURE_MESSAGE",
+              `statuses[${index}] must be an object.`,
+            );
+          }
+
+          requireExactKeys(
+            status,
+            ["observedPaymentStatus", "variationNumber"],
+            `statuses[${index}]`,
+          );
+          const variationNumber = requireVariationNumber(
+            status.variationNumber,
+            `statuses[${index}].variationNumber`,
+          );
+
+          if (seenVariationNumbers.has(variationNumber)) {
+            fail(
+              "INVALID_CAPTURE_MESSAGE",
+              "statuses must contain unique variation numbers.",
+            );
+          }
+
+          if (!OUTBOUND_PAYMENT_STATUSES.has(status.observedPaymentStatus)) {
+            fail(
+              "INVALID_CAPTURE_MESSAGE",
+              `statuses[${index}].observedPaymentStatus is not supported for capture.`,
+            );
+          }
+
+          seenVariationNumbers.add(variationNumber);
+        });
       } else {
         requireVariationNumber(event.variationNumber, "variationNumber");
 
@@ -198,9 +266,11 @@
     return Object.freeze({
       CaptureProtocolError,
       EVENT_TYPES,
+      MAX_OBSERVED_PAYMENT_STATUSES,
       MAX_OBSERVED_VARIATIONS,
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,
+      OBSERVED_PAYMENT_STATUSES,
       createCaptureMessage,
       validateCaptureEvent,
       validateCaptureMessage,

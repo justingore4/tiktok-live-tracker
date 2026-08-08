@@ -910,6 +910,363 @@ test("forwards observation before completed payment and only once per fingerprin
   assert.equal(harness.captureMessages.length, 3);
 });
 
+test("captures every sanitized row status before completed payments", async () => {
+  const processing = createSaleRow(
+    "Buyer One has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  const fixing = createSaleRow(
+    "Buyer Two has won: $8.00 Variation: #43 Awaiting payment",
+  );
+  const failed = createSaleRow(
+    "Buyer Three has won: $9.00 Variation: #42 Awaiting payment",
+  );
+  const unrecognized = createSaleRow(
+    "Buyer Four has won: $10.00 Variation: #41 Awaiting payment",
+  );
+  const complete = createSaleRow(
+    "Buyer Five has won: $11.00 Variation: #40 Payment complete",
+  );
+  const canceled = createSaleRow(
+    "Buyer Six has won: $12.00 Variation: #39 Awaiting payment",
+  );
+
+  setPaymentText(processing, "Payment processing");
+  setPaymentText(fixing, "Payment fixing");
+  setPaymentText(failed, "Payment failed");
+  setPaymentText(canceled, "Canceled");
+  canceled.row.append(
+    new FakeElement({
+      name: "payment-failure-detail",
+      ownText: "Payment failed",
+    }),
+  );
+  setPaymentText(unrecognized, "Private custom badge text");
+  const harness = createHarness({
+    rows: [processing, fixing, failed, unrecognized, complete, canceled],
+  });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      {
+        type: "observe_variations",
+        variationNumbers: [44, 43, 42, 41, 40, 39],
+      },
+      {
+        type: "observe_payment_statuses",
+        statuses: [
+          {
+            variationNumber: 44,
+            observedPaymentStatus: "payment_processing",
+          },
+          {
+            variationNumber: 43,
+            observedPaymentStatus: "payment_fixing",
+          },
+          {
+            variationNumber: 42,
+            observedPaymentStatus: "payment_failed",
+          },
+          {
+            variationNumber: 41,
+            observedPaymentStatus: "unrecognized",
+          },
+          {
+            variationNumber: 39,
+            observedPaymentStatus: "canceled",
+          },
+        ],
+      },
+      {
+        type: "payment_complete",
+        variationNumber: 40,
+        soldPriceCents: 1100,
+      },
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages),
+    /Buyer One|Buyer Two|Buyer Three|Buyer Four|Buyer Five|Buyer Six|Private custom|statusText|title|element/i,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages),
+    /Canceled|Payment failed/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify([...harness.infos, ...harness.warnings, ...harness.errors]),
+    /Buyer One|Buyer Two|Buyer Three|Buyer Four|Buyer Five|Buyer Six|Canceled|Payment failed|Private custom badge text/,
+  );
+});
+
+test("an unpriced completion remains provisional and can transition", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Payment complete",
+  );
+  setSaleSummary(sale, "Example Buyer Variation: #44");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      { type: "observe_variations", variationNumbers: [44] },
+      {
+        type: "observe_payment_statuses",
+        statuses: [
+          {
+            variationNumber: 44,
+            observedPaymentStatus: "payment_complete",
+          },
+        ],
+      },
+    ],
+  );
+  assert.equal(harness.completedSaleLogs().length, 0);
+
+  setPaymentText(sale, "Payment fixing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [
+      { variationNumber: 44, observedPaymentStatus: "payment_fixing" },
+    ],
+  });
+
+  setPaymentText(sale, "Payment processing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [
+      { variationNumber: 44, observedPaymentStatus: "payment_processing" },
+    ],
+  });
+  assert.equal(
+    harness.captureMessages.some(
+      ({ event }) => event.type === "payment_complete",
+    ),
+    false,
+  );
+});
+
+test("streams status transitions once and keeps a completed payment sticky", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment processing");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.type),
+    ["observe_variations", "observe_payment_statuses"],
+  );
+
+  setPaymentText(sale, "Payment fixing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [
+      { variationNumber: 44, observedPaymentStatus: "payment_fixing" },
+    ],
+  });
+
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 3);
+
+  setPaymentText(sale, "Payment complete");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "payment_complete",
+    variationNumber: 44,
+    soldPriceCents: 700,
+  });
+
+  setPaymentText(sale, "Canceled");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 4);
+});
+
+test("streams failed, fixing, canceled, and processing as distinct observations", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment failed");
+  sale.row.append(
+    new FakeElement({
+      name: "payment-failure-detail",
+      ownText: "Payment failed",
+    }),
+  );
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+  assert.equal(
+    harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus,
+    "payment_failed",
+  );
+
+  setPaymentText(sale, "Payment fixing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(
+    harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus,
+    "payment_fixing",
+  );
+
+  setPaymentText(sale, "Canceled");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [
+      { variationNumber: 44, observedPaymentStatus: "canceled" },
+    ],
+  });
+
+  setPaymentText(sale, "Payment processing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(
+    harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus,
+    "payment_processing",
+  );
+  assert.equal(
+    harness.captureMessages.some(
+      ({ event }) => event.type === "payment_complete",
+    ),
+    false,
+  );
+});
+
+test("a stale Payment failed retry never overwrites newer Canceled", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment failed");
+  let statusAttempts = 0;
+  const harness = createHarness({
+    rows: [sale],
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_payment_statuses" &&
+        statusAttempts++ === 0
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "No active tracker stream is available.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 1);
+
+  setPaymentText(sale, "Canceled");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages
+      .filter(({ event }) => event.type === "observe_payment_statuses")
+      .map(({ event }) => event.statuses[0].observedPaymentStatus),
+    ["payment_failed", "canceled"],
+  );
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("a failed status retry is cancelled when the newest DOM state is already delivered", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment processing");
+  let statusAttempts = 0;
+  const harness = createHarness({
+    rows: [sale],
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_payment_statuses" &&
+        statusAttempts++ === 1
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "No active tracker stream is available.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  setPaymentText(sale, "Payment fixing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 1);
+
+  setPaymentText(sale, "Payment processing");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages
+      .filter(({ event }) => event.type === "observe_payment_statuses")
+      .map(({ event }) => event.statuses[0].observedPaymentStatus),
+    ["payment_processing", "payment_fixing"],
+  );
+  assert.equal(harness.timeouts.size, 0);
+});
+
 test("retries a failed observation without a DOM mutation and resets backoff", async () => {
   const failureIndexes = new Set([0, 2]);
   const row44 = new FakeElement({ name: "pending-row-44" }).append(

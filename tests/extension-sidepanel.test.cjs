@@ -223,7 +223,16 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
   assert.match(html, /id="state-warning"[^>]+role="status"/);
-  assert.match(html, />Waiting for payment</);
+  assert.match(html, /id="auction-status"[^>]+tabindex="-1"/);
+  assert.match(html, /<dt>TikTok payment<\/dt>/);
+  assert.match(
+    html,
+    /id="tiktok-payment-status"[\s\S]+data-payment-status="not_observed"/,
+  );
+  assert.match(html, /data-field="observed-payment-status"[\s\S]+Payment not yet observed/);
+  assert.match(html, /id="payment-price"[^>]+hidden/);
+  assert.match(html, /<dt>Inventory tag<\/dt>/);
+  assert.match(html, /data-field="mapping-status"[\s\S]+No item selected/);
   assert.match(html, /<label[^>]+for="sold-price"/);
   assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
   assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
@@ -254,6 +263,10 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   const workflowSource = fs.readFileSync(
     path.join(taggerDirectory, "mapping-workflow.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
     "utf8",
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
@@ -368,6 +381,34 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.doesNotMatch(panelSource, /changeMappingButton|#change-mapping/);
   assert.match(panelSource, /auctionEyebrow\.textContent/);
+  assert.match(panelSource, /function renderOrderStatuses\(auction\)/);
+  assert.match(panelSource, /observedPaymentStatus\.textContent = observedLabel/);
+  assert.match(
+    panelSource,
+    /tiktokPaymentStatus\.dataset\.paymentStatus = safeObservedStatus/,
+  );
+  assert.match(panelSource, /paymentPrice\.hidden = !hasCapturedPrice/);
+  assert.match(panelSource, /mappingStatus\.textContent = getInventoryTagLabel\(auction\)/);
+  assert.match(
+    panelSource,
+    /auction\.paymentStatus === "payment_complete"/,
+  );
+  assert.match(workflowSource, /"Payment status unavailable"/);
+  assert.match(panelSource, /"Sale assigned"/);
+  assert.match(panelSource, /"Item reserved"/);
+  assert.match(
+    workflowSource,
+    /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
+  );
+  assert.match(panelSource, /"payment_failed",[\s\S]+"canceled",/);
+  assert.match(
+    styleSource,
+    /data-payment-status="payment_fixing"\],[\s\S]+data-payment-status="payment_failed"\][\s\S]+color: #ffd88a/,
+  );
+  assert.match(
+    styleSource,
+    /data-payment-status="canceled"\][\s\S]+color: #ffb1b7[\s\S]+data-payment-status="canceled"\] \.pending-status-dot[\s\S]+background: #ff737e/,
+  );
   assert.match(panelSource, /stateWarning\.textContent !== warning/);
   assert.doesNotMatch(panelSource, /this pending mapping/);
   assert.doesNotMatch(mappingSource, /undoPaymentComplete/);
@@ -421,8 +462,19 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /Captured variation #/);
   assert.match(
     panelSource,
-    /Captured variation #\$\{added\[0\]\} from Sold Items\. It is selected and ready to tag\./,
+    /Captured variation #\$\{added\[0\]\} from Sold Items\. \$\{paymentDetail\} It is selected and ready to tag\./,
   );
+  assert.match(panelSource, /variation\.observedPaymentStatus/);
+  assert.match(panelSource, /variation\.soldPriceCents/);
+  assert.match(panelSource, /variation\.conflicts/);
+  assert.match(panelSource, /Payment complete captured for variation #/);
+  assert.match(panelSource, /Payment price conflict for variation #/);
+  assert.match(panelSource, /payment_completed_after_marked_unpaid/);
+  assert.match(
+    panelSource,
+    /#\$\{option\.variationNumber\} - \$\{option\.observedPaymentStatusLabel\} - \$\{item\}/,
+  );
+  assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
   assert.match(panelSource, /Captured earlier variation/);
   assert.match(panelSource, /captureRefreshHadVariationFocus/);

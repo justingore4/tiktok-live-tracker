@@ -4,9 +4,11 @@ const test = require("node:test");
 const {
   CaptureProtocolError,
   EVENT_TYPES,
+  MAX_OBSERVED_PAYMENT_STATUSES,
   MAX_OBSERVED_VARIATIONS,
   MESSAGE_CHANNEL,
   MESSAGE_VERSION,
+  OBSERVED_PAYMENT_STATUSES,
   createCaptureMessage,
   validateCaptureMessage,
 } = require("../extension/shared/capture-protocol.js");
@@ -55,6 +57,42 @@ test("creates an exact detached payment-complete message", () => {
   });
 });
 
+test("creates an exact detached batch payment-status message", () => {
+  const statuses = [
+    {
+      variationNumber: 44,
+      observedPaymentStatus:
+        OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    },
+    {
+      variationNumber: 43,
+      observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    },
+    {
+      variationNumber: 42,
+      observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+    },
+  ];
+  const message = createCaptureMessage({
+    type: EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses,
+  });
+
+  assert.deepEqual(message, {
+    channel: MESSAGE_CHANNEL,
+    version: MESSAGE_VERSION,
+    event: {
+      type: "observe_payment_statuses",
+      statuses,
+    },
+  });
+  assert.notEqual(message.event.statuses, statuses);
+  assert.notEqual(message.event.statuses[0], statuses[0]);
+
+  statuses[0].variationNumber = 999;
+  assert.equal(message.event.statuses[0].variationNumber, 44);
+});
+
 test("rejects stream identity, buyer, title, DOM, and time fields", () => {
   const baseObservation = {
     type: EVENT_TYPES.OBSERVE_VARIATIONS,
@@ -64,6 +102,16 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
     type: EVENT_TYPES.PAYMENT_COMPLETE,
     variationNumber: 44,
     soldPriceCents: 700,
+  };
+  const baseStatuses = {
+    type: EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses: [
+      {
+        variationNumber: 44,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+    ],
   };
 
   for (const forbiddenField of [
@@ -80,6 +128,77 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
     );
     assertErrorCode(
       () => createCaptureMessage({ ...basePayment, [forbiddenField]: "x" }),
+      "INVALID_CAPTURE_MESSAGE",
+    );
+    assertErrorCode(
+      () => createCaptureMessage({ ...baseStatuses, [forbiddenField]: "x" }),
+      "INVALID_CAPTURE_MESSAGE",
+    );
+  }
+});
+
+test("accepts only sanitized outbound payment-status batches", () => {
+  const outboundStatuses = Object.values(OBSERVED_PAYMENT_STATUSES).filter(
+    (status) => status !== OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
+  );
+
+  assert.equal(MAX_OBSERVED_PAYMENT_STATUSES, 1000);
+  assert.notEqual(
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    OBSERVED_PAYMENT_STATUSES.CANCELED,
+  );
+  outboundStatuses.forEach((observedPaymentStatus, index) => {
+    assert.doesNotThrow(() =>
+      createCaptureMessage({
+        type: EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+        statuses: [{ variationNumber: index + 1, observedPaymentStatus }],
+      }),
+    );
+  });
+
+  const invalidStatuses = [
+    [],
+    [
+      {
+        variationNumber: 44,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
+      },
+    ],
+    [{ variationNumber: 44, observedPaymentStatus: "Payment complete" }],
+    [{ variationNumber: 44, observedPaymentStatus: "another_status" }],
+    [
+      {
+        variationNumber: 44,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+        statusText: "private DOM text",
+      },
+    ],
+    [
+      {
+        variationNumber: 44,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+      {
+        variationNumber: 44,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+    new Array(MAX_OBSERVED_PAYMENT_STATUSES + 1).fill(null).map(
+      (_, index) => ({
+        variationNumber: index + 1,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      }),
+    ),
+  ];
+
+  for (const statuses of invalidStatuses) {
+    assertErrorCode(
+      () =>
+        createCaptureMessage({
+          type: EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+          statuses,
+        }),
       "INVALID_CAPTURE_MESSAGE",
     );
   }

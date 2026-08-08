@@ -43,6 +43,16 @@ function createState() {
     variationNumber: 2,
     sku: "GREY-HOODIE-L",
   });
+  reconciliation.observePaymentStatuses(state, {
+    streamId: "morning-stream",
+    statuses: [
+      {
+        variationNumber: 1,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
   reconciliation.recordPaymentComplete(state, {
     streamId: "morning-stream",
     variationNumber: 2,
@@ -57,6 +67,18 @@ function createEnvelope(state = createState()) {
     schemaVersion: STORAGE_SCHEMA_VERSION,
     reconciliationState: state,
   };
+}
+
+function createLegacyState() {
+  const state = createState();
+
+  state.version = 1;
+  state.streams.forEach((stream) => {
+    stream.variations.forEach((auction) => {
+      delete auction.observedPaymentStatus;
+    });
+  });
+  return state;
 }
 
 function createMemoryStorage(initialValues = {}) {
@@ -136,6 +158,11 @@ test("saves and loads a complete detached reconciliation snapshot", async () => 
 
   const firstLoad = await store.loadState();
   assert.deepEqual(firstLoad, original);
+  assert.equal(firstLoad.version, 2);
+  assert.equal(
+    firstLoad.streams[0].variations[0].observedPaymentStatus,
+    "canceled",
+  );
   assert.notEqual(
     firstLoad,
     memoryStorage.getValues()[STORAGE_KEY].reconciliationState,
@@ -169,6 +196,71 @@ test("loads a valid empty reconciliation state", async () => {
   });
 
   assert.deepEqual(await createStore(memoryStorage).loadState(), emptyState);
+});
+
+test("lazily migrates strict legacy v1 state inside the v1 storage envelope", async () => {
+  const legacyState = createLegacyState();
+  const legacyEnvelope = {
+    schemaVersion: 1,
+    reconciliationState: legacyState,
+  };
+  const memoryStorage = createMemoryStorage({
+    [STORAGE_KEY]: legacyEnvelope,
+  });
+  const store = createStore(memoryStorage);
+
+  const migrated = await store.loadState();
+
+  assert.equal(STORAGE_SCHEMA_VERSION, 1);
+  assert.equal(migrated.version, 2);
+  assert.deepEqual(
+    migrated.streams[0].variations.map((auction) => ({
+      paymentStatus: auction.paymentStatus,
+      observedPaymentStatus: auction.observedPaymentStatus,
+    })),
+    [
+      { paymentStatus: "unknown", observedPaymentStatus: "not_observed" },
+      {
+        paymentStatus: "payment_complete",
+        observedPaymentStatus: "payment_complete",
+      },
+    ],
+  );
+  assert.equal(memoryStorage.calls.set.length, 0);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.version,
+    1,
+  );
+
+  await store.saveState(migrated);
+
+  assert.equal(memoryStorage.calls.set.length, 1);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].schemaVersion,
+    STORAGE_SCHEMA_VERSION,
+  );
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.version,
+    2,
+  );
+});
+
+test("rejects legacy v1 auctions containing v2 or unknown fields", async () => {
+  const legacyState = createLegacyState();
+
+  legacyState.streams[0].variations[0].observedPaymentStatus = "not_observed";
+  const envelope = {
+    schemaVersion: STORAGE_SCHEMA_VERSION,
+    reconciliationState: legacyState,
+  };
+  const memoryStorage = createMemoryStorage({ [STORAGE_KEY]: envelope });
+
+  await assertStorageError(
+    () => createStore(memoryStorage).loadState(),
+    "INVALID_RECONCILIATION_STATE",
+  );
+  assert.equal(memoryStorage.calls.set.length, 0);
+  assert.equal(memoryStorage.getValues()[STORAGE_KEY], envelope);
 });
 
 for (const [label, storedValue] of [
@@ -217,7 +309,7 @@ test("distinguishes invalid and unsupported storage schema versions", async () =
 
 test("reports unsupported reconciliation versions through the state boundary", async () => {
   const futureState = createState();
-  futureState.version = 2;
+  futureState.version = 3;
   const memoryStorage = createMemoryStorage({
     [STORAGE_KEY]: createEnvelope(futureState),
   });
@@ -264,6 +356,15 @@ const corruptStateCases = [
   }],
   ["unknown payment status", (state) => {
     state.streams[0].variations[0].paymentStatus = "refunded";
+  }],
+  ["unknown observed payment status", (state) => {
+    state.streams[0].variations[0].observedPaymentStatus = "payment_pending";
+  }],
+  ["missing observed payment status", (state) => {
+    delete state.streams[0].variations[0].observedPaymentStatus;
+  }],
+  ["completed payment with a noncomplete observed status", (state) => {
+    state.streams[0].variations[1].observedPaymentStatus = "payment_fixing";
   }],
   ["money on an unknown payment", (state) => {
     state.streams[0].variations[0].soldPriceCents = 4800;
@@ -444,7 +545,7 @@ test("rejects invalid state before writing and preserves the prior snapshot", as
 
 test("rejects an unsupported reconciliation version before writing", async () => {
   const futureState = createState();
-  futureState.version = 2;
+  futureState.version = 3;
   const memoryStorage = createMemoryStorage();
 
   await assertStorageError(

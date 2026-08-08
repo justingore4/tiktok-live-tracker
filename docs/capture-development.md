@@ -1,7 +1,7 @@
 # Capture development notes
 
 These notes describe the live-validated TikTok LIVE Sold Items boundary, the current
-page-to-worker capture pipeline, and the checks that remain for prompt 3.
+page-to-worker capture pipeline, and the checks that remain for broader live validation.
 
 ## Confirmed live dashboard details
 
@@ -14,20 +14,30 @@ Live inspection on August 8, 2026 confirmed:
 - The nearest useful stable boundary was `[data-tid="m4b_space"]`.
 - The inspected page had exactly one visible `m4b_space` root, 47 exact variation labels,
   and 48 generic `[data-tid="m4b_tag"]` elements.
-- A completed row uses an `m4b_tag` whose own normalized text is exactly
-  `Payment complete` and contains a final dollar price.
+- A payment badge is an exact `[data-tid="m4b_tag"]`; the inspected completed row used
+  the whole normalized text `Payment complete` and contained a final dollar price.
+- During TikTok's correction buffer, the exact `m4b_tag` text is `Payment failed` and
+  capture stores the sanitized `payment_failed` status. If the correction window expires,
+  the exact badge changes to `Canceled` and capture stores the distinct `canceled` status.
+  A fixed payment can instead settle as `Payment complete`.
+- The capture allowlist also recognizes the requested whole-label values
+  `Payment processing` and `Payment fixing`. Their exact spelling and
+  transition order still need confirmation during live use.
 
-The unequal variation/tag counts matter: capture cannot treat every `m4b_tag` as a
-completed payment. It requires the tag's own exact green-badge text and a row that the
-shared parser resolves to one variation number and one price.
+The unequal variation/tag counts matter: capture cannot treat every `m4b_tag` as an
+auction payment. It associates a tag with exactly one row-local variation label. Unknown
+nonempty tag text is reduced to `unrecognized`; raw tag text is never transmitted or
+saved. A canonical completion additionally requires the shared parser to resolve that
+same variation and one price.
 
 Generated CSS classes are not selectors. The center video/current-auction card,
 right-side Chat, and analytics are not capture sources. Sold Items rows can contain
 incidental buyer names, avatars, and product text, but those values are never selected
 as fields, logged raw, transmitted, or persisted.
 
-TikTok's yellow payment-warning state remains unverified. No dashboard area outside
-Sold Items is a planned capture source.
+The non-complete labels' business meaning remains unverified. They are saved and shown as
+observed TikTok UI state only; they do not automatically release inventory, mark an order
+unpaid, or start a timeout. No dashboard area outside Sold Items is a planned source.
 
 ## Current capture pipeline
 
@@ -38,10 +48,11 @@ outside `/streamer/live/product/dashboard`. On that route it:
 2. fails closed and retries when zero, multiple, or unsafe roots are found;
 3. scans only that root for `span` text matching the complete normalized pattern
    `Variation: #N`;
-4. scans only that root for exact `[data-tid="m4b_tag"]` elements whose own normalized
-   text is `Payment complete`, ignoring case;
-5. climbs at most 12 ancestors without crossing the root and accepts a completion only
-   when the shared parser finds one variation number and one final US-dollar price;
+4. scans only that root for exact `[data-tid="m4b_tag"]` elements, associates each with
+   one exact row-local variation label, and converts its whole normalized text to an
+   allowlisted status code or `unrecognized`;
+5. climbs at most 12 ancestors without crossing the root; a completion becomes canonical
+   only when the shared parser finds the same variation and one final US-dollar price;
 6. immediately backfills rendered variations, then observes only that root for text and
    child-node changes;
 7. coalesces mutation bursts with a 150 ms quiet delay and a non-resetting 1-second
@@ -54,27 +65,35 @@ payment badges are parsed outside the unique root. There is no fallback body sca
 
 ### Runtime message boundary
 
-The page sends one of two strict event shapes:
+The page sends one of three strict event shapes:
 
 ```text
 { type: "observe_variations", variationNumbers: [37, 38, ...] }
+{ type: "observe_payment_statuses", statuses: [
+    { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
+] }
 { type: "payment_complete", variationNumber: 37, soldPriceCents: 700 }
 ```
 
-It sends no `streamId`, buyer identity, product title, observation timestamp, source HTML,
-or other DOM content. The content script also cannot access canonical extension storage.
+It sends no `streamId`, raw payment text, buyer identity, product title, observation
+timestamp, source HTML, or other DOM content. The content script also cannot access
+canonical extension storage.
 
 The service worker accepts capture messages only from the extension content script in
 the top frame of the exact product-dashboard URL. It resolves the currently active
 `local-stream:<uuid>` itself and persists:
 
-- every observed variation as an unmapped auction with unknown payment state; and
-- every exact green completion as an authoritative final price for that same auction.
+- every observed variation as an unmapped auction;
+- the latest sanitized observed payment status for each variation; and
+- every exact green completion with a parsed price as authoritative payment truth.
 
-An observation alone does not change inventory or profit. A completed payment contributes
-to completed GMV, but inventory and gross profit commit only after the employee maps the
-variation to an inventory item. Repeated observations and identical payments are no-ops.
-A conflicting later price retains the first price and creates a reconciliation conflict.
+Observed processing, fixing, failed, or unrecognized status does not change inventory or
+profit. A completed payment contributes to completed GMV, but inventory and gross profit
+commit only after the employee maps the variation to an inventory item. A complete badge
+whose price is temporarily unavailable remains a provisional displayed observation;
+later status changes are still accepted until a priced completion is durably saved.
+Repeated observations are no-ops. A conflicting later completed price retains the first
+price and creates a reconciliation conflict.
 
 The content client marks an event delivered only after the worker acknowledges it. A
 failed observation or payment is requeued with a delay that backs off from one to five
@@ -119,15 +138,18 @@ tracker stream.
 7. Select one recorded variation, then wait for a newer Sold Items variation. Confirm the
    new number appears in the selector and becomes the displayed variation automatically.
    A later payment/status update to an existing row should not change the selection.
-8. When a noted row receives the exact green `Payment complete` badge, select that row in
-   the menu and confirm the open panel shows its final price and **Payment complete - item
-   needed** state. Then reopen and Resume once to verify the same number, price, and state
-   remain durable. Item tagging and Google Sheets can be tested in later development.
+8. Keep a variation selected while its badge changes. Confirm the visible **TikTok
+   payment** value changes live among **Payment processing**, **Payment fixing**,
+   **Payment failed**, **Canceled**, and **Payment complete** without a page refresh or menu click. The
+   selector must stay on that variation for status-only changes.
+9. For `Payment complete`, confirm its final price is visible even before an inventory
+   item is selected. Reopen and Resume once to verify the same number, status, and price
+   remain durable. Item tagging and Google Sheets can be tested later.
 
-The live refetch intentionally does not declare the newest saved variation to be
-TikTok's current auction or automatically move an employee away from the order being
-reviewed. A prioritized employee queue based only on persisted Sold Items rows remains
-future work.
+The live refetch does not claim the newest saved variation is TikTok's current bidding
+auction. It does automatically display a newly persisted higher variation for faster
+tracking; status-only changes do not move the selection. A richer prioritized queue
+based only on persisted Sold Items rows remains future work.
 
 ### Read-only root diagnostic
 
@@ -159,13 +181,13 @@ tests provide synthetic DOM coverage.
 ## Local stream and page boundary
 
 The worker-generated local stream ID is durable but is not a verified TikTok room ID.
-Until prompt 3 finds such an ID, follow these rules:
+Until a later identity stage finds such an ID, follow these rules:
 
 - Use one local tracker stream for one real TikTok LIVE.
 - A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
   canonical duplicates are ignored.
-- Keep the local tracker stream active until expected green payment transitions have
-  appeared and capture delivery has had time to finish or retry. There is no visible
+- Keep the local tracker stream active until expected payment transitions have appeared
+  and capture delivery has had time to finish or retry. There is no visible
   queue-drained indicator yet. If a tracker delivery error appears, leave the session
   active through at least the capped retry interval and verify that the open panel
   receives the expected record before using End.
@@ -177,7 +199,7 @@ Until prompt 3 finds such an ID, follow these rules:
 
 Starting a new local tracker stream while the old stream's Sold Items DOM is still
 rendered can backfill those old rows under the new ID. Automatic prevention requires a
-verified TikTok identity and belongs to prompt 3.
+verified TikTok identity and belongs to a later stage.
 
 ## SPA lifecycle manual check
 
@@ -186,7 +208,7 @@ verified TikTok identity and belongs to prompt 3.
 3. Confirm the active message appears again only after the unique Sold Items root is
    available.
 4. Put the tab in the background, return to it, and confirm a later Sold Items variation
-   or green transition appears in the still-open side panel.
+   or payment-status transition appears in the still-open side panel.
 5. If TikTok replaces the Sold Items root, confirm capture rebinds and the backfill does
    not duplicate inventory or GMV.
 
@@ -235,15 +257,15 @@ Sheets, or a live stream.
 - The capture script makes no TikTok network request and never clicks or edits TikTok
   controls.
 
-## Prompt 3 live-validation checklist
+## Next live-validation checklist
 
-Prompt 3 should validate and implement:
+The next capture stage should validate and implement:
 
 - a prioritized employee work queue driven only by the now-live-refreshed, persisted Sold
   Items variations;
 - visible capture connection, retry, and queue-drained state;
-- the exact text, DOM, and business meaning of TikTok's yellow payment-warning and final
-  failed-payment states;
+- the transition timing, color-independent meaning, and business effect of the observed
+  processing, fixing, failed, canceled, and any additional payment labels;
 - a stable TikTok-provided stream/session identifier across SPA navigation and full
   refresh that differs across two LIVE sessions;
 - automatic protection against assigning stale rendered rows to a new local stream;
@@ -253,18 +275,19 @@ Prompt 3 should validate and implement:
   recovered for an end-of-stream pass; and
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
-Google Sheets integration is a later stage and is not part of this capture prompt.
+Google Sheets integration is a later stage and is not part of this capture work.
 
 ## Current limitations
 
 - Parsing assumes English dashboard text and US-dollar formatting.
-- Only exact Sold Items variation labels and exact green completed payments are
-  authoritative. Capture does not infer a failure from missing or non-green tags.
+- Exact Sold Items variation labels and sanitized payment statuses are persisted. Only a
+  priced `Payment complete` is authoritative for sales, inventory, and profit;
+  `Payment failed` and `Canceled` remain observed display states rather than inventory rules.
 - The `m4b_space` selector has been observed on one real stream and still needs broader
   validation.
 - The local stream ID is tracker-owned, not TikTok-verified.
-- The open tagger refetches on durable capture invalidations but does not automatically
-  treat the newest captured variation as TikTok's current auction.
+- The open tagger auto-displays a newly captured higher variation but does not claim that
+  it is TikTok's current bidding auction.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.

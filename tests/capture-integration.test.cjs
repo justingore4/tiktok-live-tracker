@@ -196,6 +196,40 @@ test("binds completed payments to the worker-owned active stream", async () => {
   ]);
 });
 
+test("binds sanitized payment-status batches to the worker-owned active stream", async () => {
+  const harness = createHarness();
+  const statuses = [
+    {
+      variationNumber: 44,
+      observedPaymentStatus: "payment_processing",
+    },
+    {
+      variationNumber: 43,
+      observedPaymentStatus: "payment_failed",
+    },
+    {
+      variationNumber: 42,
+      observedPaymentStatus: "canceled",
+    },
+  ];
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+      statuses,
+    }),
+    { status: "accepted" },
+  );
+  assert.deepEqual(harness.stateCalls, [
+    {
+      type: "observe_payment_statuses",
+      streamId: STREAM_ONE,
+      statuses,
+    },
+  ]);
+  assert.equal("streamId" in statuses[0], false);
+});
+
 test("fails closed without an active stream", async () => {
   const harness = createHarness({
     activeState: streamSession.createStreamSessionState(),
@@ -312,6 +346,25 @@ test("rejects invalid events before resolving active state", async () => {
         streamId: STREAM_ONE,
         variationNumber: 44,
         soldPriceCents: 700,
+      }),
+    (error) =>
+      error instanceof captureProtocol.CaptureProtocolError &&
+      error.code === "INVALID_CAPTURE_MESSAGE",
+  );
+  assert.equal(harness.activeCalls.length, 0);
+  assert.equal(harness.stateCalls.length, 0);
+
+  await assert.rejects(
+    () =>
+      harness.integration.dispatch({
+        type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+        statuses: [
+          {
+            variationNumber: 44,
+            observedPaymentStatus: "Payment processing",
+            statusText: "private DOM text",
+          },
+        ],
       }),
     (error) =>
       error instanceof captureProtocol.CaptureProtocolError &&

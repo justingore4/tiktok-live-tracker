@@ -6,7 +6,8 @@ tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early browser prototype. The tracker now observes the live
 > **Sold items** panel, records its variation numbers under the active local tracker
-> stream, and persists exact green `Payment complete` prices through the service worker.
+> stream, and persists sanitized payment-status changes plus exact green
+> `Payment complete` prices through the service worker.
 > An open Live session side panel refetches saved state as those records change, without
 > requiring a TikTok-page refresh or panel reopen. A dedicated employee work queue,
 > verified TikTok stream identity, and Google Sheets are not connected yet.
@@ -31,6 +32,11 @@ The tracker counts the sale only after TikTok shows the final price with the gre
 A real TikTok `Payment complete` event is authoritative and cannot be undone by this
 extension. Employees can correct the mapped inventory item, but they cannot reverse
 TikTok's payment state.
+
+The tagger also shows the latest observed Sold Items badge independently as **Payment
+processing**, **Payment fixing**, **Payment failed**, **Canceled**, **Payment complete**, or
+**Unrecognized payment status**. Those non-complete labels are display-only for now:
+they do not release stock or change profit until their exact TikTok behavior is validated.
 
 If payment permanently fails after TikTok's payment buffer, the employee can mark the
 variation unpaid. Remaining inventory stays unchanged because that auction never counted
@@ -70,19 +76,21 @@ the item is auctioned again, the employee maps its new variation number.
   `[data-tid="m4b_space"]` root. Capture stops and retries when that selector is missing
   or ambiguous, and sale parsing never scans the video, Chat, analytics, or the rest of
   the dashboard.
-- Strict matching for exact `Variation: #N` labels and exact green
-  `[data-tid="m4b_tag"]` badges whose normalized text is `Payment complete`. Generic tag
-  counts and generated CSS classes are not capture inputs. Incidental buyer and product
-  text in the same row is never selected as a field, logged raw, transmitted, or saved.
+- Strict row-local matching for exact `Variation: #N` labels and exact
+  `[data-tid="m4b_tag"]` badges. The allowlist recognizes `Payment processing`,
+  `Payment fixing`, `Payment failed`, `Canceled`, and `Payment complete`; any other nonempty badge is
+  stored only as `unrecognized`, never as raw page text. Generic tag counts and generated
+  CSS classes are not capture inputs. Incidental buyer and product text in the same row
+  is never selected as a field, logged raw, transmitted, or saved.
 - A strict capture protocol and runtime client that send only observed variation numbers
-  or a completed variation plus its integer-cent price. The page sends no stream ID,
-  buyer data, or DOM content.
+  and sanitized payment-status codes, plus a completed variation's integer-cent price.
+  The page sends no stream ID, buyer data, raw badge text, or DOM content.
 - A worker-owned capture integration that authorizes only the top-level product
   dashboard, resolves the active local stream itself, and persists observations and
-  completed payments through the serialized reconciliation coordinator.
+  payment changes through the serialized reconciliation coordinator.
 - A data-free capture-state invalidation sent only after the worker accepts a durable
   capture update. An open Live session side panel validates and coalesces those notices,
-  then refetches canonical state so new variations and green-payment changes appear live
+  then refetches canonical state so new variations and payment changes appear live
   without trusting page-supplied state.
 - Ack-based delivery with retry and bounded backoff. Repeated DOM scans, page reloads,
   and service-worker restarts remain idempotent for the same local stream.
@@ -120,7 +128,8 @@ the item is auctioned again, the employee maps its new variation number.
   auto-follow behavior. A selected Sold Items row remains a recorded row, not a claim
   about the auction currently bidding.
 - Visible capture connection, retry, and queue-drained status.
-- Detection of TikTok's yellow payment-warning state.
+- Verified business meaning for TikTok's non-complete payment labels. The tracker displays
+  the observed label but does not infer inventory release, cancellation, or a timeout.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
 - Google Sheets inventory import and results export.
@@ -147,10 +156,11 @@ the item is auctioned again, the employee maps its new variation number.
    1. **Completed:** create persistent local active-stream sessions with Start, Resume,
       and End controls;
    2. **Completed:** attach read-only Sold Items observations to the active local stream
-      and persist variation numbers and payment completion through the worker;
-   3. **In progress:** the open tagger now refetches persisted capture changes in real
-      time; next add a prioritized employee queue, visible capture status, verified
-      TikTok stream identity, and complete local live-stream validation.
+      and persist variation numbers and payment changes through the worker;
+   3. **Completed:** refetch persisted capture changes in real time, auto-follow each new
+      higher variation, and display its observed TikTok payment status independently of
+      inventory mapping. A prioritized queue, visible capture status, verified TikTok
+      stream identity, and broader live validation remain next.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
 7. Add end-of-stream reconciliation and analytics reporting.
@@ -245,10 +255,12 @@ prototype data. There is no silent reset.
     close the panel, or choose Resume again.
 16. Select one recorded variation, then wait for a newer Sold Items variation. Confirm
     the new number appears in the selector and becomes the displayed variation
-    automatically. When that row receives the exact green `Payment complete` badge,
-    confirm its final price and **Payment complete - item needed** state appear without
-    changing the selected variation. Do not use Chat, the video auction card, or analytics
-    as a comparison source.
+    automatically. Under **TikTok payment**, confirm its exact observed state appears as
+    `Payment processing`, `Payment fixing`, `Payment failed`, `Canceled`, or `Payment complete` and
+    changes live without refreshing. A status-only update must keep that variation
+    selected. For `Payment complete`, also confirm the captured final price appears even
+    before an inventory item is selected. Do not use Chat, the video auction card, or
+    analytics as a comparison source.
 17. Map one captured pending variation to `Stussy tee - black, L` and wait for the save.
     Reopen and Resume once to confirm the mapping and pending reservation are durable.
     Correct it to another available card, then click that selected card again; confirm
@@ -259,7 +271,7 @@ prototype data. There is no silent reset.
 19. Use TikTok's own navigation to leave the dashboard and return without reloading the
     tab; confirm capture becomes active again. Put the tab in the background, return to
     it, and confirm a later Sold Items change is still captured.
-20. Keep the same local tracker stream active until expected green payment transitions
+20. Keep the same local tracker stream active until expected payment transitions
     have appeared and the capture delivery queue has had time to finish or retry. End it
     only after that point and after resolving any inventory-reserved pending mapping.
     Cancel End once, then confirm it; TikTok LIVE must remain unaffected. Before the next
@@ -292,10 +304,11 @@ authentication is deliberately unresolved until the Sheets stage:
   from the extension.
 
 Never commit `.env` files, access tokens, private keys, or client data. Capture runtime
-messages contain only variation numbers and, for completed payments, the final price in
-integer cents. They contain no page-supplied stream ID, buyer information, product text,
-or DOM content. The trusted worker binds those facts to the active local tracker stream;
-nothing is sent to Google Sheets.
+messages contain only variation numbers, allowlisted payment-status codes, and, for
+completed payments, the final price in integer cents. They contain no page-supplied
+stream ID, raw badge text, buyer information, product text, or DOM content. The trusted
+worker binds those facts to the active local tracker stream; nothing is sent to Google
+Sheets.
 
 ## Documentation
 

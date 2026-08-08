@@ -208,6 +208,7 @@ function validateSender(sender, command, boundary) {
     boundary.protocol === reconciliationCoordinator &&
     [
       reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
       reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
     ].includes(command.type)
   ) {
