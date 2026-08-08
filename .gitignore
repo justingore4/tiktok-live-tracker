@@ -1,0 +1,43 @@
+# Secrets & credentials — never commit these
+config/*
+!config/.env.example
+*.env
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+service-account*.json
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Python (only if backend ends up in Python)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Build output
+dist/
+build/
+*.zip
+
+# Editor / OS junk
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+Thumbs.db
+Desktop.ini
+*.swp
+
+# Logs & local scratch
+*.log
+npm-debug.log*
+scratch/
+tmp/

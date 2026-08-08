@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TikTok Live Tracker",
+  "version": "0.1.0",
+  "description": "Tag live-stream items as they sell and reconcile them against TikTok payment confirmations.",
+  "permissions": ["storage"],
+  "host_permissions": [],
+  "content_scripts": [],
+  "action": {
+    "default_title": "TikTok Live Tracker"
+  }
+}
