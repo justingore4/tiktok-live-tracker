@@ -4,6 +4,8 @@ const test = require("node:test");
 const {
   MOCK_INVENTORY,
   filterInventoryEntries,
+  formatUsdCents,
+  getProfitDisplay,
   getRemainingQuantity,
   getStockDisplay,
   normalizeSearchText,
@@ -69,16 +71,81 @@ test("derives available, low-stock, and sold-out labels", () => {
     state: "available",
     label: "5 left",
     remainingQuantity: 5,
+    availableToTagQuantity: 5,
+    reservedQuantity: 0,
   });
   assert.deepEqual(getStockDisplay({ quantityReceived: 1 }), {
     state: "low_stock",
     label: "1 left",
     remainingQuantity: 1,
+    availableToTagQuantity: 1,
+    reservedQuantity: 0,
   });
   assert.deepEqual(getStockDisplay({ quantityReceived: 0 }), {
     state: "sold_out",
     label: "Sold out",
     remainingQuantity: 0,
+    availableToTagQuantity: 0,
+    reservedQuantity: 0,
+  });
+});
+
+test("distinguishes available, fully reserved, and over-reserved inventory", () => {
+  assert.deepEqual(
+    getStockDisplay({
+      remainingQuantity: 5,
+      availableToTagQuantity: 4,
+      reservedQuantity: 1,
+      reservationShortfallQuantity: 0,
+    }),
+    {
+      state: "available",
+      label: "4 available · 1 pending",
+      remainingQuantity: 5,
+      availableToTagQuantity: 4,
+      reservedQuantity: 1,
+    },
+  );
+  assert.deepEqual(
+    getStockDisplay({
+      remainingQuantity: 1,
+      availableToTagQuantity: 0,
+      reservedQuantity: 1,
+      reservationShortfallQuantity: 0,
+    }),
+    {
+      state: "fully_reserved",
+      label: "All reserved · 1 pending",
+      remainingQuantity: 1,
+      availableToTagQuantity: 0,
+      reservedQuantity: 1,
+    },
+  );
+  assert.equal(
+    getStockDisplay({
+      remainingQuantity: 1,
+      availableToTagQuantity: -1,
+      reservedQuantity: 2,
+      reservationShortfallQuantity: 1,
+    }).state,
+    "over_reserved",
+  );
+});
+
+test("formats currency and positive, negative, and neutral gross profit", () => {
+  assert.equal(formatUsdCents(4800), "$48.00");
+  assert.equal(formatUsdCents(-400), "-$4.00");
+  assert.deepEqual(getProfitDisplay(3600), {
+    tone: "positive",
+    label: "+$36.00 profit",
+  });
+  assert.deepEqual(getProfitDisplay(-400), {
+    tone: "negative",
+    label: "-$4.00 loss",
+  });
+  assert.deepEqual(getProfitDisplay(0), {
+    tone: "neutral",
+    label: "$0.00 profit",
   });
 });
 

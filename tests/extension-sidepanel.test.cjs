@@ -58,6 +58,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
 
   assert.deepEqual(resourcePaths, [
     "sidepanel.css",
+    "../shared/sale-parser.js",
     "../shared/reconciliation.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
@@ -71,7 +72,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
   assert.doesNotMatch(html, /<script(?![^>]+src=)[^>]*>/i);
 });
 
-test("side panel exposes accessible mapping controls and clearly labels demo data", () => {
+test("side panel exposes accessible lifecycle controls and clearly labels demo data", () => {
   const html = fs.readFileSync(
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
@@ -83,13 +84,30 @@ test("side panel exposes accessible mapping controls and clearly labels demo dat
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
   assert.match(html, /<button class="inventory-card"[^>]+aria-pressed="false"/);
   assert.match(html, /id="pending-mapping"/);
+  assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
+  assert.match(html, /id="state-warning"[^>]+role="status"/);
   assert.match(html, />Waiting for payment</);
+  assert.match(html, /<label[^>]+for="sold-price"/);
+  assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
+  assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
+  assert.match(html, />Offline test controls</);
+  assert.match(html, />\s*Simulate payment complete\s*</);
+  assert.match(html, />\s*Simulate payment buffer expired\s*</);
+  assert.match(html, />\s*Mark unpaid after buffer\s*</);
+  assert.match(html, />\s*Undo unpaid\s*</);
+  assert.match(html, /id="undo-payment-note"/);
+  assert.match(
+    html,
+    /id="undo-simulated-payment"[\s\S]+aria-describedby="undo-payment-note"/,
+  );
+  assert.match(html, />\s*Undo simulated payment\s*</);
+  assert.match(html, /data-field="gross-profit"/);
   assert.match(html, />Demo data</);
-  assert.match(html, /Sold-out entries[\s\S]+cannot be selected/);
+  assert.match(html, /do not act on TikTok/);
 });
 
-test("tagger UI disables sold-out cards and stays inside mapping-only scope", () => {
+test("tagger UI wires the offline lifecycle and stays outside integration scope", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const panelSource = fs.readFileSync(
     path.join(taggerDirectory, "sidepanel.js"),
@@ -101,11 +119,36 @@ test("tagger UI disables sold-out cards and stays inside mapping-only scope", ()
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
 
-  assert.match(panelSource, /button\.disabled = stock\.state === "sold_out"/);
+  assert.match(panelSource, /button\.disabled = !entry\.selectionAllowed/);
   assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
+  assert.match(panelSource, /session\.completePayment/);
+  assert.match(panelSource, /session\.simulatePaymentBufferExpired/);
+  assert.match(panelSource, /session\.markUnpaid/);
+  assert.match(panelSource, /session\.undoMarkUnpaid/);
+  assert.match(panelSource, /session\.undoSimulatedPayment/);
+  assert.match(panelSource, /offlineSimulation: true/);
+  assert.match(
+    panelSource,
+    /undoSimulatedPaymentButton\.addEventListener\("click",[\s\S]+searchInput\.value = "";[\s\S]+renderAll\(\{ focusSku: result\.mapping\.sku \}\)/,
+  );
+  assert.match(
+    panelSource,
+    /committed && !canUndoSimulatedPayment/,
+  );
+  assert.match(
+    panelSource,
+    /undoSimulatedPaymentButton\.hidden = !canUndoSimulatedPayment/,
+  );
+  assert.match(panelSource, /const auction = view\.auction/);
+  assert.match(panelSource, /result\.action === "completed_sale_mapped"/);
+  assert.match(panelSource, /unmapped_completed_sale/);
+  assert.match(panelSource, /auctionEyebrow\.textContent/);
+  assert.match(panelSource, /stateWarning\.textContent !== warning/);
+  assert.doesNotMatch(panelSource, /this pending mapping/);
+  assert.doesNotMatch(mappingSource, /undoPaymentComplete/);
   assert.doesNotMatch(
     mappingSource,
-    /recordPaymentComplete|markUnpaid|undoMarkUnpaid|chrome\.storage|sendMessage|\bfetch\s*\(/,
+    /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
   );
 });
 

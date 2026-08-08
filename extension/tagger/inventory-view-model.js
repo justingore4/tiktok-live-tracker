@@ -75,6 +75,13 @@
       return Number.isSafeInteger(quantity) ? quantity : 0;
     }
 
+    function getAvailableToTagQuantity(entry) {
+      const quantity =
+        entry?.availableToTagQuantity ?? getRemainingQuantity(entry);
+
+      return Number.isSafeInteger(quantity) ? quantity : 0;
+    }
+
     function filterInventoryEntries(entries, query) {
       if (!Array.isArray(entries)) {
         throw new TypeError("Inventory entries must be an array.");
@@ -101,25 +108,100 @@
 
     function getStockDisplay(entry) {
       const remainingQuantity = getRemainingQuantity(entry);
+      const availableToTagQuantity = getAvailableToTagQuantity(entry);
+      const reservedQuantity = Number.isSafeInteger(entry?.reservedQuantity)
+        ? entry.reservedQuantity
+        : 0;
+      const reservationShortfallQuantity = Number.isSafeInteger(
+        entry?.reservationShortfallQuantity,
+      )
+        ? entry.reservationShortfallQuantity
+        : 0;
+
+      if (reservationShortfallQuantity > 0) {
+        return {
+          state: "over_reserved",
+          label: `Short by ${reservationShortfallQuantity}`,
+          remainingQuantity,
+          availableToTagQuantity,
+          reservedQuantity,
+        };
+      }
 
       if (remainingQuantity <= 0) {
         return {
           state: "sold_out",
           label: "Sold out",
           remainingQuantity,
+          availableToTagQuantity,
+          reservedQuantity,
+        };
+      }
+
+      if (availableToTagQuantity <= 0) {
+        return {
+          state: "fully_reserved",
+          label: reservedQuantity > 0
+            ? `All reserved · ${reservedQuantity} pending`
+            : "None available",
+          remainingQuantity,
+          availableToTagQuantity,
+          reservedQuantity,
+        };
+      }
+
+      const hasDerivedAvailability = Number.isSafeInteger(
+        entry?.availableToTagQuantity,
+      );
+      const label = hasDerivedAvailability
+        ? reservedQuantity > 0
+          ? `${availableToTagQuantity} available · ${reservedQuantity} pending`
+          : `${availableToTagQuantity} available`
+        : `${remainingQuantity} left`;
+
+      return {
+        state: availableToTagQuantity <= 2 ? "low_stock" : "available",
+        label,
+        remainingQuantity,
+        availableToTagQuantity,
+        reservedQuantity,
+      };
+    }
+
+    function formatUsdCents(value) {
+      if (!Number.isSafeInteger(value)) {
+        throw new TypeError("Currency value must be a safe integer number of cents.");
+      }
+
+      const absoluteValue = Math.abs(value);
+      const dollars = Math.floor(absoluteValue / 100);
+      const cents = String(absoluteValue % 100).padStart(2, "0");
+
+      return `${value < 0 ? "-" : ""}$${dollars.toLocaleString("en-US")}.${cents}`;
+    }
+
+    function getProfitDisplay(value) {
+      const formattedValue = formatUsdCents(value);
+
+      if (value < 0) {
+        return {
+          tone: "negative",
+          label: `${formattedValue} loss`,
         };
       }
 
       return {
-        state: remainingQuantity <= 2 ? "low_stock" : "available",
-        label: `${remainingQuantity} left`,
-        remainingQuantity,
+        tone: value > 0 ? "positive" : "neutral",
+        label: `${value > 0 ? "+" : ""}${formattedValue} profit`,
       };
     }
 
     return {
       MOCK_INVENTORY,
       filterInventoryEntries,
+      formatUsdCents,
+      getAvailableToTagQuantity,
+      getProfitDisplay,
       getRemainingQuantity,
       getStockDisplay,
       normalizeSearchText,

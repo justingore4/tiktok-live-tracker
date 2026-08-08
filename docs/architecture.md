@@ -74,7 +74,7 @@ The engine derives a user-facing auction status from both axes:
 | --- | --- |
 | `unmapped` | No completed payment and no inventory mapping |
 | `pending` | Inventory is mapped, but TikTok has not shown payment complete |
-| `marked_unpaid` | Locally closed as unpaid; inventory is unchanged |
+| `marked_unpaid` | Locally closed as unpaid; remaining stock is unchanged and its reservation is released |
 | `unmapped_completed` | TikTok shows payment complete, but the inventory item is unknown |
 | `committed` | Payment is complete and the inventory item is mapped |
 
@@ -85,21 +85,25 @@ The engine derives a user-facing auction status from both axes:
 
 Consequences:
 
-1. A failed auction never decrements stock, so **Mark unpaid** does not need to restore
-   inventory.
+1. A failed auction never decrements remaining stock, so **Mark unpaid** has no completed
+   sale to restore; it releases the pending reservation instead.
 2. A green-but-unmapped auction still contributes to completed GMV and must be shown as
    an exception until an employee maps it.
 3. Reprocessing the same completed event must update the same auction record rather
    than count a second sale.
 4. Employee mappings must be saved persistently before refresh/crash recovery can be
    promised. Persistent storage is not implemented yet.
+5. Canonical TikTok payment state is monotonic: `unknown → payment_complete`. There is no
+   canonical transition back to unknown or unpaid. A future refund or cancellation must
+   be represented as a separate authoritative event.
 
 ### Permanent payment failure and re-auction
 
 After the buyer's payment buffer has expired:
 
 1. The employee marks the mapped variation unpaid.
-2. The record becomes `marked_unpaid` and inventory stays unchanged.
+2. The record becomes `marked_unpaid`; remaining inventory and profit stay unchanged,
+   while the pending reservation is released.
 3. If the same physical item is auctioned again, TikTok assigns a new variation number.
 4. The employee maps that new variation as a separate auction.
 
@@ -110,8 +114,10 @@ and surfaces a conflict for review.
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
-rules module. The offline tagger demo now uses its mapping operation, but payment events
-from the capture probe are not connected yet.
+rules module. The offline tagger demo uses its mapping, payment-complete, mark-unpaid, and
+undo-unpaid operations, but payment events from the capture probe are not connected yet.
+Simulated-payment undo is a private tagger-session checkpoint, not a reconciliation-engine
+operation.
 
 Implemented behavior includes:
 
@@ -124,7 +130,9 @@ Implemented behavior includes:
 - Allowing a mapping to be corrected before or after a sale commits.
 - Replacing the committed cost snapshot when a committed sale is corrected to a
   different SKU.
-- Leaving inventory unchanged for pending and marked-unpaid records.
+- Leaving remaining inventory and profit unchanged for pending and marked-unpaid records.
+- Tracking mapped pending units as reservations; the tagger uses the derived availability
+  to stop another pending auction from claiming the same last unit.
 - Recording a real completed sale even if inventory becomes negative, while surfacing an
   oversold warning.
 - Warning immediately when a pending variation is mapped to an exhausted SKU.
@@ -133,12 +141,26 @@ Implemented behavior includes:
 All money is represented internally as integer cents. For example, `$48.00` becomes
 `4800`. This avoids decimal rounding errors.
 
+Inventory exposes two deliberately different quantities:
+
+```text
+remainingQuantity = quantityReceived - completed sales
+availableToTagQuantity = remainingQuantity - pending reservations
+```
+
+Pending mappings therefore reduce what the employee can tag next, but they do not count
+as sold or reduce reported remaining inventory. Marking an auction unpaid releases its
+reservation; undo restores it; and payment completion converts the reservation into a
+completed sale.
+
 ### Summary scope
 
 The engine can calculate results for all streams or filter performance to one stream:
 
 - `inventory` always reflects committed sales across every stream currently stored in
   the state (`inventoryScope: "all_streams"`).
+- Its reservation and available-to-tag quantities also include pending mappings across
+  every stored stream.
 - `itemPerformance` and financial totals follow the requested stream filter.
 - `completedGmvCents` includes every payment-complete auction, even if it is still
   unmapped.
@@ -211,33 +233,49 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — mapping demo implemented
+## 5. Employee tagger — lifecycle demo implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
-The current Chrome side-panel mapping demo includes:
+The current Chrome side-panel lifecycle demo includes:
 
 - A clearly labeled simulated variation number.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
-- Remaining-quantity, low-stock, and sold-out visual states.
+- Engine-derived available, pending-reservation, remaining, and sold-out states.
 - One-click mapping and correction of the simulated variation.
-- A selected-card state and **Waiting for payment** summary.
-- Disabled sold-out entries, accessible buttons, keyboard search controls, and a
-  no-results state.
+- **Waiting for payment**, **Payment complete**, and **Marked unpaid** states.
+- A **Payment complete - item needed** exception when shared state receives payment before
+  the employee mapping; choosing an item immediately commits that sale.
+- Clearly labeled offline controls that simulate a completed payment and expired payment
+  buffer without acting on TikTok.
+- Final price, unit cost, gross profit/loss, and remaining inventory after completion.
+- **Undo simulated payment**, which restores the isolated demo's pre-completion payment
+  state while preserving later mapping corrections, removes the simulated revenue/profit
+  deduction, and returns focus to item selection.
+- **Mark unpaid after buffer** and **Undo unpaid** behavior that leaves remaining inventory
+  and profit unchanged; marking unpaid releases the reservation and undo restores it.
+- Mapping correction after completion, with inventory and profit recalculated by the
+  reconciliation engine.
+- An inventory warning when a truthful historical correction produces negative stock.
+- Unavailable, unselected entries disabled for new or pending mappings. The selected entry
+  stays usable, and truthful historical corrections remain allowed and warn when they
+  produce a shortage.
+- Accessible buttons, keyboard search controls, and a no-results state.
 
-The demo mapping exists only while the side panel remains loaded. It uses mock inventory
-and does not receive the real current variation, persist state, record payment, calculate
-profit, or decrement inventory.
+The demo exists only while the side panel remains loaded. It uses mock inventory and a
+fixed variation `#203`; reloading the extension resets its state. It does not receive the
+real current variation, persist state, or receive payment events from the capture probe.
+Its simulated-payment undo is explicitly enabled only when the demo session owns its
+isolated state; it is disabled for supplied/shared state and cannot reverse a TikTok
+event.
 
 Planned tagger behavior includes:
 
 - Show the current variation and a queue of variations needing attention.
-- Display final price and gross profit only after the sale commits.
-- Allow remapping after a misclick, including after commit.
-- Allow **Mark unpaid** only after the payment buffer and provide undo.
-- Surface completed-but-unmapped sales and inventory/conflict warnings.
+- Queue completed-but-unmapped sales and capture-generated conflicts when real capture is
+  connected.
 
 The production tagger is planned as a queue rather than a blocking modal so an employee
 can catch up when multiple variations need attention. The current demo holds one fixed
@@ -253,6 +291,10 @@ exist only in an in-memory service-worker variable.
 
 Persistence must make employee mappings, payment events, corrections, and the outbound
 sync queue recoverable after a page refresh or browser restart.
+
+Offline simulation checkpoints and resets must never overwrite captured or persisted
+canonical state. Production refunds or cancellations require their own authoritative
+events rather than a reversed `payment_complete` record.
 
 ### Google Sheets
 
@@ -340,10 +382,9 @@ Browser support beyond Chrome is a later decision.
 
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** offline reconciliation engine and automated tests.
-3. **In progress:** tagger foundation and mapping workflow completed; lifecycle controls
-   are next.
+3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
 4. Persistent browser storage and recovery.
-5. Capture-to-engine-to-tagger integration.
-6. Google Sheet template, authentication, import, and export.
-7. Live-stream validation and selector refinement.
+5. Capture hardening and live-stream selector/session validation.
+6. Capture-to-engine-to-tagger integration.
+7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.
