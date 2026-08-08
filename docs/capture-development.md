@@ -1,116 +1,196 @@
 # Capture development notes
 
-These notes describe what has been verified on the TikTok LIVE dashboard, what the
-current read-only probe does, and what must be checked during the next real stream.
+These notes describe the live-validated TikTok LIVE Sold Items boundary, the current
+page-to-worker capture pipeline, and the checks that remain for prompt 3.
 
-## Confirmed dashboard details
+## Confirmed live dashboard details
+
+Live inspection on August 8, 2026 confirmed:
 
 - Origin: `https://shop.tiktok.com`
-- Path: `/streamer/live/event/dashboard`
-- An inspected completed row exposed these values as DOM text:
-  - `Example Buyer has won: $48.00`
-  - `Variation: #250`
-  - `Payment complete`
-- The inspected payment badge had `data-tid="m4b_tag"`.
-- The extension startup message has been confirmed on the blank offline dashboard.
+- Path: `/streamer/live/product/dashboard`
+- The only capture source is the left-side **LIVE auctions → Sold items** history.
+- A selected row contained an exact `span` label such as `Variation: #37`.
+- The nearest useful stable boundary was `[data-tid="m4b_space"]`.
+- The inspected page had exactly one visible `m4b_space` root, 47 exact variation labels,
+  and 48 generic `[data-tid="m4b_tag"]` elements.
+- A completed row uses an `m4b_tag` whose own normalized text is exactly
+  `Payment complete` and contains a final dollar price.
 
-Generated CSS class names are not treated as stable selectors. The probe begins with the
-observed payment-tag attribute, requires that badge's own normalized text to equal
-`Payment complete`, and climbs to the smallest candidate row without crossing its active
-capture boundary. It accepts the row only when the shared parser finds exactly one
-variation and one sold price.
+The unequal variation/tag counts matter: capture cannot treat every `m4b_tag` as a
+completed payment. It requires the tag's own exact green-badge text and a row that the
+shared parser resolves to one variation number and one price.
 
-Only the completed green row has been inspected in enough detail to implement capture.
-The current-auction and yellow-warning DOM structures remain unknown.
+Generated CSS classes are not selectors. The center video/current-auction card,
+right-side Chat, and analytics are not capture sources. Sold Items rows can contain
+incidental buyer names, avatars, and product text, but those values are never selected
+as fields, logged raw, transmitted, or persisted.
 
-## Current capture probe
+TikTok's yellow payment-warning state remains unverified. No dashboard area outside
+Sold Items is a planned capture source.
 
-The extension content script:
+## Current capture pipeline
 
-1. is available only on the exact `https://shop.tiktok.com` host but remains inactive
-   outside the exact `/streamer/live/event/dashboard` path;
-2. checks its route and document body at startup, on route and page-resume signals, and
-   with a 250 ms fallback;
-3. starts once on the dashboard, attaches its observer, and then performs an initial scan
-   of rendered payment-tag candidates;
-4. disconnects its observer and disposes its scheduler when the route is left, restarting
-   them when the dashboard is re-entered or the document body is replaced;
-5. filters text and child-node mutation batches for changes that can affect the confirmed
-   payment tag or its row, then sends only relevant work to the bounded scheduler;
-6. accepts only the exact `[data-tid="m4b_tag"]` attribute with badge text that normalizes
-   to `Payment complete`, ignoring case;
-7. searches at most 12 ancestors, never parsing, accepting, or crossing the dashboard
-   body boundary;
-8. validates and returns the smallest candidate row with the pure shared parser;
-9. logs a normalized event with `streamId: null` only when variation number, final price,
-   and payment-complete status are present;
-10. ignores an identical event already seen in the unverified page scope, including a
-    route exit and re-entry in that document; and
-11. warns instead of replacing the first price if the same variation later appears with
-    a different completed price.
+The content script is available only on the exact TikTok Shop host and stays dormant
+outside `/streamer/live/product/dashboard`. On that route it:
 
-The scheduler waits 150 ms for a quiet moment so a short burst produces one scan. A
-non-resetting 1-second maximum wait also forces a scan while chat, viewer counts, or other
-dashboard elements keep changing continuously. Either timer closes the same batch, so it
-cannot double-scan. The initial scan still runs immediately after observation begins.
+1. requires exactly one visible `[data-tid="m4b_space"]` Sold Items root;
+2. fails closed and retries when zero, multiple, or unsafe roots are found;
+3. scans only that root for `span` text matching the complete normalized pattern
+   `Variation: #N`;
+4. scans only that root for exact `[data-tid="m4b_tag"]` elements whose own normalized
+   text is `Payment complete`, ignoring case;
+5. climbs at most 12 ancestors without crossing the root and accepts a completion only
+   when the shared parser finds one variation number and one final US-dollar price;
+6. immediately backfills rendered variations, then observes only that root for text and
+   child-node changes;
+7. coalesces mutation bursts with a 150 ms quiet delay and a non-resetting 1-second
+   maximum wait; and
+8. uses route, page-resume, body, and root-identity checks to stop or rebind after TikTok
+   SPA navigation and root replacement.
 
-`capture/sale-candidate-locator.js` contains the DOM targeting and mutation relevance
-rules. It uses `textContent`, the one inspected `data-tid`, exact badge text, parser
-invariants, and a hard ancestor boundary rather than generated CSS classes, panel heading
-text, or positional selectors. Added subtrees and character changes related to a payment
-tag or its row are relevant, including removals that can make previously ambiguous text
-valid. Unrelated, lookalike, outside-boundary, and detached changes are ignored. If
-mutation inspection is malformed or throws, the filter requests a scan so an
-optimization cannot silently disable capture.
+The lifecycle check can locate the root from the page, but no sale labels, prices, or
+payment badges are parsed outside the unique root. There is no fallback body scan.
 
-`capture/capture-event-registry.js` provides separate page and verified-stream scopes.
-The verified-stream behavior is covered offline, including identical variation numbers in
-different streams, but the registry does not discover or invent an ID. The live runtime
-uses an unverified page scope, warns once about that limitation, and emits
-`streamIdentityStatus: "unverified"` with `dedupeScope: "page_load"`.
+### Runtime message boundary
 
-The side panel now has a separate persistent local tracker session with a worker-generated
-`local-stream:<uuid>` ID. That ID survives panel and browser restarts and safely separates
-employee mappings between tracker sessions, but the content script cannot read or use it
-yet. It must not be described as a verified TikTok stream ID. Connecting read-only
-capture events to that active local session is the next integration prompt.
+The page sends one of two strict event shapes:
 
-TikTok can change routes with its History API without reloading the page or emitting a
-single dependable browser event. Route and resume signals therefore provide immediate
-checks when available, while the 250 ms fallback catches silent history changes and body
-replacement. Repeated checks are idempotent: one body has at most one active capture
-observer and scheduler. This recovery uses ordinary content-script browser APIs and adds
-no extension permission.
+```text
+{ type: "observe_variations", variationNumbers: [37, 38, ...] }
+{ type: "payment_complete", variationNumber: 37, soldPriceCents: 700 }
+```
 
-It remains disconnected outside the dashboard path. It does not modify the TikTok page,
-click TikTok controls, decrement inventory, persist sales, connect to the reconciliation
-engine, or contact Google Sheets.
+It sends no `streamId`, buyer identity, product title, observation timestamp, source HTML,
+or other DOM content. The content script also cannot access canonical extension storage.
 
-## Load the probe in Chrome
+The service worker accepts capture messages only from the extension content script in
+the top frame of the exact product-dashboard URL. It resolves the currently active
+`local-stream:<uuid>` itself and persists:
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Select **Load unpacked**.
-4. Choose this repository's `extension` directory.
-5. Open the side panel, choose **Live session**, and Start or Resume the local tracker
-   stream. These controls do not start TikTok LIVE.
-6. Open the TikTok LIVE dashboard.
-7. Refresh the dashboard if it was already open.
-8. Open DevTools → **Console** and look for:
+- every observed variation as an unmapped auction with unknown payment state; and
+- every exact green completion as an authoritative final price for that same auction.
+
+An observation alone does not change inventory or profit. A completed payment contributes
+to completed GMV, but inventory and gross profit commit only after the employee maps the
+variation to an inventory item. Repeated observations and identical payments are no-ops.
+A conflicting later price retains the first price and creates a reconciliation conflict.
+
+The content client marks an event delivered only after the worker acknowledges it. A
+failed observation or payment is requeued with a delay that backs off from one to five
+seconds while the same Sold Items root stays active. Root replacement triggers a fresh
+backfill, and persisted reconciliation state makes that repeat safe.
+
+If no local tracker stream is active, or saved session/state cannot be verified, no
+canonical write occurs. The current root's facts remain queued for retry.
+
+After the worker accepts a capture fact through the durable reconciliation boundary, it
+sends the open side panel a data-free `capture_state_changed` invalidation. The panel
+validates the exact extension-worker message, coalesces bursts, and refetches canonical
+state through its read client. The notice contains no stream ID, variation, price, buyer
+information, DOM content, or snapshot. A notification delivery failure does not undo or
+misreport the already-successful capture write.
+
+The existing capture-event registry still deduplicates sanitized page-scoped Console
+diagnostics. Those logs contain variation, payment status, price, the fixed page path,
+source label, and local observation time; they contain no buyer or DOM content and do
+not choose canonical identity. Only the worker binds capture facts to the active local
+tracker stream.
+
+## Load and test during a real stream
+
+1. Open `chrome://extensions`, enable **Developer mode**, and load or reload this
+   repository's `extension` directory.
+2. Refresh any TikTok dashboard tab that was already open so it receives the current
+   content scripts.
+3. Open the extension side panel, choose **Live session**, and Start or Resume one local
+   tracker stream. This does not start or control TikTok LIVE.
+4. Open `https://shop.tiktok.com/streamer/live/product/dashboard` and select TikTok's
+   left-side **Sold items** view.
+5. Open DevTools → **Console** and confirm:
 
    ```text
-   [TikTok Live Tracker] Capture probe active on /streamer/live/event/dashboard.
+   [TikTok Live Tracker] Capture probe active on /streamer/live/product/dashboard.
    ```
 
-On a blank offline dashboard, the startup message without a completed-sale event is the
-expected result.
+6. Keep the active Live session side panel open. Note several variation numbers visible
+   in Sold Items and confirm those exact numbers appear in the variation selector after
+   the capture scan and refetch settle. Do not refresh TikTok or reopen the panel.
+7. Select one recorded variation, then wait for a newer Sold Items variation. Confirm the
+   new number appears in the selector and becomes the displayed variation automatically.
+   A later payment/status update to an existing row should not change the selection.
+8. When a noted row receives the exact green `Payment complete` badge, select that row in
+   the menu and confirm the open panel shows its final price and **Payment complete - item
+   needed** state. Then reopen and Resume once to verify the same number, price, and state
+   remain durable. Item tagging and Google Sheets can be tested in later development.
 
-After changing extension code, reload the unpacked extension. A tab that was already open
-before that extension reload must be refreshed once to receive the new content script.
-Afterward, navigating away from and back to the dashboard as an SPA no longer requires a
-refresh. Load and verify the extension before the next live stream; refreshing a
-historical stream after it has ended may replace the old dashboard contents with a blank
-page.
+The live refetch intentionally does not declare the newest saved variation to be
+TikTok's current auction or automatically move an employee away from the order being
+reviewed. A prioritized employee queue based only on persisted Sold Items rows remains
+future work.
+
+### Read-only root diagnostic
+
+If the active message is missing or capture is not restoring variations, run this
+read-only diagnostic in the dashboard Console:
+
+```js
+[...document.querySelectorAll('[data-tid="m4b_space"]')].map(
+  (root, index) => ({
+    index,
+    variationCount: [...root.querySelectorAll("span")].filter((element) =>
+      /^Variation\s*:\s*#\s*\d+$/i.test(element.textContent.trim()),
+    ).length,
+    paymentTagCount: root.querySelectorAll('[data-tid="m4b_tag"]').length,
+    visible:
+      root.getBoundingClientRect().width > 0 &&
+      root.getBoundingClientRect().height > 0,
+  }),
+);
+```
+
+Expected: exactly one object has `visible: true`, and its variation count agrees with
+the rendered Sold Items list. `paymentTagCount` may be larger; it is not a completion
+count.
+
+Do not paste scripts that modify the dashboard DOM during a real sale. Offline automated
+tests provide synthetic DOM coverage.
+
+## Local stream and page boundary
+
+The worker-generated local stream ID is durable but is not a verified TikTok room ID.
+Until prompt 3 finds such an ID, follow these rules:
+
+- Use one local tracker stream for one real TikTok LIVE.
+- A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
+  canonical duplicates are ignored.
+- Keep the local tracker stream active until expected green payment transitions have
+  appeared and capture delivery has had time to finish or retry. There is no visible
+  queue-drained indicator yet. If a tracker delivery error appears, leave the session
+  active through at least the capped retry interval and verify that the open panel
+  receives the expected record before using End.
+- Ending a local tracker stream does not delete captured history and does not end TikTok
+  LIVE, but ended streams cannot yet be reopened in the tagger.
+- Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
+  new stream rather than displaying stale prior rows, and only then Start a new local
+  tracker stream.
+
+Starting a new local tracker stream while the old stream's Sold Items DOM is still
+rendered can backfill those old rows under the new ID. Automatic prevention requires a
+verified TikTok identity and belongs to prompt 3.
+
+## SPA lifecycle manual check
+
+1. Start on the dashboard and confirm the capture-active Console message.
+2. Use TikTok's own navigation to leave the dashboard, then return without refreshing.
+3. Confirm the active message appears again only after the unique Sold Items root is
+   available.
+4. Put the tab in the background, return to it, and confirm a later Sold Items variation
+   or green transition appears in the still-open side panel.
+5. If TikTok replaces the Sold Items root, confirm capture rebinds and the backfill does
+   not duplicate inventory or GMV.
+
+These checks exercise lifecycle recovery. They do not prove TikTok stream identity.
 
 ## Run the offline tests
 
@@ -120,141 +200,71 @@ Run every project test from the repository root:
 npm.cmd test
 ```
 
-Run one area by itself:
+Run capture integration areas individually:
 
 ```powershell
 node --test .\tests\sale-parser.test.cjs
 node --test .\tests\sale-candidate-locator.test.cjs
-node --test .\tests\capture-event-registry.test.cjs
-node --test .\tests\capture-scheduler.test.cjs
 node --test .\tests\capture-content.test.cjs
-node --test .\tests\reconciliation.test.cjs
-node --test .\tests\stream-session.test.cjs
-node --test .\tests\stream-session-storage.test.cjs
-node --test .\tests\stream-session-coordinator.test.cjs
-node --test .\tests\stream-session-client.test.cjs
-node --test .\tests\stream-session-controller.test.cjs
+node --test .\tests\capture-protocol.test.cjs
+node --test .\tests\capture-client.test.cjs
+node --test .\tests\capture-integration.test.cjs
+node --test .\tests\service-worker.test.cjs
+node --test .\tests\active-stream-integration.test.cjs
 ```
 
-These tests use fixtures and sample inventory. They do not require TikTok, Google Sheets,
-or a live stream.
-
-## SPA lifecycle manual check
-
-1. Start on the dashboard and confirm the capture-active Console message.
-2. Use TikTok's own navigation to leave the dashboard, then return without refreshing.
-3. Run the optional capture simulation with a new variation and confirm exactly one
-   completed-sale event after re-entry.
-4. Repeat the navigation cycle and confirm capture restarts without duplicate observers
-   or duplicate events. Automated tests also exercise document-body replacement; do not
-   force a body replacement during a live sale.
-5. Put the dashboard tab in the background, return to it, and confirm a new simulated or
-   real completed row is still detected.
-
-These checks verify lifecycle recovery, not stream identity. The tested registry can use
-a verified stream scope, but the runtime remains page-scoped until a TikTok ID is
-validated during a live stream.
-
-## Optional offline capture simulation
-
-The blank dashboard cannot produce a real completed row, but a temporary local DOM row
-can verify that the observer and parser work together.
-
-In the dashboard's DevTools Console, run:
-
-```js
-const testRow = document.createElement("div");
-testRow.id = "tlt-offline-test-row";
-testRow.innerHTML = `
-  <p>Test Buyer has won: $48.00</p>
-  <span>Variation: #999999</span>
-  <span data-tid="m4b_tag">
-    <span>Payment complete</span>
-  </span>
-`;
-document.body.append(testRow);
-```
-
-Chrome may block pasted Console code as a self-XSS precaution. If prompted, read the
-warning and manually type `allow pasting` only when you understand and trust the code.
-
-The first accepted sale in a page load also produces one tracker warning that TikTok
-stream identity is unverified. That warning is expected in the current probe.
-
-Expected tracker output:
-
-```text
-[TikTok Live Tracker] Completed sale detected
-```
-
-The logged object should contain:
-
-```text
-variationNumber: 999999
-soldPriceCents: 4800
-paymentStatus: "payment_complete"
-streamId: null
-streamIdentityStatus: "unverified"
-dedupeScope: "page_load"
-```
-
-Remove the temporary row afterward:
-
-```js
-document.getElementById("tlt-offline-test-row")?.remove();
-```
-
-This changes only the local rendered page and disappears on refresh. It does not send a
-request to TikTok. Because capture deduplication lasts for the page load, use a different
-test variation number or refresh before repeating the simulation.
+These tests use fixtures and in-memory storage. They do not require TikTok, Google
+Sheets, or a live stream.
 
 ## Console troubleshooting
 
-- TikTok may log its own `404`, `ERR_BLOCKED_BY_CLIENT`, or cross-origin policy errors.
-  The current tracker probe makes no network requests, so those errors are not produced
-  by its capture code.
-- If the tracker startup message is missing, reload the extension and then refresh the
-  tab once so the updated content script is installed in that document.
-- TikTok may navigate between views as a single-page application (SPA). Capture now stops
-  off-route and restarts after dashboard re-entry without a refresh. If it does not,
-  record the before/after URLs and tracker Console messages for diagnosis rather than
-  relying on refresh as the normal workaround.
+- If the active message is missing, confirm the origin and pathname, reload the unpacked
+  extension, then refresh the dashboard tab once.
+- If the root diagnostic returns zero visible matches, open TikTok's left Sold Items view
+  and wait for it to render. Capture will retry.
+- If it returns multiple visible matches, record the DOM state for diagnosis. Capture
+  intentionally fails closed instead of guessing.
+- `NO_ACTIVE_STREAM` means Start or Resume the extension's local tracker stream. Queued
+  facts retry while the same root remains active.
+- Missing/ambiguous Sold Items roots and the retryable `NO_ACTIVE_STREAM`,
+  `STATE_NOT_INITIALIZED`, and transport states are reported as readable Console info,
+  not Chrome extension errors. Chrome may retain older warning/error entries until
+  **Clear all** is selected after reloading the extension.
+- TikTok may log unrelated `404`, `ERR_BLOCKED_BY_CLIENT`, CSP, or cross-origin errors.
+  Tracker errors begin with `[TikTok Live Tracker]`.
+- The capture script makes no TikTok network request and never clicks or edits TikTok
+  controls.
 
-## Blocking live-stream validation checklist
+## Prompt 3 live-validation checklist
 
-The next real stream must verify the following before canonical stream identity or Sold
-items root narrowing is implemented:
+Prompt 3 should validate and implement:
 
-- the DOM structure and stable selector for the current variation while bidding;
-- the exact text and structure of the yellow payment-warning state;
-- whether yellow-to-green produces observable text or child-node mutations;
-- a unique, stable Sold items container using a non-generated attribute or ARIA
-  relationship rather than generated classes or element position;
-- that the candidate container excludes the right-side Chat panel, current-auction card,
-  and analytics, and survives new rows, scrolling, and SPA re-entry;
-- whether rows are virtualized, replaced, or placed in an iframe/shadow root;
-- a TikTok-provided stream/session identifier that stays stable across route re-entry and
-  full refresh, but differs across two real streams;
-- real-stream validation of route exit/re-entry, page resume, and any body replacement;
-- stream identity and deduplication behavior across dashboard refresh and a second stream;
-- whether auctions with no bids appear in a trackable location; and
-- whether every completed row remains recoverable for an end-of-stream pass.
+- a prioritized employee work queue driven only by the now-live-refreshed, persisted Sold
+  Items variations;
+- visible capture connection, retry, and queue-drained state;
+- the exact text, DOM, and business meaning of TikTok's yellow payment-warning and final
+  failed-payment states;
+- a stable TikTok-provided stream/session identifier across SPA navigation and full
+  refresh that differs across two LIVE sessions;
+- automatic protection against assigning stale rendered rows to a new local stream;
+- whether `m4b_space` stays unique across accounts, modes, streams, scrolling, and TikTok
+  releases;
+- whether Sold Items is virtualized or replaced as it grows and whether every row can be
+  recovered for an end-of-stream pass; and
+- real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
+
+Google Sheets integration is a later stage and is not part of this capture prompt.
 
 ## Current limitations
 
-- Parsing currently assumes English dashboard text and US-dollar formatting.
-- The capture event contains variation, price in cents, payment status, source, page,
-  observation time, `streamId: null`, and explicit unverified page-scope metadata; it
-  intentionally omits buyer information.
-- Verified-stream registry behavior is tested, but no TikTok stream ID has been observed
-  or validated. Runtime deduplication remains in memory for one page load and is not safe
-  across multiple streams by itself.
-- A durable local tracker stream now exists, but capture remains console-only and is not
-  authorized to attach events to it until the next integration stage.
-- The confirmed payment-tag candidate rules are implemented, but the page-wide dashboard
-  body remains a provisional boundary until the live checklist proves a narrower root.
-- Mutation relevance currently covers added nodes and character-data changes. The actual
-  yellow-to-green transition and any relevant attribute-only change still require live
+- Parsing assumes English dashboard text and US-dollar formatting.
+- Only exact Sold Items variation labels and exact green completed payments are
+  authoritative. Capture does not infer a failure from missing or non-green tags.
+- The `m4b_space` selector has been observed on one real stream and still needs broader
   validation.
-- The bounded scheduler prevents ordinary mutation traffic from starving capture, but
-  browsers may still delay timers when a tab or process is suspended.
+- The local stream ID is tracker-owned, not TikTok-verified.
+- The open tagger refetches on durable capture invalidations but does not automatically
+  treat the newest captured variation as TikTok's current auction.
+- There is no visible capture connection, retry, or queue-drained indicator yet.
+- Browser or process suspension can delay scans and delivery retries.
+- Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.

@@ -123,6 +123,9 @@ function createMemoryClient(initialState = null) {
     calls,
     client,
     getState: () => clone(state),
+    setState: (nextState) => {
+      state = clone(nextState);
+    },
   };
 }
 
@@ -161,6 +164,7 @@ test("exports a pure saved-session controller without a payment-complete API", (
     "getSnapshot",
     "mapSelectedSku",
     "markSelectedUnpaid",
+    "refresh",
     "retry",
     "selectVariation",
     "start",
@@ -172,6 +176,397 @@ test("exports a pure saved-session controller without a payment-complete API", (
     source,
     /chrome\.|recordPaymentComplete|record_payment_complete|completePayment/,
   );
+});
+
+test("refresh selects the newest newly captured variation for immediate tagging", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(202);
+
+  const capturedState = memory.getState();
+  reconciliation.observeVariations(capturedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [204, 205],
+  });
+  memory.setState(capturedState);
+
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.phase, "ready");
+  assert.equal(refreshed.operation, "refresh");
+  assert.equal(refreshed.view.selectedVariationNumber, 205);
+  assert.deepEqual(
+    refreshed.view.variations.map((variation) => variation.variationNumber),
+    [205, 204, 203, 202, 201, 200],
+  );
+  assert.equal(
+    refreshed.view.variations.find(
+      (variation) => variation.variationNumber === 205,
+    ).selected,
+    true,
+  );
+  assert.deepEqual(
+    memory.calls.map((call) => call.method),
+    ["getState", "getState"],
+  );
+});
+
+test("refresh retains selection when canonical state has no newly captured variation", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [202, 203],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(202);
+
+  const paymentState = memory.getState();
+  reconciliation.recordPaymentComplete(paymentState, {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+    soldPriceCents: 2500,
+  });
+  memory.setState(paymentState);
+
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.view.selectedVariationNumber, 202);
+  assert.equal(
+    refreshed.view.variations.find(
+      (variation) => variation.variationNumber === 203,
+    ).status,
+    "unmapped_completed",
+  );
+});
+
+test("older backfill and later payment updates do not steal the live selection", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [45],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  const initial = await controller.start();
+  assert.equal(initial.view.selectedVariationNumber, 45);
+
+  const backfilledState = memory.getState();
+  reconciliation.observeVariations(backfilledState, {
+    streamId: STREAM_ID,
+    variationNumbers: [43],
+  });
+  memory.setState(backfilledState);
+
+  const backfilled = await controller.refresh();
+  assert.equal(backfilled.view.selectedVariationNumber, 45);
+  assert.ok(
+    backfilled.view.variations.some(
+      (variation) => variation.variationNumber === 43,
+    ),
+  );
+
+  const paymentState = memory.getState();
+  reconciliation.recordPaymentComplete(paymentState, {
+    streamId: STREAM_ID,
+    variationNumber: 43,
+    soldPriceCents: 1800,
+  });
+  memory.setState(paymentState);
+
+  const paymentUpdated = await controller.refresh();
+  assert.equal(paymentUpdated.view.selectedVariationNumber, 45);
+  assert.equal(
+    paymentUpdated.view.variations.find(
+      (variation) => variation.variationNumber === 43,
+    ).status,
+    "unmapped_completed",
+  );
+});
+
+test("selects the newest recorded variation when only a prototype placeholder was selected", async () => {
+  const state = createState();
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  const initial = await controller.start();
+
+  assert.equal(initial.view.selectedVariationNumber, 203);
+  assert.equal(
+    initial.view.variations.find((variation) => variation.selected).recorded,
+    false,
+  );
+
+  const capturedState = memory.getState();
+  reconciliation.observeVariations(capturedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [37, 38],
+  });
+  memory.setState(capturedState);
+
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.view.selectedVariationNumber, 38);
+  assert.equal(
+    refreshed.view.variations.find((variation) => variation.selected).recorded,
+    true,
+  );
+});
+
+test("initial restore selects the newest recorded variation even when the prototype number is recorded", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [203, 204, 205],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  const restored = await controller.start();
+
+  assert.equal(restored.view.selectedVariationNumber, 205);
+  assert.equal(
+    restored.view.variations.find((variation) => variation.selected)
+      .variationNumber,
+    205,
+  );
+});
+
+test("serializes and coalesces refresh notifications behind a mutation", async () => {
+  const initialState = createState();
+  const memory = createMemoryClient(initialState);
+  const deferred = createDeferred();
+  memory.client.mapVariation = (options) => {
+    memory.calls.push({ method: "mapVariation", options: clone(options) });
+    return deferred.promise;
+  };
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(202);
+  const save = controller.mapSelectedSku("BLACK-TEE-L");
+  const firstRefresh = controller.refresh();
+  const secondRefresh = controller.refresh();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(
+    memory.calls.filter((call) => call.method === "getState").length,
+    1,
+  );
+  assert.equal(controller.getSnapshot().phase, "saving");
+
+  const savedState = reconciliation.hydrateReconciliationState(initialState);
+  const result = reconciliation.mapVariation(savedState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    sku: "BLACK-TEE-L",
+  });
+  reconciliation.observeVariations(savedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [204],
+  });
+  memory.setState(savedState);
+  deferred.resolve({ state: clone(savedState), result });
+
+  const [saved, refreshed, duplicateRefresh] = await Promise.all([
+    save,
+    firstRefresh,
+    secondRefresh,
+  ]);
+
+  assert.equal(saved.operation, "map_variation");
+  assert.equal(refreshed.operation, "refresh");
+  assert.deepEqual(duplicateRefresh, refreshed);
+  assert.equal(refreshed.view.selectedVariationNumber, 204);
+  assert.equal(refreshed.view.auction.variationNumber, 204);
+  assert.equal(refreshed.view.auction.status, "unmapped");
+  assert.equal(refreshed.view.auction.sku, null);
+  assert.ok(
+    refreshed.view.variations.some(
+      (variation) => variation.variationNumber === 204,
+    ),
+  );
+  assert.equal(
+    memory.calls.filter((call) => call.method === "getState").length,
+    2,
+  );
+});
+
+test("retains the last good view after refresh failure and retries canonical GET", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [202, 203],
+  });
+  const memory = createMemoryClient(state);
+  const canonicalGet = memory.client.getState;
+  let refreshAttempts = 0;
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(202);
+  const lastGoodView = controller.getSnapshot().view;
+  memory.client.getState = async () => {
+    refreshAttempts += 1;
+
+    if (refreshAttempts === 1) {
+      const failure = new Error("Could not read the newest state.");
+      failure.code = "STORAGE_READ_FAILED";
+      throw failure;
+    }
+
+    return canonicalGet();
+  };
+
+  const failed = await controller.refresh();
+
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.operation, "refresh");
+  assert.deepEqual(failed.error, {
+    scope: "refresh",
+    code: "STORAGE_READ_FAILED",
+    message: "Could not read the newest state.",
+  });
+  assert.deepEqual(failed.view, lastGoodView);
+
+  const retried = await controller.retry();
+
+  assert.equal(retried.phase, "ready");
+  assert.equal(retried.operation, "refresh");
+  assert.equal(retried.error, null);
+  assert.equal(retried.view.selectedVariationNumber, 202);
+  assert.equal(refreshAttempts, 2);
+});
+
+test("rejects malformed refresh data without publishing it over the last good view", async () => {
+  const memory = createMemoryClient(createState());
+  const controller = createController(memory.client);
+  const snapshots = [];
+
+  controller.subscribe((snapshot) => snapshots.push(snapshot));
+  await controller.start();
+  const lastGoodView = controller.getSnapshot().view;
+  memory.client.getState = async () => ({ state: null, result: null });
+
+  const failed = await controller.refresh();
+
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.error.scope, "refresh");
+  assert.equal(failed.error.code, "MISSING_CANONICAL_STATE");
+  assert.deepEqual(failed.view, lastGoodView);
+  assert.deepEqual(
+    snapshots.slice(-2).map((snapshot) => ({
+      phase: snapshot.phase,
+      operation: snapshot.operation,
+      view: snapshot.view,
+    })),
+    [
+      { phase: "loading", operation: "refresh", view: lastGoodView },
+      { phase: "error", operation: "refresh", view: lastGoodView },
+    ],
+  );
+});
+
+test("capture refresh cannot mask a failed save or replace its retry command", async () => {
+  const memory = createMemoryClient(createState());
+  const successfulMap = memory.client.mapVariation;
+  const firstAttempt = createDeferred();
+  let attempts = 0;
+  memory.client.mapVariation = (options) => {
+    attempts += 1;
+
+    if (attempts === 1) {
+      memory.calls.push({ method: "mapVariation", options: clone(options) });
+      return firstAttempt.promise;
+    }
+
+    return successfulMap(options);
+  };
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(201);
+  const save = controller.mapSelectedSku("GREY-HOODIE-XL");
+  const queuedRefresh = controller.refresh();
+  const readCount = memory.calls.filter(
+    (call) => call.method === "getState",
+  ).length;
+  const failure = new Error("Mapping was not saved.");
+  failure.code = "STORAGE_WRITE_FAILED";
+  firstAttempt.reject(failure);
+
+  const [failed, ignoredRefresh] = await Promise.all([save, queuedRefresh]);
+
+  assert.deepEqual(ignoredRefresh, failed);
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.operation, "map_variation");
+  assert.equal(failed.error.scope, "save");
+  assert.equal(
+    memory.calls.filter((call) => call.method === "getState").length,
+    readCount,
+  );
+
+  const saved = await controller.retry();
+
+  assert.equal(saved.phase, "ready");
+  assert.equal(saved.operation, "map_variation");
+  assert.equal(saved.view.selectedVariationNumber, 201);
+  assert.equal(saved.view.auction.sku, "GREY-HOODIE-XL");
+  assert.equal(attempts, 2);
+});
+
+test("a queued capture refresh cannot replace a failed initial-load retry", async () => {
+  const memory = createMemoryClient(createState());
+  const canonicalGet = memory.client.getState;
+  const firstRead = createDeferred();
+  let reads = 0;
+
+  memory.client.getState = () => {
+    reads += 1;
+
+    if (reads === 1) {
+      memory.calls.push({ method: "getState" });
+      return firstRead.promise;
+    }
+
+    return canonicalGet();
+  };
+  const controller = createController(memory.client);
+  const load = controller.start();
+  const queuedRefresh = controller.refresh();
+  const failure = new Error("Saved state could not be read.");
+  failure.code = "STORAGE_READ_FAILED";
+
+  firstRead.reject(failure);
+  const [failed, ignoredRefresh] = await Promise.all([load, queuedRefresh]);
+
+  assert.deepEqual(ignoredRefresh, failed);
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.operation, "load");
+  assert.equal(failed.error.scope, "load");
+  assert.equal(reads, 1);
+
+  const restored = await controller.retry();
+
+  assert.equal(restored.phase, "ready");
+  assert.equal(restored.operation, "load");
+  assert.equal(reads, 2);
 });
 
 test("starts idle, publishes detached snapshots, and unsubscribes idempotently", async () => {
@@ -257,7 +652,7 @@ test("restores stored history without trying to initialize again", async () => {
 
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
   assert.equal(snapshot.phase, "ready");
-  assert.equal(snapshot.view.selectedVariationNumber, CURRENT_VARIATION);
+  assert.equal(snapshot.view.selectedVariationNumber, 202);
   assert.equal(restoredVariation.status, "marked_unpaid");
   assert.equal(restoredVariation.item, "Nike hoodie");
 });

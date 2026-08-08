@@ -12,6 +12,7 @@
     "use strict";
 
     const STATE_VERSION = 1;
+    const MAX_OBSERVED_VARIATIONS = 1000;
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -771,6 +772,62 @@
       return createAuctionView(state, auction);
     }
 
+    function observeVariations(state, input) {
+      requireState(state);
+
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        fail("INVALID_ARGUMENT", "An observed-variations input is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+
+      if (
+        !Array.isArray(input.variationNumbers) ||
+        input.variationNumbers.length === 0 ||
+        input.variationNumbers.length > MAX_OBSERVED_VARIATIONS
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          `variationNumbers must contain between 1 and ${MAX_OBSERVED_VARIATIONS} variation numbers.`,
+        );
+      }
+
+      const seenVariationNumbers = new Set();
+      const variationNumbers = input.variationNumbers.map(
+        (variationNumber, index) => {
+          const normalizedVariationNumber = requireSafeInteger(
+            variationNumber,
+            `variationNumbers[${index}]`,
+            1,
+          );
+
+          if (seenVariationNumbers.has(normalizedVariationNumber)) {
+            fail(
+              "INVALID_ARGUMENT",
+              "variationNumbers must not contain duplicates.",
+            );
+          }
+
+          seenVariationNumbers.add(normalizedVariationNumber);
+          return normalizedVariationNumber;
+        },
+      );
+      let newlyObservedCount = 0;
+
+      variationNumbers.forEach((variationNumber) => {
+        if (findAuction(state, streamId, variationNumber) === null) {
+          getOrCreateAuction(state, streamId, variationNumber);
+          newlyObservedCount += 1;
+        }
+      });
+
+      return {
+        status: newlyObservedCount === 0 ? "already_observed" : "observed",
+        observedCount: variationNumbers.length,
+        newlyObservedCount,
+      };
+    }
+
     function unmapVariation(state, input) {
       requireState(state);
       const key = validateAuctionKey(input);
@@ -1036,6 +1093,7 @@
       createReconciliationState,
       hydrateReconciliationState,
       getInventoryAvailability,
+      observeVariations,
       mapVariation,
       unmapVariation,
       recordPaymentComplete,

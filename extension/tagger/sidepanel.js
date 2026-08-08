@@ -26,6 +26,11 @@
     DEMO_CURRENT_VARIATION_NUMBER,
     ...DEMO_VARIATION_SEEDS.map((seed) => seed.variationNumber),
   ]);
+  const CAPTURE_STATE_NOTIFICATION_CHANNEL =
+    "tiktok-live-tracker.capture-state";
+  const CAPTURE_STATE_NOTIFICATION_VERSION = 1;
+  const CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed";
+  const CAPTURE_REFRESH_DELAY_MS = 150;
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -203,6 +208,174 @@
   let focusSavedWorkspaceAfterRetry = false;
   let hasFocusedStreamError = false;
   let endConfirmationOpen = false;
+  let captureRefreshTimerId = null;
+  let captureRefreshDirty = false;
+  let captureRefreshFocusSku = null;
+  let captureRefreshHadVariationFocus = false;
+  let lastRenderedSavedVariations = new Map();
+
+  function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function hasExactKeys(value, expectedKeys) {
+    return (
+      isRecord(value) &&
+      JSON.stringify(Object.keys(value).sort()) ===
+        JSON.stringify([...expectedKeys].sort())
+    );
+  }
+
+  function isCaptureStateChangedNotification(message, sender) {
+    return (
+      hasExactKeys(message, ["channel", "version", "event"]) &&
+      message.channel === CAPTURE_STATE_NOTIFICATION_CHANNEL &&
+      message.version === CAPTURE_STATE_NOTIFICATION_VERSION &&
+      hasExactKeys(message.event, ["type"]) &&
+      message.event.type === CAPTURE_STATE_NOTIFICATION_TYPE &&
+      sender?.id === chrome.runtime.id &&
+      sender.tab === undefined
+    );
+  }
+
+  function getRecordedVariations(view) {
+    return view?.variations?.filter((variation) => variation.recorded) ?? [];
+  }
+
+  function hasSelectedRecordedVariation(view) {
+    return getRecordedVariations(view).some((variation) => variation.selected);
+  }
+
+  function createSavedVariationSignatures(view) {
+    return new Map(
+      getRecordedVariations(view).map((variation) => [
+        variation.variationNumber,
+        JSON.stringify([
+          variation.status,
+          variation.item,
+          variation.style,
+          variation.size,
+        ]),
+      ]),
+    );
+  }
+
+  function describeLiveRefresh(previous, view, includeExistingUpdates = true) {
+    const next = createSavedVariationSignatures(view);
+    const added = [...next.keys()].filter((number) => !previous.has(number));
+    const updated = includeExistingUpdates
+      ? [...next.entries()]
+          .filter(([number, signature]) =>
+            previous.has(number) && previous.get(number) !== signature,
+          )
+          .map(([number]) => number)
+      : [];
+
+    if (added.length === 1 && updated.length === 0) {
+      return added[0] === view.selectedVariationNumber
+        ? `Captured variation #${added[0]} from Sold Items. It is selected and ready to tag.`
+        : `Captured earlier variation #${added[0]} from Sold Items. Variation #${view.selectedVariationNumber} remains selected.`;
+    }
+
+    if (added.length > 1 && updated.length === 0) {
+      return `Captured ${added.length} new Sold Items variations: ${added.map((number) => `#${number}`).join(", ")}. Now showing variation #${view.selectedVariationNumber}.`;
+    }
+
+    if (added.length === 0 && updated.length === 1) {
+      return `Sold Items updated variation #${updated[0]}.`;
+    }
+
+    if (added.length > 0 || updated.length > 0) {
+      return `Live Sold Items updated ${added.length + updated.length} variations.`;
+    }
+
+    return "";
+  }
+
+  function clearCaptureRefreshTimer() {
+    if (captureRefreshTimerId !== null) {
+      window.clearTimeout(captureRefreshTimerId);
+      captureRefreshTimerId = null;
+    }
+  }
+
+  function getFocusedInventorySku() {
+    const button = document.activeElement?.closest?.("button[data-sku]");
+
+    return button && inventoryGrid.contains(button)
+      ? button.dataset.sku
+      : null;
+  }
+
+  function armCaptureRefresh() {
+    if (
+      !captureRefreshDirty ||
+      captureRefreshTimerId !== null ||
+      activeMode !== "saved_session" ||
+      !streamSnapshot.resumed ||
+      streamSnapshot.activeSession === null ||
+      persistentController === null
+    ) {
+      return;
+    }
+
+    const scheduledController = persistentController;
+    const scheduledStreamId = mountedStreamId;
+
+    captureRefreshTimerId = window.setTimeout(() => {
+      captureRefreshTimerId = null;
+
+      if (
+        scheduledController !== persistentController ||
+        scheduledStreamId !== mountedStreamId ||
+        activeMode !== "saved_session" ||
+        !streamSnapshot.resumed
+      ) {
+        return;
+      }
+
+      captureRefreshDirty = false;
+      captureRefreshFocusSku = getFocusedInventorySku();
+      captureRefreshHadVariationFocus = pendingMapping.contains(
+        document.activeElement,
+      );
+      Promise.resolve()
+        .then(() => scheduledController.refresh())
+        .then((snapshot) => {
+          if (
+            scheduledController === persistentController &&
+            scheduledStreamId === mountedStreamId &&
+            snapshot?.operation !== "refresh"
+          ) {
+            captureRefreshDirty = true;
+
+            if (snapshot?.phase === "ready") {
+              armCaptureRefresh();
+            }
+          }
+        })
+        .catch((error) => {
+          console.error(
+            "[TikTok Live Tracker] Unexpected live Sold Items refresh failure.",
+            error,
+          );
+        });
+    }, CAPTURE_REFRESH_DELAY_MS);
+  }
+
+  function scheduleCaptureRefresh() {
+    captureRefreshDirty = true;
+    armCaptureRefresh();
+  }
+
+  function handleCaptureStateChanged(message, sender) {
+    if (!isCaptureStateChangedNotification(message, sender)) {
+      return false;
+    }
+
+    scheduleCaptureRefresh();
+    return false;
+  }
 
   function createDemoSession() {
     const nextSession = mappingWorkflow.createMappingSession({
@@ -243,6 +416,7 @@
   }
 
   function unmountPersistentController() {
+    clearCaptureRefreshTimer();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -250,6 +424,10 @@
     savedSnapshot = createEmptySavedSnapshot();
     previousSavedPhase = null;
     pendingSavedAction = null;
+    captureRefreshDirty = false;
+    captureRefreshFocusSku = null;
+    captureRefreshHadVariationFocus = false;
+    lastRenderedSavedVariations = new Map();
     savedSessionStatus.hidden = true;
     savedSessionError.hidden = true;
     trackerWorkspace.hidden = true;
@@ -311,9 +489,9 @@
     );
   }
 
-  function getUnresolvedLiveVariations() {
+  function getInventoryBlockingVariations() {
     return (savedSnapshot?.view?.variations ?? []).filter((variation) =>
-      ["pending", "unmapped_completed"].includes(variation.status),
+      variation.status === "pending",
     );
   }
 
@@ -398,14 +576,21 @@
     const stock = viewModel.getStockDisplay(entry);
     const selected = entry.selected;
     const itemName = formatItemName(entry);
+    const canTagSelectedVariation =
+      activeMode !== "saved_session" || hasSelectedRecordedVariation(view);
 
     button.dataset.sku = entry.sku;
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
-    button.disabled = !entry.selectionAllowed;
+    button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
     button.setAttribute("aria-pressed", String(selected));
 
-    if (selected) {
+    if (!canTagSelectedVariation) {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${entry.size}, ${stock.label}. Wait for a Sold Items variation before tagging.`,
+      );
+    } else if (selected) {
       button.setAttribute(
         "aria-label",
         `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stock.label}. Click to unselect this item.`,
@@ -459,7 +644,7 @@
       (candidate) => candidate.dataset.sku === sku,
     );
 
-    if (button) {
+    if (button && !button.disabled) {
       button.focus();
     } else {
       searchInput.focus();
@@ -467,11 +652,11 @@
   }
 
   function formatVariationOption(option) {
-    const context = option.current
-      ? activeMode === "saved_session"
-        ? "Prototype current"
-        : "On screen now"
-      : "Previous";
+    const context = activeMode === "saved_session"
+      ? "Sold Items"
+      : option.current
+        ? "On screen now"
+        : "Previous";
     const item = option.item
       ? `${formatItemName(option)}, size ${option.size}`
       : "No item selected";
@@ -481,34 +666,58 @@
 
   function renderVariationNavigation(view) {
     const fragment = document.createDocumentFragment();
+    const variations = activeMode === "saved_session"
+      ? getRecordedVariations(view)
+      : view.variations;
 
-    view.variations.forEach((variation) => {
+    if (variations.length === 0) {
       const option = document.createElement("option");
 
-      option.value = String(variation.variationNumber);
-      option.textContent = formatVariationOption(variation);
-      option.selected = variation.selected;
+      option.value = "";
+      option.textContent = "Waiting for Sold Items variations";
+      option.disabled = true;
+      option.selected = true;
       fragment.append(option);
-    });
+    } else {
+      variations.forEach((variation) => {
+        const option = document.createElement("option");
+
+        option.value = String(variation.variationNumber);
+        option.textContent = formatVariationOption(variation);
+        option.selected = variation.selected;
+        fragment.append(option);
+      });
+    }
 
     variationSelector.replaceChildren(fragment);
+    variationSelector.disabled = variations.length === 0;
+
+    if (activeMode === "saved_session") {
+      if (variations.length > 0) {
+        variationSelector.value = String(view.selectedVariationNumber);
+        variationContext.textContent = "Live Sold Items variations";
+        inventoryTitle.textContent =
+          `Review or tag variation #${view.selectedVariationNumber}`;
+      } else {
+        variationContext.textContent =
+          "Waiting for a variation to appear in Sold Items";
+        inventoryTitle.textContent = "Waiting for a Sold Items variation";
+      }
+
+      returnToCurrentButton.hidden = true;
+      return;
+    }
+
     variationSelector.value = String(view.selectedVariationNumber);
     variationContext.textContent = view.isReviewingHistory
-      ? activeMode === "saved_session"
-        ? "Reviewing previous prototype variation"
-        : "Reviewing previous variation"
-      : activeMode === "saved_session"
-        ? "Prototype variation - capture not connected"
-        : "On screen now";
+      ? "Reviewing previous variation"
+      : "On screen now";
     returnToCurrentButton.hidden = !view.isReviewingHistory;
-    returnToCurrentButton.textContent = activeMode === "saved_session"
-      ? `Return to prototype variation #${view.currentVariationNumber}`
-      : `Return to on-screen variation #${view.currentVariationNumber}`;
+    returnToCurrentButton.textContent =
+      `Return to on-screen variation #${view.currentVariationNumber}`;
     inventoryTitle.textContent = view.isReviewingHistory
       ? `Review or correct variation #${view.selectedVariationNumber}`
-      : activeMode === "saved_session"
-        ? `Tag prototype variation #${view.currentVariationNumber}`
-        : `Find the item for variation #${view.currentVariationNumber}`;
+      : `Find the item for variation #${view.currentVariationNumber}`;
   }
 
   function renderInventory(view, focusSku = null) {
@@ -729,6 +938,8 @@
       auctionStatus.focus();
     } else if (options.focusControl === "mark_unpaid") {
       markUnpaidButton.focus();
+    } else if (options.focusVariation) {
+      variationSelector.focus();
     }
 
     return view;
@@ -800,13 +1011,21 @@
 
   function getSavedStatusText(snapshot) {
     if (snapshot.phase === "idle" || snapshot.phase === "loading") {
-      return snapshot.operation === "initialize"
-        ? "Preparing live session data..."
+      if (snapshot.operation === "initialize") {
+        return "Preparing live session data...";
+      }
+
+      return snapshot.operation === "refresh"
+        ? "Checking live Sold Items..."
         : "Restoring live session data...";
     }
 
     if (snapshot.phase === "saving") {
       return "Saving change...";
+    }
+
+    if (snapshot.operation === "refresh") {
+      return "Live Sold Items updated";
     }
 
     return snapshot.operation === "load" || snapshot.operation === "initialize"
@@ -928,7 +1147,7 @@
       streamSessionBadge.textContent = "Not started";
       streamSessionStatusTitle.textContent = "No active tracker stream";
       streamSessionStatusMessage.textContent =
-        "Start a local stream before tagging live variations.";
+        "Start a local stream before capture can save Sold Items variations.";
       startStreamButton.hidden = false;
       unmountPersistentController();
       return;
@@ -978,6 +1197,9 @@
 
   function renderSavedSnapshot(snapshot) {
     const priorPhase = savedSnapshot?.phase ?? previousSavedPhase;
+    const priorVariations = lastRenderedSavedVariations;
+    const priorSelectedVariationNumber =
+      savedSnapshot?.view?.selectedVariationNumber ?? null;
 
     savedSnapshot = snapshot;
     updateModeControls();
@@ -996,6 +1218,14 @@
     confirmEndStreamButton.disabled =
       isSavedWorkspaceUnavailable() || streamSnapshot.busy;
 
+    if (snapshot.phase === "loading" && snapshot.operation === "refresh") {
+      captureRefreshFocusSku =
+        getFocusedInventorySku() ?? captureRefreshFocusSku;
+      captureRefreshHadVariationFocus =
+        pendingMapping.contains(document.activeElement) ||
+        captureRefreshHadVariationFocus;
+    }
+
     const failed = snapshot.phase === "error";
     const hasView = snapshot.view !== null;
 
@@ -1005,18 +1235,27 @@
 
     if (failed) {
       const loadFailure = snapshot.error?.scope === "load" || !hasView;
+      const refreshFailure = snapshot.error?.scope === "refresh" && hasView;
 
       setWorkspaceBusy(false);
       trackerWorkspace.toggleAttribute("inert", true);
-      savedSessionErrorTitle.textContent = loadFailure
-        ? "Live session data unavailable"
-        : "Change was not saved";
+      savedSessionErrorTitle.textContent = refreshFailure
+        ? "Live Sold Items refresh failed"
+        : loadFailure
+          ? "Live session data unavailable"
+          : "Change was not saved";
       savedSessionErrorMessage.textContent = snapshot.error?.message
-        ? `${snapshot.error.message} Your last saved data was not changed.`
-        : "Your last saved data was not changed. Try again.";
-      retrySavedSessionButton.textContent = loadFailure
-        ? "Retry loading"
-        : "Retry saving";
+        ? refreshFailure
+          ? `${snapshot.error.message} The last saved view is still shown; retry before making more changes.`
+          : `${snapshot.error.message} Your last saved data was not changed.`
+        : refreshFailure
+          ? "The newest Sold Items data could not be loaded. Retry before making more changes."
+          : "Your last saved data was not changed. Try again.";
+      retrySavedSessionButton.textContent = refreshFailure
+        ? "Retry live update"
+        : loadFailure
+          ? "Retry loading"
+          : "Retry saving";
 
       if (!hasFocusedSavedError || priorPhase !== "error") {
         savedSessionError.focus();
@@ -1039,26 +1278,70 @@
     if (hasView && snapshot.phase === "ready") {
       const completedAction = pendingSavedAction;
       const focusOptions = {};
+      const refreshCompleted = snapshot.operation === "refresh";
+      const selectedNewVariation =
+        snapshot.view.selectedVariationNumber !== priorSelectedVariationNumber &&
+        !priorVariations.has(snapshot.view.selectedVariationNumber) &&
+        snapshot.view.variations.some(
+          (variation) =>
+            variation.recorded &&
+            variation.variationNumber === snapshot.view.selectedVariationNumber,
+        );
 
-      if (completedAction?.focusSku) {
+      if (
+        selectedNewVariation &&
+        (
+          completedAction?.focusSku ||
+          completedAction?.focusStatus ||
+          captureRefreshFocusSku ||
+          captureRefreshHadVariationFocus
+        )
+      ) {
+        focusOptions.focusVariation = true;
+      } else if (completedAction?.focusSku) {
         focusOptions.focusSku = completedAction.focusSku;
       } else if (completedAction?.focusStatus) {
         focusOptions.focusStatus = true;
+      } else if (refreshCompleted && captureRefreshFocusSku) {
+        focusOptions.focusSku = captureRefreshFocusSku;
       }
 
       const view = renderAll(focusOptions);
+      const liveRefreshAnnouncement = refreshCompleted || completedAction
+        ? describeLiveRefresh(priorVariations, view, refreshCompleted)
+        : "";
+
+      lastRenderedSavedVariations = createSavedVariationSignatures(view);
+      captureRefreshFocusSku = null;
+      captureRefreshHadVariationFocus = false;
 
       if (completedAction) {
         announceSavedAction(completedAction, view);
+        if (liveRefreshAnnouncement) {
+          mappingAnnouncement.textContent += ` ${liveRefreshAnnouncement}`;
+        }
         pendingSavedAction = null;
       } else if (focusSavedWorkspaceAfterRetry) {
         focusSavedWorkspaceAfterRetry = false;
-        variationSelector.focus();
-        mappingAnnouncement.textContent =
-          "Live session data restored. You can continue with the selected prototype variation.";
-      } else if (priorPhase === "loading") {
+        if (hasSelectedRecordedVariation(view)) {
+          variationSelector.focus();
+          mappingAnnouncement.textContent = refreshCompleted
+            ? liveRefreshAnnouncement || "Live Sold Items are up to date."
+            : "Live session data restored. You can continue with the selected Sold Items variation.";
+        } else {
+          streamSessionStatus.focus();
+          mappingAnnouncement.textContent =
+            "Live tracking is ready. Waiting for a variation to appear in Sold Items.";
+        }
+      } else if (liveRefreshAnnouncement) {
+        mappingAnnouncement.textContent = liveRefreshAnnouncement;
+      } else if (priorPhase === "loading" && !refreshCompleted) {
         mappingAnnouncement.textContent =
           "Live session data restored from local browser storage.";
+      }
+
+      if (captureRefreshDirty) {
+        armCaptureRefresh();
       }
     }
 
@@ -1128,6 +1411,7 @@
       return;
     }
 
+    armCaptureRefresh();
     hasFocusedSavedError = false;
     hasFocusedStreamError = false;
     renderStreamSnapshot(streamSessionController.getSnapshot());
@@ -1142,9 +1426,15 @@
       savedSnapshot.view
     ) {
       focusSavedWorkspaceAfterRetry = false;
-      variationSelector.focus();
-      mappingAnnouncement.textContent =
-        `Returned to live ${describeSelectedVariation(savedSnapshot.view)}.`;
+      if (hasSelectedRecordedVariation(savedSnapshot.view)) {
+        variationSelector.focus();
+        mappingAnnouncement.textContent =
+          `Returned to live Sold Items tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
+      } else {
+        streamSessionStatus.focus();
+        mappingAnnouncement.textContent =
+          "Returned to live Sold Items tracking. Waiting for a captured variation.";
+      }
     } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
       resumeStreamButton.focus();
     } else if (!streamSnapshot.activeSession && streamSnapshot.phase === "ready") {
@@ -1154,6 +1444,12 @@
 
   variationSelector.addEventListener("change", () => {
     if (activeMode === "saved_session") {
+      if (!persistentController || variationSelector.value === "") {
+        mappingAnnouncement.textContent =
+          "Waiting for a variation to appear in Sold Items.";
+        return;
+      }
+
       try {
         clearPriceError();
         searchInput.value = "";
@@ -1163,9 +1459,8 @@
 
         const view = snapshot.view;
 
-        mappingAnnouncement.textContent = view.isReviewingHistory
-          ? `Reviewing previous ${describeSelectedVariation(view)}. Select an inventory card to tag or correct this variation.`
-          : `Returned to prototype ${describeSelectedVariation(view)}. Capture is not connected yet.`;
+        mappingAnnouncement.textContent =
+          `Reviewing Sold Items ${describeSelectedVariation(view)}. A newly captured variation will open automatically.`;
       } catch (error) {
         mappingAnnouncement.textContent =
           error?.message ?? "That variation could not be selected.";
@@ -1195,21 +1490,6 @@
 
   returnToCurrentButton.addEventListener("click", () => {
     if (activeMode === "saved_session") {
-      try {
-        clearPriceError();
-        searchInput.value = "";
-        const snapshot = persistentController.selectVariation(
-          DEMO_CURRENT_VARIATION_NUMBER,
-        );
-
-        variationSelector.focus();
-        mappingAnnouncement.textContent =
-          `Returned to prototype ${describeSelectedVariation(snapshot.view)}. Capture is not connected yet.`;
-      } catch (error) {
-        mappingAnnouncement.textContent =
-          error?.message ?? "The prototype variation could not be selected.";
-      }
-
       return;
     }
 
@@ -1241,6 +1521,13 @@
 
     if (activeMode === "saved_session") {
       const view = getActiveView();
+
+      if (!hasSelectedRecordedVariation(view)) {
+        mappingAnnouncement.textContent =
+          "Wait for a captured Sold Items variation before selecting inventory.";
+        return;
+      }
+
       const selected = button.getAttribute("aria-pressed") === "true";
 
       runSavedMutation(
@@ -1458,7 +1745,7 @@
       return;
     }
 
-    const unresolvedVariations = getUnresolvedLiveVariations();
+    const unresolvedVariations = getInventoryBlockingVariations();
 
     if (unresolvedVariations.length > 0) {
       const variationList = unresolvedVariations
@@ -1466,9 +1753,9 @@
         .join(", ");
 
       streamSessionStatusMessage.textContent =
-        `Resolve waiting or item-needed ${variationList} before ending this tracker stream.`;
+        `Resolve inventory-reserved ${variationList} before ending this tracker stream.`;
       mappingAnnouncement.textContent =
-        `Tracker stream not ended. Resolve ${unresolvedVariations.length} unfinished variation${unresolvedVariations.length === 1 ? "" : "s"} first.`;
+        `Tracker stream not ended. Resolve ${unresolvedVariations.length} inventory-reserved variation${unresolvedVariations.length === 1 ? "" : "s"} first.`;
       variationSelector.focus();
       return;
     }
@@ -1547,7 +1834,8 @@
 
     hasFocusedSavedError = false;
     focusSavedWorkspaceAfterRetry =
-      savedSnapshot.error?.scope === "load" || savedSnapshot.view === null;
+      ["load", "refresh"].includes(savedSnapshot.error?.scope) ||
+      savedSnapshot.view === null;
     Promise.resolve().then(() => persistentController.retry()).catch((error) => {
       console.error(
         "[TikTok Live Tracker] Unexpected saved-session retry failure.",
@@ -1556,6 +1844,15 @@
     });
   });
 
+  chrome.runtime.onMessage.addListener(handleCaptureStateChanged);
+  window.addEventListener(
+    "pagehide",
+    () => {
+      clearCaptureRefreshTimer();
+      chrome.runtime.onMessage.removeListener(handleCaptureStateChanged);
+    },
+    { once: true },
+  );
   streamSessionController.subscribe(renderStreamSnapshot);
   Promise.resolve().then(() => streamSessionController.start()).catch((error) => {
     console.error(

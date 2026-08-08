@@ -15,6 +15,10 @@ const streamSessionStorage = require(
 const streamSessionCoordinator = require(
   "../extension/shared/stream-session-coordinator.js"
 );
+const captureProtocol = require("../extension/shared/capture-protocol.js");
+const captureIntegration = require(
+  "../extension/shared/capture-integration.js"
+);
 
 const FIRST_ID = "local-stream:11111111-1111-4111-8111-111111111111";
 const SECOND_ID = "local-stream:22222222-2222-4222-8222-222222222222";
@@ -49,6 +53,17 @@ function createStreamCoordinator(storageArea, ids) {
     stateStore,
     createId: () => ids[index++],
     now: () => "2026-08-08T20:00:00.000Z",
+  });
+}
+
+function createCaptureBridge(activeStreamCoordinator, stateCoordinator) {
+  return captureIntegration.createCaptureIntegration({
+    activeStreamCoordinator,
+    captureProtocol,
+    reconciliationCoordinator,
+    stateCoordinator,
+    streamSession,
+    streamSessionCoordinator,
   });
 }
 
@@ -115,4 +130,111 @@ test("ending and starting tracker streams preserves reconciliation history", asy
     reconciliationStorage.STORAGE_KEY,
     streamSessionStorage.STORAGE_KEY,
   );
+});
+
+test("captured Sold Items observations survive worker restart under the active stream", async () => {
+  const storageArea = createStorageArea();
+  const inventory = [
+    {
+      sku: "TEST-SKU-M",
+      name: "Test item",
+      size: "M",
+      quantityReceived: 2,
+      unitCostCents: 1200,
+    },
+  ];
+  const firstStateCoordinator =
+    reconciliationCoordinator.createReconciliationCoordinator({
+      reconciliation,
+      stateStore: reconciliationStorage.createReconciliationStateStore({
+        storageArea,
+        reconciliation,
+      }),
+    });
+  const firstStreamCoordinator = createStreamCoordinator(storageArea, [
+    FIRST_ID,
+  ]);
+  const firstCapture = createCaptureBridge(
+    firstStreamCoordinator,
+    firstStateCoordinator,
+  );
+
+  await firstStateCoordinator.dispatch({
+    type: "initialize_state",
+    inventory,
+  });
+  await firstStreamCoordinator.dispatch({ type: "start_stream" });
+  await firstCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,
+    variationNumbers: [37, 38],
+  });
+  await firstCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
+    variationNumber: 37,
+    soldPriceCents: 700,
+  });
+
+  const restartedStateCoordinator =
+    reconciliationCoordinator.createReconciliationCoordinator({
+      reconciliation,
+      stateStore: reconciliationStorage.createReconciliationStateStore({
+        storageArea,
+        reconciliation,
+      }),
+    });
+  const restartedStreamCoordinator = createStreamCoordinator(storageArea, []);
+  const restartedCapture = createCaptureBridge(
+    restartedStreamCoordinator,
+    restartedStateCoordinator,
+  );
+
+  await restartedCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,
+    variationNumbers: [37, 38],
+  });
+  await restartedCapture.dispatch({
+    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
+    variationNumber: 37,
+    soldPriceCents: 700,
+  });
+
+  const restored = await restartedStateCoordinator.dispatch({
+    type: "get_state",
+  });
+  const summary = reconciliation.calculateSummary(restored.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.deepEqual(
+    summary.auctions.map((auction) => ({
+      paymentStatus: auction.paymentStatus,
+      status: auction.status,
+      variationNumber: auction.variationNumber,
+    })),
+    [
+      {
+        paymentStatus: "payment_complete",
+        status: "unmapped_completed",
+        variationNumber: 37,
+      },
+      {
+        paymentStatus: "unknown",
+        status: "unmapped",
+        variationNumber: 38,
+      },
+    ],
+  );
+  assert.deepEqual(summary.totals, {
+    auctionCount: 2,
+    completedPaymentCount: 1,
+    committedSalesCount: 0,
+    unmappedCompletedCount: 1,
+    pendingMappedCount: 0,
+    markedUnpaidCount: 0,
+    conflictCount: 0,
+    completedGmvCents: 700,
+    committedRevenueCents: 0,
+    costOfGoodsCents: 0,
+    profitCents: 0,
+  });
 });

@@ -11,13 +11,15 @@ const candidateLocator = require(
 const captureEventRegistry = require(
   "../extension/capture/capture-event-registry.js",
 );
+const captureProtocol = require("../extension/shared/capture-protocol.js");
+const captureClientModule = require("../extension/capture/capture-client.js");
 const contentSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "capture", "content.js"),
   "utf8",
 );
 
 const DASHBOARD_ORIGIN = "https://shop.tiktok.com";
-const DASHBOARD_PATH = "/streamer/live/event/dashboard";
+const DASHBOARD_PATH = "/streamer/live/product/dashboard";
 
 class FakeText {
   constructor(value) {
@@ -37,11 +39,21 @@ class FakeText {
 }
 
 class FakeElement {
-  constructor({ dataTid = null, name = "element", ownText = "" } = {}) {
+  constructor({
+    dataTid = null,
+    height = 20,
+    name = "element",
+    ownText = "",
+    tagName = "DIV",
+    width = 100,
+  } = {}) {
     this.nodeType = 1;
     this.dataTid = dataTid;
+    this.height = height;
     this.name = name;
     this.ownText = ownText;
+    this.tagName = tagName;
+    this.width = width;
     this.children = [];
     this.parentElement = null;
     this.parentNode = null;
@@ -65,12 +77,22 @@ class FakeElement {
   }
 
   matches(selector) {
-    assert.equal(selector, candidateLocator.PAYMENT_TAG_SELECTOR);
-    return this.dataTid === "m4b_tag";
+    if (selector === candidateLocator.PAYMENT_TAG_SELECTOR) {
+      return this.dataTid === "m4b_tag";
+    }
+
+    if (selector === candidateLocator.SOLD_ITEMS_ROOT_SELECTOR) {
+      return this.dataTid === "m4b_space";
+    }
+
+    if (selector === candidateLocator.VARIATION_LABEL_SELECTOR) {
+      return this.tagName === "SPAN";
+    }
+
+    throw new Error(`Unexpected selector: ${selector}`);
   }
 
   querySelectorAll(selector) {
-    assert.equal(selector, candidateLocator.PAYMENT_TAG_SELECTOR);
     this.onQuery?.(selector);
     const matches = [];
 
@@ -92,6 +114,10 @@ class FakeElement {
 
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  getBoundingClientRect() {
+    return { height: this.height, width: this.width };
   }
 
   contains(candidate) {
@@ -128,28 +154,48 @@ function createBody(name = "body") {
 function createSaleRow(text) {
   const paymentComplete = /\bPayment\s+complete\b/i.test(text);
   const status = paymentComplete ? "Payment complete" : "Awaiting payment";
+  const variationMatch = text.match(/\bVariation\s*:\s*#\s*(\d+)\b/i);
   const summaryValue = text
     .replace(/\bPayment\s+complete\b/gi, "")
     .replace(/\bAwaiting\s+payment\b/gi, "")
+    .replace(/\bVariation\s*:\s*#\s*\d+\b/gi, "")
     .trim();
   const row = new FakeElement({ name: "sale-row" });
   const summary = new FakeElement({ name: "sale-summary" });
   const summaryText = new FakeText(`${summaryValue} `);
+  const variationLabel = new FakeElement({
+    name: "variation-label",
+    ownText: variationMatch ? `Variation: #${variationMatch[1]} ` : "",
+    tagName: "SPAN",
+  });
   const statusTag = new FakeElement({
     dataTid: "m4b_tag",
     name: "payment-tag",
   });
   const statusText = new FakeText(status);
 
-  summary.append(summaryText);
+  summary.append(summaryText, variationLabel);
   statusTag.append(statusText);
   row.append(summary, statusTag);
 
-  return { row, statusTag, statusText, summary, summaryText };
+  return {
+    row,
+    statusTag,
+    statusText,
+    summary,
+    summaryText,
+    variationLabel,
+  };
 }
 
 function setSaleSummary(sale, text) {
-  sale.summaryText.textContent = `${text.trim()} `;
+  const variationMatch = text.match(/\bVariation\s*:\s*#\s*(\d+)\b/i);
+  sale.summaryText.textContent = `${text
+    .replace(/\bVariation\s*:\s*#\s*\d+\b/gi, "")
+    .trim()} `;
+  sale.variationLabel.ownText = variationMatch
+    ? `Variation: #${variationMatch[1]} `
+    : "";
 }
 
 function setPaymentText(sale, text) {
@@ -199,7 +245,14 @@ function createHarness({
   locatorAvailable = true,
   registryAvailable = true,
   schedulerAvailable = true,
+  protocolAvailable = true,
+  clientAvailable = true,
   rows = [],
+  rootCount = 1,
+  captureResponseHandler = async () => ({
+    ok: true,
+    data: { status: "accepted" },
+  }),
   scanOnRequest = false,
   schedulerCreateFailures = 0,
   bodyObserveFailures = 0,
@@ -215,12 +268,15 @@ function createHarness({
   const errors = [];
   const observerInstances = [];
   const schedulerSessions = [];
+  const captureMessages = [];
   const documentElement = { name: "documentElement" };
   const location = { origin, pathname };
   const intervals = new Map();
+  const timeouts = new Map();
   const windowEvents = createEventTarget(calls, "window");
   const documentEvents = createEventTarget(calls, "document");
   let currentBody = body;
+  let currentRoot = null;
   let currentRows = rows;
   let bodyQueryCount = 0;
   let documentQueryCount = 0;
@@ -236,14 +292,45 @@ function createHarness({
 
   function mountRowsOnCurrentBody() {
     if (!(currentBody instanceof FakeElement)) {
+      currentRoot = null;
       return;
     }
 
-    currentBody.onQuery = () => {
-      bodyQueryCount += 1;
-      calls.push("body:query");
+    let existingRoots = currentBody.children.filter(
+      (child) => child.dataTid === "m4b_space",
+    );
+
+    if (existingRoots.length === 0) {
+      for (let index = 0; index < rootCount; index += 1) {
+        currentBody.append(
+          new FakeElement({
+            dataTid: "m4b_space",
+            name: `${currentBody.name}-sold-items-${index}`,
+          }),
+        );
+      }
+
+      existingRoots = currentBody.children.filter(
+        (child) => child.dataTid === "m4b_space",
+      );
+    }
+
+    currentRoot = existingRoots[0] ?? null;
+
+    currentBody.onQuery = (selector) => {
+      calls.push(`body:query:${selector}`);
     };
-    currentRows.forEach(({ row }) => currentBody.append(row));
+    if (!currentRoot) {
+      return;
+    }
+
+    currentRoot.onQuery = (selector) => {
+      if (selector === candidateLocator.PAYMENT_TAG_SELECTOR) {
+        bodyQueryCount += 1;
+        calls.push("body:query");
+      }
+    };
+    currentRows.forEach(({ row }) => currentRoot.append(row));
   }
 
   mountRowsOnCurrentBody();
@@ -381,15 +468,32 @@ function createHarness({
       ? captureEventRegistry
       : undefined,
     TikTokLiveTrackerCaptureScheduler: schedulerModule,
+    TikTokLiveTrackerCaptureProtocol: protocolAvailable
+      ? captureProtocol
+      : undefined,
+    TikTokLiveTrackerCaptureClient: clientAvailable
+      ? captureClientModule
+      : undefined,
+    chrome: {
+      runtime: {
+        async sendMessage(message) {
+          captureMessages.push(message);
+          return captureResponseHandler(message, captureMessages.length - 1);
+        },
+      },
+    },
     location,
     document,
     MutationObserver: FakeMutationObserver,
-    setTimeout() {
+    setTimeout(callback, delayMs) {
       const timerId = nextTimeoutId;
       nextTimeoutId += 1;
+      timeouts.set(timerId, { callback, delayMs });
       return timerId;
     },
-    clearTimeout() {},
+    clearTimeout(timerId) {
+      timeouts.delete(timerId);
+    },
     setInterval(callback, delayMs) {
       const intervalId = nextIntervalId;
       nextIntervalId += 1;
@@ -432,10 +536,12 @@ function createHarness({
 
   const harness = {
     calls,
+    captureMessages,
     documentElement,
     errors,
     infos,
     intervals,
+    timeouts,
     location,
     observerInstances,
     schedulerSessions,
@@ -448,6 +554,9 @@ function createHarness({
     },
     currentBody() {
       return currentBody;
+    },
+    currentRoot() {
+      return currentRoot;
     },
     captureObservers() {
       return observerInstances.filter(
@@ -488,6 +597,14 @@ function createHarness({
     tickIntervals() {
       [...intervals.values()].forEach(({ callback }) => callback());
     },
+    tickTimeouts() {
+      const scheduled = [...timeouts.entries()];
+
+      scheduled.forEach(([timerId, { callback }]) => {
+        timeouts.delete(timerId);
+        callback();
+      });
+    },
     get queryCount() {
       return bodyQueryCount;
     },
@@ -511,6 +628,19 @@ function createHarness({
 
 function latestCaptureObserver(harness) {
   return harness.captureObservers().at(-1);
+}
+
+async function flushAsync(turns = 6) {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function assertSinglePrimitiveLog(entry, pattern) {
+  assert.equal(entry.length, 1);
+  assert.equal(typeof entry[0], "string");
+  assert.match(entry[0], pattern);
+  assert.doesNotMatch(entry[0], /\[object Object\]/);
 }
 
 test("requires the capture scheduler before installing lifecycle watchers", () => {
@@ -558,6 +688,59 @@ test("stays dormant outside the exact dashboard path", () => {
   assert.equal(harness.completedSaleLogs().length, 0);
 });
 
+test("fails closed when the capture protocol or client is unavailable", () => {
+  const missingProtocol = createHarness({ protocolAvailable: false });
+  const missingClient = createHarness({ clientAvailable: false });
+
+  assert.equal(missingProtocol.schedulerCreateCount, 0);
+  assert.deepEqual(missingProtocol.errors, [
+    ["[TikTok Live Tracker] Capture protocol failed to load."],
+  ]);
+  assert.equal(missingClient.schedulerCreateCount, 0);
+  assert.deepEqual(missingClient.errors, [
+    ["[TikTok Live Tracker] Capture client failed to load."],
+  ]);
+});
+
+test("keeps transient Sold Items root discovery states out of Chrome extension errors", () => {
+  const missing = createHarness({ rootCount: 0 });
+  const ambiguous = createHarness({ rootCount: 2 });
+
+  for (const [harness, description] of [
+    [missing, "no visible Sold Items panel was found"],
+    [ambiguous, "more than one visible Sold Items panel was found"],
+  ]) {
+    assert.equal(harness.schedulerSessions.length, 0);
+    assert.equal(harness.captureObservers().length, 0);
+    assert.equal(harness.captureMessages.length, 0);
+    assert.equal(harness.intervals.size, 1);
+
+    harness.tickIntervals();
+    assert.equal(harness.schedulerSessions.length, 0);
+    assert.deepEqual(harness.warnings, []);
+    assert.deepEqual(harness.errors, []);
+    assert.equal(harness.infos.length, 1);
+    assertSinglePrimitiveLog(
+      harness.infos[0],
+      new RegExp(`Sold Items capture paused: ${description}\\.$`),
+    );
+  }
+});
+
+test("keeps the former event dashboard route dormant", () => {
+  const harness = createHarness({
+    pathname: "/streamer/live/event/dashboard",
+  });
+
+  assert.equal(harness.schedulerSessions.length, 0);
+  assert.equal(harness.captureObservers().length, 0);
+  assert.equal(harness.queryCount, 0);
+  assert.equal(harness.lifecycleObservers().length, 1);
+  assert.equal(harness.intervals.size, 1);
+  assert.deepEqual(harness.errors, []);
+  assert.equal(harness.infos.length, 0);
+});
+
 test("does not install lifecycle monitoring on another origin", () => {
   const harness = createHarness({ origin: "https://seller.example.com" });
 
@@ -578,7 +761,7 @@ test("starts one capture session on the exact dashboard and installs lifecycle s
   assert.equal(session.runNowCount, 1);
   assert.equal(harness.bodyQueryCount, 1);
   assert.equal(harness.documentQueryCount, 0);
-  assert.equal(captureObserver.observeCalls[0].target, harness.currentBody());
+  assert.equal(captureObserver.observeCalls[0].target, harness.currentRoot());
   assert.deepEqual(
     JSON.parse(JSON.stringify(captureObserver.observeCalls[0].options)),
     { childList: true, subtree: true, characterData: true },
@@ -603,6 +786,371 @@ test("starts one capture session on the exact dashboard and installs lifecycle s
   assert.equal(harness.listenerCount("window", "hashchange"), 1);
   assert.equal(harness.listenerCount("window", "pageshow"), 1);
   assert.equal(harness.listenerCount("document", "visibilitychange"), 1);
+});
+
+test("observes exact pending Variation labels without requiring a payment tag", async () => {
+  const firstRow = new FakeElement({ name: "pending-row-44" }).append(
+    new FakeElement({
+      name: "variation-44",
+      ownText: "Variation: #44",
+      tagName: "SPAN",
+    }),
+  );
+  const duplicateRow = new FakeElement({ name: "duplicate-row-44" }).append(
+    new FakeElement({
+      name: "duplicate-variation-44",
+      ownText: "variation: #44",
+      tagName: "SPAN",
+    }),
+  );
+  const secondRow = new FakeElement({ name: "pending-row-43" }).append(
+    new FakeElement({
+      name: "variation-43",
+      ownText: " Variation:   #43 ",
+      tagName: "SPAN",
+    }),
+  );
+  const lookalike = new FakeElement({ name: "lookalike-row" }).append(
+    new FakeElement({
+      name: "lookalike",
+      ownText: "Buyer mentioned Variation: #999",
+      tagName: "SPAN",
+    }),
+  );
+  const harness = createHarness({
+    rows: [
+      { row: firstRow },
+      { row: duplicateRow },
+      { row: secondRow },
+      { row: lookalike },
+    ],
+  });
+
+  await flushAsync();
+
+  assert.deepEqual(harness.captureMessages, [
+    {
+      channel: "tiktok-live-tracker.capture",
+      version: 1,
+      event: {
+        type: "observe_variations",
+        variationNumbers: [44, 43],
+      },
+    },
+  ]);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.doesNotMatch(JSON.stringify(harness.captureMessages), /Buyer/);
+  const syncLogs = harness.infos.filter(
+    ([message]) =>
+      message ===
+      "[TikTok Live Tracker] Sold Items variations synchronized.",
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(syncLogs)), [
+    [
+      "[TikTok Live Tracker] Sold Items variations synchronized.",
+      { variationNumbers: [44, 43] },
+    ],
+  ]);
+  assert.doesNotMatch(JSON.stringify(syncLogs), /Buyer|title|streamId/i);
+});
+
+test("forwards observation before completed payment and only once per fingerprint", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Payment complete",
+  );
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      { type: "observe_variations", variationNumbers: [44] },
+      {
+        type: "payment_complete",
+        variationNumber: 44,
+        soldPriceCents: 700,
+      },
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages),
+    /Example Buyer|streamId|observedAt|title|row/i,
+  );
+
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(
+    harness.infos.filter(([message]) =>
+      message.includes("Sold Items variations synchronized"),
+    ).length,
+    1,
+  );
+
+  setSaleSummary(sale, "Example Buyer has won: $8.00 Variation: #44");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+  await flushAsync();
+
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "payment_complete",
+    variationNumber: 44,
+    soldPriceCents: 800,
+  });
+  assert.equal(harness.captureMessages.length, 3);
+
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 3);
+});
+
+test("retries a failed observation without a DOM mutation and resets backoff", async () => {
+  const failureIndexes = new Set([0, 2]);
+  const row44 = new FakeElement({ name: "pending-row-44" }).append(
+    new FakeElement({
+      ownText: "Variation: #44",
+      tagName: "SPAN",
+    }),
+  );
+  const harness = createHarness({
+    rows: [{ row: row44 }],
+    scanOnRequest: true,
+    captureResponseHandler: async (_message, index) =>
+      failureIndexes.has(index)
+        ? {
+            ok: false,
+            error: {
+              code: "NO_ACTIVE_STREAM",
+              message: "No active tracker stream is available.",
+            },
+          }
+        : { ok: true, data: { status: "accepted" } },
+  });
+
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
+  assert.deepEqual(
+    [...harness.timeouts.values()].map(({ delayMs }) => delayMs),
+    [1000],
+  );
+
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: row44.children[0] },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
+  assert.deepEqual(
+    [...harness.timeouts.values()].map(({ delayMs }) => delayMs),
+    [1000],
+  );
+
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.timeouts.size, 0);
+
+  const row45 = new FakeElement({ name: "pending-row-45" }).append(
+    new FakeElement({
+      ownText: "Variation: #45",
+      tagName: "SPAN",
+    }),
+  );
+  harness.currentRoot().append(row45);
+  latestCaptureObserver(harness).trigger([
+    {
+      type: "childList",
+      target: harness.currentRoot(),
+      addedNodes: [row45],
+      removedNodes: [],
+    },
+  ]);
+  await flushAsync();
+
+  assert.equal(harness.captureMessages.length, 3);
+  assert.deepEqual(harness.captureMessages[2].event, {
+    type: "observe_variations",
+    variationNumbers: [45],
+  });
+  assert.deepEqual(
+    [...harness.timeouts.values()].map(({ delayMs }) => delayMs),
+    [1000],
+  );
+  assert.deepEqual(harness.warnings, []);
+  assert.deepEqual(harness.errors, []);
+  const retryLogs = harness.infos.filter(([message]) =>
+    message.includes("Variation observation delivery failed."),
+  );
+  assert.equal(retryLogs.length, 1);
+  assertSinglePrimitiveLog(
+    retryLogs[0],
+    /Variation observation delivery failed\. Retrying automatically \(NO_ACTIVE_STREAM\)\.$/,
+  );
+
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 4);
+
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: row45.children[0] },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 4);
+});
+
+test("retries a failed payment without resending its accepted observation", async () => {
+  let paymentAttempts = 0;
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Payment complete",
+  );
+  const harness = createHarness({
+    rows: [sale],
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "payment_complete" &&
+        paymentAttempts++ === 0
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "STATE_NOT_INITIALIZED",
+            message: "Capture state is not ready.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.type),
+    ["observe_variations", "payment_complete"],
+  );
+  assert.deepEqual(
+    [...harness.timeouts.values()].map(({ delayMs }) => delayMs),
+    [1000],
+  );
+  assert.deepEqual(harness.warnings, []);
+  assert.deepEqual(harness.errors, []);
+  const retryLogs = harness.infos.filter(([message]) =>
+    message.includes("Payment delivery failed."),
+  );
+  assert.equal(retryLogs.length, 1);
+  assertSinglePrimitiveLog(
+    retryLogs[0],
+    /Payment delivery failed\. Retrying automatically \(STATE_NOT_INITIALIZED\)\.$/,
+  );
+
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.type),
+    ["observe_variations", "payment_complete", "payment_complete"],
+  );
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("keeps retryable transport failures out of Chrome extension errors", async () => {
+  let attempt = 0;
+  const row = new FakeElement({ name: "pending-row-44" }).append(
+    new FakeElement({ ownText: "Variation: #44", tagName: "SPAN" }),
+  );
+  const harness = createHarness({
+    rows: [{ row }],
+    captureResponseHandler: async () => {
+      if (attempt++ === 0) {
+        throw new Error("The service worker restarted.");
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+
+  assert.equal(harness.captureMessages.length, 1);
+  assert.equal(harness.timeouts.size, 1);
+  assert.deepEqual(harness.warnings, []);
+  assert.deepEqual(harness.errors, []);
+  const retryLogs = harness.infos.filter(([message]) =>
+    message.includes("Variation observation delivery failed."),
+  );
+  assert.equal(retryLogs.length, 1);
+  assertSinglePrimitiveLog(
+    retryLogs[0],
+    /Variation observation delivery failed\. Retrying automatically \(CAPTURE_TRANSPORT_ERROR\)\.$/,
+  );
+
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("reports unexpected delivery failures once with a readable primitive message", async () => {
+  const row = new FakeElement({ name: "pending-row-44" }).append(
+    new FakeElement({ ownText: "Variation: #44", tagName: "SPAN" }),
+  );
+  const harness = createHarness({
+    rows: [{ row }],
+    captureResponseHandler: async () => ({ unexpected: true }),
+  });
+
+  await flushAsync();
+
+  assert.equal(harness.captureMessages.length, 1);
+  assert.equal(harness.timeouts.size, 1);
+  assert.deepEqual(harness.warnings, []);
+  assert.equal(harness.errors.length, 1);
+  assertSinglePrimitiveLog(
+    harness.errors[0],
+    /Variation observation delivery failed\. Retrying automatically \(INVALID_CAPTURE_RESPONSE\)\.$/,
+  );
+
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.errors.length, 1);
+});
+
+test("cancels a pending delivery retry when the route tears down", async () => {
+  const row = new FakeElement({ name: "pending-row" }).append(
+    new FakeElement({ ownText: "Variation: #44", tagName: "SPAN" }),
+  );
+  const harness = createHarness({
+    rows: [{ row }],
+    captureResponseHandler: async () => ({
+      ok: false,
+      error: {
+        code: "NO_ACTIVE_STREAM",
+        message: "No active tracker stream is available.",
+      },
+    }),
+  });
+
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
+  assert.equal(harness.timeouts.size, 1);
+
+  harness.setPathname("/streamer/live/event/list");
+  harness.dispatchWindow("popstate");
+
+  assert.equal(harness.timeouts.size, 0);
+  assert.equal(latestCaptureObserver(harness).connected, false);
+
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
 });
 
 test("requires the exact completed-payment badge text before emitting a sale", () => {
@@ -748,7 +1296,7 @@ test("waits for a body, cleans up when it disappears, and starts on its replacem
   const firstSession = harness.schedulerSessions[0];
   const firstCaptureObserver = latestCaptureObserver(harness);
 
-  assert.equal(firstCaptureObserver.observeCalls[0].target, firstBody);
+  assert.equal(firstCaptureObserver.observeCalls[0].target, harness.currentRoot());
 
   harness.setBody(null);
   lifecycleObserver.trigger();
@@ -760,7 +1308,10 @@ test("waits for a body, cleans up when it disappears, and starts on its replacem
   lifecycleObserver.trigger();
 
   assert.equal(harness.schedulerSessions.length, 2);
-  assert.equal(latestCaptureObserver(harness).observeCalls[0].target, secondBody);
+  assert.equal(
+    latestCaptureObserver(harness).observeCalls[0].target,
+    harness.currentRoot(),
+  );
 });
 
 test("replaces a detached body session once and ignores its stale mutation callback", () => {
@@ -777,7 +1328,10 @@ test("replaces a detached body session once and ignores its stale mutation callb
   assert.equal(firstSession.disposeCount, 1);
   assert.equal(firstCaptureObserver.disconnectCount, 1);
   assert.equal(harness.schedulerSessions.length, 2);
-  assert.equal(latestCaptureObserver(harness).observeCalls[0].target, secondBody);
+  assert.equal(
+    latestCaptureObserver(harness).observeCalls[0].target,
+    harness.currentRoot(),
+  );
 
   lifecycleObserver.trigger();
   assert.equal(harness.schedulerSessions.length, 2);
@@ -787,6 +1341,47 @@ test("replaces a detached body session once and ignores its stale mutation callb
   assert.doesNotThrow(() => firstCaptureObserver.trigger());
   assert.equal(firstSession.requestCount, requestCountBeforeStaleCallback);
   assert.equal(harness.queryCount, queryCountBeforeStaleCallback);
+});
+
+test("replaces the Sold Items root, rescans it, and ignores stale callbacks", async () => {
+  const firstRow = new FakeElement({ name: "first-row" }).append(
+    new FakeElement({ ownText: "Variation: #44", tagName: "SPAN" }),
+  );
+  const harness = createHarness({ rows: [{ row: firstRow }] });
+
+  await flushAsync();
+  const firstObserver = latestCaptureObserver(harness);
+  const firstRoot = harness.currentRoot();
+  const secondRoot = new FakeElement({
+    dataTid: "m4b_space",
+    name: "replacement-sold-items",
+  });
+  const secondRow = new FakeElement({ name: "second-row" }).append(
+    new FakeElement({ ownText: "Variation: #45", tagName: "SPAN" }),
+  );
+  secondRoot.append(secondRow);
+  harness.currentBody().children = harness.currentBody().children.filter(
+    (child) => child !== firstRoot,
+  );
+  firstRoot.parentElement = null;
+  firstRoot.parentNode = null;
+  harness.currentBody().append(secondRoot);
+
+  harness.tickIntervals();
+  await flushAsync();
+
+  assert.equal(firstObserver.connected, false);
+  assert.equal(latestCaptureObserver(harness).observeCalls[0].target, secondRoot);
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumbers),
+    [[44], [45]],
+  );
+
+  firstObserver.trigger([
+    { type: "characterData", target: firstRow.children[0] },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
 });
 
 test("keeps completed-sale deduplication for the lifetime of the SPA document", () => {
@@ -820,12 +1415,7 @@ test("keeps completed-sale deduplication for the lifetime of the SPA document", 
 
   assert.equal(harness.completedSaleLogs().length, 2);
   assert.equal(harness.completedSaleLogs()[1][1].variationNumber, 251);
-  assert.equal(
-    harness.warnings.filter(([message]) =>
-      message.includes("stream identity is not yet verified"),
-    ).length,
-    1,
-  );
+  assert.equal(harness.warnings.length, 0);
 });
 
 test("emits a pending row once when it turns green and preserves price conflicts", () => {
@@ -858,9 +1448,12 @@ test("emits a pending row once when it turns green and preserves price conflicts
   assert.equal(firstCompletedLogs[0][1].variationNumber, 250);
   assert.equal(firstCompletedLogs[0][1].soldPriceCents, 4800);
   assert.equal(firstCompletedLogs[0][1].paymentStatus, "payment_complete");
-  assert.equal(firstCompletedLogs[0][1].streamId, null);
-  assert.equal(firstCompletedLogs[0][1].streamIdentityStatus, "unverified");
-  assert.equal(firstCompletedLogs[0][1].dedupeScope, "page_load");
+  assert.equal(Object.hasOwn(firstCompletedLogs[0][1], "streamId"), false);
+  assert.equal(
+    Object.hasOwn(firstCompletedLogs[0][1], "streamIdentityStatus"),
+    false,
+  );
+  assert.equal(Object.hasOwn(firstCompletedLogs[0][1], "dedupeScope"), false);
   assert.equal(typeof firstCompletedLogs[0][1].observedAt, "string");
 
   captureObserver.trigger([
@@ -877,9 +1470,6 @@ test("emits a pending row once when it turns green and preserves price conflicts
 
   assert.equal(harness.completedSaleLogs().length, 1);
   assert.deepEqual(harness.warnings, [
-    [
-      "[TikTok Live Tracker] TikTok stream identity is not yet verified; completed-sale deduplication is limited to this page load.",
-    ],
     [
       "[TikTok Live Tracker] Conflicting completed price detected for variation #250 within the current page scope.",
     ],
@@ -919,7 +1509,7 @@ test("warns once for each distinct conflicting price within the page scope", () 
     harness.warnings.filter(([message]) =>
       message.includes("stream identity is not yet verified"),
     ).length,
-    1,
+    0,
   );
   assert.equal(harness.completedSaleLogs().length, 1);
 });
@@ -1036,7 +1626,7 @@ test("cleanup failures cannot prevent a later dashboard session", () => {
   assert.equal(harness.schedulerSessions[1].runNowCount, 1);
 });
 
-test("capture remains read-only and does not send data", () => {
+test("capture remains page-read-only and delegates only extension messages", () => {
   assert.doesNotMatch(
     contentSource,
     /\bfetch\s*\(|XMLHttpRequest|runtime\.sendMessage|\.sendBeacon\s*\(/,

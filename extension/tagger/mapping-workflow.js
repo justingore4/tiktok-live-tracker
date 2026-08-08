@@ -256,6 +256,7 @@
 
           return {
             variationNumber,
+            recorded: auction !== null,
             current: variationNumber === currentVariationNumber,
             selected: variationNumber === selectedVariationNumber,
             status: auction?.status ?? "unmapped",

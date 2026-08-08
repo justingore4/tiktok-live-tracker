@@ -11,6 +11,9 @@
   function createSaleCandidateLocatorModule() {
     "use strict";
 
+    const SOLD_ITEMS_ROOT_SELECTOR = '[data-tid="m4b_space"]';
+    const VARIATION_LABEL_SELECTOR = "span";
+    const VARIATION_LABEL_PATTERN = /^Variation\s*:\s*#\s*(\d+)$/i;
     const PAYMENT_TAG_SELECTOR = '[data-tid="m4b_tag"]';
     const PAYMENT_COMPLETE_TEXT = "Payment complete";
     const PAYMENT_COMPLETE_NORMALIZED = PAYMENT_COMPLETE_TEXT.toLowerCase();
@@ -28,6 +31,101 @@
       }
     }
 
+    function isExactSelectorMatch(node, selector) {
+      return (
+        Boolean(node) &&
+        typeof node.matches === "function" &&
+        node.matches(selector)
+      );
+    }
+
+    function isVisibleElement(node) {
+      if (!node || typeof node.getBoundingClientRect !== "function") {
+        return false;
+      }
+
+      const rect = node.getBoundingClientRect();
+
+      return (
+        Boolean(rect) &&
+        typeof rect.width === "number" &&
+        Number.isFinite(rect.width) &&
+        rect.width > 0 &&
+        typeof rect.height === "number" &&
+        Number.isFinite(rect.height) &&
+        rect.height > 0
+      );
+    }
+
+    function locateUniqueVisibleSoldItemsRoot(boundary) {
+      requireBoundary(boundary);
+
+      try {
+        const candidates = boundary.querySelectorAll(
+          SOLD_ITEMS_ROOT_SELECTOR,
+        );
+        const visibleRoots = [];
+
+        for (const candidate of candidates) {
+          if (
+            !isInsideBoundary(candidate, boundary) ||
+            !isExactSelectorMatch(candidate, SOLD_ITEMS_ROOT_SELECTOR) ||
+            !isVisibleElement(candidate)
+          ) {
+            continue;
+          }
+
+          visibleRoots.push(candidate);
+
+          if (visibleRoots.length > 1) {
+            return Object.freeze({ root: null, status: "ambiguous" });
+          }
+        }
+
+        if (visibleRoots.length === 0) {
+          return Object.freeze({ root: null, status: "not_found" });
+        }
+
+        return Object.freeze({ root: visibleRoots[0], status: "found" });
+      } catch {
+        return Object.freeze({ root: null, status: "unsafe" });
+      }
+    }
+
+    function locateObservedVariations(boundary) {
+      requireBoundary(boundary);
+
+      const results = [];
+      const labels = boundary.querySelectorAll(VARIATION_LABEL_SELECTOR);
+
+      for (const label of labels) {
+        if (!isInsideBoundary(label, boundary)) {
+          continue;
+        }
+
+        const match = normalizeText(label.textContent).match(
+          VARIATION_LABEL_PATTERN,
+        );
+
+        if (!match) {
+          continue;
+        }
+
+        const variationNumber = Number(match[1]);
+
+        if (
+          !Number.isSafeInteger(variationNumber) ||
+          variationNumber < 1
+        ) {
+          continue;
+        }
+
+        results.push(Object.freeze({ label, variationNumber }));
+      }
+
+      return results;
+    }
+
     function requireParser(parser) {
       if (!parser || typeof parser.parseSoldItemText !== "function") {
         throw new TypeError("A sale parser with parseSoldItemText is required.");
@@ -35,11 +133,32 @@
     }
 
     function isExactPaymentTag(node) {
+      return isExactSelectorMatch(node, PAYMENT_TAG_SELECTOR);
+    }
+
+    function isVariationLabelElement(node) {
+      return isExactSelectorMatch(node, VARIATION_LABEL_SELECTOR);
+    }
+
+    function isExactVariationLabel(node) {
       return (
-        Boolean(node) &&
-        typeof node.matches === "function" &&
-        node.matches(PAYMENT_TAG_SELECTOR)
+        isVariationLabelElement(node) &&
+        VARIATION_LABEL_PATTERN.test(normalizeText(node.textContent))
       );
+    }
+
+    function containsExactVariationLabel(node) {
+      if (typeof node?.querySelectorAll !== "function") {
+        return false;
+      }
+
+      for (const candidate of node.querySelectorAll(VARIATION_LABEL_SELECTOR)) {
+        if (isExactVariationLabel(candidate)) {
+          return true;
+        }
+      }
+
+      return false;
     }
 
     function isInsideBoundary(node, boundary) {
@@ -118,10 +237,19 @@
         return true;
       }
 
+      if (isExactVariationLabel(node)) {
+        return true;
+      }
+
       if (
         typeof node.querySelector === "function" &&
         node.querySelector(PAYMENT_TAG_SELECTOR)
       ) {
+        return true;
+      }
+
+
+      if (containsExactVariationLabel(node)) {
         return true;
       }
 
@@ -145,10 +273,19 @@
           return true;
         }
 
+        if (isExactVariationLabel(ancestor)) {
+          return true;
+        }
+
         if (
           typeof ancestor.querySelector === "function" &&
           ancestor.querySelector(PAYMENT_TAG_SELECTOR)
         ) {
+          return true;
+        }
+
+
+        if (containsExactVariationLabel(ancestor)) {
           return true;
         }
 
@@ -227,7 +364,11 @@
     return Object.freeze({
       MAX_ROW_ANCESTORS,
       PAYMENT_TAG_SELECTOR,
+      SOLD_ITEMS_ROOT_SELECTOR,
+      VARIATION_LABEL_SELECTOR,
       locateCompletedSales,
+      locateObservedVariations,
+      locateUniqueVisibleSoldItemsRoot,
       mutationsMayAffectSale,
     });
   },

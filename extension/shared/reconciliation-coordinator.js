@@ -17,6 +17,7 @@
     const COMMAND_TYPES = Object.freeze({
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
+      OBSERVE_VARIATIONS: "observe_variations",
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
@@ -26,6 +27,11 @@
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STATE]: ["type"],
       [COMMAND_TYPES.INITIALIZE_STATE]: ["inventory", "type"],
+      [COMMAND_TYPES.OBSERVE_VARIATIONS]: [
+        "streamId",
+        "type",
+        "variationNumbers",
+      ],
       [COMMAND_TYPES.MAP_VARIATION]: [
         "sku",
         "streamId",
@@ -59,6 +65,7 @@
       "hydrateReconciliationState",
       "mapVariation",
       "markUnpaid",
+      "observeVariations",
       "recordPaymentComplete",
       "unmapVariation",
       "undoMarkUnpaid",
@@ -147,6 +154,27 @@
           "INVALID_COMMAND",
           "initialize_state inventory must contain at least one entry.",
         );
+      }
+
+      if (command.type === COMMAND_TYPES.OBSERVE_VARIATIONS) {
+        if (
+          typeof command.streamId !== "string" ||
+          command.streamId.trim() === "" ||
+          !Array.isArray(command.variationNumbers) ||
+          command.variationNumbers.length === 0 ||
+          command.variationNumbers.length > 1000 ||
+          command.variationNumbers.some(
+            (variationNumber) =>
+              !Number.isSafeInteger(variationNumber) || variationNumber < 1,
+          ) ||
+          new Set(command.variationNumbers).size !==
+            command.variationNumbers.length
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "observe_variations requires a stream and 1 to 1000 unique positive variation numbers.",
+          );
+        }
       }
 
       return command.type;
@@ -244,6 +272,10 @@
         const candidate = cloneCanonicalState();
         const result = operation(candidate);
 
+        if (JSON.stringify(candidate) === JSON.stringify(canonicalState)) {
+          return createResponse(result);
+        }
+
         await stateStore.saveState(candidate);
         canonicalState = candidate;
 
@@ -260,6 +292,13 @@
             return createResponse();
           case COMMAND_TYPES.INITIALIZE_STATE:
             return initializeState(command);
+          case COMMAND_TYPES.OBSERVE_VARIATIONS:
+            return mutateState((state) =>
+              reconciliation.observeVariations(state, {
+                streamId: command.streamId,
+                variationNumbers: command.variationNumbers,
+              }),
+            );
           case COMMAND_TYPES.MAP_VARIATION:
             return mutateState((state) =>
               reconciliation.mapVariation(state, {

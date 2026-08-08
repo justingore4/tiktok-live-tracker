@@ -4,12 +4,12 @@ A browser-based tool for tracking TikTok LIVE auction sales. TikTok supplies the
 completed sale and final price, an employee identifies the physical item, and the
 tracker combines those facts to calculate inventory and gross profit.
 
-> **Project status:** early browser prototype. The completed-sale parser, read-only
-> dashboard capture probe with SPA recovery and offline-safe candidate targeting,
-> reconciliation engine, tagger lifecycle demo, and local saved-session recovery are
-> implemented and tested. The service worker now owns persistent local tracker-stream
-> sessions as well as employee mappings and unpaid corrections. TikTok payment capture
-> and Google Sheets are not connected yet.
+> **Project status:** early browser prototype. The tracker now observes the live
+> **Sold items** panel, records its variation numbers under the active local tracker
+> stream, and persists exact green `Payment complete` prices through the service worker.
+> An open Live session side panel refetches saved state as those records change, without
+> requiring a TikTok-page refresh or panel reopen. A dedicated employee work queue,
+> verified TikTok stream identity, and Google Sheets are not connected yet.
 
 ## How it works
 
@@ -65,15 +65,29 @@ the item is auctioned again, the employee maps its new variation number.
   dashboard updates cannot indefinitely postpone scans while the page is executing.
 - SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
   fallback check, and cleans up or restarts the observer and scheduler when the route or
-  document body changes.
-- A sale-candidate locator that accepts only the confirmed payment-tag attribute with
-  normalized `Payment complete` badge text, stays inside a bounded ancestor search, and
-  avoids generated CSS classes.
-- Mutation relevance filtering that skips unrelated dashboard updates while failing
-  toward a recovery scan if DOM inspection is unsafe.
-- A pure capture-event registry that keeps page-load and verified-stream scopes separate.
-  The verified-stream behavior is tested, but the live probe still emits `streamId: null`
-  and labels its deduplication scope as an unverified page load.
+  Sold Items root changes.
+- A live-validated Sold Items boundary that requires exactly one visible
+  `[data-tid="m4b_space"]` root. Capture stops and retries when that selector is missing
+  or ambiguous, and sale parsing never scans the video, Chat, analytics, or the rest of
+  the dashboard.
+- Strict matching for exact `Variation: #N` labels and exact green
+  `[data-tid="m4b_tag"]` badges whose normalized text is `Payment complete`. Generic tag
+  counts and generated CSS classes are not capture inputs. Incidental buyer and product
+  text in the same row is never selected as a field, logged raw, transmitted, or saved.
+- A strict capture protocol and runtime client that send only observed variation numbers
+  or a completed variation plus its integer-cent price. The page sends no stream ID,
+  buyer data, or DOM content.
+- A worker-owned capture integration that authorizes only the top-level product
+  dashboard, resolves the active local stream itself, and persists observations and
+  completed payments through the serialized reconciliation coordinator.
+- A data-free capture-state invalidation sent only after the worker accepts a durable
+  capture update. An open Live session side panel validates and coalesces those notices,
+  then refetches canonical state so new variations and green-payment changes appear live
+  without trusting page-supplied state.
+- Ack-based delivery with retry and bounded backoff. Repeated DOM scans, page reloads,
+  and service-worker restarts remain idempotent for the same local stream.
+- A pure capture-event registry that keeps diagnostic page-load and verified-stream
+  scopes separate. Canonical stream assignment is instead performed by the worker.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
   - accepts employee mapping and payment events in either order;
@@ -102,17 +116,14 @@ the item is auctioned again, the employee maps its new variation number.
 
 ### Not implemented yet
 
-- Real TikTok payment events driving the tagger interface.
-- A live, capture-fed variation queue; the current history selector uses seeded demo
-  variations only.
-- Automatic detection of the current variation while bidding.
+- A richer prioritized employee work queue beyond the current newest-captured-variation
+  auto-follow behavior. A selected Sold Items row remains a recorded row, not a claim
+  about the auction currently bidding.
+- Visible capture connection, retry, and queue-drained status.
 - Detection of TikTok's yellow payment-warning state.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
-- A live-validated, stable Sold items container selector; the current read-only boundary
-  remains the dashboard body.
 - Google Sheets inventory import and results export.
-- A connection between the capture probe and reconciliation engine.
 - End-of-stream analytics and live-stream validation.
 
 ## Development roadmap
@@ -127,18 +138,19 @@ the item is auctioned again, the employee maps its new variation number.
       worker;
    3. **Completed:** connect the tagger to saved state and verify refresh/restart
       recovery.
-3. **Offline hardening completed:** bounded scheduling, SPA lifecycle recovery,
-   candidate validation, mutation filtering, and scoped event-registry tests are
-   implemented. Verified stream identity, Sold items root narrowing, and real-stream
-   validation remain blocking live checks.
+3. **Capture hardening completed:** bounded scheduling, SPA lifecycle recovery,
+   candidate validation, root-scoped observation, and scoped event-registry tests are
+   implemented. Verified TikTok stream identity and broader real-stream validation
+   remain open.
 4. Connect captured TikTok events to the reconciliation engine and tagger in three
    focused stages:
    1. **Completed:** create persistent local active-stream sessions with Start, Resume,
       and End controls;
-   2. **Next:** attach read-only capture events to the active local stream and persist
-      payment completion through the worker;
-   3. Feed captured variations into the tagger queue and validate the complete local
-      live-stream workflow.
+   2. **Completed:** attach read-only Sold Items observations to the active local stream
+      and persist variation numbers and payment completion through the worker;
+   3. **In progress:** the open tagger now refetches persisted capture changes in real
+      time; next add a prioritized employee queue, visible capture status, verified
+      TikTok stream identity, and complete local live-stream validation.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
 7. Add end-of-stream reconciliation and analytics reporting.
@@ -148,14 +160,15 @@ the item is auctioned again, the employee maps its new variation number.
 | Path | Purpose | Status |
 | --- | --- | --- |
 | `extension/manifest.json` | Extension configuration and dashboard entry point | Implemented |
-| `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Coordinator implemented |
-| `extension/capture/` | Read-only TikTok dashboard observation | Offline hardening implemented; live scope and identity pending |
+| `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Tagger, session, and capture coordination implemented |
+| `extension/capture/` | Root-scoped Sold Items observation and retrying runtime client | Live capture integration implemented |
+| `extension/shared/capture-*.js` | Strict page-to-worker protocol and active-stream binding | Implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
 | `extension/shared/stream-session*.js` | Versioned active-stream state, storage, and serialized lifecycle commands | Implemented in service worker |
-| `extension/tagger/` | Employee queue, inventory picker, active-stream controls, and persistence clients | Active-stream persistence connected; live capture pending |
+| `extension/tagger/` | Live-refreshed variation history, inventory picker, active-stream controls, and persistence clients | Capture invalidation/refetch implemented; prioritized queue pending |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
@@ -201,50 +214,63 @@ or clear its local extension storage, only if you intentionally want to discard 
 prototype data. There is no silent reset.
 
 6. In **Live session**, select **Start stream**. Confirm the tracker says the local stream
-   is active; this does not start TikTok LIVE.
-7. Select `Stussy tee - black, L` for variation `#203`; wait for the save to finish.
-8. Close and reopen the side panel. Select **Resume active stream**, then confirm `#203`
-   is still mapped and shows one pending
-   reservation.
-9. Select another available inventory card, wait for it to save, then reopen the panel
-   once more and confirm the correction was restored.
-10. Click the selected inventory card again, wait for it to save, and confirm the
-    variation shows **No item selected** after reopening. Select an item again to
-    continue.
-11. Use **Mark unpaid after TikTok's buffer**, reopen the panel, and confirm the unpaid
-    state was restored. Use **Undo unpaid** and confirm that change also survives reopen.
-12. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
+   is active; this does not start TikTok LIVE. Until capture records a Sold Items row,
+   confirm the variation selector waits for one and inventory mapping is unavailable.
+7. Close and reopen the side panel. Select **Resume active stream** and confirm the same
+   local stream is restored without creating a fake live variation.
+8. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
     variation `#203` plus seeded history `#202`, `#201`, and `#200`.
-13. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
+9. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
     different inventory card and confirm its completed-sale inventory and profit update.
-14. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
+10. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
     payment** and `4 available · 1 pending`.
-15. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
+11. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
     `4 remaining`; then use **Undo simulated payment** and confirm the pending state
     returns.
-16. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
+12. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
     unpaid**. Switch back to **Live session** and confirm none of the demo-only payment
     changes altered the saved data.
-17. In **Live session**, resolve any **Waiting for payment** test mapping by marking it
-    unpaid. Then choose **End stream**, cancel once, and confirm End. Verify the UI
-    returns to Start, the prior order history remains stored, and TikTok LIVE is
-    unaffected. Start a new tracker stream and confirm its prototype variation `#203`
-    begins without the prior stream's mapping.
-18. Open `https://shop.tiktok.com/streamer/live/event/dashboard`.
-19. Open DevTools and confirm the Console contains:
+13. Keep that local stream active, open
+    `https://shop.tiktok.com/streamer/live/product/dashboard`, and refresh the dashboard
+    once after loading or reloading the unpacked extension.
+14. Open DevTools and confirm the Console contains the exact active route:
 
    ```text
-   [TikTok Live Tracker] Capture probe active
+   [TikTok Live Tracker] Capture probe active on /streamer/live/product/dashboard.
    ```
 
-20. Use TikTok's own navigation to leave the dashboard and return without reloading the
-    tab; confirm capture becomes active again without duplicate completed-sale events.
-21. Put the tab in the background, return to it, and confirm capture remains active. Body
-    replacement and repeated re-entry are also covered by the offline capture tests.
+15. Keep the active Live session side panel open. In **LIVE auctions → Sold items**,
+    note two or more visible variation numbers and confirm those exact numbers appear
+    in the variation selector after the capture scan settles. Do not refresh TikTok,
+    close the panel, or choose Resume again.
+16. Select one recorded variation, then wait for a newer Sold Items variation. Confirm
+    the new number appears in the selector and becomes the displayed variation
+    automatically. When that row receives the exact green `Payment complete` badge,
+    confirm its final price and **Payment complete - item needed** state appear without
+    changing the selected variation. Do not use Chat, the video auction card, or analytics
+    as a comparison source.
+17. Map one captured pending variation to `Stussy tee - black, L` and wait for the save.
+    Reopen and Resume once to confirm the mapping and pending reservation are durable.
+    Correct it to another available card, then click that selected card again; confirm
+    both the correction and **No item selected** state survive another reopen.
+18. Use **Mark unpaid after TikTok's buffer** on a mapped, non-completed test variation,
+    reopen the panel, and confirm the unpaid state was restored. Use **Undo unpaid** and
+    confirm that change also survives reopen.
+19. Use TikTok's own navigation to leave the dashboard and return without reloading the
+    tab; confirm capture becomes active again. Put the tab in the background, return to
+    it, and confirm a later Sold Items change is still captured.
+20. Keep the same local tracker stream active until expected green payment transitions
+    have appeared and the capture delivery queue has had time to finish or retry. End it
+    only after that point and after resolving any inventory-reserved pending mapping.
+    Cancel End once, then confirm it; TikTok LIVE must remain unaffected. Before the next
+    TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the new stream rather
+    than showing stale rows, and only then start a new local tracker stream.
 
-On a blank offline dashboard, the startup message is the expected result. See
-[Capture development notes](docs/capture-development.md) for an optional simulated-sale
-test and the remaining live-stream checks.
+The capture boundary must resolve to exactly one visible
+`[data-tid="m4b_space"]` element. If TikTok renders zero or multiple visible matches,
+capture fails closed and retries instead of scanning elsewhere. See
+[Capture development notes](docs/capture-development.md) for the read-only root diagnostic
+and the remaining live-stream checks.
 
 Live-session identity and employee changes survive side-panel reloads and service-worker
 restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID.
@@ -265,10 +291,11 @@ authentication is deliberately unresolved until the Sheets stage:
 - A service-account key is only appropriate in an optional backend that keeps it away
   from the extension.
 
-Never commit `.env` files, access tokens, private keys, or client data. The current
-capture probe logs variation number, price in integer cents, payment status, and explicit
-unverified identity metadata including `streamId: null`; it does not store buyer names or
-contact Google Sheets.
+Never commit `.env` files, access tokens, private keys, or client data. Capture runtime
+messages contain only variation numbers and, for completed payments, the final price in
+integer cents. They contain no page-supplied stream ID, buyer information, product text,
+or DOM content. The trusted worker binds those facts to the active local tracker stream;
+nothing is sent to Google Sheets.
 
 ## Documentation
 

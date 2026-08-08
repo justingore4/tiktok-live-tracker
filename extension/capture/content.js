@@ -3,10 +3,17 @@
 
   const LOG_PREFIX = "[TikTok Live Tracker]";
   const CAPTURE_ORIGIN = "https://shop.tiktok.com";
-  const CAPTURE_PATH = "/streamer/live/event/dashboard";
+  const CAPTURE_PATH = "/streamer/live/product/dashboard";
   const LIFECYCLE_INTERVAL_MS = 250;
   const QUIET_SCAN_DELAY_MS = 150;
   const MAX_SCAN_WAIT_MS = 1000;
+  const DELIVERY_RETRY_DELAY_MS = 1000;
+  const MAX_DELIVERY_RETRY_DELAY_MS = 5000;
+  const EXPECTED_CAPTURE_RETRY_CODES = new Set([
+    "CAPTURE_TRANSPORT_ERROR",
+    "NO_ACTIVE_STREAM",
+    "STATE_NOT_INITIALIZED",
+  ]);
   const SINGLETON_KEY = "__tiktokLiveTrackerCaptureProbeInstance__";
 
   if (location.origin !== CAPTURE_ORIGIN) {
@@ -22,6 +29,8 @@
   const eventRegistryModule =
     globalThis.TikTokLiveTrackerCaptureEventRegistry;
   const schedulerModule = globalThis.TikTokLiveTrackerCaptureScheduler;
+  const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
+  const captureClientModule = globalThis.TikTokLiveTrackerCaptureClient;
 
   if (!parser) {
     console.error(`${LOG_PREFIX} Sale parser failed to load.`);
@@ -30,7 +39,8 @@
 
   if (
     !candidateLocator?.locateCompletedSales ||
-    !candidateLocator?.mutationsMayAffectSale
+    !candidateLocator?.locateObservedVariations ||
+    !candidateLocator?.locateUniqueVisibleSoldItemsRoot
   ) {
     console.error(`${LOG_PREFIX} Sale candidate locator failed to load.`);
     return;
@@ -49,6 +59,28 @@
     return;
   }
 
+  if (!captureProtocol?.createCaptureMessage) {
+    console.error(`${LOG_PREFIX} Capture protocol failed to load.`);
+    return;
+  }
+
+  if (!captureClientModule?.createCaptureClient) {
+    console.error(`${LOG_PREFIX} Capture client failed to load.`);
+    return;
+  }
+
+  let captureClient;
+
+  try {
+    captureClient = captureClientModule.createCaptureClient({
+      protocol: captureProtocol,
+      runtime: globalThis.chrome?.runtime,
+    });
+  } catch (error) {
+    console.error(`${LOG_PREFIX} Capture client failed to initialize.`, error);
+    return;
+  }
+
   const eventRegistry = eventRegistryModule.createCaptureEventRegistry();
   const captureScope = eventRegistryModule.createPageScope(
     "current-dashboard-document",
@@ -58,7 +90,7 @@
   let captureSession = null;
   let lifecycleObserver = null;
   let observedDocumentElement = null;
-  let streamIdentityWarningLogged = false;
+  let lastRootDiscoveryStatus = null;
 
   globalThis[SINGLETON_KEY] = singletonToken;
 
@@ -93,25 +125,284 @@
       return;
     }
 
-    if (!streamIdentityWarningLogged) {
-      streamIdentityWarningLogged = true;
-      console.warn(
-        `${LOG_PREFIX} TikTok stream identity is not yet verified; completed-sale deduplication is limited to this page load.`,
-      );
-    }
-
     const event = {
       type: "completed_sale_detected",
       source: "sold_items_dom_probe",
       page: `${location.origin}${location.pathname}`,
       observedAt: new Date().toISOString(),
-      streamId: null,
-      streamIdentityStatus: registryResult.identityStatus,
-      dedupeScope: registryResult.dedupeScope,
       ...sale,
     };
 
     console.info(`${LOG_PREFIX} Completed sale detected`, event);
+  }
+
+  function isCurrentSession(session) {
+    try {
+      return (
+        Boolean(session) &&
+        captureSession === session &&
+        isCaptureRoute() &&
+        document.body === session.body &&
+        session.body.contains(session.root)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function paymentFingerprint(sale) {
+    return `${sale.variationNumber}:${sale.soldPriceCents}`;
+  }
+
+  function reportDeliveryError(session, message, error) {
+    const code =
+      typeof error?.code === "string"
+        ? error.code
+        : "CAPTURE_DELIVERY_FAILED";
+
+    if (session?.reportedDeliveryErrorCodes?.has(code)) {
+      return;
+    }
+
+    session?.reportedDeliveryErrorCodes?.add(code);
+    const detail = `${message} Retrying automatically (${code}).`;
+
+    try {
+      if (EXPECTED_CAPTURE_RETRY_CODES.has(code)) {
+        console.info(`${LOG_PREFIX} ${detail}`);
+      } else {
+        console.error(`${LOG_PREFIX} ${detail}`);
+      }
+    } catch {
+      // Diagnostics must not interrupt capture delivery.
+    }
+  }
+
+  function cancelDeliveryRetry(session) {
+    if (!session || session.deliveryRetryTimerId === null) {
+      return false;
+    }
+
+    const timerId = session.deliveryRetryTimerId;
+    session.deliveryRetryTimerId = null;
+
+    try {
+      window.clearTimeout(timerId);
+    } catch (error) {
+      reportError("Capture delivery retry cleanup failed.", error);
+    }
+
+    return true;
+  }
+
+  function reportVariationSync(variationNumbers) {
+    try {
+      console.info(
+        `${LOG_PREFIX} Sold Items variations synchronized.`,
+        { variationNumbers: [...variationNumbers] },
+      );
+    } catch {
+      // Diagnostics must not interrupt capture delivery.
+    }
+  }
+
+  function reportRootDiscoveryStatus(status) {
+    const description =
+      {
+        ambiguous: "more than one visible Sold Items panel was found",
+        not_found: "no visible Sold Items panel was found",
+        unsafe: "Sold Items panel visibility could not be verified",
+      }[status] ?? "the Sold Items panel is not ready";
+
+    try {
+      console.info(
+        `${LOG_PREFIX} Sold Items capture paused: ${description}.`,
+      );
+    } catch {
+      // Diagnostics must not interrupt capture recovery.
+    }
+  }
+
+  function scheduleDeliveryRetry(session) {
+    if (
+      !isCurrentSession(session) ||
+      session.deliveryRetryTimerId !== null
+    ) {
+      return false;
+    }
+
+    const delayMs = session.deliveryRetryDelayMs;
+
+    try {
+      session.deliveryRetryTimerId = window.setTimeout(() => {
+        session.deliveryRetryTimerId = null;
+
+        if (!isCurrentSession(session)) {
+          return;
+        }
+
+        if (session.deliveryRunning) {
+          scheduleDeliveryRetry(session);
+          return;
+        }
+
+        if (
+          session.queuedVariations.size === 0 &&
+          session.queuedPayments.size === 0
+        ) {
+          return;
+        }
+
+        session.deliveryRunning = true;
+        void drainCaptureQueue(session).catch((error) => {
+          reportDeliveryError(
+            session,
+            "Capture delivery queue failed.",
+            error,
+          );
+        });
+      }, delayMs);
+      session.deliveryRetryDelayMs = Math.min(
+        delayMs * 2,
+        MAX_DELIVERY_RETRY_DELAY_MS,
+      );
+      return true;
+    } catch (error) {
+      reportDeliveryError(
+        session,
+        "Capture delivery retry failed.",
+        error,
+      );
+      return false;
+    }
+  }
+
+  async function drainCaptureQueue(session) {
+    try {
+      while (
+        isCurrentSession(session) &&
+        (session.queuedVariations.size > 0 ||
+          session.queuedPayments.size > 0)
+      ) {
+        const variationNumbers = [...session.queuedVariations].filter(
+          (variationNumber) =>
+            !session.deliveredVariations.has(variationNumber),
+        );
+        const completedSales = [...session.queuedPayments.values()].filter(
+          (sale) =>
+            !session.deliveredPayments.has(paymentFingerprint(sale)),
+        );
+
+        session.queuedVariations.clear();
+        session.queuedPayments.clear();
+
+        let observationsDelivered = true;
+
+        if (variationNumbers.length > 0) {
+          try {
+            await captureClient.observeVariations(variationNumbers);
+
+            if (!isCurrentSession(session)) {
+              return;
+            }
+
+            variationNumbers.forEach((variationNumber) => {
+              session.deliveredVariations.add(variationNumber);
+            });
+            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            reportVariationSync(variationNumbers);
+          } catch (error) {
+            observationsDelivered = false;
+            variationNumbers.forEach((variationNumber) => {
+              session.queuedVariations.add(variationNumber);
+            });
+            completedSales.forEach((sale) => {
+              session.queuedPayments.set(paymentFingerprint(sale), sale);
+            });
+            reportDeliveryError(
+              session,
+              "Variation observation delivery failed.",
+              error,
+            );
+            scheduleDeliveryRetry(session);
+          }
+        }
+
+        if (!observationsDelivered || !isCurrentSession(session)) {
+          return;
+        }
+
+        for (const sale of completedSales) {
+          if (!isCurrentSession(session)) {
+            return;
+          }
+
+          const fingerprint = paymentFingerprint(sale);
+
+          try {
+            await captureClient.recordPaymentComplete({
+              variationNumber: sale.variationNumber,
+              soldPriceCents: sale.soldPriceCents,
+            });
+
+            if (!isCurrentSession(session)) {
+              return;
+            }
+
+            session.deliveredPayments.add(fingerprint);
+            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+          } catch (error) {
+            session.queuedPayments.set(fingerprint, sale);
+            reportDeliveryError(session, "Payment delivery failed.", error);
+            scheduleDeliveryRetry(session);
+          }
+        }
+
+        if (session.deliveryRetryTimerId !== null) {
+          return;
+        }
+      }
+    } finally {
+      session.deliveryRunning = false;
+    }
+  }
+
+  function queueCaptureBatch(session, variationNumbers, completedSales) {
+    if (!isCurrentSession(session)) {
+      return false;
+    }
+
+    variationNumbers.forEach((variationNumber) => {
+      if (!session.deliveredVariations.has(variationNumber)) {
+        session.queuedVariations.add(variationNumber);
+      }
+    });
+
+    completedSales.forEach((sale) => {
+      const fingerprint = paymentFingerprint(sale);
+
+      if (!session.deliveredPayments.has(fingerprint)) {
+        session.queuedPayments.set(fingerprint, sale);
+      }
+    });
+
+    if (session.deliveryRunning) {
+      return true;
+    }
+
+    if (session.deliveryRetryTimerId !== null) {
+      return true;
+    }
+
+    session.deliveryRunning = true;
+    void drainCaptureQueue(session).catch((error) => {
+      reportDeliveryError(
+        session,
+        "Capture delivery queue failed.",
+        error,
+      );
+    });
+    return true;
   }
 
   function stopCapture() {
@@ -122,6 +413,8 @@
     }
 
     captureSession = null;
+
+    cancelDeliveryRetry(session);
 
     try {
       session.observer.disconnect();
@@ -142,15 +435,34 @@
     const targetBody = isCaptureRoute() ? document.body : null;
 
     if (!targetBody) {
+      lastRootDiscoveryStatus = null;
       return stopCapture();
     }
 
-    if (captureSession?.body === targetBody) {
+    const locatedRoot = candidateLocator.locateUniqueVisibleSoldItemsRoot(
+      targetBody,
+    );
+
+    if (locatedRoot.status !== "found") {
+      if (lastRootDiscoveryStatus !== locatedRoot.status) {
+        lastRootDiscoveryStatus = locatedRoot.status;
+        reportRootDiscoveryStatus(locatedRoot.status);
+      }
+
+      return stopCapture();
+    }
+
+    lastRootDiscoveryStatus = "found";
+
+    if (
+      captureSession?.body === targetBody &&
+      captureSession?.root === locatedRoot.root
+    ) {
       return false;
     }
 
     stopCapture();
-    return startCapture(targetBody);
+    return startCapture(targetBody, locatedRoot.root);
   }
 
   function scanSoldItems(session) {
@@ -158,23 +470,88 @@
       !session ||
       captureSession !== session ||
       !isCaptureRoute() ||
-      document.body !== session.body
+      document.body !== session.body ||
+      !isCurrentSession(session)
     ) {
       reconcileCapture();
       return;
     }
 
-    candidateLocator
-      .locateCompletedSales(session.body, parser)
-      .forEach(({ sale }) => emitCompletedSale(sale));
+    const observedVariations = candidateLocator.locateObservedVariations(
+      session.root,
+    );
+    const completedSales = candidateLocator
+      .locateCompletedSales(session.root, parser)
+      .map(({ sale }) =>
+        Object.freeze({
+          paymentStatus: sale.paymentStatus,
+          soldPriceCents: sale.soldPriceCents,
+          variationNumber: sale.variationNumber,
+        }),
+      );
+    const variationNumbers = [];
+    const seenVariations = new Set();
+
+    observedVariations.forEach(({ variationNumber }) => {
+      if (!seenVariations.has(variationNumber)) {
+        seenVariations.add(variationNumber);
+        variationNumbers.push(variationNumber);
+      }
+    });
+
+    completedSales.forEach((sale) => {
+      if (!seenVariations.has(sale.variationNumber)) {
+        seenVariations.add(sale.variationNumber);
+        variationNumbers.push(sale.variationNumber);
+      }
+
+      emitCompletedSale(sale);
+    });
+
+    queueCaptureBatch(session, variationNumbers, completedSales);
   }
 
-  function startCapture(body) {
-    if (!body || !isCaptureRoute() || document.body !== body) {
+  function hasScopedCaptureMutation(records, root) {
+    try {
+      if (!records || typeof records[Symbol.iterator] !== "function") {
+        return true;
+      }
+
+      for (const record of records) {
+        if (
+          !record ||
+          (record.type !== "childList" && record.type !== "characterData")
+        ) {
+          continue;
+        }
+
+        if (!record.target) {
+          return true;
+        }
+
+        if (record.target === root || root.contains(record.target)) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function startCapture(body, root) {
+    if (
+      !body ||
+      !root ||
+      !isCaptureRoute() ||
+      document.body !== body ||
+      !body.contains(root)
+    ) {
       return false;
     }
 
-    if (captureSession?.body === body) {
+    if (captureSession?.body === body && captureSession?.root === root) {
       return false;
     }
 
@@ -200,13 +577,14 @@
         if (
           captureSession !== session ||
           !isCaptureRoute() ||
-          document.body !== body
+          document.body !== body ||
+          !isCurrentSession(session)
         ) {
           reconcileCapture();
           return;
         }
 
-        if (!candidateLocator.mutationsMayAffectSale(records, body)) {
+        if (!hasScopedCaptureMutation(records, root)) {
           return;
         }
 
@@ -217,10 +595,23 @@
         }
       });
 
-      session = Object.freeze({ body, observer, scheduler });
+      session = {
+        body,
+        deliveredPayments: new Set(),
+        deliveredVariations: new Set(),
+        deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
+        deliveryRetryTimerId: null,
+        deliveryRunning: false,
+        observer,
+        queuedPayments: new Map(),
+        queuedVariations: new Set(),
+        reportedDeliveryErrorCodes: new Set(),
+        root,
+        scheduler,
+      };
       captureSession = session;
 
-      observer.observe(body, {
+      observer.observe(root, {
         childList: true,
         subtree: true,
         characterData: true,

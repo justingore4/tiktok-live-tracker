@@ -35,6 +35,8 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeStreamError extends Error {}
   class FakeStreamStorageError extends Error {}
   class FakeStreamCoordinatorError extends Error {}
+  class FakeCaptureProtocolError extends Error {}
+  class FakeCaptureIntegrationError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -50,6 +52,7 @@ test("service worker opens the side panel from the toolbar action", () => {
       MESSAGE_CHANNEL: "tiktok-live-tracker.reconciliation",
       MESSAGE_VERSION: 1,
       COMMAND_TYPES: {
+        OBSERVE_VARIATIONS: "observe_variations",
         RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       },
       ReconciliationCoordinatorError: FakeCoordinatorError,
@@ -77,6 +80,16 @@ test("service worker opens the side panel from the toolbar action", () => {
       StreamSessionCoordinatorError: FakeStreamCoordinatorError,
       createStreamSessionCoordinator() {
         return { dispatch: () => Promise.resolve({}) };
+      },
+    },
+    TikTokLiveTrackerCaptureProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.capture",
+      CaptureProtocolError: FakeCaptureProtocolError,
+    },
+    TikTokLiveTrackerCaptureIntegration: {
+      CaptureIntegrationError: FakeCaptureIntegrationError,
+      createCaptureIntegration() {
+        return { dispatch: () => Promise.resolve({ status: "accepted" }) };
       },
     },
     crypto: {
@@ -182,8 +195,8 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
-  assert.match(html, /Prototype variation - capture not connected/);
-  assert.match(html, /ended streams cannot be reopened in this prototype/i);
+  assert.match(html, /Waiting for a variation to appear in Sold Items/);
+  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
   assert.match(
     html,
     /id="saved-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
@@ -245,7 +258,10 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
 
-  assert.match(panelSource, /button\.disabled = !entry\.selectionAllowed/);
+  assert.match(
+    panelSource,
+    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+  );
   assert.match(panelSource, /function renderVariationNavigation\(view\)/);
   assert.match(
     panelSource,
@@ -253,7 +269,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(
     panelSource,
-    /returnToCurrentButton\.addEventListener\("click",[\s\S]+persistentController\.selectVariation\([\s\S]*?DEMO_CURRENT_VARIATION_NUMBER[\s\S]+getDemoSession\(\)\.selectVariation/,
+    /returnToCurrentButton\.addEventListener\("click",[\s\S]+activeMode === "saved_session"[\s\S]+getDemoSession\(\)\.selectVariation/,
   );
   assert.match(panelSource, /view\.selectedVariationNumber/);
   assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);
@@ -314,9 +330,13 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.retry\(\)/);
-  assert.match(panelSource, /getUnresolvedLiveVariations\(\)/);
-  assert.match(panelSource, /Prototype current/);
-  assert.match(panelSource, /capture not connected/);
+  assert.match(panelSource, /getInventoryBlockingVariations\(\)/);
+  assert.match(panelSource, /variation\.status === "pending"/);
+  assert.match(panelSource, /getRecordedVariations\(view\)/);
+  assert.match(panelSource, /variation\.recorded/);
+  assert.match(panelSource, /Waiting for Sold Items variations/);
+  assert.match(panelSource, /Wait for a Sold Items variation before tagging/);
+  assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
   assert.match(
     panelSource,
     /savedModeButton\.addEventListener\("click",[\s\S]+selectMode\("saved_session"\)/,
@@ -357,6 +377,72 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
 });
 
+test("tagger refreshes canonical Sold Items state from strict worker invalidations", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+
+  assert.match(
+    panelSource,
+    /CAPTURE_STATE_NOTIFICATION_CHANNEL\s*=\s*\n?\s*"tiktok-live-tracker\.capture-state"/,
+  );
+  assert.match(panelSource, /CAPTURE_STATE_NOTIFICATION_VERSION = 1/);
+  assert.match(
+    panelSource,
+    /CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed"/,
+  );
+  assert.match(panelSource, /CAPTURE_REFRESH_DELAY_MS = 150/);
+  assert.match(
+    panelSource,
+    /hasExactKeys\(message, \["channel", "version", "event"\]\)/,
+  );
+  assert.match(panelSource, /hasExactKeys\(message\.event, \["type"\]\)/);
+  assert.match(panelSource, /sender\?\.id === chrome\.runtime\.id/);
+  assert.match(panelSource, /sender\.tab === undefined/);
+  assert.match(
+    panelSource,
+    /chrome\.runtime\.onMessage\.addListener\(handleCaptureStateChanged\)/,
+  );
+  assert.match(panelSource, /scheduledController\.refresh\(\)/);
+  assert.match(panelSource, /scheduledController !== persistentController/);
+  assert.match(panelSource, /scheduledStreamId !== mountedStreamId/);
+  assert.match(panelSource, /window\.setTimeout\([\s\S]+CAPTURE_REFRESH_DELAY_MS/);
+  assert.match(panelSource, /clearCaptureRefreshTimer\(\)/);
+  assert.match(
+    panelSource,
+    /pagehide[\s\S]+removeListener\(handleCaptureStateChanged\)/,
+  );
+  assert.match(panelSource, /getFocusedInventorySku\(\)/);
+  assert.match(panelSource, /captureRefreshFocusSku[\s\S]+focusOptions\.focusSku/);
+  assert.match(panelSource, /Checking live Sold Items/);
+  assert.match(panelSource, /Live Sold Items updated/);
+  assert.match(panelSource, /Retry live update/);
+  assert.match(panelSource, /Captured variation #/);
+  assert.match(
+    panelSource,
+    /Captured variation #\$\{added\[0\]\} from Sold Items\. It is selected and ready to tag\./,
+  );
+  assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
+  assert.match(panelSource, /Captured earlier variation/);
+  assert.match(panelSource, /captureRefreshHadVariationFocus/);
+  assert.match(panelSource, /pendingMapping\.contains\(document\.activeElement\)/);
+  assert.match(panelSource, /focusOptions\.focusVariation = true/);
+  assert.match(
+    panelSource,
+    /Now showing variation #\$\{view\.selectedVariationNumber\}\./,
+  );
+  assert.match(
+    panelSource,
+    /A newly captured variation will open automatically\./,
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /available in the variation menu now/,
+  );
+  assert.doesNotMatch(panelSource, /message\.state|message\.streamId/);
+});
+
 test("capture scripts load across the TikTok shop SPA and gate themselves at runtime", () => {
   const dashboardScript = manifest.content_scripts.find((script) =>
     script.matches.includes("https://shop.tiktok.com/*"),
@@ -365,6 +451,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.ok(dashboardScript);
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
+    "shared/capture-protocol.js",
+    "capture/capture-client.js",
     "capture/sale-candidate-locator.js",
     "capture/capture-event-registry.js",
     "capture/capture-scheduler.js",
@@ -380,6 +468,10 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
     path.join(extensionDirectory, "capture", "capture-scheduler.js"),
     "utf8",
   );
+  const captureClientSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "capture-client.js"),
+    "utf8",
+  );
   const locatorSource = fs.readFileSync(
     path.join(extensionDirectory, "capture", "sale-candidate-locator.js"),
     "utf8",
@@ -392,12 +484,15 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.match(captureSource, /TikTokLiveTrackerCaptureScheduler/);
   assert.match(captureSource, /TikTokLiveTrackerSaleCandidateLocator/);
   assert.match(captureSource, /TikTokLiveTrackerCaptureEventRegistry/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureProtocol/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureClient/);
+  assert.match(captureClientSource, /trustedRuntime\.sendMessage/);
   assert.match(captureSource, /const QUIET_SCAN_DELAY_MS = 150/);
   assert.match(captureSource, /const MAX_SCAN_WAIT_MS = 1000/);
   assert.match(captureSource, /quietDelayMs:\s*QUIET_SCAN_DELAY_MS/);
   assert.match(captureSource, /maxWaitMs:\s*MAX_SCAN_WAIT_MS/);
   assert.match(captureSource, /https:\/\/shop\.tiktok\.com/);
-  assert.match(captureSource, /\/streamer\/live\/event\/dashboard/);
+  assert.match(captureSource, /\/streamer\/live\/product\/dashboard/);
   assert.doesNotMatch(
     `${captureSource}\n${locatorSource}\n${registrySource}\n${schedulerSource}`,
     /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,

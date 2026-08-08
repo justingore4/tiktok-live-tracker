@@ -7,7 +7,11 @@ const parser = require("../extension/shared/sale-parser.js");
 const {
   MAX_ROW_ANCESTORS,
   PAYMENT_TAG_SELECTOR,
+  SOLD_ITEMS_ROOT_SELECTOR,
+  VARIATION_LABEL_SELECTOR,
   locateCompletedSales,
+  locateObservedVariations,
+  locateUniqueVisibleSoldItemsRoot,
   mutationsMayAffectSale,
 } = require("../extension/capture/sale-candidate-locator.js");
 
@@ -25,11 +29,21 @@ class FakeText {
 }
 
 class FakeElement {
-  constructor({ dataTid = null, ownText = "", name = "element" } = {}) {
+  constructor({
+    dataTid = null,
+    height = 20,
+    ownText = "",
+    name = "element",
+    tagName = "DIV",
+    width = 100,
+  } = {}) {
     this.nodeType = 1;
     this.dataTid = dataTid;
+    this.height = height;
     this.ownText = ownText;
     this.name = name;
+    this.tagName = tagName;
+    this.width = width;
     this.children = [];
     this.parentElement = null;
     this.parentNode = null;
@@ -46,12 +60,22 @@ class FakeElement {
   }
 
   matches(selector) {
-    assert.equal(selector, PAYMENT_TAG_SELECTOR);
-    return this.dataTid === "m4b_tag";
+    if (selector === PAYMENT_TAG_SELECTOR) {
+      return this.dataTid === "m4b_tag";
+    }
+
+    if (selector === SOLD_ITEMS_ROOT_SELECTOR) {
+      return this.dataTid === "m4b_space";
+    }
+
+    if (selector === VARIATION_LABEL_SELECTOR) {
+      return this.tagName === "SPAN";
+    }
+
+    throw new Error(`Unexpected selector: ${selector}`);
   }
 
   querySelectorAll(selector) {
-    assert.equal(selector, PAYMENT_TAG_SELECTOR);
     const matches = [];
 
     function visit(node) {
@@ -72,6 +96,10 @@ class FakeElement {
 
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  getBoundingClientRect() {
+    return { height: this.height, width: this.width };
   }
 
   contains(candidate) {
@@ -159,7 +187,103 @@ function childListRecord(addedNodes, removedNodes = []) {
 
 test("exports the single verified payment-tag selector and ancestor limit", () => {
   assert.equal(PAYMENT_TAG_SELECTOR, '[data-tid="m4b_tag"]');
+  assert.equal(SOLD_ITEMS_ROOT_SELECTOR, '[data-tid="m4b_space"]');
+  assert.equal(VARIATION_LABEL_SELECTOR, "span");
   assert.equal(MAX_ROW_ANCESTORS, 12);
+});
+
+test("selects exactly one visible Sold Items root and ignores hidden matches", () => {
+  const body = element({ name: "body" });
+  const hiddenRoot = element({
+    dataTid: "m4b_space",
+    height: 0,
+    name: "hidden-root",
+  });
+  const visibleRoot = element({
+    dataTid: "m4b_space",
+    name: "visible-root",
+  });
+  body.append(hiddenRoot, visibleRoot);
+
+  assert.deepEqual(locateUniqueVisibleSoldItemsRoot(body), {
+    root: visibleRoot,
+    status: "found",
+  });
+});
+
+test("fails closed when the visible Sold Items root is missing or ambiguous", () => {
+  const missingBody = element({ name: "missing-body" }).append(
+    element({ dataTid: "m4b_space", width: 0 }),
+  );
+  const ambiguousBody = element({ name: "ambiguous-body" }).append(
+    element({ dataTid: "m4b_space", name: "first" }),
+    element({ dataTid: "m4b_space", name: "second" }),
+  );
+
+  assert.deepEqual(locateUniqueVisibleSoldItemsRoot(missingBody), {
+    root: null,
+    status: "not_found",
+  });
+  assert.deepEqual(locateUniqueVisibleSoldItemsRoot(ambiguousBody), {
+    root: null,
+    status: "ambiguous",
+  });
+});
+
+test("fails closed when Sold Items visibility cannot be inspected", () => {
+  const root = element({ dataTid: "m4b_space" });
+  const body = element({ name: "body" }).append(root);
+  root.getBoundingClientRect = () => {
+    throw new Error("layout unavailable");
+  };
+
+  assert.deepEqual(locateUniqueVisibleSoldItemsRoot(body), {
+    root: null,
+    status: "unsafe",
+  });
+});
+
+test("extracts only whole Variation labels without returning row text", () => {
+  const root = element({ dataTid: "m4b_space", name: "sold-items-root" });
+  const first = element({
+    name: "variation-37",
+    ownText: " Variation:   #37 ",
+    tagName: "SPAN",
+  });
+  const second = element({
+    name: "variation-38",
+    ownText: "variation: #38",
+    tagName: "SPAN",
+  });
+  root.append(
+    first,
+    element({ ownText: "Buyer Variation: #99", tagName: "SPAN" }),
+    element({ ownText: "Variation: #40 extra", tagName: "SPAN" }),
+    element({ ownText: "Variation: #9007199254740992", tagName: "SPAN" }),
+    element({ ownText: "Variation: #41", tagName: "DIV" }),
+    second,
+  );
+
+  const located = locateObservedVariations(root);
+
+  assert.deepEqual(
+    located.map(({ variationNumber }) => variationNumber),
+    [37, 38],
+  );
+  assert.equal(located[0].label, first);
+  assert.equal(located[1].label, second);
+  assert.equal(Object.hasOwn(located[0], "text"), false);
+});
+
+test("rejects invalid Sold Items discovery and variation boundaries", () => {
+  assert.throws(
+    () => locateUniqueVisibleSoldItemsRoot(null),
+    /queryable sale-capture boundary/i,
+  );
+  assert.throws(
+    () => locateObservedVariations(null),
+    /queryable sale-capture boundary/i,
+  );
 });
 
 test("locates an exact completed badge and returns its parsed smallest row", () => {
@@ -336,6 +460,24 @@ test("a child-list addition is relevant when it is or contains the exact tag", (
   const subtreeBoundary = element({ name: "boundary" }).append(subtree);
   assert.equal(
     mutationsMayAffectSale([childListRecord([subtree])], subtreeBoundary),
+    true,
+  );
+});
+
+test("an exact Variation label is relevant before a payment tag exists", () => {
+  const label = element({
+    ownText: "Variation: #252",
+    tagName: "SPAN",
+  });
+  const row = element({ name: "pending-row" }).append(label);
+  const boundary = element({ name: "boundary" }).append(row);
+
+  assert.equal(
+    mutationsMayAffectSale([childListRecord([label])], boundary),
+    true,
+  );
+  assert.equal(
+    mutationsMayAffectSale([childListRecord([row])], boundary),
     true,
   );
 });

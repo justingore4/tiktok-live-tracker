@@ -10,6 +10,7 @@ const {
   hydrateReconciliationState,
   mapVariation,
   markUnpaid,
+  observeVariations,
   recordPaymentComplete,
   unmapVariation,
   undoMarkUnpaid,
@@ -62,6 +63,83 @@ function assertErrorCode(action, code) {
     (error) => error instanceof ReconciliationError && error.code === code,
   );
 }
+
+test("observes a batch without changing inventory or financial totals", () => {
+  const state = createState();
+  const inventoryBefore = JSON.parse(JSON.stringify(state.inventory));
+
+  const result = observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [37, 38, 39],
+  });
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.deepEqual(result, {
+    status: "observed",
+    observedCount: 3,
+    newlyObservedCount: 3,
+  });
+  assert.deepEqual(state.inventory, inventoryBefore);
+  assert.equal(summary.totals.auctionCount, 3);
+  assert.equal(summary.totals.completedPaymentCount, 0);
+  assert.equal(summary.totals.completedGmvCents, 0);
+  assert.equal(summary.totals.committedSalesCount, 0);
+  assert.equal(summary.totals.profitCents, 0);
+  assert.deepEqual(
+    summary.auctions.map((auction) => ({
+      variationNumber: auction.variationNumber,
+      status: auction.status,
+      sku: auction.sku,
+      soldPriceCents: auction.soldPriceCents,
+    })),
+    [
+      { variationNumber: 37, status: "unmapped", sku: null, soldPriceCents: null },
+      { variationNumber: 38, status: "unmapped", sku: null, soldPriceCents: null },
+      { variationNumber: 39, status: "unmapped", sku: null, soldPriceCents: null },
+    ],
+  );
+});
+
+test("repeated observations are idempotent and never regress completed truth", () => {
+  const state = createState();
+
+  observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [40, 41],
+  });
+  recordPaymentComplete(state, auctionInput(40, { soldPriceCents: 7000 }));
+  const beforeRetry = JSON.parse(JSON.stringify(state));
+  const repeated = observeVariations(state, {
+    streamId: STREAM_ONE,
+    variationNumbers: [40, 41],
+  });
+
+  assert.deepEqual(repeated, {
+    status: "already_observed",
+    observedCount: 2,
+    newlyObservedCount: 0,
+  });
+  assert.deepEqual(state, beforeRetry);
+  assert.equal(getAuction(state, auctionInput(40)).paymentStatus, "payment_complete");
+  assert.equal(getAuction(state, auctionInput(40)).soldPriceCents, 7000);
+});
+
+test("invalid observation batches are rejected atomically", () => {
+  const state = createState();
+
+  for (const variationNumbers of [[], [1, 1], [1, 0], [1, 2.5]]) {
+    assertErrorCode(
+      () =>
+        observeVariations(state, {
+          streamId: STREAM_ONE,
+          variationNumbers,
+        }),
+      "INVALID_ARGUMENT",
+    );
+  }
+
+  assert.deepEqual(state.streams, []);
+});
 
 test("commits a mapped variation only after payment completes", () => {
   const state = createState();

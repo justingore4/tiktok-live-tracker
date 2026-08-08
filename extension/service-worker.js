@@ -7,6 +7,8 @@ importScripts(
   "shared/stream-session.js",
   "shared/stream-session-storage.js",
   "shared/stream-session-coordinator.js",
+  "shared/capture-protocol.js",
+  "shared/capture-integration.js",
 );
 
 const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -19,6 +21,8 @@ const streamSessionStorage =
   globalThis.TikTokLiveTrackerStreamSessionStorage;
 const streamSessionCoordinator =
   globalThis.TikTokLiveTrackerStreamSessionCoordinator;
+const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
+const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
 let storageAccessError = null;
 const storageAccessReady = chrome.storage.local
   .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
@@ -50,7 +54,24 @@ const activeStreamCoordinator =
     createId: () => `local-stream:${globalThis.crypto.randomUUID()}`,
     now: () => new Date().toISOString(),
   });
+const captureEventIntegration =
+  captureIntegration.createCaptureIntegration({
+    activeStreamCoordinator,
+    captureProtocol,
+    reconciliationCoordinator,
+    stateCoordinator,
+    streamSession,
+    streamSessionCoordinator,
+  });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
+const captureDashboardUrlPattern =
+  /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
+const captureStateChangedNotification = Object.freeze({
+  channel: "tiktok-live-tracker.capture-state",
+  version: 1,
+  event: Object.freeze({ type: "capture_state_changed" }),
+});
+let messageTail = Promise.resolve();
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -62,15 +83,16 @@ chrome.sidePanel
   });
 
 function failBoundary(protocol, code, message) {
-  const BoundaryError =
-    protocol === streamSessionCoordinator
-      ? streamSessionCoordinator.StreamSessionCoordinatorError
-      : reconciliationCoordinator.ReconciliationCoordinatorError;
+  let BoundaryError =
+    reconciliationCoordinator.ReconciliationCoordinatorError;
 
-  throw new BoundaryError(
-    code,
-    message,
-  );
+  if (protocol === captureProtocol) {
+    BoundaryError = captureIntegration.CaptureIntegrationError;
+  } else if (protocol === streamSessionCoordinator) {
+    BoundaryError = streamSessionCoordinator.StreamSessionCoordinatorError;
+  }
+
+  throw new BoundaryError(code, message);
 }
 
 function isRecord(value) {
@@ -98,11 +120,24 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === captureProtocol.MESSAGE_CHANNEL) {
+    return {
+      coordinator: captureEventIntegration,
+      label: "capture",
+      protocol: captureProtocol,
+    };
+  }
+
   return null;
 }
 
 function validateMessage(message, boundary) {
   const { label, protocol } = boundary;
+
+  if (protocol === captureProtocol) {
+    return captureProtocol.validateCaptureMessage(message);
+  }
+
   const expectedKeys = ["channel", "command", "version"];
   const actualKeys = Object.keys(message).sort();
 
@@ -138,6 +173,25 @@ function validateMessage(message, boundary) {
 }
 
 function validateSender(sender, command, boundary) {
+  if (boundary.protocol === captureProtocol) {
+    if (
+      !sender ||
+      sender.id !== chrome.runtime.id ||
+      sender.frameId !== 0 ||
+      !isRecord(sender.tab) ||
+      typeof sender.url !== "string" ||
+      !captureDashboardUrlPattern.test(sender.url)
+    ) {
+      failBoundary(
+        boundary.protocol,
+        "UNAUTHORIZED_MESSAGE_SENDER",
+        "Only the top-level TikTok LIVE product dashboard can submit capture events.",
+      );
+    }
+
+    return;
+  }
+
   if (
     !sender ||
     sender.id !== chrome.runtime.id ||
@@ -152,13 +206,15 @@ function validateSender(sender, command, boundary) {
 
   if (
     boundary.protocol === reconciliationCoordinator &&
-    command.type ===
-    reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE
+    [
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
+      reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
+    ].includes(command.type)
   ) {
     failBoundary(
       boundary.protocol,
       "UNAUTHORIZED_MESSAGE_SENDER",
-      "Captured TikTok payment events are not connected yet.",
+      "Captured TikTok events cannot be issued by the side panel.",
     );
   }
 }
@@ -171,7 +227,9 @@ function serializeError(error, boundary) {
     error instanceof reconciliationStorage.ReconciliationStorageError ||
     error instanceof streamSession.StreamSessionError ||
     error instanceof streamSessionStorage.StreamSessionStorageError ||
-    error instanceof streamSessionCoordinator.StreamSessionCoordinatorError;
+    error instanceof streamSessionCoordinator.StreamSessionCoordinatorError ||
+    error instanceof captureProtocol.CaptureProtocolError ||
+    error instanceof captureIntegration.CaptureIntegrationError;
 
   if (knownError) {
     return { code: error.code, message: error.message };
@@ -188,6 +246,20 @@ function serializeError(error, boundary) {
   };
 }
 
+function notifyCaptureStateChanged() {
+  try {
+    const delivery = chrome.runtime.sendMessage(
+      captureStateChangedNotification,
+    );
+
+    if (delivery && typeof delivery.catch === "function") {
+      delivery.catch(() => undefined);
+    }
+  } catch {
+    // Persistence already succeeded; notification delivery is best-effort.
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const boundary = getMessageBoundary(message);
 
@@ -195,7 +267,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  Promise.resolve()
+  const execution = messageTail
     .then(() => storageAccessReady)
     .then(() => {
       if (storageAccessError) {
@@ -210,15 +282,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       validateSender(sender, command, boundary);
       return boundary.coordinator.dispatch(command);
-    })
-    .then(
-      (data) => sendResponse({ ok: true, data }),
-      (error) =>
-        sendResponse({
-          ok: false,
-          error: serializeError(error, boundary),
-        }),
-    );
+    });
+
+  messageTail = execution.catch(() => undefined);
+
+  execution.then(
+    (data) => {
+      if (
+        boundary.protocol === captureProtocol &&
+        isRecord(data) &&
+        data.status === "accepted"
+      ) {
+        notifyCaptureStateChanged();
+      }
+
+      sendResponse({ ok: true, data });
+    },
+    (error) =>
+      sendResponse({
+        ok: false,
+        error: serializeError(error, boundary),
+      }),
+  );
 
   return true;
 });

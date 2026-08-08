@@ -132,9 +132,11 @@
         >
           <h3 id="stream-session-end-title">End this tracker stream?</h3>
           <p>
-            Resolve every waiting or item-needed variation first. History will
-            remain saved, but ended streams cannot be reopened in this prototype.
-            TikTok LIVE will keep running.
+            Wait for expected Sold Items payment updates and resolve every
+            inventory-reserved variation first. Captured history, including
+            item-needed payments, will remain saved, but ended streams cannot be
+            reopened in this prototype. Reload the TikTok dashboard before starting
+            a tracker session for another LIVE. TikTok LIVE will keep running.
           </p>
           <div class="stream-session-confirm-actions">
             <button
@@ -216,13 +218,13 @@
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="current-auction-label">
-            Prototype variation - capture not connected
+            Waiting for a variation to appear in Sold Items
           </p>
           <div class="variation-picker">
             <h2 id="current-auction-title">Variation</h2>
             <span class="variation-select-shell">
               <label class="visually-hidden" for="variation-selector">
-                Choose a current or previous variation to review
+                Choose a variation to review
               </label>
               <select
                 id="variation-selector"
@@ -231,7 +233,7 @@
             </span>
           </div>
           <button id="return-to-current" class="return-to-current" type="button" hidden>
-            Return to prototype variation #203
+            Return to on-screen variation #203
           </button>
         </div>
         <span id="data-mode-badge" class="demo-badge">Live session</span>
@@ -349,7 +351,7 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">Inventory</p>
-            <h2 id="inventory-title">Tag prototype variation #203</h2>
+            <h2 id="inventory-title">Waiting for a Sold Items variation</h2>
           </div>
           <p id="result-count" class="result-count" aria-live="polite"></p>
         </div>

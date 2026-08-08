@@ -61,6 +61,10 @@ test("navigates explicit variation history without changing reconciliation state
     initialView.variations.map((variation) => variation.variationNumber),
     [203, 201],
   );
+  assert.deepEqual(
+    initialView.variations.map((variation) => variation.recorded),
+    [false, false],
+  );
   assert.equal(initialView.currentVariationNumber, 203);
   assert.equal(initialView.selectedVariationNumber, 203);
   assert.equal(initialView.isReviewingHistory, false);
@@ -80,6 +84,34 @@ test("navigates explicit variation history without changing reconciliation state
   assert.equal(unknown.code, "UNKNOWN_VARIATION");
   assert.equal(unknown.view.selectedVariationNumber, 201);
   assert.deepEqual(session.getStateSnapshot(), stateBefore);
+});
+
+test("marks only canonical variation records as recorded", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [202],
+  });
+  const session = createSession({
+    state,
+    variationNumbers: [203, 202, 201],
+  });
+  const options = session.getViewState().variations;
+
+  assert.deepEqual(
+    options.map(({ variationNumber, recorded }) => ({
+      variationNumber,
+      recorded,
+    })),
+    [
+      { variationNumber: 203, recorded: false },
+      { variationNumber: 202, recorded: true },
+      { variationNumber: 201, recorded: false },
+    ],
+  );
 });
 
 test("multiple variations share inventory while keeping their mappings distinct", () => {
