@@ -18,6 +18,7 @@
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
       MAP_VARIATION: "map_variation",
+      UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       MARK_UNPAID: "mark_unpaid",
       UNDO_MARK_UNPAID: "undo_mark_unpaid",
@@ -27,6 +28,11 @@
       [COMMAND_TYPES.INITIALIZE_STATE]: ["inventory", "type"],
       [COMMAND_TYPES.MAP_VARIATION]: [
         "sku",
+        "streamId",
+        "type",
+        "variationNumber",
+      ],
+      [COMMAND_TYPES.UNMAP_VARIATION]: [
         "streamId",
         "type",
         "variationNumber",
@@ -54,6 +60,7 @@
       "mapVariation",
       "markUnpaid",
       "recordPaymentComplete",
+      "unmapVariation",
       "undoMarkUnpaid",
     ];
 
@@ -259,6 +266,13 @@
                 streamId: command.streamId,
                 variationNumber: command.variationNumber,
                 sku: command.sku,
+              }),
+            );
+          case COMMAND_TYPES.UNMAP_VARIATION:
+            return mutateState((state) =>
+              reconciliation.unmapVariation(state, {
+                streamId: command.streamId,
+                variationNumber: command.variationNumber,
               }),
             );
           case COMMAND_TYPES.RECORD_PAYMENT_COMPLETE:

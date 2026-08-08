@@ -154,6 +154,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
   assert.match(html, /<button class="inventory-card"[^>]+aria-pressed="false"/);
+  assert.match(html, /Click the selected card again to remove its item/);
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
@@ -206,6 +207,11 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /view\.selectedVariationNumber/);
   assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);
   assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
+  assert.match(panelSource, /Click to unselect this item/);
+  assert.match(
+    panelSource,
+    /No item selected\. Select the matching inventory entry below\./,
+  );
   assert.match(panelSource, /getDemoSession\(\)\.completePayment/);
   assert.match(panelSource, /getDemoSession\(\)\.simulatePaymentBufferExpired/);
   assert.match(panelSource, /getDemoSession\(\)\.markUnpaid/);
@@ -214,7 +220,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /offlineSimulation: true/);
   assert.match(
     panelSource,
-    /undoSimulatedPaymentButton\.addEventListener\("click",[\s\S]+searchInput\.value = "";[\s\S]+renderAll\(\{ focusSku: result\.mapping\.sku \}\)/,
+    /undoSimulatedPaymentButton\.addEventListener\("click",[\s\S]+searchInput\.value = "";[\s\S]+result\.mapping[\s\S]+focusStatus: true/,
   );
   assert.match(
     panelSource,
@@ -224,9 +230,21 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /undoSimulatedPaymentButton\.hidden = !canUndoSimulatedPayment/,
   );
+  assert.match(
+    panelSource,
+    /Remove the simulated payment with no item selected/,
+  );
   assert.match(panelSource, /const auction = view\.auction/);
   assert.match(panelSource, /getDemoSession\(\)\.selectSku\(button\.dataset\.sku\)/);
   assert.match(panelSource, /persistentController\.mapSelectedSku/);
+  assert.match(panelSource, /persistentController\.unmapSelectedVariation/);
+  assert.match(panelSource, /type: selected \? "unmap_variation" : "map_variation"/);
+  assert.match(panelSource, /result\.action === "unmapped"/);
+  assert.match(workflowSource, /reconciliation\.unmapVariation\(state, auctionKey\(\)\)/);
+  assert.match(
+    workflowSource,
+    /reconciliation\.unmapVariation\([\s\S]+simulatedPaymentCheckpoint\.state/,
+  );
   assert.match(panelSource, /persistentController\.markSelectedUnpaid/);
   assert.match(panelSource, /persistentController\.undoSelectedUnpaid/);
   assert.match(panelSource, /persistentController\.start\(\)/);
@@ -262,15 +280,17 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
 });
 
-test("existing dashboard capture scripts remain configured", () => {
+test("capture scripts load across the TikTok shop SPA and gate themselves at runtime", () => {
   const dashboardScript = manifest.content_scripts.find((script) =>
-    script.matches.includes(
-      "https://shop.tiktok.com/streamer/live/event/dashboard*",
-    ),
+    script.matches.includes("https://shop.tiktok.com/*"),
   );
 
+  assert.ok(dashboardScript);
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
+    "capture/sale-candidate-locator.js",
+    "capture/capture-event-registry.js",
+    "capture/capture-scheduler.js",
     "capture/content.js",
   ]);
   assert.ok(dashboardScript.js.every(extensionResourceExists));
@@ -279,8 +299,30 @@ test("existing dashboard capture scripts remain configured", () => {
     path.join(extensionDirectory, "capture", "content.js"),
     "utf8",
   );
+  const schedulerSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "capture-scheduler.js"),
+    "utf8",
+  );
+  const locatorSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "sale-candidate-locator.js"),
+    "utf8",
+  );
+  const registrySource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "capture-event-registry.js"),
+    "utf8",
+  );
+
+  assert.match(captureSource, /TikTokLiveTrackerCaptureScheduler/);
+  assert.match(captureSource, /TikTokLiveTrackerSaleCandidateLocator/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureEventRegistry/);
+  assert.match(captureSource, /const QUIET_SCAN_DELAY_MS = 150/);
+  assert.match(captureSource, /const MAX_SCAN_WAIT_MS = 1000/);
+  assert.match(captureSource, /quietDelayMs:\s*QUIET_SCAN_DELAY_MS/);
+  assert.match(captureSource, /maxWaitMs:\s*MAX_SCAN_WAIT_MS/);
+  assert.match(captureSource, /https:\/\/shop\.tiktok\.com/);
+  assert.match(captureSource, /\/streamer\/live\/event\/dashboard/);
   assert.doesNotMatch(
-    captureSource,
+    `${captureSource}\n${locatorSource}\n${registrySource}\n${schedulerSource}`,
     /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,
   );
 });

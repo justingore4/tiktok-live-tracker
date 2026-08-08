@@ -24,6 +24,7 @@
       LOAD: "load",
       INITIALIZE: "initialize",
       MAP_VARIATION: "map_variation",
+      UNMAP_VARIATION: "unmap_variation",
       MARK_UNPAID: "mark_unpaid",
       UNDO_MARK_UNPAID: "undo_mark_unpaid",
     });
@@ -32,6 +33,7 @@
       "initializeState",
       "mapVariation",
       "markUnpaid",
+      "unmapVariation",
       "undoMarkUnpaid",
     ]);
 
@@ -99,7 +101,7 @@
         )
       ) {
         throw new TypeError(
-          "client must provide saved-state read, initialize, mapping, and unpaid methods.",
+          "client must provide saved-state read, initialize, mapping, unmapping, and unpaid methods.",
         );
       }
 
@@ -516,6 +518,22 @@
         return begin(() => performMutation(descriptor));
       }
 
+      function unmapSelectedVariation() {
+        requireReadyForMutation();
+
+        const command = Object.freeze({
+          streamId,
+          variationNumber: selectedVariationNumber,
+        });
+        const descriptor = {
+          scope: "save",
+          operation: OPERATIONS.UNMAP_VARIATION,
+          execute: () => client.unmapVariation({ ...command }),
+        };
+
+        return begin(() => performMutation(descriptor));
+      }
+
       function undoSelectedUnpaid() {
         requireReadyForMutation();
 
@@ -563,6 +581,7 @@
         selectVariation,
         start,
         subscribe,
+        unmapSelectedVariation,
         undoSelectedUnpaid,
       });
     }

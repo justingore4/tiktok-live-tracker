@@ -161,10 +161,7 @@
       if (conflict.code === "payment_completed_after_marked_unpaid") {
         requirePersistedRecord(conflict, path, ["code"]);
 
-        if (
-          auction.paymentStatus !== "payment_complete" ||
-          auction.sku === null
-        ) {
+        if (auction.paymentStatus !== "payment_complete") {
           failInvalidState(`${path} does not match its completed payment.`);
         }
 
@@ -228,7 +225,7 @@
       }
 
       if (
-        (sku === null && auction.mappingStatus !== "unmapped") ||
+        (sku === null && auction.mappingStatus === "mapped") ||
         (sku !== null && auction.mappingStatus === "unmapped")
       ) {
         failInvalidState(`${path} has inconsistent SKU and mapping state.`);
@@ -774,6 +771,29 @@
       return createAuctionView(state, auction);
     }
 
+    function unmapVariation(state, input) {
+      requireState(state);
+      const key = validateAuctionKey(input);
+      const auction = findAuction(state, key.streamId, key.variationNumber);
+
+      if (!auction) {
+        fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
+      }
+
+      if (auction.sku === null) {
+        return createAuctionView(state, auction);
+      }
+
+      auction.sku = null;
+      auction.committedUnitCostCents = null;
+
+      if (auction.mappingStatus !== "marked_unpaid") {
+        auction.mappingStatus = "unmapped";
+      }
+
+      return createAuctionView(state, auction);
+    }
+
     function recordPaymentComplete(state, input) {
       requireState(state);
       const key = validateAuctionKey(input);
@@ -1017,6 +1037,7 @@
       hydrateReconciliationState,
       getInventoryAvailability,
       mapVariation,
+      unmapVariation,
       recordPaymentComplete,
       markUnpaid,
       undoMarkUnpaid,

@@ -15,6 +15,7 @@
       "GET_STATE",
       "INITIALIZE_STATE",
       "MAP_VARIATION",
+      "UNMAP_VARIATION",
       "MARK_UNPAID",
       "UNDO_MARK_UNPAID",
     ]);
@@ -327,6 +328,15 @@
         );
       }
 
+      function unmapVariation(optionsValue) {
+        return enqueueCommand(() =>
+          createVariationCommand(
+            protocol.COMMAND_TYPES.UNMAP_VARIATION,
+            optionsValue,
+          ),
+        );
+      }
+
       function undoMarkUnpaid(optionsValue) {
         return enqueueCommand(() =>
           createVariationCommand(
@@ -341,6 +351,7 @@
         initializeState,
         mapVariation,
         markUnpaid,
+        unmapVariation,
         undoMarkUnpaid,
       });
     }

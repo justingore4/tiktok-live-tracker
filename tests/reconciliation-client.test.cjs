@@ -13,6 +13,7 @@ const protocol = Object.freeze({
     GET_STATE: "get_state",
     INITIALIZE_STATE: "initialize_state",
     MAP_VARIATION: "map_variation",
+    UNMAP_VARIATION: "unmap_variation",
     RECORD_PAYMENT_COMPLETE: "record_payment_complete",
     MARK_UNPAID: "mark_unpaid",
     UNDO_MARK_UNPAID: "undo_mark_unpaid",
@@ -88,6 +89,10 @@ test("sends exact versioned envelopes for every employee command", async () => {
     variationNumber: 203,
     sku: "BLACK-TEE-M",
   });
+  await client.unmapVariation({
+    streamId: "stream-1",
+    variationNumber: 203,
+  });
   await client.markUnpaid({ streamId: "stream-1", variationNumber: 203 });
   await client.undoMarkUnpaid({
     streamId: "stream-1",
@@ -116,6 +121,15 @@ test("sends exact versioned envelopes for every employee command", async () => {
         streamId: "stream-1",
         variationNumber: 203,
         sku: "BLACK-TEE-M",
+      },
+    },
+    {
+      channel: protocol.MESSAGE_CHANNEL,
+      version: protocol.MESSAGE_VERSION,
+      command: {
+        type: protocol.COMMAND_TYPES.UNMAP_VARIATION,
+        streamId: "stream-1",
+        variationNumber: 203,
       },
     },
     {
@@ -151,6 +165,7 @@ test("exposes no API that can create payment truth", () => {
     "mapVariation",
     "markUnpaid",
     "undoMarkUnpaid",
+    "unmapVariation",
   ]);
   assert.equal(client.recordPaymentComplete, undefined);
   assert.ok(Object.isFrozen(client));
@@ -337,6 +352,15 @@ test("rejects invalid commands before contacting the runtime", async () => {
   );
   await assertClientError(
     () =>
+      client.unmapVariation({
+        streamId: "stream-1",
+        variationNumber: 203,
+        sku: "BLACK-TEE-M",
+      }),
+    "INVALID_CLIENT_COMMAND",
+  );
+  await assertClientError(
+    () =>
       client.mapVariation({
         streamId: "stream-1",
         variationNumber: 0,
@@ -380,6 +404,11 @@ test("rejects non-serializable command input without poisoning later commands", 
 });
 
 test("validates runtime and protocol dependencies immediately", () => {
+  const {
+    UNMAP_VARIATION: _unmapVariation,
+    ...commandTypesWithoutUnmap
+  } = protocol.COMMAND_TYPES;
+
   assert.throws(() => createReconciliationClient(), /options are required/);
   assert.throws(
     () => createReconciliationClient({ runtime: {}, protocol }),
@@ -392,6 +421,17 @@ test("validates runtime and protocol dependencies immediately", () => {
         protocol: {
           ...protocol,
           COMMAND_TYPES: { GET_STATE: "get_state" },
+        },
+      }),
+    /missing required command types/,
+  );
+  assert.throws(
+    () =>
+      createReconciliationClient({
+        runtime: createRuntime().runtime,
+        protocol: {
+          ...protocol,
+          COMMAND_TYPES: commandTypesWithoutUnmap,
         },
       }),
     /missing required command types/,

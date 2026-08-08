@@ -12,10 +12,13 @@
   "content_scripts": [
     {
       "matches": [
-        "https://shop.tiktok.com/streamer/live/event/dashboard*"
+        "https://shop.tiktok.com/*"
       ],
       "js": [
         "shared/sale-parser.js",
+        "capture/sale-candidate-locator.js",
+        "capture/capture-event-registry.js",
+        "capture/capture-scheduler.js",
         "capture/content.js"
       ],
       "run_at": "document_idle",

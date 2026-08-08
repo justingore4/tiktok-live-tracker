@@ -133,6 +133,14 @@ function mapCommand(variationNumber, sku = "BLACK-TEE-M") {
   };
 }
 
+function unmapCommand(variationNumber) {
+  return {
+    type: COMMAND_TYPES.UNMAP_VARIATION,
+    streamId: "stream-1",
+    variationNumber,
+  };
+}
+
 function paymentCommand(variationNumber, soldPriceCents = 4800) {
   return {
     type: COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
@@ -276,6 +284,28 @@ test("supports payment arriving before employee mapping", async () => {
   assert.equal(memoryStore.calls.save.length, 2);
 });
 
+test("persists an unmap command and returns the canonical unselected state", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  reconciliation.mapVariation(storedState, {
+    streamId: "stream-1",
+    variationNumber: 6,
+    sku: "BLACK-TEE-M",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const response = await coordinator.dispatch(unmapCommand(6));
+  const persistedAuction =
+    memoryStore.getPersistedState().streams[0].variations[0];
+
+  assert.equal(response.result.status, "unmapped");
+  assert.equal(response.result.sku, null);
+  assert.equal(response.state.streams[0].variations[0].sku, null);
+  assert.equal(persistedAuction.sku, null);
+  assert.equal(persistedAuction.mappingStatus, "unmapped");
+  assert.equal(memoryStore.calls.save.length, 1);
+});
+
 test("serializes concurrent writes without losing an update", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);
@@ -413,6 +443,42 @@ test("rolls back memory when a durable write fails and keeps the queue usable", 
   );
 });
 
+test("a failed unmap save leaves the canonical and durable mapping unchanged", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  reconciliation.mapVariation(storedState, {
+    streamId: "stream-1",
+    variationNumber: 32,
+    sku: "BLACK-TEE-M",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const writeError = new ReconciliationStorageError(
+    "STORAGE_WRITE_FAILED",
+    "write failed",
+  );
+  const coordinator = createCoordinator(memoryStore);
+
+  memoryStore.failNextSave(writeError);
+  await assertErrorCode(
+    () => coordinator.dispatch(unmapCommand(32)),
+    "STORAGE_WRITE_FAILED",
+    ReconciliationStorageError,
+  );
+
+  const afterFailure = await coordinator.dispatch(getStateCommand());
+
+  assert.equal(afterFailure.state.streams[0].variations[0].sku, "BLACK-TEE-M");
+  assert.equal(
+    memoryStore.getPersistedState().streams[0].variations[0].sku,
+    "BLACK-TEE-M",
+  );
+
+  const retried = await coordinator.dispatch(unmapCommand(32));
+
+  assert.equal(retried.result.status, "unmapped");
+  assert.equal(retried.state.streams[0].variations[0].sku, null);
+  assert.equal(memoryStore.getPersistedState().streams[0].variations[0].sku, null);
+});
+
 test("engine rejection creates no partial state and does not poison later commands", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);
@@ -510,6 +576,11 @@ test("rejects malformed and unknown commands before storage access", async () =>
   );
   await assertErrorCode(
     () => coordinator.dispatch(initializeCommand([])),
+    "INVALID_COMMAND",
+    ReconciliationCoordinatorError,
+  );
+  await assertErrorCode(
+    () => coordinator.dispatch({ ...unmapCommand(1), sku: "BLACK-TEE-M" }),
     "INVALID_COMMAND",
     ReconciliationCoordinatorError,
   );

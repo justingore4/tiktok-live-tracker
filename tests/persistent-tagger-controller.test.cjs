@@ -101,6 +101,14 @@ function createMemoryClient(initialState = null) {
       state = candidate;
       return { state: clone(state), result: clone(result) };
     },
+    async unmapVariation(options) {
+      calls.push({ method: "unmapVariation", options: clone(options) });
+      const candidate = reconciliation.hydrateReconciliationState(state);
+      const result = reconciliation.unmapVariation(candidate, options);
+
+      state = candidate;
+      return { state: clone(state), result: clone(result) };
+    },
     async undoMarkUnpaid(options) {
       calls.push({ method: "undoMarkUnpaid", options: clone(options) });
       const candidate = reconciliation.hydrateReconciliationState(state);
@@ -158,6 +166,7 @@ test("exports a pure saved-session controller without a payment-complete API", (
     "start",
     "subscribe",
     "undoSelectedUnpaid",
+    "unmapSelectedVariation",
   ]);
   assert.doesNotMatch(
     source,
@@ -335,6 +344,60 @@ test("keeps the canonical projection unchanged until a mapping save succeeds", a
   });
 });
 
+test("keeps a historical mapping visible until its unmap save succeeds", async () => {
+  const initialState = createState();
+
+  reconciliation.mapVariation(initialState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    sku: "BLACK-TEE-L",
+  });
+  const memory = createMemoryClient(initialState);
+  const deferred = createDeferred();
+  memory.client.unmapVariation = (options) => {
+    memory.calls.push({ method: "unmapVariation", options: clone(options) });
+    return deferred.promise;
+  };
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(202);
+  const save = controller.unmapSelectedVariation();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const saving = controller.getSnapshot();
+
+  assert.equal(saving.phase, "saving");
+  assert.equal(saving.operation, "unmap_variation");
+  assert.equal(saving.view.selectedVariationNumber, 202);
+  assert.equal(auctionFromSnapshot(saving).sku, "BLACK-TEE-L");
+  assert.deepEqual(memory.getState(), initialState);
+
+  const candidate = reconciliation.hydrateReconciliationState(initialState);
+  const result = reconciliation.unmapVariation(candidate, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+  });
+
+  deferred.resolve({ state: candidate, result });
+  const saved = await save;
+
+  assert.equal(saved.phase, "ready");
+  assert.equal(saved.operation, "unmap_variation");
+  assert.equal(saved.view.selectedVariationNumber, 202);
+  assert.equal(saved.view.mapping, null);
+  assert.equal(auctionFromSnapshot(saved).sku, null);
+  assert.equal(auctionFromSnapshot(saved).status, "unmapped");
+  assert.deepEqual(memory.calls.at(-1), {
+    method: "unmapVariation",
+    options: {
+      streamId: STREAM_ID,
+      variationNumber: 202,
+    },
+  });
+});
+
 test("retains the last saved view after failure and retries the frozen command", async () => {
   const memory = createMemoryClient(createState());
   const successfulMap = memory.client.mapVariation;
@@ -379,6 +442,60 @@ test("retains the last saved view after failure and retries the frozen command",
   assert.equal(saved.view.auction.sku, "GREY-HOODIE-XL");
   assert.equal(mappingCalls.length, 2);
   assert.deepEqual(mappingCalls[0].options, mappingCalls[1].options);
+});
+
+test("retains a mapped historical view after unmap failure and retries the frozen command", async () => {
+  const state = createState();
+
+  reconciliation.mapVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 201,
+    sku: "GREY-HOODIE-XL",
+  });
+  const memory = createMemoryClient(state);
+  const successfulUnmap = memory.client.unmapVariation;
+  let attempts = 0;
+
+  memory.client.unmapVariation = async (options) => {
+    attempts += 1;
+
+    if (attempts === 1) {
+      memory.calls.push({ method: "unmapVariation", options: clone(options) });
+      const failure = new Error("Could not remove mapping.");
+      failure.code = "STORAGE_WRITE_FAILED";
+      throw failure;
+    }
+
+    return successfulUnmap(options);
+  };
+
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(201);
+  const failed = await controller.unmapSelectedVariation();
+
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.operation, "unmap_variation");
+  assert.deepEqual(failed.error, {
+    scope: "save",
+    code: "STORAGE_WRITE_FAILED",
+    message: "Could not remove mapping.",
+  });
+  assert.equal(failed.view.selectedVariationNumber, 201);
+  assert.equal(failed.view.auction.sku, "GREY-HOODIE-XL");
+
+  const saved = await controller.retry();
+  const unmapCalls = memory.calls.filter(
+    (call) => call.method === "unmapVariation",
+  );
+
+  assert.equal(saved.phase, "ready");
+  assert.equal(saved.view.selectedVariationNumber, 201);
+  assert.equal(saved.view.mapping, null);
+  assert.equal(saved.view.auction.status, "unmapped");
+  assert.equal(unmapCalls.length, 2);
+  assert.deepEqual(unmapCalls[0].options, unmapCalls[1].options);
 });
 
 test("persists mark-unpaid and undo commands for the selected variation", async () => {
@@ -430,6 +547,48 @@ test("a reopened controller restores the last durable mapping and unpaid state",
   assert.equal(restored.view.auction.paymentStatus, "unknown");
   assert.equal(
     memory.calls.filter((call) => call.method === "initializeState").length,
+    1,
+  );
+  assert.equal(
+    memory.calls.filter((call) => call.method === "getState").length,
+    2,
+  );
+});
+
+test("requires the saved-session client to provide unmapping", () => {
+  const { client } = createMemoryClient();
+
+  delete client.unmapVariation;
+
+  assert.throws(
+    () => createController(client),
+    /mapping, unmapping, and unpaid methods/,
+  );
+});
+
+test("a reopened controller restores a durable unmap", async () => {
+  const memory = createMemoryClient(null);
+  const firstController = createController(memory.client);
+
+  await firstController.start();
+  await firstController.mapSelectedSku("BLACK-TEE-L");
+  await firstController.unmapSelectedVariation();
+
+  const reopenedController = createController(memory.client);
+  const restored = await reopenedController.start();
+
+  assert.equal(restored.phase, "ready");
+  assert.equal(restored.view.selectedVariationNumber, CURRENT_VARIATION);
+  assert.equal(restored.view.mapping, null);
+  assert.equal(restored.view.auction.sku, null);
+  assert.equal(restored.view.auction.status, "unmapped");
+  assert.equal(restored.view.auction.paymentStatus, "unknown");
+  assert.equal(
+    memory.calls.filter((call) => call.method === "initializeState").length,
+    1,
+  );
+  assert.equal(
+    memory.calls.filter((call) => call.method === "unmapVariation").length,
     1,
   );
   assert.equal(

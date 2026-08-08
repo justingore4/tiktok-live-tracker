@@ -271,7 +271,7 @@
     if (selected) {
       button.setAttribute(
         "aria-label",
-        `Variation ${variationNumber} is mapped to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stock.label}. Click to unselect this item.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -501,6 +501,7 @@
     const offlineDemo = activeMode === "offline_demo";
     const canUndoSimulatedPayment =
       offlineDemo && view.controls.canUndoSimulatedPayment;
+    const canUndoUnpaid = view.controls.canUndoUnpaid;
 
     lifecycleControlsLegend.textContent = offlineDemo
       ? "Offline test controls"
@@ -508,9 +509,12 @@
     lifecycleControlsNote.textContent = offlineDemo
       ? "These controls simulate TikTok events in temporary memory and do not act on TikTok."
       : "Mark unpaid only after TikTok's payment buffer has expired. These employee changes are saved locally.";
+    undoPaymentNote.textContent = view.mapping
+      ? "Offline demo only. Return this sale to Waiting for payment, keep the selected item reserved, and do not change TikTok."
+      : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
 
     lifecycleControls.hidden =
-      !view.mapping ||
+      (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
       (committed && !canUndoSimulatedPayment) ||
       (!offlineDemo && committed);
     completePaymentForm.hidden =
@@ -544,7 +548,7 @@
     mappedVariation.textContent = `#${auction.variationNumber}`;
     mappedItem.textContent = auction.sku
       ? `${formatItemName(auction)}, size ${auction.size}`
-      : "Select the matching inventory entry below.";
+      : "No item selected. Select the matching inventory entry below.";
     auctionEyebrow.textContent =
       {
         committed: "Sale result",
@@ -596,6 +600,22 @@
   }
 
   function announceMapping(result) {
+    if (result.action === "unmapped") {
+      const detail =
+        {
+          committed:
+            "Payment remains complete, but inventory and gross profit need a replacement item.",
+          marked_unpaid:
+            "The unpaid status remains and no item is selected.",
+          pending:
+            "Its pending reservation was released and no item is selected.",
+        }[result.previousStatus] ?? "No item is selected.";
+
+      mappingAnnouncement.textContent =
+        `Variation ${result.view.variationNumber} item unselected. ${detail}`;
+      return;
+    }
+
     const mapping = result.mapping;
     const itemDescription = `${formatItemName(mapping)}, size ${mapping.size}`;
 
@@ -653,6 +673,9 @@
     if (action.type === "map_variation") {
       mappingAnnouncement.textContent =
         `Variation ${variationNumber} mapping saved locally.`;
+    } else if (action.type === "unmap_variation") {
+      mappingAnnouncement.textContent =
+        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     } else if (action.type === "mark_unpaid") {
       mappingAnnouncement.textContent =
         `Variation ${variationNumber} marked unpaid and saved locally. Its pending reservation was released.`;
@@ -893,11 +916,14 @@
 
     if (activeMode === "saved_session") {
       const view = getActiveView();
+      const selected = button.getAttribute("aria-pressed") === "true";
 
       runSavedMutation(
-        () => persistentController.mapSelectedSku(button.dataset.sku),
+        () => selected
+          ? persistentController.unmapSelectedVariation()
+          : persistentController.mapSelectedSku(button.dataset.sku),
         {
-          type: "map_variation",
+          type: selected ? "unmap_variation" : "map_variation",
           variationNumber: view.selectedVariationNumber,
           focusSku: button.dataset.sku,
         },
@@ -913,7 +939,7 @@
     }
 
     clearPriceError();
-    renderAll({ focusSku: result.mapping.sku });
+    renderAll({ focusSku: button.dataset.sku });
     announceMapping(result);
   });
 
@@ -1013,7 +1039,9 @@
     }
 
     renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = `Unpaid mark removed from variation ${result.view.variationNumber}. Waiting for payment.`;
+    mappingAnnouncement.textContent = result.mapping
+      ? `Unpaid mark removed from variation ${result.view.variationNumber}. Waiting for payment.`
+      : `Unpaid mark removed from variation ${result.view.variationNumber}. No item is selected.`;
   });
 
   undoSimulatedPaymentButton.addEventListener("click", () => {
@@ -1030,8 +1058,14 @@
 
     clearPriceError();
     searchInput.value = "";
-    renderAll({ focusSku: result.mapping.sku });
-    mappingAnnouncement.textContent = `Simulated payment undone for variation ${result.view.variationNumber}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`;
+    renderAll(
+      result.mapping
+        ? { focusSku: result.mapping.sku }
+        : { focusStatus: true },
+    );
+    mappingAnnouncement.textContent = result.mapping
+      ? `Simulated payment undone for variation ${result.view.variationNumber}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`
+      : `Simulated payment undone for variation ${result.view.variationNumber}. No item is selected; remaining inventory and gross profit were restored.`;
   });
 
   searchInput.addEventListener("input", () => renderAll());

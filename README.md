@@ -5,10 +5,10 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early browser prototype. The completed-sale parser, read-only
-> dashboard capture probe, reconciliation engine, tagger lifecycle demo, and local
-> saved-session recovery are implemented and tested. Employee mappings and unpaid
-> corrections persist through the service worker; TikTok payment capture and Google
-> Sheets are not connected yet.
+> dashboard capture probe with SPA recovery and offline-safe candidate targeting,
+> reconciliation engine, tagger lifecycle demo, and local saved-session recovery are
+> implemented and tested. Employee mappings and unpaid corrections persist through the
+> service worker; TikTok payment capture and Google Sheets are not connected yet.
 
 ## How it works
 
@@ -18,7 +18,8 @@ represents one auction of one physical item.
 
 While the item is on screen, an employee selects its item, style, and size from the
 tracker's inventory menu. The tracker stores that selection as a mapping; it does not
-enter a price or perform any action on TikTok.
+enter a price or perform any action on TikTok. Clicking the selected inventory card
+again removes only that item mapping and leaves TikTok's payment result unchanged.
 
 The tracker counts the sale only after TikTok shows the final price with the green
 `Payment complete` badge in the **Sold items** panel:
@@ -39,9 +40,12 @@ the item is auctioned again, the employee maps its new variation number.
 
 ### Implemented and tested
 
-- A Manifest V3 Chrome extension that loads on the TikTok LIVE dashboard.
+- A Manifest V3 Chrome extension whose isolated capture script is available only on the
+  exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
+  dashboard path.
 - A responsive Chrome side-panel prototype with mock inventory, search, reservations,
-  sold-out states, one-click item mapping, and a current/previous variation selector.
+  sold-out states, one-click item mapping and unmapping, and a current/previous
+  variation selector.
 - A **Saved session** mode that restores mappings, unpaid decisions, reservations, and
   prior variation records after the side panel or browser is reopened.
 - Loading, saving, retry, and fail-closed error states that keep the last successfully
@@ -53,14 +57,27 @@ the item is auctioned again, the employee maps its new variation number.
   simulated completion, expire its payment buffer, **Mark unpaid**, and **Undo unpaid**.
 - Engine-derived final price, unit cost, gross profit/loss, and inventory results after
   a simulated completed payment.
-- A read-only `MutationObserver` capture probe for rendered completed-sale rows.
+- A read-only `MutationObserver` capture probe with bounded scheduling so ordinary
+  dashboard updates cannot indefinitely postpone scans while the page is executing.
+- SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
+  fallback check, and cleans up or restarts the observer and scheduler when the route or
+  document body changes.
+- A sale-candidate locator that accepts only the confirmed payment-tag attribute with
+  normalized `Payment complete` badge text, stays inside a bounded ancestor search, and
+  avoids generated CSS classes.
+- Mutation relevance filtering that skips unrelated dashboard updates while failing
+  toward a recovery scan if DOM inspection is unsafe.
+- A pure capture-event registry that keeps page-load and verified-stream scopes separate.
+  The verified-stream behavior is tested, but the live probe still emits `streamId: null`
+  and labels its deduplication scope as an unverified page load.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, completed GMV, and gross profit;
   - reserves pending units separately from completed sales;
-  - supports mapping corrections, **Mark unpaid**, and undoing the local unpaid mark;
+  - supports mapping corrections, click-again unmapping, **Mark unpaid**, and undoing
+    the local unpaid mark;
   - surfaces unmapped sales, conflicting prices, and inventory shortages;
   - keeps auctions distinct by `(streamId, variationNumber)`.
 - A versioned persistence adapter that validates and saves detached reconciliation
@@ -69,11 +86,12 @@ the item is auctioned again, the employee maps its new variation number.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails.
-- A strict tagger runtime client and controller that send only mapping, mark-unpaid, and
-  undo-unpaid commands through that coordinator. The tagger never accesses browser
-  storage directly and cannot create authoritative payment-complete events.
-- Automated parser, reconciliation, persistence, service-worker, and tagger tests using
-  Node's built-in test runner.
+- A strict tagger runtime client and controller that send only mapping, unmapping,
+  mark-unpaid, and undo-unpaid commands through that coordinator. The tagger never
+  accesses browser storage directly and cannot create authoritative payment-complete
+  events.
+- Automated capture, parser, reconciliation, persistence, service-worker, and tagger
+  tests using Node's built-in test runner.
 
 ### Not implemented yet
 
@@ -84,6 +102,8 @@ the item is auctioned again, the employee maps its new variation number.
 - Detection of TikTok's yellow payment-warning state.
 - Persistent stream identity and automatic creation of a fresh saved session for each
   real TikTok LIVE.
+- A live-validated, stable Sold items container selector; the current read-only boundary
+  remains the dashboard body.
 - Google Sheets inventory import and results export.
 - A connection between the capture probe and reconciliation engine.
 - End-of-stream analytics and live-stream validation.
@@ -100,7 +120,10 @@ the item is auctioned again, the employee maps its new variation number.
       worker;
    3. **Completed:** connect the tagger to saved state and verify refresh/restart
       recovery.
-3. Harden and live-validate capture scheduling, stream identity, and dashboard selectors.
+3. **Offline hardening completed:** bounded scheduling, SPA lifecycle recovery,
+   candidate validation, mutation filtering, and scoped event-registry tests are
+   implemented. Verified stream identity, Sold items root narrowing, and real-stream
+   validation remain blocking live checks.
 4. Connect captured TikTok events to the reconciliation engine and tagger.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
@@ -112,7 +135,7 @@ the item is auctioned again, the employee maps its new variation number.
 | --- | --- | --- |
 | `extension/manifest.json` | Extension configuration and dashboard entry point | Implemented |
 | `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Coordinator implemented |
-| `extension/capture/` | Read-only TikTok dashboard observation | Probe implemented |
+| `extension/capture/` | Read-only TikTok dashboard observation | Offline hardening implemented; live scope and identity pending |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
@@ -161,26 +184,34 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
    reservation.
 9. Select another available inventory card, wait for it to save, then reopen the panel
    once more and confirm the correction was restored.
-10. Use **Mark unpaid after TikTok's buffer**, reopen the panel, and confirm the unpaid
+10. Click the selected inventory card again, wait for it to save, and confirm the
+    variation shows **No item selected** after reopening. Select an item again to
+    continue.
+11. Use **Mark unpaid after TikTok's buffer**, reopen the panel, and confirm the unpaid
     state was restored. Use **Undo unpaid** and confirm that change also survives reopen.
-11. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
+12. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
     variation `#203` plus seeded history `#202`, `#201`, and `#200`.
-12. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
+13. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
     different inventory card and confirm its completed-sale inventory and profit update.
-13. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
+14. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
     payment** and `4 available · 1 pending`.
-14. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
+15. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
     `4 remaining`; then use **Undo simulated payment** and confirm the pending state
     returns.
-15. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
+16. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
     unpaid**. Switch back to **Saved session** and confirm none of the demo-only payment
     changes altered the saved data.
-16. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
-17. Open DevTools and confirm the Console contains:
+17. Open `https://shop.tiktok.com/streamer/live/event/dashboard`.
+18. Open DevTools and confirm the Console contains:
 
    ```text
    [TikTok Live Tracker] Capture probe active
    ```
+
+19. Use TikTok's own navigation to leave the dashboard and return without reloading the
+    tab; confirm capture becomes active again without duplicate completed-sale events.
+20. Put the tab in the background, return to it, and confirm capture remains active. Body
+    replacement and repeated re-entry are also covered by the offline capture tests.
 
 On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale
@@ -205,8 +236,9 @@ authentication is deliberately unresolved until the Sheets stage:
   from the extension.
 
 Never commit `.env` files, access tokens, private keys, or client data. The current
-capture probe logs only variation number, price in integer cents, and payment status; it
-does not store buyer names or contact Google Sheets.
+capture probe logs variation number, price in integer cents, payment status, and explicit
+unverified identity metadata including `streamId: null`; it does not store buyer names or
+contact Google Sheets.
 
 ## Documentation
 
