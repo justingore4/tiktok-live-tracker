@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>TikTok Live Tracker</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-mark" aria-hidden="true">T</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Seller tool</p>
+          <h1>TikTok Live Tracker</h1>
+        </div>
+        <span class="prototype-badge">Prototype</span>
+      </header>
+
+      <section class="current-auction" aria-labelledby="current-auction-title">
+        <div>
+          <p class="current-auction-label">On screen now</p>
+          <h2 id="current-auction-title">
+            Variation <span class="variation-number">#203</span>
+          </h2>
+        </div>
+        <span class="demo-badge">Demo data</span>
+      </section>
+
+      <section class="inventory-section" aria-labelledby="inventory-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Inventory</p>
+            <h2 id="inventory-title">Find the item on screen</h2>
+          </div>
+          <p id="result-count" class="result-count" aria-live="polite"></p>
+        </div>
+
+        <div class="search-field">
+          <span class="search-icon" aria-hidden="true"></span>
+          <label class="visually-hidden" for="inventory-search">
+            Search inventory by item, style, or size
+          </label>
+          <input
+            id="inventory-search"
+            type="search"
+            placeholder="Search item, style, or size"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button id="clear-search" class="clear-search" type="button" hidden>
+            Clear
+          </button>
+        </div>
+
+        <p class="preview-note">
+          Preview only — item selection will be enabled in the next development step.
+        </p>
+
+        <div id="inventory-grid" class="inventory-grid" role="list"></div>
+
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-state-icon" aria-hidden="true"></div>
+          <h3>No inventory matches <strong id="empty-query"></strong></h3>
+          <p>Try a different item, style, or size.</p>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Offline UI prototype</span>
+      </footer>
+    </main>
+
+    <template id="inventory-card-template">
+      <article class="inventory-card" role="listitem">
+        <div class="card-heading">
+          <h3>
+            <span data-field="item"></span>
+            <span class="item-separator" aria-hidden="true">—</span>
+            <span data-field="style"></span>
+          </h3>
+          <span class="stock-indicator" aria-hidden="true"></span>
+        </div>
+        <div class="card-meta">
+          <span class="size-label">Size <strong data-field="size"></strong></span>
+          <span class="stock-label" data-field="stock"></span>
+        </div>
+      </article>
+    </template>
+
+    <script src="inventory-view-model.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

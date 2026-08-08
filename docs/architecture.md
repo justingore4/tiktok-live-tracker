@@ -210,12 +210,21 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — planned next
+## 5. Employee tagger — foundation implemented
 
 The tagger will be a browser-extension interface based on the current mockup. The
 employee should never type a variation number or interact with the hidden SKU.
 
-Planned behavior:
+The current Chrome side-panel foundation includes:
+
+- A clearly labeled simulated variation number.
+- Responsive, employee-facing inventory cards using mock data.
+- Search across item, style, and size.
+- Remaining-quantity, low-stock, and sold-out visual states.
+- Accessible labels, keyboard search controls, and a no-results state.
+
+The cards are intentionally display-only in this first UI step. Planned behavior for the
+next two tagger steps includes:
 
 - Show the current variation and a queue of variations needing attention.
 - Search inventory by employee-facing item, style, and size.
@@ -327,7 +336,8 @@ Browser support beyond Chrome is a later decision.
 
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** offline reconciliation engine and automated tests.
-3. **Next:** offline tagger interface foundation, mapping workflow, and lifecycle controls.
+3. **In progress:** tagger foundation completed; mapping workflow and lifecycle controls
+   are next.
 4. Persistent browser storage and recovery.
 5. Capture-to-engine-to-tagger integration.
 6. Google Sheet template, authentication, import, and export.

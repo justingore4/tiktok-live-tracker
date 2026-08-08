@@ -5,8 +5,9 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early offline prototype. The completed-sale parser, read-only
-> dashboard capture probe, and reconciliation engine are implemented and tested. They
-> are not connected to a tagger interface, persistent storage, or Google Sheets yet.
+> dashboard capture probe, reconciliation engine, and static tagger side-panel
+> foundation are implemented and tested. Mapping, persistence, and Google Sheets are not
+> connected yet.
 
 ## How it works
 
@@ -33,6 +34,8 @@ sale. If the item is auctioned again, the employee maps its new variation number
 ### Implemented and tested
 
 - A Manifest V3 Chrome extension that loads on the TikTok LIVE dashboard.
+- A responsive Chrome side-panel prototype with mock inventory, search, quantity, and
+  sold-out states.
 - A read-only `MutationObserver` capture probe for rendered completed-sale rows.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
@@ -46,7 +49,7 @@ sale. If the item is auctioned again, the employee maps its new variation number
 
 ### Not implemented yet
 
-- The employee-facing tagger interface.
+- Item selection and mapping behavior inside the tagger interface.
 - Automatic detection of the current variation while bidding.
 - Detection of TikTok's yellow payment-warning state.
 - Persistent browser storage or recovery after a refresh/crash.
@@ -57,8 +60,8 @@ sale. If the item is auctioned again, the employee maps its new variation number
 ## Development roadmap
 
 1. Build the offline tagger interface in three focused stages:
-   1. interface foundation;
-   2. item-mapping workflow;
+   1. **Completed:** interface foundation;
+   2. **Next:** item-mapping workflow;
    3. payment lifecycle controls and testing.
 2. Persist canonical stream state in browser storage.
 3. Connect captured TikTok events to the reconciliation engine and tagger.
@@ -76,7 +79,7 @@ sale. If the item is auctioned again, the employee maps its new variation number
 | `extension/capture/` | Read-only TikTok dashboard observation | Probe implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
-| `extension/tagger/` | Employee queue and inventory picker | Planned |
+| `extension/tagger/` | Employee queue and inventory picker | Static foundation implemented |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
@@ -107,14 +110,15 @@ npm.cmd test
 
 PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper.
 
-### Load the capture probe in Chrome
+### Load the extension in Chrome
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
-5. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
-6. Open DevTools and confirm the Console contains:
+5. Click the extension's toolbar icon to open the demo tagger side panel.
+6. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
+7. Open DevTools and confirm the Console contains:
 
    ```text
    [TikTok Live Tracker] Capture probe active
