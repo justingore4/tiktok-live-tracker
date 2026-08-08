@@ -52,6 +52,203 @@ test("initializes an isolated mapping session without creating an auction", () =
   assert.deepEqual(clone(MOCK_INVENTORY), inventoryBefore);
 });
 
+test("navigates explicit variation history without changing reconciliation state", () => {
+  const session = createSession({ variationNumbers: [203, 201] });
+  const stateBefore = session.getStateSnapshot();
+  const initialView = session.getViewState();
+
+  assert.deepEqual(
+    initialView.variations.map((variation) => variation.variationNumber),
+    [203, 201],
+  );
+  assert.equal(initialView.currentVariationNumber, 203);
+  assert.equal(initialView.selectedVariationNumber, 203);
+  assert.equal(initialView.isReviewingHistory, false);
+
+  const selected = session.selectVariation(201);
+
+  assert.equal(selected.ok, true);
+  assert.equal(selected.action, "variation_selected");
+  assert.equal(selected.view.currentVariationNumber, 203);
+  assert.equal(selected.view.selectedVariationNumber, 201);
+  assert.equal(selected.view.isReviewingHistory, true);
+  assert.deepEqual(session.getStateSnapshot(), stateBefore);
+
+  const unknown = session.selectVariation(202);
+
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.code, "UNKNOWN_VARIATION");
+  assert.equal(unknown.view.selectedVariationNumber, 201);
+  assert.deepEqual(session.getStateSnapshot(), stateBefore);
+});
+
+test("multiple variations share inventory while keeping their mappings distinct", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.selectVariation(202);
+  session.selectSku("NIKE-HOODIE-GREY-XL");
+
+  const historicalView = session.getViewState();
+  const state = session.getStateSnapshot();
+  const stream = state.streams.find((entry) => entry.streamId === STREAM_ID);
+
+  assert.equal(historicalView.mapping.variationNumber, 202);
+  assert.equal(historicalView.mapping.sku, "NIKE-HOODIE-GREY-XL");
+  assert.equal(session.getSelectedMapping().variationNumber, 202);
+  assert.equal(session.getSelectedMapping().sku, "NIKE-HOODIE-GREY-XL");
+  assert.equal(session.getCurrentMapping().variationNumber, 203);
+  assert.equal(session.getCurrentMapping().sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(stream.variations.length, 2);
+  assert.equal(
+    inventoryEntry(historicalView, "STUSSY-TEE-BLACK-L").reservedQuantity,
+    1,
+  );
+  assert.equal(
+    inventoryEntry(historicalView, "NIKE-HOODIE-GREY-XL").reservedQuantity,
+    1,
+  );
+
+  session.selectVariation(203);
+
+  assert.equal(session.getCurrentMapping().sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(session.getSelectedMapping().sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(session.getViewState().currentVariationNumber, 203);
+});
+
+test("correcting a completed historical variation leaves the current mapping intact", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectSku("NIKE-HOODIE-GREY-XL");
+  const currentBefore = reconciliation.getAuction(session.getStateSnapshot(), {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+  });
+
+  session.selectVariation(202);
+  session.selectSku("STUSSY-TEE-BLACK-M");
+  session.completePayment(2000);
+  const corrected = session.selectSku("CARHARTT-JACKET-BROWN-M");
+  const currentAfter = reconciliation.getAuction(session.getStateSnapshot(), {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+  });
+  const option = corrected.view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+
+  assert.equal(corrected.action, "committed_mapping_corrected");
+  assert.equal(corrected.mapping.soldPriceCents, 2000);
+  assert.equal(corrected.mapping.committedUnitCostCents, 1800);
+  assert.equal(corrected.mapping.profitCents, 200);
+  assert.equal(option.status, "committed");
+  assert.equal(option.item, "Carhartt jacket");
+  assert.equal(option.size, "M");
+  assert.deepEqual(currentAfter, currentBefore);
+});
+
+test("correcting an unpaid historical variation preserves current state and undo", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  const currentBefore = reconciliation.getAuction(session.getStateSnapshot(), {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+  });
+
+  session.selectVariation(202);
+  session.selectSku("NIKE-HOODIE-GREY-XL");
+  session.simulatePaymentBufferExpired();
+  session.markUnpaid();
+  const corrected = session.selectSku("CARHARTT-JACKET-BROWN-M");
+
+  assert.equal(corrected.action, "unpaid_mapping_corrected");
+  assert.equal(corrected.mapping.status, "marked_unpaid");
+  assert.equal(
+    inventoryEntry(corrected.view, "NIKE-HOODIE-GREY-XL").reservedQuantity,
+    0,
+  );
+  assert.equal(
+    inventoryEntry(corrected.view, "CARHARTT-JACKET-BROWN-M").reservedQuantity,
+    0,
+  );
+
+  const restored = session.undoMarkUnpaid();
+  const currentAfter = reconciliation.getAuction(session.getStateSnapshot(), {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+  });
+
+  assert.equal(restored.mapping.status, "pending");
+  assert.equal(restored.mapping.sku, "CARHARTT-JACKET-BROWN-M");
+  assert.equal(
+    inventoryEntry(restored.view, "CARHARTT-JACKET-BROWN-M").reservedQuantity,
+    1,
+  );
+  assert.deepEqual(currentAfter, currentBefore);
+});
+
+test("payment-buffer eligibility stays with its own variation", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectVariation(202);
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.simulatePaymentBufferExpired();
+
+  assert.equal(session.getViewState().controls.canMarkUnpaid, true);
+
+  session.selectVariation(203);
+  session.selectSku("NIKE-HOODIE-GREY-XL");
+
+  assert.equal(session.getViewState().controls.canMarkUnpaid, false);
+  assert.equal(
+    session.getViewState().controls.canSimulateBufferExpiry,
+    true,
+  );
+
+  session.selectVariation(202);
+
+  assert.equal(session.getViewState().controls.canMarkUnpaid, true);
+  assert.equal(
+    session.getViewState().controls.canSimulateBufferExpiry,
+    false,
+  );
+});
+
+test("undoing one simulated payment preserves changes to other variations", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectVariation(202);
+  session.selectSku("STUSSY-TEE-BLACK-M");
+  session.completePayment(2000);
+
+  session.selectVariation(203);
+  session.selectSku("NIKE-HOODIE-GREY-L");
+  session.completePayment(2500);
+  const currentBeforeUndo = reconciliation.getAuction(
+    session.getStateSnapshot(),
+    { streamId: STREAM_ID, variationNumber: 203 },
+  );
+
+  session.selectVariation(202);
+  const undone = session.undoSimulatedPayment();
+  const state = session.getStateSnapshot();
+  const currentAfterUndo = reconciliation.getAuction(state, {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+  });
+
+  assert.equal(undone.ok, true);
+  assert.equal(undone.mapping.status, "pending");
+  assert.equal(undone.mapping.sku, "STUSSY-TEE-BLACK-M");
+  assert.deepEqual(currentAfterUndo, currentBeforeUndo);
+  assert.equal(undone.view.totals.committedSalesCount, 1);
+
+  session.selectVariation(203);
+
+  assert.equal(session.getViewState().controls.canUndoSimulatedPayment, true);
+});
+
 test("maps an available inventory entry to the demo variation", () => {
   const session = createSession();
   const result = session.selectSku("STUSSY-TEE-BLACK-L");
@@ -114,6 +311,40 @@ test("uses a supplied shared state without replacing its existing auctions", () 
     inventoryEntry(updatedView, "STUSSY-TEE-BLACK-L").remainingQuantity,
     4,
   );
+});
+
+test("an unmapped completed warning remains associated with its own variation", () => {
+  const state = reconciliation.createReconciliationState(toEngineInventory());
+
+  reconciliation.mapVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 203,
+    sku: "STUSSY-TEE-BLACK-L",
+  });
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    soldPriceCents: 4800,
+  });
+
+  const session = createSession({
+    state,
+    variationNumbers: [203, 202],
+  });
+  const currentView = session.getViewState();
+
+  assert.equal(currentView.auction.status, "pending");
+  assert.ok(
+    currentView.warnings.some(
+      (warning) =>
+        warning.code === "unmapped_completed_sale" &&
+        warning.eventKey === "demo-stream:202",
+    ),
+  );
+
+  session.selectVariation(202);
+
+  assert.equal(session.getViewState().auction.status, "unmapped_completed");
 });
 
 test("maps a payment-complete variation that arrived before employee tagging", () => {
@@ -581,6 +812,43 @@ test("requires demo buffer expiry before unpaid and supports undo", () => {
   assert.equal(restoredInventory.reservedQuantity, 1);
   assert.equal(restoredInventory.availableToTagQuantity, 4);
   assert.equal(restored.view.controls.canMarkUnpaid, true);
+});
+
+test("selecting another inventory card corrects an unpaid mapping", () => {
+  const session = createSession();
+
+  session.selectSku("STUSSY-TEE-BLACK-L");
+  session.simulatePaymentBufferExpired();
+  session.markUnpaid();
+
+  const corrected = session.selectSku("NIKE-HOODIE-GREY-XL");
+  const originalInventory = inventoryEntry(
+    corrected.view,
+    "STUSSY-TEE-BLACK-L",
+  );
+  const correctedInventory = inventoryEntry(
+    corrected.view,
+    "NIKE-HOODIE-GREY-XL",
+  );
+
+  assert.equal(corrected.ok, true);
+  assert.equal(corrected.action, "unpaid_mapping_corrected");
+  assert.equal(corrected.mapping.status, "marked_unpaid");
+  assert.equal(corrected.mapping.sku, "NIKE-HOODIE-GREY-XL");
+  assert.equal(originalInventory.soldQuantity, 0);
+  assert.equal(originalInventory.reservedQuantity, 0);
+  assert.equal(
+    originalInventory.remainingQuantity,
+    originalInventory.quantityReceived,
+  );
+  assert.equal(correctedInventory.soldQuantity, 0);
+  assert.equal(correctedInventory.reservedQuantity, 0);
+  assert.equal(
+    correctedInventory.remainingQuantity,
+    correctedInventory.quantityReceived,
+  );
+  assert.equal(corrected.view.totals.profitCents, 0);
+  assert.equal(corrected.view.controls.canUndoUnpaid, true);
 });
 
 test("payment completion after an unpaid mark wins and surfaces a conflict", () => {

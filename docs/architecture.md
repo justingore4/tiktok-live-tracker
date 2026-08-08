@@ -91,8 +91,9 @@ Consequences:
    an exception until an employee maps it.
 3. Reprocessing the same completed event must update the same auction record rather
    than count a second sale.
-4. Employee mappings must be saved persistently before refresh/crash recovery can be
-   promised. Persistent storage is not implemented yet.
+4. Employee mappings and unpaid decisions pass through the service worker and are saved
+   before the tagger displays them as successful. They are restored after the panel or
+   service worker restarts.
 5. Canonical TikTok payment state is monotonic: `unknown → payment_complete`. There is no
    canonical transition back to unknown or unpaid. A future refund or cancellation must
    be represented as a separate authoritative event.
@@ -114,10 +115,16 @@ and surfaces a conflict for review.
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
-rules module. The offline tagger demo uses its mapping, payment-complete, mark-unpaid, and
-undo-unpaid operations, but payment events from the capture probe are not connected yet.
-Simulated-payment undo is a private tagger-session checkpoint, not a reconciliation-engine
-operation.
+rules module. The saved tagger uses its read model while the service-worker coordinator
+owns persistent mapping, mark-unpaid, and undo-unpaid operations. The separate offline
+demo also uses its payment-complete operation, but payment events from the capture probe
+are not connected yet. Simulated-payment undo is a private demo-session checkpoint, not a
+reconciliation-engine operation.
+
+The module also exposes a strict hydration boundary for data read from persistence. It
+rebuilds a detached canonical state only after validating versions, inventory, streams,
+auction relationships, money fields, statuses, and conflicts. Invalid persisted data is
+rejected rather than passed into normal engine operations.
 
 Implemented behavior includes:
 
@@ -167,7 +174,8 @@ The engine can calculate results for all streams or filter performance to one st
 - `committedRevenueCents` and gross profit include only mapped, payment-complete sales.
 
 The current state stores the latest mapping and status. A full event-by-event employee
-audit log can be added with persistent storage if the client requires one.
+audit log can be added as a separate persistent event-log feature if the client requires
+one.
 
 ## 4. Dashboard capture
 
@@ -233,27 +241,37 @@ No underlying TikTok API or network payload has been selected. The current probe
 only scan rendered DOM. Network or official API integration remains an optional fallback
 if DOM capture proves incomplete.
 
-## 5. Employee tagger — lifecycle demo implemented
+## 5. Employee tagger — saved session and offline demo implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
-The current Chrome side-panel lifecycle demo includes:
+The Chrome side panel has two explicit modes:
 
-- A clearly labeled simulated variation number.
+- **Saved session** is the default employee workspace. It restores the last durable
+  reconciliation state, persists mapping and unpaid corrections, and displays loading,
+  saving, success, and retryable error states.
+- **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
+  isolated state, sends no persistent commands, and resets when recreated or reloaded.
+
+Shared tagger behavior includes:
+
+- A clearly labeled current variation and native dropdown for seeded previous variations.
+- Separate on-screen and selected variation identity, so reviewing history never labels
+  an older auction as live.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Engine-derived available, pending-reservation, remaining, and sold-out states.
-- One-click mapping and correction of the simulated variation.
+- One-click mapping and correction of the selected current or previous variation.
 - **Waiting for payment**, **Payment complete**, and **Marked unpaid** states.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
-- Clearly labeled offline controls that simulate a completed payment and expired payment
-  buffer without acting on TikTok.
+- Clearly labeled offline-demo controls that simulate a completed payment and expired
+  payment buffer without acting on TikTok or saved data.
 - Final price, unit cost, gross profit/loss, and remaining inventory after completion.
-- **Undo simulated payment**, which restores the isolated demo's pre-completion payment
-  state while preserving later mapping corrections, removes the simulated revenue/profit
-  deduction, and returns focus to item selection.
+- **Undo simulated payment**, which restores only the selected variation's isolated demo
+  payment state while preserving later mapping corrections and edits to other variations,
+  removes that simulated revenue/profit deduction, and returns focus to item selection.
 - **Mark unpaid after buffer** and **Undo unpaid** behavior that leaves remaining inventory
   and profit unchanged; marking unpaid releases the reservation and undo restores it.
 - Mapping correction after completion, with inventory and profit recalculated by the
@@ -264,33 +282,96 @@ The current Chrome side-panel lifecycle demo includes:
   produce a shortage.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-The demo exists only while the side panel remains loaded. It uses mock inventory and a
-fixed variation `#203`; reloading the extension resets its state. It does not receive the
-real current variation, persist state, or receive payment events from the capture probe.
-Its simulated-payment undo is explicitly enabled only when the demo session owns its
-isolated state; it is disabled for supplied/shared state and cannot reverse a TikTok
-event.
+Saved mode initializes the current mock inventory only when storage is confirmed absent.
+It never seeds fake completed payments. It restores persisted variations, merges them
+with the temporary prototype variation list for navigation, and defaults back to the
+prototype on-screen variation when the panel is reopened. Selection navigation itself is
+local UI state and does not write to storage.
+
+The demo exists only while the side panel remains loaded. It uses mock inventory, treats
+`#203` as on screen, and seeds previous variations `#202`, `#201`, and `#200` with example
+completed, pending, and unpaid states. Navigation does not create or mutate auction
+records; every demo variation shares one isolated reconciliation state so corrections
+immediately recalculate shared inventory and profit. Reloading resets changes to those
+demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
+reverse a TikTok event or modify the saved session.
+
+The current variation and stream identifiers are still prototype constants. The tagger
+does not yet receive them or completed-payment events from the capture probe.
 
 Planned tagger behavior includes:
 
-- Show the current variation and a queue of variations needing attention.
+- Replace seeded history with a live, capture-fed queue of variations needing attention.
 - Queue completed-but-unmapped sales and capture-generated conflicts when real capture is
   connected.
 
 The production tagger is planned as a queue rather than a blocking modal so an employee
-can catch up when multiple variations need attention. The current demo holds one fixed
-variation only.
+can catch up when multiple variations need attention. The current dropdown proves
+multi-variation navigation and correction, but its variation list is still demo data.
 
-## 6. Storage and sync — planned
+## 6. Storage and sync — tagger persistence integrated
 
 ### Browser storage
 
-The canonical active-stream state will be saved to `chrome.storage.local`. Browser
-extension service workers may be suspended when idle, so authoritative state must not
-exist only in an in-memory service-worker variable.
+`extension/shared/reconciliation-storage.js` implements the first persistence layer. It
+stores one reconciliation snapshot beneath the stable key
+`tiktokLiveTracker.reconciliation` using this versioned envelope:
 
-Persistence must make employee mappings, payment events, corrections, and the outbound
-sync queue recoverable after a page refresh or browser restart.
+```text
+{
+  schemaVersion: 1,
+  reconciliationState: { version, inventory, streams }
+}
+```
+
+The storage-envelope version is separate from the reconciliation-state version so each
+can evolve deliberately. The adapter validates and detaches state before every write,
+hydrates and validates every read, returns `null` only when the key is truly absent, and
+reports malformed, unsupported, or failed reads and writes as typed errors. It never
+silently clears or replaces corrupt or future-version data.
+
+The extension service worker now creates the adapter with `chrome.storage.local` and is
+the sole canonical-state command owner. Its coordinator:
+
+- lazily loads saved state once per worker lifetime;
+- represents a missing key as explicitly uninitialized rather than inventing inventory;
+- accepts one-time nonempty inventory initialization and explicit mapping/unpaid
+  commands;
+- serializes reads and mutations through one FIFO Promise queue;
+- applies every mutation to a detached working copy;
+- waits for that copy to save successfully before publishing it in memory; and
+- retains the previous canonical state when validation, engine logic, or storage fails.
+
+This ordering prevents simultaneous commands from overwriting one another and prevents
+memory from getting ahead of disk. When an MV3 worker is suspended and later restarted,
+the next command reloads the last durable snapshot.
+
+Worker messages use a strict versioned envelope and return plain success or error data.
+Only the exact extension side-panel page is currently authorized to issue employee/read
+commands. Although the pure coordinator supports `record_payment_complete`, the worker
+does not authorize the side panel to create payment truth, and the capture probe is not
+connected yet.
+
+Local storage is restricted to trusted extension contexts so the dashboard content
+script cannot read or write the canonical snapshot directly. State changes must pass
+through the worker's validated command boundary.
+
+The side panel uses a dedicated runtime client and persistent tagger controller. On open,
+it requests canonical state and initializes inventory only when the worker explicitly
+reports that the storage key is absent. Malformed, corrupt, future-version, and failed
+reads never trigger initialization or replacement.
+
+Mapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the selected
+`(streamId, variationNumber)`. The UI keeps its last good view while a command is saving,
+publishes only the worker's successfully persisted response, and offers retry after safe
+errors. Reopening the panel rebuilds its view from the durable snapshot. The tagger never
+calls `chrome.storage` directly.
+
+The runtime client deliberately exposes no payment-complete command. Offline-demo actions
+send no runtime messages, and their simulations remain detached from canonical state.
+The saved controller may still finish loading in the background while the demo is open.
+The capture probe sends no coordinator messages; captured-event persistence and the
+outbound Google Sheets sync queue belong to later stages.
 
 Offline simulation checkpoints and resets must never overwrite captured or persisted
 canonical state. Production refunds or cancellations require their own authoritative
@@ -383,7 +464,8 @@ Browser support beyond Chrome is a later decision.
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** offline reconciliation engine and automated tests.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
-4. Persistent browser storage and recovery.
+4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
+   visible recovery.
 5. Capture hardening and live-stream selector/session validation.
 6. Capture-to-engine-to-tagger integration.
 7. Google Sheet template, authentication, import, and export.

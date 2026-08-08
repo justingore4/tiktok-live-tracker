@@ -7,6 +7,7 @@ const {
   createReconciliationState,
   getAuction,
   getInventoryAvailability,
+  hydrateReconciliationState,
   mapVariation,
   markUnpaid,
   recordPaymentComplete,
@@ -514,17 +515,43 @@ test("records real completed sales even when inventory becomes negative", () => 
   ]);
 });
 
-test("state survives a JSON round trip for future local storage", () => {
+test("hydrates a detached state after a JSON storage round trip", () => {
   const state = createState();
 
   mapVariation(state, auctionInput(80, { sku: "BLACK-TEE-M" }));
   recordPaymentComplete(state, auctionInput(80, { soldPriceCents: 4800 }));
 
-  const restoredState = JSON.parse(JSON.stringify(state));
+  const serializedState = JSON.parse(JSON.stringify(state));
+  const restoredState = hydrateReconciliationState(serializedState);
   const summary = calculateSummary(restoredState, { streamId: STREAM_ONE });
 
+  assert.deepEqual(restoredState, state);
+  assert.notEqual(restoredState, serializedState);
+  assert.notEqual(restoredState.inventory, serializedState.inventory);
+  assert.notEqual(restoredState.streams, serializedState.streams);
   assert.equal(summary.totals.committedSalesCount, 1);
   assert.equal(summary.totals.profitCents, 3600);
+
+  restoredState.inventory[0].name = "Changed after hydration";
+  assert.equal(serializedState.inventory[0].name, "Black Tee");
+});
+
+test("rejects unsupported and malformed persisted state", () => {
+  const unsupportedState = createState();
+  unsupportedState.version = 2;
+
+  assertErrorCode(
+    () => hydrateReconciliationState(unsupportedState),
+    "UNSUPPORTED_STATE_VERSION",
+  );
+
+  const malformedState = createState();
+  malformedState.inventory[0].quantityReceived = "2";
+
+  assertErrorCode(
+    () => hydrateReconciliationState(malformedState),
+    "INVALID_STATE",
+  );
 });
 
 test("validates duplicate SKUs and integer money values", () => {
