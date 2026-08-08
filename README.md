@@ -4,11 +4,11 @@ A browser-based tool for tracking TikTok LIVE auction sales. TikTok supplies the
 completed sale and final price, an employee identifies the physical item, and the
 tracker combines those facts to calculate inventory and gross profit.
 
-> **Project status:** early offline prototype. The completed-sale parser, read-only
-> dashboard capture probe, reconciliation engine, and in-memory tagger lifecycle demo
-> are implemented and tested. The service worker now owns a versioned, serialized
-> persistent-state coordinator, but the tagger and capture probe do not send it commands
-> yet. Google Sheets is not connected.
+> **Project status:** early browser prototype. The completed-sale parser, read-only
+> dashboard capture probe, reconciliation engine, tagger lifecycle demo, and local
+> saved-session recovery are implemented and tested. Employee mappings and unpaid
+> corrections persist through the service worker; TikTok payment capture and Google
+> Sheets are not connected yet.
 
 ## How it works
 
@@ -42,6 +42,10 @@ the item is auctioned again, the employee maps its new variation number.
 - A Manifest V3 Chrome extension that loads on the TikTok LIVE dashboard.
 - A responsive Chrome side-panel prototype with mock inventory, search, reservations,
   sold-out states, one-click item mapping, and a current/previous variation selector.
+- A **Saved session** mode that restores mappings, unpaid decisions, reservations, and
+  prior variation records after the side panel or browser is reopened.
+- Loading, saving, retry, and fail-closed error states that keep the last successfully
+  saved view visible when a command fails.
 - An in-memory lifecycle demo for variations `#200` through `#203`. It keeps on-screen
   variation `#203` distinct from the previous variation being reviewed, and previous
   mappings can be corrected directly from the same inventory cards.
@@ -65,6 +69,9 @@ the item is auctioned again, the employee maps its new variation number.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails.
+- A strict tagger runtime client and controller that send only mapping, mark-unpaid, and
+  undo-unpaid commands through that coordinator. The tagger never accesses browser
+  storage directly and cannot create authoritative payment-complete events.
 - Automated parser, reconciliation, persistence, service-worker, and tagger tests using
   Node's built-in test runner.
 
@@ -75,8 +82,8 @@ the item is auctioned again, the employee maps its new variation number.
   variations only.
 - Automatic detection of the current variation while bidding.
 - Detection of TikTok's yellow payment-warning state.
-- Tagger connection to persistent state and visible recovery after a refresh, crash, or
-  browser restart.
+- Persistent stream identity and automatic creation of a fresh saved session for each
+  real TikTok LIVE.
 - Google Sheets inventory import and results export.
 - A connection between the capture probe and reconciliation engine.
 - End-of-stream analytics and live-stream validation.
@@ -91,7 +98,8 @@ the item is auctioned again, the employee maps its new variation number.
    1. **Completed:** versioned storage envelope, strict hydration, and adapter tests;
    2. **Completed:** coordinate serialized state updates through the extension service
       worker;
-   3. connect the tagger to saved state and verify refresh/restart recovery.
+   3. **Completed:** connect the tagger to saved state and verify refresh/restart
+      recovery.
 3. Harden and live-validate capture scheduling, stream identity, and dashboard selectors.
 4. Connect captured TikTok events to the reconciliation engine and tagger.
 5. Create the Google Sheet template and choose the authentication approach.
@@ -109,7 +117,7 @@ the item is auctioned again, the employee maps its new variation number.
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
-| `extension/tagger/` | Employee queue and inventory picker | In-memory lifecycle demo implemented |
+| `extension/tagger/` | Employee queue, inventory picker, and saved-session controller | Persistence connected; live capture pending |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
@@ -146,24 +154,27 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
-5. Click the extension's toolbar icon to open the demo tagger side panel.
-6. Open the variation dropdown and confirm it lists current variation `#203` plus demo
-   history `#202`, `#201`, and `#200` with their statuses.
-7. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
-   different inventory card and confirm its completed-sale inventory and profit update.
-8. Select **Return to on-screen variation #203**.
-9. Select `Stussy tee - black, L` and confirm it shows **Selected**, **Waiting for
-   payment**, and `4 available · 1 pending`.
-10. Leave the simulated price at `$48.00` and select **Simulate payment complete**.
-11. Confirm the result shows `$48.00`, `+$36.00 profit`, and `4 remaining`.
-12. Select **Undo simulated payment** and confirm the result disappears, **Waiting for
-    payment** returns, and the item shows `4 available · 1 pending`.
-13. Simulate payment again, select a different inventory card, and confirm the old
-    inventory count is restored while the new count and profit are recalculated.
-14. Reload the extension to reset the in-memory demo, map an item, then test **Simulate
-    payment buffer expired**, **Mark unpaid after buffer**, and **Undo unpaid**.
-15. While marked unpaid, use **Simulate payment complete** to confirm a late TikTok
-    payment still counts and displays a conflict warning.
+5. Click the extension's toolbar icon to open the tagger side panel.
+6. In **Saved session**, wait for the status to say **Saved locally**.
+7. Select `Stussy tee - black, L` for variation `#203`; wait for the save to finish.
+8. Close and reopen the side panel. Confirm `#203` is still mapped and shows one pending
+   reservation.
+9. Select another available inventory card, wait for it to save, then reopen the panel
+   once more and confirm the correction was restored.
+10. Use **Mark unpaid after TikTok's buffer**, reopen the panel, and confirm the unpaid
+    state was restored. Use **Undo unpaid** and confirm that change also survives reopen.
+11. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
+    variation `#203` plus seeded history `#202`, `#201`, and `#200`.
+12. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
+    different inventory card and confirm its completed-sale inventory and profit update.
+13. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
+    payment** and `4 available · 1 pending`.
+14. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
+    `4 remaining`; then use **Undo simulated payment** and confirm the pending state
+    returns.
+15. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
+    unpaid**. Switch back to **Saved session** and confirm none of the demo-only payment
+    changes altered the saved data.
 16. Open or refresh `https://shop.tiktok.com/streamer/live/event/dashboard`.
 17. Open DevTools and confirm the Console contains:
 
@@ -175,8 +186,9 @@ On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale
 test and the remaining live-stream checks.
 
-Closing or reloading the side panel resets changes back to the seeded demo history. The
-worker coordinator is not connected to the tagger until persistence prompt 3/3.
+Saved-session employee changes survive side-panel reloads and service-worker restarts.
+Offline-demo changes still reset when that disposable demo is recreated or the panel is
+reloaded.
 
 **Undo simulated payment** only restores the private, in-memory offline demo. **Undo
 unpaid** only removes the employee's local unpaid mark. Neither control acts on TikTok or

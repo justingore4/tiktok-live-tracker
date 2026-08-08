@@ -18,6 +18,75 @@
         <span class="prototype-badge">Prototype</span>
       </header>
 
+      <section class="mode-panel" aria-labelledby="mode-title">
+        <div class="mode-heading">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h2 id="mode-title">Choose where changes go</h2>
+          </div>
+          <div class="mode-controls" role="group" aria-label="Tracker mode">
+            <button
+              id="saved-session-mode"
+              class="mode-button"
+              type="button"
+              aria-pressed="true"
+              aria-describedby="mode-description"
+            >
+              Saved session
+            </button>
+            <button
+              id="offline-demo-mode"
+              class="mode-button"
+              type="button"
+              aria-pressed="false"
+              aria-describedby="mode-description"
+            >
+              Offline demo
+            </button>
+          </div>
+        </div>
+        <p id="mode-description" class="mode-description">
+          Mappings and unpaid changes are saved locally and restored when this
+          panel reopens.
+        </p>
+      </section>
+
+      <section
+        id="saved-session-status"
+        class="session-message session-status"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span class="session-message-dot" aria-hidden="true"></span>
+        <span id="saved-session-status-text">Restoring saved session...</span>
+      </section>
+
+      <section
+        id="saved-session-error"
+        class="session-message session-error"
+        role="alert"
+        tabindex="-1"
+        hidden
+      >
+        <div>
+          <h2 id="saved-session-error-title">Saved session unavailable</h2>
+          <p id="saved-session-error-message">
+            Your saved data was not changed. Try connecting again.
+          </p>
+        </div>
+        <button id="retry-saved-session" class="secondary-action" type="button">
+          Retry
+        </button>
+      </section>
+
+      <div
+        id="tracker-workspace"
+        class="tracker-workspace"
+        aria-busy="true"
+        inert
+        hidden
+      >
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="current-auction-label">
@@ -39,7 +108,7 @@
             Return to on-screen variation #203
           </button>
         </div>
-        <span class="demo-badge">Demo data</span>
+        <span id="data-mode-badge" class="demo-badge">Saved session</span>
       </section>
 
       <section
@@ -89,9 +158,10 @@
         <p id="state-warning" class="state-warning" role="status" hidden></p>
 
         <fieldset id="lifecycle-controls" class="lifecycle-controls">
-          <legend>Offline test controls</legend>
-          <p class="demo-controls-note">
-            These controls simulate TikTok events locally and do not act on TikTok.
+          <legend id="lifecycle-controls-legend">Saved order controls</legend>
+          <p id="lifecycle-controls-note" class="demo-controls-note">
+            Mark unpaid only after TikTok's payment buffer has expired. These
+            employee changes are saved locally.
           </p>
 
           <form id="complete-payment-form" novalidate>
@@ -191,8 +261,9 @@
 
       <footer class="app-footer">
         <span class="status-dot" aria-hidden="true"></span>
-        <span>Offline lifecycle demo</span>
+        <span id="session-footer-label">Saved locally</span>
       </footer>
+      </div>
 
       <p
         id="mapping-announcement"
@@ -225,8 +296,11 @@
 
     <script src="../shared/sale-parser.js"></script>
     <script src="../shared/reconciliation.js"></script>
+    <script src="../shared/reconciliation-coordinator.js"></script>
+    <script src="reconciliation-client.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
+    <script src="persistent-tagger-controller.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>
