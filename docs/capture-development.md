@@ -1,0 +1,161 @@
+# Capture development notes
+
+These notes describe what has been verified on the TikTok LIVE dashboard, what the
+current read-only probe does, and what must be checked during the next real stream.
+
+## Confirmed dashboard details
+
+- Origin: `https://shop.tiktok.com`
+- Path: `/streamer/live/event/dashboard`
+- An inspected completed row exposed these values as DOM text:
+  - `Example Buyer has won: $48.00`
+  - `Variation: #250`
+  - `Payment complete`
+- The inspected payment badge had `data-tid="m4b_tag"`.
+- The extension startup message has been confirmed on the blank offline dashboard.
+
+Generated CSS class names are not treated as stable selectors. The probe begins with the
+observed payment-tag attribute, climbs to the smallest candidate row, and accepts it only
+when the shared parser finds exactly one variation and one sold price.
+
+Only the completed green row has been inspected in enough detail to implement capture.
+The current-auction and yellow-warning DOM structures remain unknown.
+
+## Current capture probe
+
+The extension content script:
+
+1. loads only on the confirmed TikTok dashboard route;
+2. performs an initial scan of rendered payment-tag candidates;
+3. watches text and child-node changes with a debounced `MutationObserver`;
+4. validates candidate rows with the pure shared parser;
+5. logs a normalized event only when variation number, final price, and the exact text
+   `Payment complete` are present;
+6. ignores an identical event already seen during the current page load; and
+7. warns instead of replacing the first price if the same variation later appears with
+   a different completed price.
+
+It does not modify the TikTok page, click TikTok controls, decrement inventory, persist
+sales, connect to the reconciliation engine, or contact Google Sheets.
+
+## Load the probe in Chrome
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose this repository's `extension` directory.
+5. Open the TikTok LIVE dashboard.
+6. Refresh the dashboard if it was already open.
+7. Open DevTools → **Console** and look for:
+
+   ```text
+   [TikTok Live Tracker] Capture probe active on /streamer/live/event/dashboard.
+   ```
+
+On a blank offline dashboard, the startup message without a completed-sale event is the
+expected result.
+
+After changing extension code, reload the unpacked extension and refresh the dashboard
+tab. Load and verify the extension before the next live stream; refreshing a historical
+stream after it has ended may replace the old dashboard contents with a blank page.
+
+## Run the offline tests
+
+Run every project test from the repository root:
+
+```powershell
+npm.cmd test
+```
+
+Run one area by itself:
+
+```powershell
+node --test .\tests\sale-parser.test.cjs
+node --test .\tests\reconciliation.test.cjs
+```
+
+These tests use fixtures and sample inventory. They do not require TikTok, Google Sheets,
+or a live stream.
+
+## Optional offline capture simulation
+
+The blank dashboard cannot produce a real completed row, but a temporary local DOM row
+can verify that the observer and parser work together.
+
+In the dashboard's DevTools Console, run:
+
+```js
+const testRow = document.createElement("div");
+testRow.id = "tlt-offline-test-row";
+testRow.innerHTML = `
+  <p>Test Buyer has won: $48.00</p>
+  <span>Variation: #999999</span>
+  <span data-tid="m4b_tag">
+    <span>Payment complete</span>
+  </span>
+`;
+document.body.append(testRow);
+```
+
+Chrome may block pasted Console code as a self-XSS precaution. If prompted, read the
+warning and manually type `allow pasting` only when you understand and trust the code.
+
+Expected tracker output:
+
+```text
+[TikTok Live Tracker] Completed sale detected
+```
+
+The logged object should contain:
+
+```text
+variationNumber: 999999
+soldPriceCents: 4800
+paymentStatus: "payment_complete"
+```
+
+Remove the temporary row afterward:
+
+```js
+document.getElementById("tlt-offline-test-row")?.remove();
+```
+
+This changes only the local rendered page and disappears on refresh. It does not send a
+request to TikTok. Because capture deduplication lasts for the page load, use a different
+test variation number or refresh before repeating the simulation.
+
+## Console troubleshooting
+
+- TikTok may log its own `404`, `ERR_BLOCKED_BY_CLIENT`, or cross-origin policy errors.
+  The current tracker probe makes no network requests, so those errors are not produced
+  by its capture code.
+- If the tracker startup message is missing, reload the extension and then refresh the
+  dashboard.
+- TikTok may navigate between views as a single-page application (SPA), meaning the URL
+  changes without a full page reload. A static content script may not be injected after
+  that type of navigation; refresh the dashboard route during development.
+
+## Live-stream validation checklist
+
+The next real stream must verify:
+
+- the DOM structure and stable selector for the current variation while bidding;
+- the exact text and structure of the yellow payment-warning state;
+- whether yellow-to-green produces observable text or child-node mutations;
+- a narrower, stable Sold items container for observation;
+- whether rows are virtualized, replaced, or placed in an iframe/shadow root;
+- a reliable TikTok stream/session identifier;
+- behavior across SPA navigation, dashboard refresh, and a second stream;
+- whether auctions with no bids appear in a trackable location; and
+- whether every completed row remains recoverable for an end-of-stream pass.
+
+## Current limitations
+
+- Parsing currently assumes English dashboard text and US-dollar formatting.
+- The capture event contains variation, price in cents, payment status, source, page, and
+  observation time; it intentionally omits buyer information.
+- The probe does not emit a stream ID.
+- Deduplication is in memory and uses variation number only, so it resets on refresh and
+  is not safe across multiple streams by itself.
+- The page-wide observer and payment-tag candidate selector are provisional until the
+  live checklist is complete.

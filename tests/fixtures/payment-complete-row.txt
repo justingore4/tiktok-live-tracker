@@ -1,0 +1,5 @@
+Example Buyer has won: $48.00
+example_buyer
+(A)ITEM SHOWN ON SCREEN/ALL SALES FINAL/8-5
+Variation: #250
+Payment complete

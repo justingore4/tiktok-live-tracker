@@ -5,7 +5,19 @@
   "description": "Tag live-stream items as they sell and reconcile them against TikTok payment confirmations.",
   "permissions": ["storage"],
   "host_permissions": [],
-  "content_scripts": [],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://shop.tiktok.com/streamer/live/event/dashboard*"
+      ],
+      "js": [
+        "shared/sale-parser.js",
+        "capture/content.js"
+      ],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
   "action": {
     "default_title": "TikTok Live Tracker"
   }
