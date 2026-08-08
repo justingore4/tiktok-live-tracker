@@ -6,8 +6,9 @@ tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early offline prototype. The completed-sale parser, read-only
 > dashboard capture probe, reconciliation engine, and in-memory tagger lifecycle demo
-> are implemented and tested. Captured payment events, persistence, and Google Sheets
-> are not connected yet.
+> are implemented and tested. A versioned browser-storage foundation is also
+> implemented, but the tagger and capture probe are not connected to persistent state
+> yet. Google Sheets is not connected.
 
 ## How it works
 
@@ -56,7 +57,11 @@ the item is auctioned again, the employee maps its new variation number.
   - supports mapping corrections, **Mark unpaid**, and undoing the local unpaid mark;
   - surfaces unmapped sales, conflicting prices, and inventory shortages;
   - keeps auctions distinct by `(streamId, variationNumber)`.
-- Automated parser, reconciliation, and tagger tests using Node's built-in test runner.
+- A versioned persistence adapter that validates and saves detached reconciliation
+  snapshots, reports typed storage/corruption/version errors, and never silently
+  replaces corrupt or future-version data.
+- Automated parser, reconciliation, persistence, and tagger tests using Node's built-in
+  test runner.
 
 ### Not implemented yet
 
@@ -64,7 +69,8 @@ the item is auctioned again, the employee maps its new variation number.
 - A multi-variation employee queue instead of the fixed demo variation.
 - Automatic detection of the current variation while bidding.
 - Detection of TikTok's yellow payment-warning state.
-- Persistent browser storage or recovery after a refresh/crash.
+- Service-worker ownership of persistent state and tagger recovery after a refresh or
+  crash.
 - Google Sheets inventory import and results export.
 - A connection between the capture probe and reconciliation engine.
 - End-of-stream analytics and live-stream validation.
@@ -75,7 +81,10 @@ the item is auctioned again, the employee maps its new variation number.
    1. **Completed:** interface foundation;
    2. **Completed:** item-mapping workflow;
    3. **Completed:** payment lifecycle controls and testing.
-2. Persist canonical stream state in browser storage.
+2. Persist canonical stream state in browser storage in three focused stages:
+   1. **Completed:** versioned storage envelope, strict hydration, and adapter tests;
+   2. coordinate serialized state updates through the extension service worker;
+   3. connect the tagger to saved state and verify refresh/restart recovery.
 3. Harden and live-validate capture scheduling, stream identity, and dashboard selectors.
 4. Connect captured TikTok events to the reconciliation engine and tagger.
 5. Create the Google Sheet template and choose the authentication approach.
@@ -90,11 +99,12 @@ the item is auctioned again, the employee maps its new variation number.
 | `extension/capture/` | Read-only TikTok dashboard observation | Probe implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
+| `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Foundation implemented; runtime wiring pending |
 | `extension/tagger/` | Employee queue and inventory picker | In-memory lifecycle demo implemented |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
 | `config/` | Backend-only credential placeholders, if a backend is selected | Not in use |
 | `docs/` | Architecture and capture-development notes | In progress |
-| `tests/` | Offline parser, reconciliation, and tagger tests | Implemented |
+| `tests/` | Offline parser, reconciliation, persistence, and tagger tests | Implemented |
 
 The first version is intended to remain browser-only if secure Google OAuth is
 sufficient. The optional backend is reserved for needs such as server-managed
@@ -151,8 +161,8 @@ On a blank offline dashboard, the startup message is the expected result. See
 [Capture development notes](docs/capture-development.md) for an optional simulated-sale
 test and the remaining live-stream checks.
 
-Closing or reloading the side panel resets all demo mappings and results because browser
-storage is not implemented yet.
+Closing or reloading the side panel still resets all demo mappings and results. The
+storage foundation is not connected to the tagger until the next persistence stages.
 
 **Undo simulated payment** only restores the private, in-memory offline demo. **Undo
 unpaid** only removes the employee's local unpaid mark. Neither control acts on TikTok or

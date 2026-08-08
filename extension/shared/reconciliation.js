@@ -63,6 +63,394 @@
       return requireSafeInteger(value, "variationNumber", 1);
     }
 
+    function isPlainRecord(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+      }
+
+      const prototype = Object.getPrototypeOf(value);
+
+      return prototype === Object.prototype || prototype === null;
+    }
+
+    function failInvalidState(message) {
+      fail("INVALID_STATE", `Persisted reconciliation state is invalid: ${message}`);
+    }
+
+    function requirePersistedRecord(value, path, expectedKeys) {
+      if (!isPlainRecord(value)) {
+        failInvalidState(`${path} must be an object.`);
+      }
+
+      const actualKeys = Object.keys(value).sort();
+      const sortedExpectedKeys = [...expectedKeys].sort();
+
+      if (
+        actualKeys.length !== sortedExpectedKeys.length ||
+        actualKeys.some((key, index) => key !== sortedExpectedKeys[index])
+      ) {
+        failInvalidState(
+          `${path} must contain exactly: ${sortedExpectedKeys.join(", ")}.`,
+        );
+      }
+
+      return value;
+    }
+
+    function requirePersistedString(value, path, allowEmpty = false) {
+      if (
+        typeof value !== "string" ||
+        value !== value.trim() ||
+        (!allowEmpty && value === "")
+      ) {
+        failInvalidState(
+          `${path} must be ${allowEmpty ? "a trimmed string" : "a non-empty trimmed string"}.`,
+        );
+      }
+
+      return value;
+    }
+
+    function requirePersistedInteger(value, path, minimum) {
+      if (!Number.isSafeInteger(value) || value < minimum) {
+        failInvalidState(
+          `${path} must be a safe integer greater than or equal to ${minimum}.`,
+        );
+      }
+
+      return value;
+    }
+
+    function hydratePersistedConflict(conflict, path, auction) {
+      if (!isPlainRecord(conflict)) {
+        failInvalidState(`${path} must be an object.`);
+      }
+
+      if (conflict.code === "conflicting_sold_price") {
+        requirePersistedRecord(conflict, path, [
+          "code",
+          "observedSoldPriceCents",
+          "retainedSoldPriceCents",
+        ]);
+        const retainedSoldPriceCents = requirePersistedInteger(
+          conflict.retainedSoldPriceCents,
+          `${path}.retainedSoldPriceCents`,
+          1,
+        );
+        const observedSoldPriceCents = requirePersistedInteger(
+          conflict.observedSoldPriceCents,
+          `${path}.observedSoldPriceCents`,
+          1,
+        );
+
+        if (
+          auction.paymentStatus !== "payment_complete" ||
+          retainedSoldPriceCents !== auction.soldPriceCents ||
+          observedSoldPriceCents === retainedSoldPriceCents
+        ) {
+          failInvalidState(`${path} does not match its completed payment.`);
+        }
+
+        return {
+          code: "conflicting_sold_price",
+          retainedSoldPriceCents,
+          observedSoldPriceCents,
+        };
+      }
+
+      if (conflict.code === "payment_completed_after_marked_unpaid") {
+        requirePersistedRecord(conflict, path, ["code"]);
+
+        if (
+          auction.paymentStatus !== "payment_complete" ||
+          auction.sku === null
+        ) {
+          failInvalidState(`${path} does not match its completed payment.`);
+        }
+
+        return { code: "payment_completed_after_marked_unpaid" };
+      }
+
+      failInvalidState(`${path}.code is not supported.`);
+    }
+
+    function hydratePersistedAuction(
+      auction,
+      path,
+      parentStreamId,
+      inventoryBySku,
+    ) {
+      requirePersistedRecord(auction, path, [
+        "committedUnitCostCents",
+        "conflicts",
+        "mappingStatus",
+        "paymentStatus",
+        "sku",
+        "soldPriceCents",
+        "streamId",
+        "variationNumber",
+      ]);
+      const streamId = requirePersistedString(
+        auction.streamId,
+        `${path}.streamId`,
+      );
+      const variationNumber = requirePersistedInteger(
+        auction.variationNumber,
+        `${path}.variationNumber`,
+        1,
+      );
+
+      if (streamId !== parentStreamId) {
+        failInvalidState(`${path}.streamId must match its parent stream.`);
+      }
+
+      const sku = auction.sku === null
+        ? null
+        : requirePersistedString(auction.sku, `${path}.sku`);
+
+      if (sku !== null && !inventoryBySku.has(sku)) {
+        failInvalidState(`${path}.sku does not exist in inventory.`);
+      }
+
+      if (![
+        "mapped",
+        "marked_unpaid",
+        "unmapped",
+      ].includes(auction.mappingStatus)) {
+        failInvalidState(`${path}.mappingStatus is not supported.`);
+      }
+
+      if (![
+        "payment_complete",
+        "unknown",
+      ].includes(auction.paymentStatus)) {
+        failInvalidState(`${path}.paymentStatus is not supported.`);
+      }
+
+      if (
+        (sku === null && auction.mappingStatus !== "unmapped") ||
+        (sku !== null && auction.mappingStatus === "unmapped")
+      ) {
+        failInvalidState(`${path} has inconsistent SKU and mapping state.`);
+      }
+
+      let soldPriceCents = null;
+      let committedUnitCostCents = null;
+
+      if (auction.paymentStatus === "unknown") {
+        if (
+          auction.soldPriceCents !== null ||
+          auction.committedUnitCostCents !== null
+        ) {
+          failInvalidState(`${path} has money without a completed payment.`);
+        }
+      } else {
+        soldPriceCents = requirePersistedInteger(
+          auction.soldPriceCents,
+          `${path}.soldPriceCents`,
+          1,
+        );
+
+        if (sku === null) {
+          if (auction.committedUnitCostCents !== null) {
+            failInvalidState(
+              `${path}.committedUnitCostCents must be null while unmapped.`,
+            );
+          }
+        } else {
+          committedUnitCostCents = requirePersistedInteger(
+            auction.committedUnitCostCents,
+            `${path}.committedUnitCostCents`,
+            0,
+          );
+
+          if (
+            committedUnitCostCents !== inventoryBySku.get(sku).unitCostCents
+          ) {
+            failInvalidState(
+              `${path}.committedUnitCostCents must match inventory cost.`,
+            );
+          }
+        }
+      }
+
+      if (!Array.isArray(auction.conflicts)) {
+        failInvalidState(`${path}.conflicts must be an array.`);
+      }
+
+      const conflictKeys = new Set();
+      const hydratedAuction = {
+        streamId,
+        variationNumber,
+        sku,
+        mappingStatus: auction.mappingStatus,
+        paymentStatus: auction.paymentStatus,
+        soldPriceCents,
+        committedUnitCostCents,
+        conflicts: [],
+      };
+
+      hydratedAuction.conflicts = auction.conflicts.map((conflict, index) => {
+        const hydratedConflict = hydratePersistedConflict(
+          conflict,
+          `${path}.conflicts[${index}]`,
+          hydratedAuction,
+        );
+        const conflictKey = `${hydratedConflict.code}:${hydratedConflict.observedSoldPriceCents ?? ""}`;
+
+        if (conflictKeys.has(conflictKey)) {
+          failInvalidState(`${path}.conflicts contains a duplicate conflict.`);
+        }
+
+        conflictKeys.add(conflictKey);
+        return hydratedConflict;
+      });
+
+      if (
+        auction.paymentStatus === "unknown" &&
+        hydratedAuction.conflicts.length > 0
+      ) {
+        failInvalidState(`${path} has conflicts without a completed payment.`);
+      }
+
+      if (
+        auction.mappingStatus === "marked_unpaid" &&
+        auction.paymentStatus === "payment_complete" &&
+        !hydratedAuction.conflicts.some(
+          (conflict) =>
+            conflict.code === "payment_completed_after_marked_unpaid",
+        )
+      ) {
+        failInvalidState(
+          `${path} is missing its payment-after-unpaid conflict.`,
+        );
+      }
+
+      return hydratedAuction;
+    }
+
+    function hydrateReconciliationState(candidate) {
+      try {
+        requirePersistedRecord(candidate, "state", [
+          "inventory",
+          "streams",
+          "version",
+        ]);
+
+        if (!Number.isSafeInteger(candidate.version)) {
+          failInvalidState("state.version must be a safe integer.");
+        }
+
+        if (candidate.version !== STATE_VERSION) {
+          fail(
+            "UNSUPPORTED_STATE_VERSION",
+            `Reconciliation state version ${candidate.version} is not supported.`,
+          );
+        }
+
+        if (!Array.isArray(candidate.inventory)) {
+          failInvalidState("state.inventory must be an array.");
+        }
+
+        if (!Array.isArray(candidate.streams)) {
+          failInvalidState("state.streams must be an array.");
+        }
+
+        const inventorySkus = new Set();
+        const inventory = candidate.inventory.map((item, index) => {
+          const path = `state.inventory[${index}]`;
+
+          requirePersistedRecord(item, path, [
+            "name",
+            "quantityReceived",
+            "size",
+            "sku",
+            "unitCostCents",
+          ]);
+          const hydratedItem = {
+            sku: requirePersistedString(item.sku, `${path}.sku`),
+            name: requirePersistedString(item.name, `${path}.name`),
+            size: requirePersistedString(item.size, `${path}.size`, true),
+            quantityReceived: requirePersistedInteger(
+              item.quantityReceived,
+              `${path}.quantityReceived`,
+              0,
+            ),
+            unitCostCents: requirePersistedInteger(
+              item.unitCostCents,
+              `${path}.unitCostCents`,
+              0,
+            ),
+          };
+
+          if (inventorySkus.has(hydratedItem.sku)) {
+            failInvalidState(`state.inventory contains duplicate SKU ${hydratedItem.sku}.`);
+          }
+
+          inventorySkus.add(hydratedItem.sku);
+          return hydratedItem;
+        });
+        const inventoryBySku = new Map(
+          inventory.map((item) => [item.sku, item]),
+        );
+        const streamIds = new Set();
+        const streams = candidate.streams.map((stream, streamIndex) => {
+          const path = `state.streams[${streamIndex}]`;
+
+          requirePersistedRecord(stream, path, ["streamId", "variations"]);
+          const streamId = requirePersistedString(
+            stream.streamId,
+            `${path}.streamId`,
+          );
+
+          if (streamIds.has(streamId)) {
+            failInvalidState(`state.streams contains duplicate stream ${streamId}.`);
+          }
+
+          streamIds.add(streamId);
+
+          if (!Array.isArray(stream.variations)) {
+            failInvalidState(`${path}.variations must be an array.`);
+          }
+
+          const variationNumbers = new Set();
+          const variations = stream.variations.map((auction, auctionIndex) => {
+            const hydratedAuction = hydratePersistedAuction(
+              auction,
+              `${path}.variations[${auctionIndex}]`,
+              streamId,
+              inventoryBySku,
+            );
+
+            if (variationNumbers.has(hydratedAuction.variationNumber)) {
+              failInvalidState(
+                `${path}.variations contains duplicate variation ${hydratedAuction.variationNumber}.`,
+              );
+            }
+
+            variationNumbers.add(hydratedAuction.variationNumber);
+            return hydratedAuction;
+          });
+
+          return { streamId, variations };
+        });
+
+        return { version: STATE_VERSION, inventory, streams };
+      } catch (error) {
+        if (
+          error instanceof ReconciliationError &&
+          ["INVALID_STATE", "UNSUPPORTED_STATE_VERSION"].includes(error.code)
+        ) {
+          throw error;
+        }
+
+        throw new ReconciliationError(
+          "INVALID_STATE",
+          `Persisted reconciliation state is invalid: ${error.message}`,
+        );
+      }
+    }
+
     function cloneInventoryItem(item, index) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         fail("INVALID_INVENTORY", `Inventory item ${index + 1} must be an object.`);
@@ -626,6 +1014,7 @@
     return {
       ReconciliationError,
       createReconciliationState,
+      hydrateReconciliationState,
       getInventoryAvailability,
       mapVariation,
       recordPaymentComplete,

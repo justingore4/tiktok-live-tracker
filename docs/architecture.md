@@ -92,7 +92,8 @@ Consequences:
 3. Reprocessing the same completed event must update the same auction record rather
    than count a second sale.
 4. Employee mappings must be saved persistently before refresh/crash recovery can be
-   promised. Persistent storage is not implemented yet.
+   promised. The versioned storage foundation is implemented, but no runtime component
+   owns or restores canonical state yet.
 5. Canonical TikTok payment state is monotonic: `unknown → payment_complete`. There is no
    canonical transition back to unknown or unpaid. A future refund or cancellation must
    be represented as a separate authoritative event.
@@ -118,6 +119,11 @@ rules module. The offline tagger demo uses its mapping, payment-complete, mark-u
 undo-unpaid operations, but payment events from the capture probe are not connected yet.
 Simulated-payment undo is a private tagger-session checkpoint, not a reconciliation-engine
 operation.
+
+The module also exposes a strict hydration boundary for data read from persistence. It
+rebuilds a detached canonical state only after validating versions, inventory, streams,
+auction relationships, money fields, statuses, and conflicts. Invalid persisted data is
+rejected rather than passed into normal engine operations.
 
 Implemented behavior includes:
 
@@ -281,16 +287,36 @@ The production tagger is planned as a queue rather than a blocking modal so an e
 can catch up when multiple variations need attention. The current demo holds one fixed
 variation only.
 
-## 6. Storage and sync — planned
+## 6. Storage and sync — foundation implemented, runtime integration planned
 
 ### Browser storage
 
-The canonical active-stream state will be saved to `chrome.storage.local`. Browser
-extension service workers may be suspended when idle, so authoritative state must not
-exist only in an in-memory service-worker variable.
+`extension/shared/reconciliation-storage.js` implements the first persistence layer. It
+stores one reconciliation snapshot beneath the stable key
+`tiktokLiveTracker.reconciliation` using this versioned envelope:
 
-Persistence must make employee mappings, payment events, corrections, and the outbound
-sync queue recoverable after a page refresh or browser restart.
+```text
+{
+  schemaVersion: 1,
+  reconciliationState: { version, inventory, streams }
+}
+```
+
+The storage-envelope version is separate from the reconciliation-state version so each
+can evolve deliberately. The adapter validates and detaches state before every write,
+hydrates and validates every read, returns `null` only when the key is truly absent, and
+reports malformed, unsupported, or failed reads and writes as typed errors. It never
+silently clears or replaces corrupt or future-version data.
+
+The adapter receives a Promise-based storage area as a dependency. The next stage will
+give the extension service worker ownership of a `chrome.storage.local` adapter and
+serialize state-changing commands. Browser extension service workers may be suspended
+when idle, so authoritative state must not exist only in an in-memory worker variable.
+
+The current storage module is not loaded by the tagger, capture probe, or service worker.
+It therefore creates no visible UI behavior and does not yet provide refresh or restart
+recovery. Runtime coordination, tagger restoration, captured-event persistence, and the
+outbound sync queue belong to later stages.
 
 Offline simulation checkpoints and resets must never overwrite captured or persisted
 canonical state. Production refunds or cancellations require their own authoritative
@@ -383,7 +409,8 @@ Browser support beyond Chrome is a later decision.
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** offline reconciliation engine and automated tests.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
-4. Persistent browser storage and recovery.
+4. **In progress:** versioned browser-storage foundation completed; service-worker
+   coordination and tagger recovery remain.
 5. Capture hardening and live-stream selector/session validation.
 6. Capture-to-engine-to-tagger integration.
 7. Google Sheet template, authentication, import, and export.
