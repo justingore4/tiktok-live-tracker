@@ -179,15 +179,93 @@ button {
   font-weight: 650;
 }
 
-.current-auction h2 {
+.current-auction-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.variation-picker {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.variation-picker h2 {
+  flex: none;
   font-size: clamp(21px, 7vw, 29px);
   font-weight: 660;
   letter-spacing: -0.045em;
 }
 
-.variation-number {
+.variation-select-shell {
+  position: relative;
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+
+.variation-select-shell::after {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--blue-bright);
+  border-bottom: 2px solid var(--blue-bright);
+  content: "";
+  pointer-events: none;
+  transform: translateY(-70%) rotate(45deg);
+}
+
+#variation-selector {
+  width: 100%;
+  min-height: 44px;
+  appearance: none;
+  overflow: hidden;
+  padding: 7px 34px 7px 11px;
+  border: 1px solid rgb(126 190 255 / 42%);
+  border-radius: 10px;
   color: #ffffff;
-  font-weight: 810;
+  background: rgb(4 21 43 / 72%);
+  font: inherit;
+  font-size: clamp(14px, 4vw, 17px);
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#variation-selector:hover {
+  border-color: rgb(126 190 255 / 72%);
+  background: rgb(5 29 58 / 88%);
+}
+
+#variation-selector:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.return-to-current {
+  min-height: 44px;
+  margin-top: 9px;
+  padding: 6px 10px;
+  border: 1px solid rgb(126 190 255 / 40%);
+  border-radius: 9px;
+  color: #d7ecff;
+  background: rgb(4 21 43 / 55%);
+  font-size: 11px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.return-to-current:hover {
+  background: rgb(5 29 58 / 90%);
+}
+
+.return-to-current:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .demo-badge {
@@ -218,27 +296,6 @@ button {
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.02em;
-}
-
-.change-mapping {
-  flex: none;
-  padding: 7px 10px;
-  border: 1px solid rgb(72 165 255 / 38%);
-  border-radius: 9px;
-  color: var(--blue-bright);
-  background: rgb(72 165 255 / 8%);
-  font-size: 11px;
-  font-weight: 720;
-  cursor: pointer;
-}
-
-.change-mapping:hover {
-  background: rgb(72 165 255 / 15%);
-}
-
-.change-mapping:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
 }
 
 .pending-card {
@@ -887,6 +944,34 @@ button {
   display: none !important;
 }
 
+@media (max-width: 420px) {
+  .current-auction {
+    min-height: 104px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    padding: 17px;
+  }
+
+  .current-auction-copy {
+    width: 100%;
+  }
+
+  .demo-badge {
+    align-self: flex-end;
+  }
+
+  .variation-picker {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .variation-select-shell {
+    width: 100%;
+  }
+}
+
 @media (max-width: 360px) {
   .app-shell {
     padding-inline: 13px;
@@ -894,11 +979,6 @@ button {
 
   .prototype-badge {
     display: none;
-  }
-
-  .current-auction {
-    min-height: 104px;
-    padding: 17px;
   }
 
   .section-heading {

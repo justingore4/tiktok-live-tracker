@@ -17,6 +17,7 @@ test("manifest configures the Chrome side-panel resources", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(Number(manifest.minimum_chrome_version) >= 114);
   assert.ok(manifest.permissions.includes("sidePanel"));
+  assert.ok(manifest.permissions.includes("storage"));
   assert.ok(extensionResourceExists(manifest.side_panel.default_path));
   assert.ok(extensionResourceExists(manifest.background.service_worker));
   assert.equal(manifest.action.default_title, "Open TikTok Live Tracker");
@@ -28,8 +29,44 @@ test("service worker opens the side panel from the toolbar action", () => {
     "utf8",
   );
   let requestedBehavior = null;
+  class FakeReconciliationError extends Error {}
+  class FakeStorageError extends Error {}
+  class FakeCoordinatorError extends Error {}
   const sandbox = {
+    importScripts() {},
+    TikTokLiveTrackerReconciliation: {
+      ReconciliationError: FakeReconciliationError,
+    },
+    TikTokLiveTrackerReconciliationStorage: {
+      ReconciliationStorageError: FakeStorageError,
+      createReconciliationStateStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerReconciliationCoordinator: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.reconciliation",
+      MESSAGE_VERSION: 1,
+      COMMAND_TYPES: {
+        RECORD_PAYMENT_COMPLETE: "record_payment_complete",
+      },
+      ReconciliationCoordinatorError: FakeCoordinatorError,
+      createReconciliationCoordinator() {
+        return { dispatch: () => Promise.resolve({}) };
+      },
+    },
     chrome: {
+      storage: {
+        local: {
+          setAccessLevel() {
+            return Promise.resolve();
+          },
+        },
+      },
+      runtime: {
+        id: "extension-id",
+        getURL: (pathName) => `chrome-extension://extension-id/${pathName}`,
+        onMessage: { addListener() {} },
+      },
       sidePanel: {
         setPanelBehavior(behavior) {
           requestedBehavior = behavior;
@@ -79,6 +116,15 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
 
   assert.match(html, /<label[^>]+for="inventory-search"/);
+  assert.match(html, /<label[^>]+for="variation-selector"/);
+  assert.match(
+    html,
+    /id="variation-selector"[^>]+aria-describedby="variation-context"/,
+  );
+  assert.match(
+    html,
+    /id="return-to-current"[^>]+type="button"[^>]+hidden/,
+  );
   assert.match(html, /id="result-count"[^>]+aria-live="polite"/);
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
@@ -105,6 +151,8 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /data-field="gross-profit"/);
   assert.match(html, />Demo data</);
   assert.match(html, /do not act on TikTok/);
+  assert.doesNotMatch(html, /id="change-mapping"/);
+  assert.doesNotMatch(html, />\s*Change item\s*</);
 });
 
 test("tagger UI wires the offline lifecycle and stays outside integration scope", () => {
@@ -120,6 +168,17 @@ test("tagger UI wires the offline lifecycle and stays outside integration scope"
   const mappingSource = `${panelSource}\n${workflowSource}`;
 
   assert.match(panelSource, /button\.disabled = !entry\.selectionAllowed/);
+  assert.match(panelSource, /function renderVariationNavigation\(view\)/);
+  assert.match(
+    panelSource,
+    /variationSelector\.addEventListener\("change",[\s\S]+session\.selectVariation/,
+  );
+  assert.match(
+    panelSource,
+    /returnToCurrentButton\.addEventListener\("click",[\s\S]+session\.selectVariation\(DEMO_CURRENT_VARIATION_NUMBER\)/,
+  );
+  assert.match(panelSource, /view\.selectedVariationNumber/);
+  assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);
   assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
   assert.match(panelSource, /session\.completePayment/);
   assert.match(panelSource, /session\.simulatePaymentBufferExpired/);
@@ -140,8 +199,14 @@ test("tagger UI wires the offline lifecycle and stays outside integration scope"
     /undoSimulatedPaymentButton\.hidden = !canUndoSimulatedPayment/,
   );
   assert.match(panelSource, /const auction = view\.auction/);
+  assert.match(panelSource, /session\.selectSku\(button\.dataset\.sku\)/);
   assert.match(panelSource, /result\.action === "completed_sale_mapped"/);
-  assert.match(panelSource, /unmapped_completed_sale/);
+  assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
+  assert.doesNotMatch(
+    panelSource,
+    /warnings\.some\([\s\S]+unmapped_completed_sale/,
+  );
+  assert.doesNotMatch(panelSource, /changeMappingButton|#change-mapping/);
   assert.match(panelSource, /auctionEyebrow\.textContent/);
   assert.match(panelSource, /stateWarning\.textContent !== warning/);
   assert.doesNotMatch(panelSource, /this pending mapping/);
@@ -164,4 +229,13 @@ test("existing dashboard capture scripts remain configured", () => {
     "capture/content.js",
   ]);
   assert.ok(dashboardScript.js.every(extensionResourceExists));
+
+  const captureSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "content.js"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    captureSource,
+    /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,
+  );
 });

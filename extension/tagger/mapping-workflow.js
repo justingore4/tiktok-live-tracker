@@ -16,6 +16,7 @@
       "createReconciliationState",
       "getAuction",
       "getInventoryAvailability",
+      "hydrateReconciliationState",
       "mapVariation",
       "markUnpaid",
       "recordPaymentComplete",
@@ -107,10 +108,32 @@
 
       const reconciliation = validateReconciliation(options.reconciliation);
       const streamId = requireNonEmptyString(options.streamId, "streamId");
-      const variationNumber = requirePositiveInteger(
+      const currentVariationNumber = requirePositiveInteger(
         options.variationNumber,
         "variationNumber",
       );
+      const configuredVariationNumbers = options.variationNumbers === undefined
+        ? [currentVariationNumber]
+        : options.variationNumbers;
+
+      if (!Array.isArray(configuredVariationNumbers)) {
+        throw new TypeError("variationNumbers must be an array when provided.");
+      }
+
+      const normalizedVariationNumbers = configuredVariationNumbers.map(
+        (value, index) => requirePositiveInteger(
+          value,
+          `variationNumbers[${index}]`,
+        ),
+      );
+
+      if (new Set(normalizedVariationNumbers).size !== normalizedVariationNumbers.length) {
+        throw new TypeError("variationNumbers cannot contain duplicates.");
+      }
+
+      if (!normalizedVariationNumbers.includes(currentVariationNumber)) {
+        throw new TypeError("variationNumbers must include the current variationNumber.");
+      }
       const inventory = options.inventory.map(normalizeDisplayEntry);
       const displaySkus = new Set();
 
@@ -132,6 +155,16 @@
         reconciliation.createReconciliationState(
           inventory.map(toReconciliationInventory),
         );
+      const persistedVariationNumbers = state.streams
+        ?.find((stream) => stream.streamId === streamId)
+        ?.variations.map((auction) => auction.variationNumber) ?? [];
+      const knownVariationNumbers = Object.freeze(
+        [...new Set([
+          ...normalizedVariationNumbers,
+          ...persistedVariationNumbers,
+        ])].sort((left, right) => right - left),
+      );
+      let selectedVariationNumber = currentVariationNumber;
       const initialSummary = reconciliation.calculateSummary(state);
       const canonicalSkus = new Set(
         initialSummary.inventory.map((entry) => entry.sku),
@@ -145,12 +178,24 @@
         }
       });
 
-      let paymentBufferExpired =
-        reconciliation.getAuction(state, { streamId, variationNumber })
-          ?.mappingStatus === "marked_unpaid";
-      let simulatedPaymentCheckpoint = null;
+      const paymentBufferExpiredByEvent = new Map();
+      const simulatedPaymentCheckpoints = new Map();
 
-      function auctionKey(extra = {}) {
+      knownVariationNumbers.forEach((variationNumber) => {
+        const auction = reconciliation.getAuction(state, {
+          streamId,
+          variationNumber,
+        });
+
+        if (auction?.mappingStatus === "marked_unpaid") {
+          paymentBufferExpiredByEvent.set(
+            `${streamId}:${variationNumber}`,
+            true,
+          );
+        }
+      });
+
+      function auctionKey(extra = {}, variationNumber = selectedVariationNumber) {
         return {
           streamId,
           variationNumber,
@@ -158,12 +203,30 @@
         };
       }
 
+      function selectedEventKey() {
+        return `${streamId}:${selectedVariationNumber}`;
+      }
+
+      function isPaymentBufferExpired() {
+        return paymentBufferExpiredByEvent.get(selectedEventKey()) === true;
+      }
+
+      function getSimulatedPaymentCheckpoint() {
+        return simulatedPaymentCheckpoints.get(selectedEventKey()) ?? null;
+      }
+
       function findDisplayEntry(sku) {
         return inventory.find((entry) => entry.sku === sku) ?? null;
       }
 
-      function getAuctionDisplay(summary) {
-        const auction = reconciliation.getAuction(state, auctionKey());
+      function getAuctionDisplay(
+        summary,
+        variationNumber = selectedVariationNumber,
+      ) {
+        const auction = reconciliation.getAuction(
+          state,
+          auctionKey({}, variationNumber),
+        );
 
         if (!auction) {
           return null;
@@ -184,6 +247,23 @@
           inventory: canonicalEntry ? { ...canonicalEntry } : null,
           statusLabel: STATUS_LABELS[auction.status] ?? auction.status,
         };
+      }
+
+      function getVariationOptions(summary) {
+        return knownVariationNumbers.map((variationNumber) => {
+          const auction = getAuctionDisplay(summary, variationNumber);
+
+          return {
+            variationNumber,
+            current: variationNumber === currentVariationNumber,
+            selected: variationNumber === selectedVariationNumber,
+            status: auction?.status ?? "unmapped",
+            statusLabel: auction?.statusLabel ?? STATUS_LABELS.unmapped,
+            item: auction?.item ?? null,
+            style: auction?.style ?? "",
+            size: auction?.size ?? "",
+          };
+        });
       }
 
       function getInventoryEntries(
@@ -230,10 +310,17 @@
         const auction = getAuctionDisplay(summary);
         const isPending = auction?.status === "pending";
         const isMarkedUnpaid = auction?.status === "marked_unpaid";
+        const paymentBufferExpired = isPaymentBufferExpired();
+        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
 
         return {
           streamId,
-          variationNumber,
+          variationNumber: selectedVariationNumber,
+          currentVariationNumber,
+          selectedVariationNumber,
+          isReviewingHistory:
+            selectedVariationNumber !== currentVariationNumber,
+          variations: getVariationOptions(summary),
           auction,
           mapping: auction?.sku ? auction : null,
           inventory: getInventoryEntries(summary),
@@ -261,7 +348,35 @@
       }
 
       function getCurrentMapping() {
+        const summary = reconciliation.calculateSummary(state, { streamId });
+        const auction = getAuctionDisplay(summary, currentVariationNumber);
+
+        return auction?.sku ? auction : null;
+      }
+
+      function getSelectedMapping() {
         return getViewState().mapping;
+      }
+
+      function selectVariation(value) {
+        const variationNumber = Number(value);
+
+        if (
+          !Number.isSafeInteger(variationNumber) ||
+          !knownVariationNumbers.includes(variationNumber)
+        ) {
+          return createRejectedResult(
+            "UNKNOWN_VARIATION",
+            "That variation is not available in this stream history.",
+          );
+        }
+
+        if (variationNumber === selectedVariationNumber) {
+          return createResult(true, "variation_unchanged");
+        }
+
+        selectedVariationNumber = variationNumber;
+        return createResult(true, "variation_selected");
       }
 
       function createResult(ok, action, extra = {}) {
@@ -317,6 +432,8 @@
         }
 
         reconciliation.mapVariation(state, auctionKey({ sku }));
+
+        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
 
         if (simulatedPaymentCheckpoint && !sameSku) {
           reconciliation.mapVariation(
@@ -375,7 +492,7 @@
           previousAuction.status === "pending"
             ? {
                 state: cloneSerializableState(state),
-                paymentBufferExpired,
+                paymentBufferExpired: isPaymentBufferExpired(),
               }
             : null;
 
@@ -385,7 +502,10 @@
         );
 
         if (nextCheckpoint) {
-          simulatedPaymentCheckpoint = nextCheckpoint;
+          simulatedPaymentCheckpoints.set(
+            selectedEventKey(),
+            nextCheckpoint,
+          );
         }
 
         let action = "payment_completed";
@@ -401,6 +521,7 @@
 
       function undoSimulatedPayment() {
         const auction = reconciliation.getAuction(state, auctionKey());
+        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
 
         if (
           !offlineSimulationEnabled ||
@@ -413,10 +534,46 @@
           );
         }
 
-        state = cloneSerializableState(simulatedPaymentCheckpoint.state);
-        paymentBufferExpired =
-          simulatedPaymentCheckpoint.paymentBufferExpired;
-        simulatedPaymentCheckpoint = null;
+        const nextState = cloneSerializableState(state);
+        const checkpointStream = simulatedPaymentCheckpoint.state.streams.find(
+          (stream) => stream.streamId === streamId,
+        );
+        const checkpointAuction = checkpointStream?.variations.find(
+          (candidate) =>
+            candidate.variationNumber === selectedVariationNumber,
+        );
+        const nextStream = nextState.streams.find(
+          (stream) => stream.streamId === streamId,
+        );
+
+        if (!checkpointAuction || !nextStream) {
+          return createRejectedResult(
+            "SIMULATED_PAYMENT_CHECKPOINT_INVALID",
+            "The offline payment checkpoint could not be restored.",
+          );
+        }
+
+        const nextAuctionIndex = nextStream.variations.findIndex(
+          (candidate) =>
+            candidate.variationNumber === selectedVariationNumber,
+        );
+
+        if (nextAuctionIndex < 0) {
+          return createRejectedResult(
+            "SIMULATED_PAYMENT_CHECKPOINT_INVALID",
+            "The offline payment checkpoint could not be restored.",
+          );
+        }
+
+        nextStream.variations[nextAuctionIndex] = cloneSerializableState(
+          checkpointAuction,
+        );
+        state = reconciliation.hydrateReconciliationState(nextState);
+        paymentBufferExpiredByEvent.set(
+          selectedEventKey(),
+          simulatedPaymentCheckpoint.paymentBufferExpired,
+        );
+        simulatedPaymentCheckpoints.delete(selectedEventKey());
 
         return createResult(true, "simulated_payment_undone");
       }
@@ -438,11 +595,11 @@
           );
         }
 
-        if (paymentBufferExpired) {
+        if (isPaymentBufferExpired()) {
           return createResult(true, "payment_buffer_unchanged");
         }
 
-        paymentBufferExpired = true;
+        paymentBufferExpiredByEvent.set(selectedEventKey(), true);
         return createResult(true, "payment_buffer_expired");
       }
 
@@ -467,7 +624,7 @@
           return createResult(true, "unpaid_unchanged");
         }
 
-        if (!paymentBufferExpired) {
+        if (!isPaymentBufferExpired()) {
           return createRejectedResult(
             "PAYMENT_BUFFER_ACTIVE",
             "Wait until TikTok's payment buffer expires before marking unpaid.",
@@ -506,14 +663,18 @@
 
       return Object.freeze({
         streamId,
-        variationNumber,
+        variationNumber: currentVariationNumber,
+        currentVariationNumber,
         completePayment,
         getCurrentMapping,
         getInventoryEntries,
+        getSelectedMapping,
         getStateSnapshot,
         getViewState,
+        getVariationOptions: () => getViewState().variations,
         markUnpaid: markCurrentUnpaid,
         selectSku,
+        selectVariation,
         simulatePaymentBufferExpired,
         undoSimulatedPayment,
         undoMarkUnpaid: undoCurrentUnpaid,

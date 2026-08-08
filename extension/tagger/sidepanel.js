@@ -2,11 +2,38 @@
   "use strict";
 
   const DEMO_STREAM_ID = "demo-stream";
-  const DEMO_VARIATION_NUMBER = 203;
+  const DEMO_CURRENT_VARIATION_NUMBER = 203;
+  const DEFAULT_DEMO_SOLD_PRICE = "48.00";
+  const DEMO_VARIATION_SEEDS = Object.freeze([
+    Object.freeze({
+      variationNumber: 202,
+      sku: "STUSSY-TEE-BLACK-M",
+      status: "committed",
+      soldPriceCents: 2000,
+    }),
+    Object.freeze({
+      variationNumber: 201,
+      sku: "NIKE-HOODIE-GREY-XL",
+      status: "pending",
+    }),
+    Object.freeze({
+      variationNumber: 200,
+      sku: "CARHARTT-JACKET-BROWN-M",
+      status: "marked_unpaid",
+    }),
+  ]);
+  const DEMO_VARIATION_NUMBERS = Object.freeze([
+    DEMO_CURRENT_VARIATION_NUMBER,
+    ...DEMO_VARIATION_SEEDS.map((seed) => seed.variationNumber),
+  ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
+  const variationContext = document.querySelector("#variation-context");
+  const variationSelector = document.querySelector("#variation-selector");
+  const returnToCurrentButton = document.querySelector("#return-to-current");
+  const inventoryTitle = document.querySelector("#inventory-title");
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
@@ -22,7 +49,6 @@
   const auctionEyebrow = document.querySelector("#auction-eyebrow");
   const auctionStatus = document.querySelector("#auction-status");
   const mappingStatus = document.querySelector('[data-field="mapping-status"]');
-  const changeMappingButton = document.querySelector("#change-mapping");
   const saleResults = document.querySelector("#sale-results");
   const soldPriceResult = document.querySelector('[data-field="sold-price"]');
   const unitCostResult = document.querySelector('[data-field="unit-cost"]');
@@ -62,15 +88,62 @@
     inventory: viewModel.MOCK_INVENTORY,
     reconciliation,
     streamId: DEMO_STREAM_ID,
-    variationNumber: DEMO_VARIATION_NUMBER,
+    variationNumber: DEMO_CURRENT_VARIATION_NUMBER,
+    variationNumbers: DEMO_VARIATION_NUMBERS,
     offlineSimulation: true,
   });
+
+  function requireDemoSeedResult(result, action) {
+    if (!result.ok) {
+      throw new Error(`Could not ${action}: ${result.message}`);
+    }
+
+    return result;
+  }
+
+  function seedDemoVariationHistory() {
+    DEMO_VARIATION_SEEDS.forEach((seed) => {
+      requireDemoSeedResult(
+        session.selectVariation(seed.variationNumber),
+        `select demo variation ${seed.variationNumber}`,
+      );
+      requireDemoSeedResult(
+        session.selectSku(seed.sku),
+        `map demo variation ${seed.variationNumber}`,
+      );
+
+      if (seed.status === "committed") {
+        requireDemoSeedResult(
+          session.completePayment(seed.soldPriceCents),
+          `complete demo variation ${seed.variationNumber}`,
+        );
+      } else if (seed.status === "marked_unpaid") {
+        requireDemoSeedResult(
+          session.simulatePaymentBufferExpired(),
+          `expire demo variation ${seed.variationNumber}`,
+        );
+        requireDemoSeedResult(
+          session.markUnpaid(),
+          `mark demo variation ${seed.variationNumber} unpaid`,
+        );
+      }
+    });
+
+    requireDemoSeedResult(
+      session.selectVariation(DEMO_CURRENT_VARIATION_NUMBER),
+      "return to the current demo variation",
+    );
+  }
+
+  seedDemoVariationHistory();
 
   function formatItemName(entry) {
     return entry.style ? `${entry.item} - ${entry.style}` : entry.item;
   }
 
-  function createInventoryCard(entry, auction) {
+  function createInventoryCard(entry, view) {
+    const auction = view.auction;
+    const variationNumber = view.variationNumber;
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const button = wrapper.querySelector(".inventory-card");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
@@ -87,22 +160,24 @@
     if (selected) {
       button.setAttribute(
         "aria-label",
-        `Variation ${DEMO_VARIATION_NUMBER} is mapped to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `Variation ${variationNumber} is mapped to ${itemName}, size ${entry.size}, ${stock.label}.`,
       );
     } else if (button.disabled) {
+      const action = auction?.sku ? "correct" : "map";
+
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stock.label}. Cannot map variation ${DEMO_VARIATION_NUMBER}.`,
+        `${itemName}, size ${entry.size}, ${stock.label}. Cannot ${action} variation ${variationNumber}.`,
       );
-    } else if (entry.selectionReason === "correction_allowed") {
+    } else if (auction?.sku) {
       button.setAttribute(
         "aria-label",
-        `Correct variation ${DEMO_VARIATION_NUMBER} to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `Correct variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stock.label}.`,
       );
     } else {
       button.setAttribute(
         "aria-label",
-        `Map variation ${DEMO_VARIATION_NUMBER} to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `Map variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stock.label}.`,
       );
     }
 
@@ -143,6 +218,40 @@
     }
   }
 
+  function formatVariationOption(option) {
+    const context = option.current ? "On screen now" : "Previous";
+    const item = option.item
+      ? `${formatItemName(option)}, size ${option.size}`
+      : "No item selected";
+
+    return `#${option.variationNumber} - ${context} - ${option.statusLabel} - ${item}`;
+  }
+
+  function renderVariationNavigation(view) {
+    const fragment = document.createDocumentFragment();
+
+    view.variations.forEach((variation) => {
+      const option = document.createElement("option");
+
+      option.value = String(variation.variationNumber);
+      option.textContent = formatVariationOption(variation);
+      option.selected = variation.selected;
+      fragment.append(option);
+    });
+
+    variationSelector.replaceChildren(fragment);
+    variationSelector.value = String(view.selectedVariationNumber);
+    variationContext.textContent = view.isReviewingHistory
+      ? "Reviewing previous variation"
+      : "On screen now";
+    returnToCurrentButton.hidden = !view.isReviewingHistory;
+    returnToCurrentButton.textContent =
+      `Return to on-screen variation #${view.currentVariationNumber}`;
+    inventoryTitle.textContent = view.isReviewingHistory
+      ? `Review or correct variation #${view.selectedVariationNumber}`
+      : `Find the item for variation #${view.currentVariationNumber}`;
+  }
+
   function renderInventory(view, focusSku = null) {
     const query = searchInput.value;
     const normalizedQuery = viewModel.normalizeSearchText(query);
@@ -153,7 +262,7 @@
     const fragment = document.createDocumentFragment();
 
     filteredInventory.forEach((entry) => {
-      fragment.append(createInventoryCard(entry, view.auction));
+      fragment.append(createInventoryCard(entry, view));
     });
 
     inventoryGrid.replaceChildren(fragment);
@@ -187,11 +296,7 @@
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
     }
 
-    if (
-      view.warnings.some(
-        (warning) => warning.code === "unmapped_completed_sale",
-      )
-    ) {
+    if (view.auction?.status === "unmapped_completed") {
       return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
@@ -311,9 +416,6 @@
     mappedItem.textContent = auction.sku
       ? `${formatItemName(auction)}, size ${auction.size}`
       : "Select the matching inventory entry below.";
-    changeMappingButton.textContent = auction.sku
-      ? "Change item"
-      : "Choose item";
     auctionEyebrow.textContent =
       {
         committed: "Sale result",
@@ -334,6 +436,7 @@
   function renderAll(options = {}) {
     const view = session.getViewState();
 
+    renderVariationNavigation(view);
     renderAuction(view);
     renderInventory(view, options.focusSku ?? null);
 
@@ -379,6 +482,56 @@
       mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} mapped to ${itemDescription}. Waiting for payment.`;
     }
   }
+
+  function describeSelectedVariation(view) {
+    const selected = view.variations.find((variation) => variation.selected);
+
+    if (!selected) {
+      return `Variation ${view.selectedVariationNumber}`;
+    }
+
+    const item = selected.item
+      ? `, ${formatItemName(selected)}, size ${selected.size}`
+      : ", no item selected";
+
+    return `Variation ${selected.variationNumber}, ${selected.statusLabel}${item}`;
+  }
+
+  variationSelector.addEventListener("change", () => {
+    const result = session.selectVariation(Number(variationSelector.value));
+
+    if (!result.ok) {
+      renderAll();
+      mappingAnnouncement.textContent = result.message;
+      return;
+    }
+
+    clearPriceError();
+    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
+    searchInput.value = "";
+    const view = renderAll();
+    mappingAnnouncement.textContent = view.isReviewingHistory
+      ? `Reviewing previous ${describeSelectedVariation(view)}. Select an inventory card to tag or correct this variation.`
+      : `Returned to on-screen ${describeSelectedVariation(view)}.`;
+  });
+
+  returnToCurrentButton.addEventListener("click", () => {
+    const result = session.selectVariation(DEMO_CURRENT_VARIATION_NUMBER);
+
+    if (!result.ok) {
+      mappingAnnouncement.textContent = result.message;
+      return;
+    }
+
+    clearPriceError();
+    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
+    searchInput.value = "";
+    const view = renderAll();
+
+    variationSelector.focus();
+    mappingAnnouncement.textContent =
+      `Returned to on-screen ${describeSelectedVariation(view)}.`;
+  });
 
   inventoryGrid.addEventListener("click", (event) => {
     const button = event.target.closest?.("button[data-sku]");
@@ -433,7 +586,7 @@
     }
 
     renderAll({ focusControl: "mark_unpaid" });
-    mappingAnnouncement.textContent = `Payment buffer expired for variation ${DEMO_VARIATION_NUMBER} in this demo.`;
+    mappingAnnouncement.textContent = `Payment buffer expired for variation ${result.view.variationNumber} in this demo.`;
   });
 
   markUnpaidButton.addEventListener("click", () => {
@@ -445,7 +598,7 @@
     }
 
     renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = `Variation ${DEMO_VARIATION_NUMBER} marked unpaid. Remaining inventory and profit stay unchanged; its reservation is released.`;
+    mappingAnnouncement.textContent = `Variation ${result.view.variationNumber} marked unpaid. Remaining inventory and profit stay unchanged; its reservation is released.`;
   });
 
   undoUnpaidButton.addEventListener("click", () => {
@@ -457,7 +610,7 @@
     }
 
     renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = `Unpaid mark removed from variation ${DEMO_VARIATION_NUMBER}. Waiting for payment.`;
+    mappingAnnouncement.textContent = `Unpaid mark removed from variation ${result.view.variationNumber}. Waiting for payment.`;
   });
 
   undoSimulatedPaymentButton.addEventListener("click", () => {
@@ -471,7 +624,7 @@
     clearPriceError();
     searchInput.value = "";
     renderAll({ focusSku: result.mapping.sku });
-    mappingAnnouncement.textContent = `Simulated payment undone for variation ${DEMO_VARIATION_NUMBER}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`;
+    mappingAnnouncement.textContent = `Simulated payment undone for variation ${result.view.variationNumber}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`;
   });
 
   searchInput.addEventListener("input", () => renderAll());
@@ -487,13 +640,6 @@
     searchInput.value = "";
     searchInput.focus();
     renderAll();
-  });
-
-  changeMappingButton.addEventListener("click", () => {
-    searchInput.value = "";
-    renderAll();
-    searchInput.focus();
-    mappingAnnouncement.textContent = `Choose a different inventory entry for variation ${DEMO_VARIATION_NUMBER}.`;
   });
 
   soldPriceInput.addEventListener("input", clearPriceError);

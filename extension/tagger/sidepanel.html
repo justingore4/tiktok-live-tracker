@@ -19,11 +19,25 @@
       </header>
 
       <section class="current-auction" aria-labelledby="current-auction-title">
-        <div>
-          <p class="current-auction-label">On screen now</p>
-          <h2 id="current-auction-title">
-            Variation <span class="variation-number">#203</span>
-          </h2>
+        <div class="current-auction-copy">
+          <p id="variation-context" class="current-auction-label">
+            On screen now
+          </p>
+          <div class="variation-picker">
+            <h2 id="current-auction-title">Variation</h2>
+            <span class="variation-select-shell">
+              <label class="visually-hidden" for="variation-selector">
+                Choose a current or previous variation to review
+              </label>
+              <select
+                id="variation-selector"
+                aria-describedby="variation-context"
+              ></select>
+            </span>
+          </div>
+          <button id="return-to-current" class="return-to-current" type="button" hidden>
+            Return to on-screen variation #203
+          </button>
         </div>
         <span class="demo-badge">Demo data</span>
       </section>
@@ -41,9 +55,6 @@
               Variation <span data-field="mapped-variation">#203</span>
             </h2>
           </div>
-          <button id="change-mapping" class="change-mapping" type="button">
-            Change item
-          </button>
         </div>
         <div class="pending-card">
           <p id="mapped-item" class="mapped-item"></p>
