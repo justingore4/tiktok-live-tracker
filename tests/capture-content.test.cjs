@@ -5,6 +5,12 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const parser = require("../extension/shared/sale-parser.js");
+const candidateLocator = require(
+  "../extension/capture/sale-candidate-locator.js",
+);
+const captureEventRegistry = require(
+  "../extension/capture/capture-event-registry.js",
+);
 const contentSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "capture", "content.js"),
   "utf8",
@@ -13,23 +19,141 @@ const contentSource = fs.readFileSync(
 const DASHBOARD_ORIGIN = "https://shop.tiktok.com";
 const DASHBOARD_PATH = "/streamer/live/event/dashboard";
 
+class FakeText {
+  constructor(value) {
+    this.nodeType = 3;
+    this.value = value;
+    this.parentElement = null;
+    this.parentNode = null;
+  }
+
+  get textContent() {
+    return this.value;
+  }
+
+  set textContent(value) {
+    this.value = value;
+  }
+}
+
+class FakeElement {
+  constructor({ dataTid = null, name = "element", ownText = "" } = {}) {
+    this.nodeType = 1;
+    this.dataTid = dataTid;
+    this.name = name;
+    this.ownText = ownText;
+    this.children = [];
+    this.parentElement = null;
+    this.parentNode = null;
+    this.onQuery = null;
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => {
+      if (node.parentNode?.children) {
+        node.parentNode.children = node.parentNode.children.filter(
+          (child) => child !== node,
+        );
+      }
+
+      node.parentElement = this;
+      node.parentNode = this;
+      this.children.push(node);
+    });
+
+    return this;
+  }
+
+  matches(selector) {
+    assert.equal(selector, candidateLocator.PAYMENT_TAG_SELECTOR);
+    return this.dataTid === "m4b_tag";
+  }
+
+  querySelectorAll(selector) {
+    assert.equal(selector, candidateLocator.PAYMENT_TAG_SELECTOR);
+    this.onQuery?.(selector);
+    const matches = [];
+
+    function visit(node) {
+      if (!(node instanceof FakeElement)) {
+        return;
+      }
+
+      if (node.matches(selector)) {
+        matches.push(node);
+      }
+
+      node.children.forEach(visit);
+    }
+
+    this.children.forEach(visit);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  contains(candidate) {
+    let node = candidate;
+    const visited = new Set();
+
+    while (node) {
+      if (node === this) {
+        return true;
+      }
+
+      if (visited.has(node)) {
+        return false;
+      }
+
+      visited.add(node);
+      node = node.parentNode;
+    }
+
+    return false;
+  }
+
+  get textContent() {
+    return `${this.ownText}${this.children
+      .map((child) => child.textContent)
+      .join("")}`;
+  }
+}
+
 function createBody(name = "body") {
-  return { name };
+  return new FakeElement({ name });
 }
 
 function createSaleRow(text) {
-  const row = {
-    innerText: text,
-    textContent: text,
-    parentElement: null,
-  };
-  const statusTag = {
-    innerText: "Payment status",
-    textContent: "Payment status",
-    parentElement: row,
-  };
+  const paymentComplete = /\bPayment\s+complete\b/i.test(text);
+  const status = paymentComplete ? "Payment complete" : "Awaiting payment";
+  const summaryValue = text
+    .replace(/\bPayment\s+complete\b/gi, "")
+    .replace(/\bAwaiting\s+payment\b/gi, "")
+    .trim();
+  const row = new FakeElement({ name: "sale-row" });
+  const summary = new FakeElement({ name: "sale-summary" });
+  const summaryText = new FakeText(`${summaryValue} `);
+  const statusTag = new FakeElement({
+    dataTid: "m4b_tag",
+    name: "payment-tag",
+  });
+  const statusText = new FakeText(status);
 
-  return { row, statusTag };
+  summary.append(summaryText);
+  statusTag.append(statusText);
+  row.append(summary, statusTag);
+
+  return { row, statusTag, statusText, summary, summaryText };
+}
+
+function setSaleSummary(sale, text) {
+  sale.summaryText.textContent = `${text.trim()} `;
+}
+
+function setPaymentText(sale, text) {
+  sale.statusText.textContent = text;
 }
 
 function createEventTarget(calls, prefix) {
@@ -72,6 +196,8 @@ function createHarness({
   origin = DASHBOARD_ORIGIN,
   pathname = DASHBOARD_PATH,
   body = createBody(),
+  locatorAvailable = true,
+  registryAvailable = true,
   schedulerAvailable = true,
   rows = [],
   scanOnRequest = false,
@@ -96,7 +222,8 @@ function createHarness({
   const documentEvents = createEventTarget(calls, "document");
   let currentBody = body;
   let currentRows = rows;
-  let queryCount = 0;
+  let bodyQueryCount = 0;
+  let documentQueryCount = 0;
   let nextIntervalId = 1;
   let nextTimeoutId = 1000;
   let schedulerCreateCount = 0;
@@ -106,6 +233,20 @@ function createHarness({
   let remainingSchedulerRequestFailures = schedulerRequestFailures;
   let remainingSchedulerDisposeFailures = schedulerDisposeFailures;
   let remainingBodyDisconnectFailures = bodyDisconnectFailures;
+
+  function mountRowsOnCurrentBody() {
+    if (!(currentBody instanceof FakeElement)) {
+      return;
+    }
+
+    currentBody.onQuery = () => {
+      bodyQueryCount += 1;
+      calls.push("body:query");
+    };
+    currentRows.forEach(({ row }) => currentBody.append(row));
+  }
+
+  mountRowsOnCurrentBody();
 
   const schedulerModule = schedulerAvailable
     ? {
@@ -222,10 +363,10 @@ function createHarness({
       return currentBody;
     },
     querySelectorAll(selector) {
-      queryCount += 1;
+      documentQueryCount += 1;
       calls.push("document:query");
-      assert.equal(selector, '[data-tid="m4b_tag"]');
-      return currentRows.map(({ statusTag }) => statusTag);
+      assert.equal(selector, candidateLocator.PAYMENT_TAG_SELECTOR);
+      return [];
     },
     addEventListener: documentEvents.addEventListener,
     removeEventListener: documentEvents.removeEventListener,
@@ -233,6 +374,12 @@ function createHarness({
 
   const context = {
     TikTokLiveTrackerSaleParser: parser,
+    TikTokLiveTrackerSaleCandidateLocator: locatorAvailable
+      ? candidateLocator
+      : undefined,
+    TikTokLiveTrackerCaptureEventRegistry: registryAvailable
+      ? captureEventRegistry
+      : undefined,
     TikTokLiveTrackerCaptureScheduler: schedulerModule,
     location,
     document,
@@ -326,6 +473,7 @@ function createHarness({
     runContent,
     setBody(nextBody) {
       currentBody = nextBody;
+      mountRowsOnCurrentBody();
     },
     setOrigin(nextOrigin) {
       location.origin = nextOrigin;
@@ -335,12 +483,19 @@ function createHarness({
     },
     setRows(nextRows) {
       currentRows = nextRows;
+      mountRowsOnCurrentBody();
     },
     tickIntervals() {
       [...intervals.values()].forEach(({ callback }) => callback());
     },
     get queryCount() {
-      return queryCount;
+      return bodyQueryCount;
+    },
+    get bodyQueryCount() {
+      return bodyQueryCount;
+    },
+    get documentQueryCount() {
+      return documentQueryCount;
     },
     get schedulerCreateCount() {
       return schedulerCreateCount;
@@ -366,6 +521,28 @@ test("requires the capture scheduler before installing lifecycle watchers", () =
   assert.equal(harness.intervals.size, 0);
   assert.deepEqual(harness.errors, [
     ["[TikTok Live Tracker] Capture scheduler failed to load."],
+  ]);
+});
+
+test("fails closed when the sale candidate locator is unavailable", () => {
+  const harness = createHarness({ locatorAvailable: false });
+
+  assert.equal(harness.schedulerCreateCount, 0);
+  assert.equal(harness.observerInstances.length, 0);
+  assert.equal(harness.intervals.size, 0);
+  assert.deepEqual(harness.errors, [
+    ["[TikTok Live Tracker] Sale candidate locator failed to load."],
+  ]);
+});
+
+test("fails closed when the capture event registry is unavailable", () => {
+  const harness = createHarness({ registryAvailable: false });
+
+  assert.equal(harness.schedulerCreateCount, 0);
+  assert.equal(harness.observerInstances.length, 0);
+  assert.equal(harness.intervals.size, 0);
+  assert.deepEqual(harness.errors, [
+    ["[TikTok Live Tracker] Capture event registry failed to load."],
   ]);
 });
 
@@ -399,7 +576,8 @@ test("starts one capture session on the exact dashboard and installs lifecycle s
 
   assert.equal(harness.schedulerSessions.length, 1);
   assert.equal(session.runNowCount, 1);
-  assert.equal(harness.queryCount, 1);
+  assert.equal(harness.bodyQueryCount, 1);
+  assert.equal(harness.documentQueryCount, 0);
   assert.equal(captureObserver.observeCalls[0].target, harness.currentBody());
   assert.deepEqual(
     JSON.parse(JSON.stringify(captureObserver.observeCalls[0].options)),
@@ -425,6 +603,81 @@ test("starts one capture session on the exact dashboard and installs lifecycle s
   assert.equal(harness.listenerCount("window", "hashchange"), 1);
   assert.equal(harness.listenerCount("window", "pageshow"), 1);
   assert.equal(harness.listenerCount("document", "visibilitychange"), 1);
+});
+
+test("requires the exact completed-payment badge text before emitting a sale", () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $48.00 Variation: #250 Payment complete",
+  );
+  setPaymentText(sale, "Payment complete now");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  const captureObserver = latestCaptureObserver(harness);
+  const [session] = harness.schedulerSessions;
+
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(session.requestCount, 0);
+  assert.equal(harness.bodyQueryCount, 1);
+
+  setPaymentText(sale, "Payment complete");
+  captureObserver.trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  assert.equal(session.requestCount, 1);
+  assert.equal(harness.bodyQueryCount, 2);
+
+  assert.equal(harness.completedSaleLogs().length, 1);
+});
+
+test("rechecks a badge when removing text makes payment complete exact", () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $48.00 Variation: #250 Payment complete",
+  );
+  const suffix = new FakeText(" now");
+  sale.statusTag.append(suffix);
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  const captureObserver = latestCaptureObserver(harness);
+  const [session] = harness.schedulerSessions;
+
+  assert.equal(harness.completedSaleLogs().length, 0);
+
+  sale.statusTag.children = sale.statusTag.children.filter(
+    (child) => child !== suffix,
+  );
+  suffix.parentElement = null;
+  suffix.parentNode = null;
+  captureObserver.trigger([
+    {
+      type: "childList",
+      target: sale.statusTag,
+      addedNodes: [],
+      removedNodes: [suffix],
+    },
+  ]);
+
+  assert.equal(session.requestCount, 1);
+  assert.equal(harness.completedSaleLogs().length, 1);
+});
+
+test("ignores unrelated dashboard mutations without scheduling or rescanning", () => {
+  const harness = createHarness({ scanOnRequest: true });
+  const [session] = harness.schedulerSessions;
+  const captureObserver = latestCaptureObserver(harness);
+  const unrelated = new FakeElement({ name: "viewer-count" });
+  harness.currentBody().append(unrelated);
+
+  const queryCountBeforeMutation = harness.bodyQueryCount;
+  captureObserver.trigger([
+    {
+      type: "childList",
+      target: harness.currentBody(),
+      addedNodes: [unrelated],
+      removedNodes: [],
+    },
+  ]);
+
+  assert.equal(session.requestCount, 0);
+  assert.equal(harness.bodyQueryCount, queryCountBeforeMutation);
+  assert.equal(harness.documentQueryCount, 0);
 });
 
 test("a silent URL change enters capture on the polling fallback and stays idempotent", () => {
@@ -557,13 +810,22 @@ test("keeps completed-sale deduplication for the lifetime of the SPA document", 
   harness.dispatchWindow("popstate");
   assert.equal(harness.completedSaleLogs().length, 1);
 
-  sale.row.innerText =
-    "Another Buyer has won: $20.00 Variation: #251 Payment complete";
-  sale.row.textContent = sale.row.innerText;
-  latestCaptureObserver(harness).trigger([{ type: "characterData" }]);
+  setSaleSummary(
+    sale,
+    "Another Buyer has won: $20.00 Variation: #251",
+  );
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
 
   assert.equal(harness.completedSaleLogs().length, 2);
   assert.equal(harness.completedSaleLogs()[1][1].variationNumber, 251);
+  assert.equal(
+    harness.warnings.filter(([message]) =>
+      message.includes("stream identity is not yet verified"),
+    ).length,
+    1,
+  );
 });
 
 test("emits a pending row once when it turns green and preserves price conflicts", () => {
@@ -572,13 +834,18 @@ test("emits a pending row once when it turns green and preserves price conflicts
   );
   const harness = createHarness({ rows: [sale], scanOnRequest: true });
   const captureObserver = latestCaptureObserver(harness);
+  const [session] = harness.schedulerSessions;
 
   assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(session.requestCount, 0);
+  assert.equal(harness.bodyQueryCount, 1);
 
-  sale.row.innerText =
-    "Example Buyer has won: $48.00 Variation: #250 Payment complete";
-  sale.row.textContent = sale.row.innerText;
-  captureObserver.trigger([{ type: "characterData" }]);
+  setPaymentText(sale, "Payment complete");
+  captureObserver.trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  assert.equal(session.requestCount, 1);
+  assert.equal(harness.bodyQueryCount, 2);
 
   const firstCompletedLogs = harness.completedSaleLogs();
   assert.equal(firstCompletedLogs.length, 1);
@@ -591,22 +858,70 @@ test("emits a pending row once when it turns green and preserves price conflicts
   assert.equal(firstCompletedLogs[0][1].variationNumber, 250);
   assert.equal(firstCompletedLogs[0][1].soldPriceCents, 4800);
   assert.equal(firstCompletedLogs[0][1].paymentStatus, "payment_complete");
+  assert.equal(firstCompletedLogs[0][1].streamId, null);
+  assert.equal(firstCompletedLogs[0][1].streamIdentityStatus, "unverified");
+  assert.equal(firstCompletedLogs[0][1].dedupeScope, "page_load");
   assert.equal(typeof firstCompletedLogs[0][1].observedAt, "string");
 
-  captureObserver.trigger();
+  captureObserver.trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
   assert.equal(harness.completedSaleLogs().length, 1);
 
-  sale.row.innerText =
-    "Example Buyer has won: $49.00 Variation: #250 Payment complete";
-  sale.row.textContent = sale.row.innerText;
-  captureObserver.trigger([{ type: "characterData" }]);
+  setSaleSummary(sale, "Example Buyer has won: $49.00 Variation: #250");
+  captureObserver.trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+  assert.equal(session.requestCount, 3);
+  assert.equal(harness.bodyQueryCount, 4);
 
   assert.equal(harness.completedSaleLogs().length, 1);
   assert.deepEqual(harness.warnings, [
     [
-      "[TikTok Live Tracker] Conflicting completed price detected for variation #250.",
+      "[TikTok Live Tracker] TikTok stream identity is not yet verified; completed-sale deduplication is limited to this page load.",
+    ],
+    [
+      "[TikTok Live Tracker] Conflicting completed price detected for variation #250 within the current page scope.",
     ],
   ]);
+});
+
+test("warns once for each distinct conflicting price within the page scope", () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $48.00 Variation: #250 Payment complete",
+  );
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  const captureObserver = latestCaptureObserver(harness);
+
+  setSaleSummary(sale, "Example Buyer has won: $49.00 Variation: #250");
+  captureObserver.trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+  captureObserver.trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+
+  let conflictWarnings = harness.warnings.filter(([message]) =>
+    message.includes("Conflicting completed price detected"),
+  );
+  assert.equal(conflictWarnings.length, 1);
+
+  setSaleSummary(sale, "Example Buyer has won: $50.00 Variation: #250");
+  captureObserver.trigger([
+    { type: "characterData", target: sale.summaryText },
+  ]);
+
+  conflictWarnings = harness.warnings.filter(([message]) =>
+    message.includes("Conflicting completed price detected"),
+  );
+  assert.equal(conflictWarnings.length, 2);
+  assert.equal(
+    harness.warnings.filter(([message]) =>
+      message.includes("stream identity is not yet verified"),
+    ).length,
+    1,
+  );
+  assert.equal(harness.completedSaleLogs().length, 1);
 });
 
 test("duplicate content-script execution reuses one active lifecycle singleton", () => {

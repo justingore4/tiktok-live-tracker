@@ -18,10 +18,29 @@
   }
 
   const parser = globalThis.TikTokLiveTrackerSaleParser;
+  const candidateLocator = globalThis.TikTokLiveTrackerSaleCandidateLocator;
+  const eventRegistryModule =
+    globalThis.TikTokLiveTrackerCaptureEventRegistry;
   const schedulerModule = globalThis.TikTokLiveTrackerCaptureScheduler;
 
   if (!parser) {
     console.error(`${LOG_PREFIX} Sale parser failed to load.`);
+    return;
+  }
+
+  if (
+    !candidateLocator?.locateCompletedSales ||
+    !candidateLocator?.mutationsMayAffectSale
+  ) {
+    console.error(`${LOG_PREFIX} Sale candidate locator failed to load.`);
+    return;
+  }
+
+  if (
+    !eventRegistryModule?.createCaptureEventRegistry ||
+    !eventRegistryModule?.createPageScope
+  ) {
+    console.error(`${LOG_PREFIX} Capture event registry failed to load.`);
     return;
   }
 
@@ -30,12 +49,16 @@
     return;
   }
 
-  const emittedSales = new Map();
+  const eventRegistry = eventRegistryModule.createCaptureEventRegistry();
+  const captureScope = eventRegistryModule.createPageScope(
+    "current-dashboard-document",
+  );
   const singletonToken = Object.freeze({});
 
   let captureSession = null;
   let lifecycleObserver = null;
   let observedDocumentElement = null;
+  let streamIdentityWarningLogged = false;
 
   globalThis[SINGLETON_KEY] = singletonToken;
 
@@ -53,64 +76,38 @@
     );
   }
 
-  function getElementText(element) {
-    return element.innerText || element.textContent || "";
-  }
-
-  function findNearestSaleRow(element) {
-    let candidate = element;
-
-    for (let depth = 0; candidate && depth < 12; depth += 1) {
-      if (parser.parseSoldItemText(getElementText(candidate))) {
-        return candidate;
-      }
-
-      candidate = candidate.parentElement;
-    }
-
-    return null;
-  }
-
-  function collectCandidateRows() {
-    const candidates = new Set();
-
-    document.querySelectorAll('[data-tid="m4b_tag"]').forEach((statusTag) => {
-      const row = findNearestSaleRow(statusTag);
-
-      if (row) {
-        candidates.add(row);
-      }
-    });
-
-    return candidates;
-  }
-
-  function createFingerprint(sale) {
-    return `${sale.variationNumber}:${sale.soldPriceCents}:${sale.paymentStatus}`;
-  }
-
   function emitCompletedSale(sale) {
-    const key = String(sale.variationNumber);
-    const fingerprint = createFingerprint(sale);
+    const registryResult = eventRegistry.record(captureScope, sale);
 
-    if (emittedSales.get(key) === fingerprint) {
+    if (
+      registryResult.status === "duplicate" ||
+      registryResult.status === "duplicate_conflict"
+    ) {
       return;
     }
 
-    if (emittedSales.has(key)) {
+    if (registryResult.status === "conflict") {
       console.warn(
-        `${LOG_PREFIX} Conflicting completed price detected for variation #${sale.variationNumber}.`,
+        `${LOG_PREFIX} Conflicting completed price detected for variation #${sale.variationNumber} within the current page scope.`,
       );
       return;
     }
 
-    emittedSales.set(key, fingerprint);
+    if (!streamIdentityWarningLogged) {
+      streamIdentityWarningLogged = true;
+      console.warn(
+        `${LOG_PREFIX} TikTok stream identity is not yet verified; completed-sale deduplication is limited to this page load.`,
+      );
+    }
 
     const event = {
       type: "completed_sale_detected",
       source: "sold_items_dom_probe",
       page: `${location.origin}${location.pathname}`,
       observedAt: new Date().toISOString(),
+      streamId: null,
+      streamIdentityStatus: registryResult.identityStatus,
+      dedupeScope: registryResult.dedupeScope,
       ...sale,
     };
 
@@ -167,13 +164,9 @@
       return;
     }
 
-    collectCandidateRows().forEach((row) => {
-      const sale = parser.parseSoldItemText(getElementText(row));
-
-      if (sale?.paymentStatus === "payment_complete") {
-        emitCompletedSale(sale);
-      }
-    });
+    candidateLocator
+      .locateCompletedSales(session.body, parser)
+      .forEach(({ sale }) => emitCompletedSale(sale));
   }
 
   function startCapture(body) {
@@ -203,13 +196,17 @@
         maxWaitMs: MAX_SCAN_WAIT_MS,
       });
 
-      observer = new MutationObserver(() => {
+      observer = new MutationObserver((records) => {
         if (
           captureSession !== session ||
           !isCaptureRoute() ||
           document.body !== body
         ) {
           reconcileCapture();
+          return;
+        }
+
+        if (!candidateLocator.mutationsMayAffectSale(records, body)) {
           return;
         }
 

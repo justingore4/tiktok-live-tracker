@@ -205,7 +205,8 @@ The extension makes its isolated content script available only on the exact
 `https://shop.tiktok.com` host so it is already present when TikTok changes views without
 reloading the document. Capture remains inactive on every route except the exact
 `/streamer/live/event/dashboard` path. It uses a bounded, coalesced `MutationObserver`
-scheduler, an SPA lifecycle controller, and a pure text parser. It:
+scheduler, an SPA lifecycle controller, a sale-candidate locator, a scoped event
+registry, and a pure text parser. It:
 
 1. reconciles the active route and document body at startup, on route or page-resume
    signals, and with a 250 ms fallback check;
@@ -213,13 +214,18 @@ scheduler, an SPA lifecycle controller, and a pure text parser. It:
    rendered payment-tag candidates;
 3. disconnects the observer and disposes its scheduler when the route is left, then
    restarts them once when the dashboard is re-entered or its body is replaced;
-4. watches page text and child-node changes, scanning 150 ms after a quiet moment while a
+4. watches page text and child-node changes, rejecting mutation batches that cannot
+   affect a sale candidate before they reach the scheduler;
+5. scans 150 ms after a relevant quiet moment while a
    non-resetting 1-second maximum wait prevents constant dashboard updates from starving
    capture;
-5. finds the smallest ancestor containing exactly one variation and one final price;
-6. emits only rows containing the exact text `Payment complete`;
-7. logs normalized variation, price-in-cents, and payment status; and
-8. deduplicates identical completed events in memory for the current page load, including
+6. accepts only `[data-tid="m4b_tag"]` elements whose own whitespace-normalized text is
+   exactly `Payment complete`, ignoring case;
+7. searches at most 12 ancestors for the smallest parsed row, never parsing, accepting,
+   or crossing the active capture boundary;
+8. logs normalized variation, price-in-cents, payment status, and explicit identity
+   metadata; and
+9. deduplicates identical completed events in an unverified page-load scope, including
    route exits and re-entry within that document.
 
 It does not click TikTok controls, modify TikTok data, persist a sale, update inventory,
@@ -227,12 +233,38 @@ or contact Google Sheets. The wider same-host script availability adds no new ex
 API permission, and the DOM observer and capture scheduler remain disconnected outside
 the exact dashboard path.
 
+The candidate locator uses `textContent`, the one inspected `data-tid`, exact badge text,
+and parser invariants rather than generated class names, headings, or positional DOM
+assumptions. Mutation filtering recognizes relevant tag subtrees, tag descendants, and
+related row text changes; malformed or unsafe DOM inspection requests a scan instead of
+silently suppressing it. The initial scan still examines the full active boundary.
+
 The scheduler clears each batch before scanning, coalesces quiet and maximum-wait timers
 into one run, and remains usable after a scan error. Route and resume signals provide
 prompt lifecycle checks, while the 250 ms fallback catches history changes that do not
-emit those signals. Browser suspension can still delay JavaScript timers. The page-wide
-observer and selector remain provisional until live validation identifies the stable
-Sold items container.
+emit those signals. Browser suspension can still delay JavaScript timers. The dashboard
+body remains the provisional capture boundary until live validation identifies a unique,
+stable Sold items container.
+
+### Capture identity and deduplication
+
+`capture/capture-event-registry.js` is a pure, tested registry with two explicit scope
+types:
+
+- a verified-stream scope supplied with an opaque, externally verified TikTok stream ID;
+  and
+- an unverified page scope that never exposes or implies a stream ID.
+
+The registry independently records accepted events, exact duplicates, new conflicts, and
+repeated conflicts for each scope. It proves that identical variation numbers can remain
+separate when different verified stream IDs are eventually available; it does not find,
+generate, or validate those IDs.
+
+The current content script therefore uses only a page scope. Its emitted event includes
+`streamId: null`, `streamIdentityStatus: "unverified"`, and
+`dedupeScope: "page_load"`, and it logs the identity limitation once. These events remain
+diagnostic and must not be treated as canonical stream sales or sent to the reconciliation
+engine until TikTok stream identity is verified during a real stream.
 
 ### Target capture events
 
@@ -244,8 +276,8 @@ Sold items container.
 
 Processing must eventually be persistent and idempotent: seeing the same
 `(streamId, variationNumber)` again must update its existing record rather than deduct
-inventory twice. The current capture probe only deduplicates by variation number in
-memory and does not yet know the stream ID.
+inventory twice. The registry supports that key once a verified ID is supplied, but the
+runtime currently retains variation fingerprints only within its in-memory page scope.
 
 ### Planned end-of-stream reconciliation
 
@@ -440,7 +472,7 @@ currency values to integer cents for the engine.
 
 | Column | Source or meaning |
 | --- | --- |
-| `stream_id` | TikTok session identifier if available; otherwise a generated stable ID |
+| `stream_id` | Verified TikTok session identifier; export remains blocked while it is unknown |
 | `variation_no` | TikTok's `Variation: #N` value |
 | `sold_price` | Final price from a payment-complete row |
 | `payment_status` | `unknown` or `payment_complete` |
@@ -475,13 +507,17 @@ and should not be populated until this decision is made.
 
 ## 9. Live-validation questions
 
-The next real stream must answer:
+The next real stream must answer the following blocking questions. Offline fixtures do
+not complete this validation:
 
 - What is the stable DOM structure for the current variation while bidding?
 - What exact text and structure represent the yellow payment-warning state?
+- Which non-generated attribute or ARIA relationship uniquely identifies the Sold items
+  container, and does it exclude Chat, the current auction, and analytics?
 - Is the Sold items list virtualized or replaced as it grows?
 - Does any relevant content live inside an iframe or shadow root?
-- What stable value can identify the stream?
+- What stable TikTok-provided value identifies one stream, survives route re-entry and a
+  full refresh, and differs across two streams?
 - Does the implemented route/body recovery remain reliable under TikTok's live rendering?
 - What happens to stream identity and deduplication across a full refresh and a second
   stream?
@@ -497,8 +533,10 @@ Browser support beyond Chrome is a later decision.
 3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
-5. **In progress:** bounded capture scheduling and SPA lifecycle recovery completed;
-   stream identity, selector narrowing, and real-stream session validation remain.
+5. **Offline hardening completed:** bounded scheduling, SPA lifecycle recovery, exact
+   badge and ancestor-boundary targeting, mutation relevance filtering, and scoped event
+   registry tests. Canonical stream identity and Sold items root narrowing remain blocked
+   on real-stream validation.
 6. Capture-to-engine-to-tagger integration.
 7. Google Sheet template, authentication, import, and export.
 8. End-of-stream reconciliation, analytics, and release hardening.

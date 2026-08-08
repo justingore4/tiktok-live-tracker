@@ -5,10 +5,10 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early browser prototype. The completed-sale parser, read-only
-> dashboard capture probe with SPA lifecycle recovery, reconciliation engine, tagger
-> lifecycle demo, and local saved-session recovery are implemented and tested. Employee
-> mappings and unpaid corrections persist through the service worker; TikTok payment
-> capture and Google Sheets are not connected yet.
+> dashboard capture probe with SPA recovery and offline-safe candidate targeting,
+> reconciliation engine, tagger lifecycle demo, and local saved-session recovery are
+> implemented and tested. Employee mappings and unpaid corrections persist through the
+> service worker; TikTok payment capture and Google Sheets are not connected yet.
 
 ## How it works
 
@@ -62,6 +62,14 @@ the item is auctioned again, the employee maps its new variation number.
 - SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
   fallback check, and cleans up or restarts the observer and scheduler when the route or
   document body changes.
+- A sale-candidate locator that accepts only the confirmed payment-tag attribute with
+  normalized `Payment complete` badge text, stays inside a bounded ancestor search, and
+  avoids generated CSS classes.
+- Mutation relevance filtering that skips unrelated dashboard updates while failing
+  toward a recovery scan if DOM inspection is unsafe.
+- A pure capture-event registry that keeps page-load and verified-stream scopes separate.
+  The verified-stream behavior is tested, but the live probe still emits `streamId: null`
+  and labels its deduplication scope as an unverified page load.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
   - accepts employee mapping and payment events in either order;
@@ -82,8 +90,8 @@ the item is auctioned again, the employee maps its new variation number.
   mark-unpaid, and undo-unpaid commands through that coordinator. The tagger never
   accesses browser storage directly and cannot create authoritative payment-complete
   events.
-- Automated parser, reconciliation, persistence, service-worker, and tagger tests using
-  Node's built-in test runner.
+- Automated capture, parser, reconciliation, persistence, service-worker, and tagger
+  tests using Node's built-in test runner.
 
 ### Not implemented yet
 
@@ -94,6 +102,8 @@ the item is auctioned again, the employee maps its new variation number.
 - Detection of TikTok's yellow payment-warning state.
 - Persistent stream identity and automatic creation of a fresh saved session for each
   real TikTok LIVE.
+- A live-validated, stable Sold items container selector; the current read-only boundary
+  remains the dashboard body.
 - Google Sheets inventory import and results export.
 - A connection between the capture probe and reconciliation engine.
 - End-of-stream analytics and live-stream validation.
@@ -110,8 +120,10 @@ the item is auctioned again, the employee maps its new variation number.
       worker;
    3. **Completed:** connect the tagger to saved state and verify refresh/restart
       recovery.
-3. **In progress:** bounded capture scheduling and SPA lifecycle recovery are
-   implemented; stream identity, selector narrowing, and real-stream validation remain.
+3. **Offline hardening completed:** bounded scheduling, SPA lifecycle recovery,
+   candidate validation, mutation filtering, and scoped event-registry tests are
+   implemented. Verified stream identity, Sold items root narrowing, and real-stream
+   validation remain blocking live checks.
 4. Connect captured TikTok events to the reconciliation engine and tagger.
 5. Create the Google Sheet template and choose the authentication approach.
 6. Import inventory from Google Sheets and export reconciled results.
@@ -123,7 +135,7 @@ the item is auctioned again, the employee maps its new variation number.
 | --- | --- | --- |
 | `extension/manifest.json` | Extension configuration and dashboard entry point | Implemented |
 | `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Coordinator implemented |
-| `extension/capture/` | Read-only TikTok dashboard observation | Scheduling and SPA recovery implemented |
+| `extension/capture/` | Read-only TikTok dashboard observation | Offline hardening implemented; live scope and identity pending |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
@@ -224,8 +236,9 @@ authentication is deliberately unresolved until the Sheets stage:
   from the extension.
 
 Never commit `.env` files, access tokens, private keys, or client data. The current
-capture probe logs only variation number, price in integer cents, and payment status; it
-does not store buyer names or contact Google Sheets.
+capture probe logs variation number, price in integer cents, payment status, and explicit
+unverified identity metadata including `streamId: null`; it does not store buyer names or
+contact Google Sheets.
 
 ## Documentation
 

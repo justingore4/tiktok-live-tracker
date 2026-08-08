@@ -288,6 +288,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.ok(dashboardScript);
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
+    "capture/sale-candidate-locator.js",
+    "capture/capture-event-registry.js",
     "capture/capture-scheduler.js",
     "capture/content.js",
   ]);
@@ -301,8 +303,18 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
     path.join(extensionDirectory, "capture", "capture-scheduler.js"),
     "utf8",
   );
+  const locatorSource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "sale-candidate-locator.js"),
+    "utf8",
+  );
+  const registrySource = fs.readFileSync(
+    path.join(extensionDirectory, "capture", "capture-event-registry.js"),
+    "utf8",
+  );
 
   assert.match(captureSource, /TikTokLiveTrackerCaptureScheduler/);
+  assert.match(captureSource, /TikTokLiveTrackerSaleCandidateLocator/);
+  assert.match(captureSource, /TikTokLiveTrackerCaptureEventRegistry/);
   assert.match(captureSource, /const QUIET_SCAN_DELAY_MS = 150/);
   assert.match(captureSource, /const MAX_SCAN_WAIT_MS = 1000/);
   assert.match(captureSource, /quietDelayMs:\s*QUIET_SCAN_DELAY_MS/);
@@ -310,7 +322,7 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.match(captureSource, /https:\/\/shop\.tiktok\.com/);
   assert.match(captureSource, /\/streamer\/live\/event\/dashboard/);
   assert.doesNotMatch(
-    `${captureSource}\n${schedulerSource}`,
+    `${captureSource}\n${locatorSource}\n${registrySource}\n${schedulerSource}`,
     /runtime\.sendMessage|tiktok-live-tracker\.reconciliation/,
   );
 });
