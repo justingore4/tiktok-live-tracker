@@ -158,7 +158,7 @@ fails closed until that public placeholder is replaced.
    grants `identity`, the exact `https://sheets.googleapis.com/*` host, and only
    `https://www.googleapis.com/auth/spreadsheets.readonly`. That Google scope can read
    spreadsheets available to the connected account, but the importer requests only the
-   selected ID and fixed `'Inventory'!A:ZZZ` range.
+   selected ID and fixed whole-sheet `'Inventory'` range.
 6. Verify the full normalized table, row count, opening-unit total, and opening-cost
    total. Select **Confirm inventory baseline**. Confirmation re-reads the Sheet before
    atomically saving a new immutable local baseline; Start becomes available only after

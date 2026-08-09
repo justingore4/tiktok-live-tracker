@@ -76,7 +76,7 @@ const inventoryImportService =
   googleSheetsInventoryImport.createGoogleSheetsInventoryImportService({
     abortController: globalThis.AbortController,
     assertNoActiveStream: requireNoActiveStreamForInventoryImport,
-    clearTimeoutImpl: globalThis.clearTimeout,
+    clearTimeoutImpl: (...args) => globalThis.clearTimeout(...args),
     createBaseline: (command) =>
       stateCoordinator.dispatch({
         type:
@@ -91,7 +91,7 @@ const inventoryImportService =
     inventorySheetImport,
     now: () => Date.now(),
     oauthClientId: chrome.runtime.getManifest()?.oauth2?.client_id,
-    setTimeoutImpl: globalThis.setTimeout,
+    setTimeoutImpl: (...args) => globalThis.setTimeout(...args),
   });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const captureDashboardUrlPattern =

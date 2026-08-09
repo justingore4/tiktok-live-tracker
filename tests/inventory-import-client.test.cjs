@@ -40,7 +40,7 @@ function previewData() {
     contractVersion: 1,
     previewToken: PREVIEW_TOKEN,
     spreadsheetId: SHEET_ID,
-    range: "'Inventory'!A:ZZZ",
+    range: "'Inventory'",
     fingerprint: FINGERPRINT,
     inventory: INVENTORY,
     summary: SUMMARY,

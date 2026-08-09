@@ -314,7 +314,7 @@ test("real Sheet confirmation persists, wins the worker FIFO, pins Start, and dr
     assert.match(request.authorization, /^Bearer worker-only-token-/);
     assert.equal(
       new URL(request.url).searchParams.get("ranges"),
-      "'Inventory'!A:ZZZ",
+      "'Inventory'",
     );
   });
   assert.equal(JSON.stringify(storage).includes("worker-only-token"), false);

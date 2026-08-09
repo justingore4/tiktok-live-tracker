@@ -12,7 +12,7 @@
   function createGoogleSheetsInventoryImportModule() {
     "use strict";
 
-    const INVENTORY_RANGE = "'Inventory'!A:ZZZ";
+    const INVENTORY_RANGE = "'Inventory'";
     const SHEETS_API_ROOT = "https://sheets.googleapis.com/v4/spreadsheets";
     const GRID_FIELDS =
       "sheets(properties(title),data(startRow,startColumn,rowData.values.userEnteredValue))";
@@ -233,7 +233,8 @@
       return {
         abortController: options.abortController ?? globalThis.AbortController,
         assertNoActiveStream,
-        clearTimeoutImpl: options.clearTimeoutImpl ?? globalThis.clearTimeout,
+        clearTimeoutImpl: options.clearTimeoutImpl ??
+          ((...args) => globalThis.clearTimeout(...args)),
         createBaseline,
         createUuid,
         fetchImpl,
@@ -242,7 +243,8 @@
         inventorySheetImport,
         now,
         oauthClientId,
-        setTimeoutImpl: options.setTimeoutImpl ?? globalThis.setTimeout,
+        setTimeoutImpl: options.setTimeoutImpl ??
+          ((...args) => globalThis.setTimeout(...args)),
       };
     }
 
@@ -586,6 +588,19 @@
           }
 
           return { response, responseText };
+        } catch (error) {
+          if (error instanceof GoogleSheetsInventoryImportError) {
+            throw error;
+          }
+
+          if (controller?.signal?.aborted === true) {
+            fail(
+              "GOOGLE_SHEETS_REQUEST_TIMEOUT",
+              "Google Sheets took too long to respond. Try again.",
+            );
+          }
+
+          throw error;
         } finally {
           if (
             timeoutId !== null &&

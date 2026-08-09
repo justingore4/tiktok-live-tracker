@@ -247,7 +247,7 @@ test("previews a fixed read-only Inventory range without persisting", async () =
     previewToken:
       "inventory-preview:11111111-1111-4111-8111-111111111111",
     spreadsheetId: SPREADSHEET_ID,
-    range: "'Inventory'!A:ZZZ",
+    range: "'Inventory'",
     contractVersion: 1,
     fingerprint: "fnv1a64:f77677917471abd7",
     inventory: [
@@ -277,7 +277,7 @@ test("previews a fixed read-only Inventory range without persisting", async () =
   assert.match(harness.fetchCalls[0].url, /includeGridData=true/);
   assert.match(harness.fetchCalls[0].url, /Inventory/);
   const requestUrl = new URL(harness.fetchCalls[0].url);
-  assert.equal(requestUrl.searchParams.get("ranges"), "'Inventory'!A:ZZZ");
+  assert.equal(requestUrl.searchParams.get("ranges"), "'Inventory'");
   assert.equal(requestUrl.searchParams.get("includeGridData"), "true");
   assert.equal(requestUrl.searchParams.get("fields"), googleImport.GRID_FIELDS);
   assert.equal(harness.fetchCalls[0].options.method, "GET");
@@ -306,6 +306,28 @@ test("returns sanitized validation issues without a token or partial rows", asyn
   assert.deepEqual(
     Object.keys(result.issues[0]).sort(),
     ["code", "column", "message", "rowNumber"],
+  );
+});
+
+test("the whole Inventory-tab range still rejects a seventh data column", async () => {
+  const payload = createGridPayload();
+  payload.sheets[0].data[0].rowData[1].values.push(
+    gridCell("stringValue", "unsupported employee note"),
+  );
+  const harness = createHarness({ payloads: [payload] });
+
+  const result = await harness.service.previewGoogleSheet(SPREADSHEET_ID);
+
+  assert.equal(result.status, "invalid");
+  assert.ok(
+    result.issues.some(
+      (issue) =>
+        issue.code === "INVALID_SHEET_VALUES" && issue.rowNumber === 2,
+    ),
+  );
+  assert.equal(
+    new URL(harness.fetchCalls[0].url).searchParams.get("ranges"),
+    "'Inventory'",
   );
 });
 
@@ -575,9 +597,10 @@ test("rejects oversized responses before parsing or retaining previews", async (
   assert.equal(canceled, true);
 });
 
-test("keeps the request timeout active while consuming the response body", async () => {
+test("reports a bounded request timeout while consuming the response body", async () => {
   const controllers = [];
   const cleared = [];
+  const scheduledDelays = [];
   class ImmediateAbortController {
     constructor() {
       this.signal = { aborted: false, onabort: null };
@@ -591,7 +614,8 @@ test("keeps the request timeout active while consuming the response body", async
   }
   const harness = createHarness({
     abortController: ImmediateAbortController,
-    setTimeoutImpl(callback) {
+    setTimeoutImpl(callback, delayMs) {
+      scheduledDelays.push(delayMs);
       queueMicrotask(callback);
       return controllers.length;
     },
@@ -618,10 +642,11 @@ test("keeps the request timeout active while consuming the response body", async
 
   await assert.rejects(
     harness.service.previewGoogleSheet(SPREADSHEET_ID),
-    (error) => error.code === "GOOGLE_SHEETS_TEMPORARILY_UNAVAILABLE",
+    (error) => error.code === "GOOGLE_SHEETS_REQUEST_TIMEOUT",
   );
-  assert.equal(controllers.length, 2);
-  assert.deepEqual(cleared, [1, 2]);
+  assert.equal(controllers.length, 1);
+  assert.deepEqual(scheduledDelays, [20_000]);
+  assert.deepEqual(cleared, [1]);
 });
 
 test("fails safely before OAuth when the build client ID is a placeholder", async () => {

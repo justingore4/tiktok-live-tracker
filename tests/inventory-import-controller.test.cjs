@@ -19,7 +19,7 @@ const PREVIEW = {
   contractVersion: 1,
   previewToken: PREVIEW_TOKEN,
   spreadsheetId: SHEET_ID,
-  range: "'Inventory'!A:ZZZ",
+  range: "'Inventory'",
   fingerprint: "fnv1a64:0123456789abcdef",
   inventory: [
     {

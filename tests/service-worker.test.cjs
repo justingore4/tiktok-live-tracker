@@ -32,6 +32,8 @@ function createWorkerHarness(options = {}) {
   const runtimeSendMessages = [];
   const inventoryImportCalls = [];
   const consoleErrors = [];
+  const timerCalls = [];
+  const timerReceiverMarker = {};
   let requestedStorageAccess = null;
   const storageArea = {
     setAccessLevel(accessOptions) {
@@ -499,7 +501,25 @@ function createWorkerHarness(options = {}) {
       };
     },
   };
+  function receiverStrictSetTimeout(callback, delayMs) {
+    if (this?.__timerReceiverMarker !== timerReceiverMarker) {
+      throw new TypeError("Illegal invocation");
+    }
+
+    timerCalls.push({ type: "set", callback, delayMs });
+    return 77;
+  }
+
+  function receiverStrictClearTimeout(timeoutId) {
+    if (this?.__timerReceiverMarker !== timerReceiverMarker) {
+      throw new TypeError("Illegal invocation");
+    }
+
+    timerCalls.push({ type: "clear", timeoutId });
+  }
+
   const sandbox = {
+    __timerReceiverMarker: timerReceiverMarker,
     importScripts(...relativePaths) {
       imports.push(...relativePaths);
     },
@@ -516,9 +536,13 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerGoogleSheetsInventoryImport:
       googleSheetsInventoryImportModule,
     AbortController,
-    clearTimeout,
+    clearTimeout: options.receiverStrictTimers
+      ? receiverStrictClearTimeout
+      : clearTimeout,
     fetch: () => Promise.reject(new Error("Network is not used by this harness.")),
-    setTimeout,
+    setTimeout: options.receiverStrictTimers
+      ? receiverStrictSetTimeout
+      : setTimeout,
     crypto: {
       randomUUID() {
         return "11111111-1111-4111-8111-111111111111";
@@ -691,6 +715,7 @@ function createWorkerHarness(options = {}) {
     streamSession,
     streamStateStore,
     storageArea,
+    timerCalls,
   };
 }
 
@@ -779,6 +804,29 @@ test("loads state dependencies and wires the canonical coordinator", () => {
   assert.equal(
     harness.getStorageAccess().accessLevel,
     "TRUSTED_CONTEXTS",
+  );
+});
+
+test("wraps worker timers so adapter method calls keep the global receiver", () => {
+  const harness = createWorkerHarness({ receiverStrictTimers: true });
+  const importOptions = harness.getInventoryImportOptions();
+  const callback = () => {};
+
+  const timeoutId = importOptions.setTimeoutImpl(callback, 20_000);
+  importOptions.clearTimeoutImpl(timeoutId);
+
+  assert.equal(timeoutId, 77);
+  assert.deepEqual(harness.timerCalls, [
+    { type: "set", callback, delayMs: 20_000 },
+    { type: "clear", timeoutId: 77 },
+  ]);
+  assert.match(
+    workerSource,
+    /clearTimeoutImpl:\s*\(\.\.\.args\) => globalThis\.clearTimeout\(\.\.\.args\)/,
+  );
+  assert.match(
+    workerSource,
+    /setTimeoutImpl:\s*\(\.\.\.args\) => globalThis\.setTimeout\(\.\.\.args\)/,
   );
 });
 

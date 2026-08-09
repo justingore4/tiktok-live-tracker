@@ -776,7 +776,7 @@ The Manifest V3 worker uses `chrome.identity` and the public OAuth client config
 `manifest.json`. It requests only
 `https://www.googleapis.com/auth/spreadsheets.readonly` and fetches only
 `https://sheets.googleapis.com`. The request is a GET for the selected spreadsheet's
-fixed `'Inventory'!A:ZZZ` range. It asks for grid `userEnteredValue` data so formulas
+fixed whole-sheet `'Inventory'` range. It asks for grid `userEnteredValue` data so formulas
 remain distinguishable and invalid rather than being accepted as their evaluated result.
 The adapter accepts at most 1,000 inventory rows beyond the header. Response bytes,
 columns, cell slots, issue counts, retries, and request duration are also bounded before

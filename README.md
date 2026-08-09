@@ -382,7 +382,7 @@ The extension uses Chrome-managed user OAuth. Its manifest requests only
 the exact `https://sheets.googleapis.com/*` API host. That Google scope can read
 spreadsheets the connected account is allowed to open; this implementation makes a GET
 request only for the employee-selected spreadsheet ID and the fixed
-`'Inventory'!A:ZZZ` range. It has no Sheets write scope.
+whole `'Inventory'` worksheet range. It has no Sheets write scope.
 
 The OAuth client ID in the manifest is public build configuration, not a secret. Replace
 the checked-in placeholder with a Chrome Extension OAuth client tied to the exact
