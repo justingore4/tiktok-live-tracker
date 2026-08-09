@@ -311,15 +311,24 @@
     const completedAfterUnpaid = variation?.conflicts?.some(
       (candidate) => candidate.code === "payment_completed_after_marked_unpaid",
     );
+    const completedAfterCanceled = variation?.conflicts?.some(
+      (candidate) => candidate.code === "payment_completed_after_canceled",
+    );
 
     if (priceConflict) {
       return `Payment price conflict for variation #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
     }
 
+    if (variation?.status === "canceled") {
+      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and stock remains unchanged.`;
+    }
+
     if (variation?.observedPaymentStatus === "payment_complete") {
-      const reviewDetail = completedAfterUnpaid
-        ? " It was previously marked unpaid; review the warning."
-        : "";
+      const reviewDetail = completedAfterCanceled
+        ? " TikTok completion overrode its earlier cancellation; inventory was counted. Review the warning."
+        : completedAfterUnpaid
+          ? " It was previously marked unpaid; review the warning."
+          : "";
 
       return `Payment complete captured for variation #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
     }
@@ -564,9 +573,11 @@
     );
   }
 
-  function getInventoryBlockingVariations() {
-    return (savedSnapshot?.view?.variations ?? []).filter((variation) =>
-      variation.status === "pending",
+  function getEndBlockingVariations() {
+    return (savedSnapshot?.view?.variations ?? []).filter(
+      (variation) =>
+        variation.status === "pending" ||
+        variation.status === "unmapped_completed",
     );
   }
 
@@ -649,6 +660,7 @@
     const button = wrapper.querySelector(".inventory-card");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
     const stock = viewModel.getStockDisplay(entry);
+    const stockAriaLabel = stock.ariaLabel ?? stock.label;
     const selected = entry.selected;
     const itemName = formatItemName(entry);
     const canTagSelectedVariation =
@@ -663,40 +675,62 @@
     if (!canTagSelectedVariation) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stock.label}. Wait for a Sold Items variation before tagging.`,
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a Sold Items variation before tagging.`,
+      );
+    } else if (selected && auction?.status === "canceled") {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${entry.size}, is linked to canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation is released and stock is unchanged. Click to unlink this item.`,
       );
     } else if (selected) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stock.label}. Click to unselect this item.`,
+        `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
 
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stock.label}. Cannot ${action} variation ${variationNumber}.`,
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
+      );
+    } else if (auction?.status === "canceled") {
+      const action = auction.sku ? "Relink" : "Link";
+
+      button.setAttribute(
+        "aria-label",
+        `${action} canceled variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}. Stock counts will not change.`,
       );
     } else if (auction?.sku) {
       button.setAttribute(
         "aria-label",
-        `Correct variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `Correct variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}.`,
       );
     } else {
       button.setAttribute(
         "aria-label",
-        `Map variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stock.label}.`,
+        `Map variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}.`,
       );
     }
 
     wrapper.querySelector('[data-field="item"]').textContent = entry.item;
     wrapper.querySelector('[data-field="style"]').textContent = entry.style;
     wrapper.querySelector('[data-field="size"]').textContent = entry.size;
-    wrapper.querySelector('[data-field="stock"]').textContent = stock.label;
+    wrapper.querySelector('[data-field="stock-primary"]').textContent =
+      stock.primaryLabel ?? stock.label;
+
+    const secondaryStockLabel = wrapper.querySelector(
+      '[data-field="stock-secondary"]',
+    );
+
+    secondaryStockLabel.textContent = stock.secondaryLabel ?? "";
+    secondaryStockLabel.hidden = !stock.secondaryLabel;
     selectedLabel.hidden = !selected;
 
     if (auction?.status === "committed" && selected) {
       selectedLabel.textContent = "Sold";
+    } else if (auction?.status === "canceled" && selected) {
+      selectedLabel.textContent = "Linked";
     } else if (auction?.status === "marked_unpaid" && selected) {
       selectedLabel.textContent = "Unpaid";
     } else {
@@ -834,6 +868,10 @@
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
     }
 
+    if (conflict?.code === "payment_completed_after_canceled") {
+      return "TikTok completed this payment after it was canceled. TikTok completion won, inventory was counted, and the order was flagged for review.";
+    }
+
     if (view.auction?.status === "unmapped_completed") {
       return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
@@ -927,6 +965,12 @@
       return auction.sku ? "Sale assigned" : "No item selected";
     }
 
+    if (auction.paymentStatus === "canceled") {
+      return auction.sku
+        ? "Item linked · reservation released · stock unchanged"
+        : "No item linked · stock unchanged";
+    }
+
     if (auction.mappingStatus === "marked_unpaid") {
       return "Marked unpaid locally";
     }
@@ -960,6 +1004,7 @@
 
   function renderLifecycleControls(view) {
     const committed = view.auction?.status === "committed";
+    const canceled = view.auction?.status === "canceled";
     const markedUnpaid = view.auction?.status === "marked_unpaid";
     const offlineDemo = activeMode === "offline_demo";
     const canUndoSimulatedPayment =
@@ -977,6 +1022,7 @@
       : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
 
     lifecycleControls.hidden =
+      canceled ||
       (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
       (committed && !canUndoSimulatedPayment) ||
       (!offlineDemo && committed);
@@ -1064,6 +1110,8 @@
     if (result.action === "unmapped") {
       const detail =
         {
+          canceled:
+            "The canceled order remains recorded. Its item link was removed and stock stays unchanged.",
           committed:
             "Payment remains complete, but inventory and gross profit need a replacement item.",
           marked_unpaid:
@@ -1089,6 +1137,10 @@
       mappingAnnouncement.textContent = `Payment-complete variation ${mapping.variationNumber} matched to ${itemDescription}. Sold for ${viewModel.formatUsdCents(mapping.soldPriceCents)}; ${profit.label} recorded.`;
     } else if (result.action === "committed_mapping_corrected") {
       mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} corrected to ${itemDescription}. Inventory and gross profit recalculated.`;
+    } else if (result.action === "canceled_order_mapped") {
+      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} linked to ${itemDescription}. Its reservation remains released and stock stays unchanged.`;
+    } else if (result.action === "canceled_mapping_corrected") {
+      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} relinked to ${itemDescription}. Stock stays unchanged.`;
     } else if (result.action === "unpaid_mapping_corrected") {
       mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
     } else if (result.action === "remapped") {
@@ -1286,11 +1338,13 @@
       action.variationNumber ?? view.selectedVariationNumber;
 
     if (action.type === "map_variation") {
-      mappingAnnouncement.textContent =
-        `Variation ${variationNumber} mapping saved locally.`;
+      mappingAnnouncement.textContent = view.auction?.status === "canceled"
+        ? `Canceled variation ${variationNumber} item link saved locally. Its reservation is released and stock remains unchanged.`
+        : `Variation ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
-      mappingAnnouncement.textContent =
-        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
+      mappingAnnouncement.textContent = view.auction?.status === "canceled"
+        ? `Canceled variation ${variationNumber} item link removed and saved locally. Stock remains unchanged.`
+        : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     } else if (action.type === "mark_unpaid") {
       mappingAnnouncement.textContent =
         `Variation ${variationNumber} marked unpaid and saved locally. Its pending reservation was released.`;
@@ -1850,17 +1904,21 @@
       return;
     }
 
-    const unresolvedVariations = getInventoryBlockingVariations();
+    const unresolvedVariations = getEndBlockingVariations();
 
     if (unresolvedVariations.length > 0) {
       const variationList = unresolvedVariations
-        .map((variation) => `#${variation.variationNumber}`)
+        .map((variation) =>
+          variation.status === "unmapped_completed"
+            ? `#${variation.variationNumber} (completed sale needs an item)`
+            : `#${variation.variationNumber} (pending reservation)`,
+        )
         .join(", ");
 
       streamSessionStatusMessage.textContent =
-        `Resolve inventory-reserved ${variationList} before ending this tracker stream.`;
+        `Resolve ${variationList} before ending this tracker stream.`;
       mappingAnnouncement.textContent =
-        `Tracker stream not ended. Resolve ${unresolvedVariations.length} inventory-reserved variation${unresolvedVariations.length === 1 ? "" : "s"} first.`;
+        `Tracker stream not ended. Resolve pending reservations and completed sales needing items first.`;
       variationSelector.focus();
       return;
     }

@@ -70,6 +70,9 @@ test("derives available, low-stock, and sold-out labels", () => {
   assert.deepEqual(getStockDisplay({ quantityReceived: 5 }), {
     state: "available",
     label: "5 left",
+    ariaLabel: "5 inventory units left",
+    primaryLabel: "5 left",
+    secondaryLabel: "",
     remainingQuantity: 5,
     availableToTagQuantity: 5,
     reservedQuantity: 0,
@@ -77,13 +80,19 @@ test("derives available, low-stock, and sold-out labels", () => {
   assert.deepEqual(getStockDisplay({ quantityReceived: 1 }), {
     state: "low_stock",
     label: "1 left",
+    ariaLabel: "1 inventory unit left",
+    primaryLabel: "1 left",
+    secondaryLabel: "",
     remainingQuantity: 1,
     availableToTagQuantity: 1,
     reservedQuantity: 0,
   });
   assert.deepEqual(getStockDisplay({ quantityReceived: 0 }), {
     state: "sold_out",
-    label: "Sold out",
+    label: "0 left · Sold out",
+    ariaLabel: "0 inventory units left, sold out",
+    primaryLabel: "0 left",
+    secondaryLabel: "Sold out",
     remainingQuantity: 0,
     availableToTagQuantity: 0,
     reservedQuantity: 0,
@@ -100,7 +109,10 @@ test("distinguishes available, fully reserved, and over-reserved inventory", () 
     }),
     {
       state: "available",
-      label: "4 available · 1 pending",
+      label: "5 left · 1 pending",
+      ariaLabel: "5 inventory units left, 1 pending reservation",
+      primaryLabel: "5 left",
+      secondaryLabel: "1 pending",
       remainingQuantity: 5,
       availableToTagQuantity: 4,
       reservedQuantity: 1,
@@ -115,21 +127,65 @@ test("distinguishes available, fully reserved, and over-reserved inventory", () 
     }),
     {
       state: "fully_reserved",
-      label: "All reserved · 1 pending",
+      label: "1 left · 1 pending",
+      ariaLabel: "1 inventory unit left, 1 pending reservation",
+      primaryLabel: "1 left",
+      secondaryLabel: "1 pending",
       remainingQuantity: 1,
       availableToTagQuantity: 0,
       reservedQuantity: 1,
     },
   );
-  assert.equal(
+  assert.deepEqual(
     getStockDisplay({
       remainingQuantity: 1,
       availableToTagQuantity: -1,
       reservedQuantity: 2,
       reservationShortfallQuantity: 1,
-    }).state,
-    "over_reserved",
+    }),
+    {
+      state: "over_reserved",
+      label: "1 left · 2 pending · short by 1",
+      ariaLabel:
+        "1 inventory unit left, 2 pending reservations, short by 1 unit",
+      primaryLabel: "1 left",
+      secondaryLabel: "2 pending · short by 1",
+      remainingQuantity: 1,
+      availableToTagQuantity: -1,
+      reservedQuantity: 2,
+    },
   );
+});
+
+test("keeps remaining stock unchanged for a pending reservation and decrements it only after completion", () => {
+  const beforeMapping = getStockDisplay({
+    remainingQuantity: 5,
+    availableToTagQuantity: 5,
+    reservedQuantity: 0,
+  });
+  const whilePending = getStockDisplay({
+    remainingQuantity: 5,
+    availableToTagQuantity: 4,
+    reservedQuantity: 1,
+  });
+  const afterPaymentComplete = getStockDisplay({
+    remainingQuantity: 4,
+    availableToTagQuantity: 4,
+    reservedQuantity: 0,
+  });
+
+  assert.equal(beforeMapping.label, "5 left");
+  assert.equal(beforeMapping.primaryLabel, "5 left");
+  assert.equal(beforeMapping.secondaryLabel, "");
+  assert.equal(whilePending.label, "5 left · 1 pending");
+  assert.equal(whilePending.primaryLabel, "5 left");
+  assert.equal(whilePending.secondaryLabel, "1 pending");
+  assert.equal(whilePending.remainingQuantity, 5);
+  assert.equal(whilePending.availableToTagQuantity, 4);
+  assert.equal(afterPaymentComplete.label, "4 left");
+  assert.equal(afterPaymentComplete.primaryLabel, "4 left");
+  assert.equal(afterPaymentComplete.secondaryLabel, "");
+  assert.equal(afterPaymentComplete.remainingQuantity, 4);
 });
 
 test("formats currency and positive, negative, and neutral gross profit", () => {

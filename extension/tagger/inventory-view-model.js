@@ -82,6 +82,24 @@
       return Number.isSafeInteger(quantity) ? quantity : 0;
     }
 
+    function formatPendingQuantity(reservedQuantity) {
+      return `${reservedQuantity} pending`;
+    }
+
+    function joinStockLabels(primaryLabel, secondaryLabel) {
+      return secondaryLabel
+        ? `${primaryLabel} · ${secondaryLabel}`
+        : primaryLabel;
+    }
+
+    function formatInventoryUnits(quantity) {
+      return `${quantity} inventory unit${quantity === 1 ? "" : "s"} left`;
+    }
+
+    function formatPendingReservations(quantity) {
+      return `${quantity} pending reservation${quantity === 1 ? "" : "s"}`;
+    }
+
     function filterInventoryEntries(entries, query) {
       if (!Array.isArray(entries)) {
         throw new TypeError("Inventory entries must be an array.");
@@ -117,11 +135,30 @@
       )
         ? entry.reservationShortfallQuantity
         : 0;
+      const primaryLabel = `${remainingQuantity} left`;
 
       if (reservationShortfallQuantity > 0) {
+        const secondaryLabel = [
+          reservedQuantity > 0 ? formatPendingQuantity(reservedQuantity) : "",
+          `short by ${reservationShortfallQuantity}`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
         return {
           state: "over_reserved",
-          label: `Short by ${reservationShortfallQuantity}`,
+          label: joinStockLabels(primaryLabel, secondaryLabel),
+          ariaLabel: [
+            formatInventoryUnits(remainingQuantity),
+            reservedQuantity > 0
+              ? formatPendingReservations(reservedQuantity)
+              : "",
+            `short by ${reservationShortfallQuantity} unit${reservationShortfallQuantity === 1 ? "" : "s"}`,
+          ]
+            .filter(Boolean)
+            .join(", "),
+          primaryLabel,
+          secondaryLabel,
           remainingQuantity,
           availableToTagQuantity,
           reservedQuantity,
@@ -129,9 +166,14 @@
       }
 
       if (remainingQuantity <= 0) {
+        const secondaryLabel = "Sold out";
+
         return {
           state: "sold_out",
-          label: "Sold out",
+          label: joinStockLabels(primaryLabel, secondaryLabel),
+          ariaLabel: `${formatInventoryUnits(remainingQuantity)}, sold out`,
+          primaryLabel,
+          secondaryLabel,
           remainingQuantity,
           availableToTagQuantity,
           reservedQuantity,
@@ -139,29 +181,44 @@
       }
 
       if (availableToTagQuantity <= 0) {
+        const secondaryLabel = reservedQuantity > 0
+          ? formatPendingQuantity(reservedQuantity)
+          : "None available to tag";
+
         return {
           state: "fully_reserved",
-          label: reservedQuantity > 0
-            ? `All reserved · ${reservedQuantity} pending`
-            : "None available",
+          label: joinStockLabels(primaryLabel, secondaryLabel),
+          ariaLabel: [
+            formatInventoryUnits(remainingQuantity),
+            reservedQuantity > 0
+              ? formatPendingReservations(reservedQuantity)
+              : "none available to tag",
+          ].join(", "),
+          primaryLabel,
+          secondaryLabel,
           remainingQuantity,
           availableToTagQuantity,
           reservedQuantity,
         };
       }
 
-      const hasDerivedAvailability = Number.isSafeInteger(
-        entry?.availableToTagQuantity,
-      );
-      const label = hasDerivedAvailability
-        ? reservedQuantity > 0
-          ? `${availableToTagQuantity} available · ${reservedQuantity} pending`
-          : `${availableToTagQuantity} available`
-        : `${remainingQuantity} left`;
+      const secondaryLabel = reservedQuantity > 0
+        ? formatPendingQuantity(reservedQuantity)
+        : "";
 
       return {
         state: availableToTagQuantity <= 2 ? "low_stock" : "available",
-        label,
+        label: joinStockLabels(primaryLabel, secondaryLabel),
+        ariaLabel: [
+          formatInventoryUnits(remainingQuantity),
+          reservedQuantity > 0
+            ? formatPendingReservations(reservedQuantity)
+            : "",
+        ]
+          .filter(Boolean)
+          .join(", "),
+        primaryLabel,
+        secondaryLabel,
         remainingQuantity,
         availableToTagQuantity,
         reservedQuantity,

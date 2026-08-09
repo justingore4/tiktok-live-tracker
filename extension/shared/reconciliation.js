@@ -11,8 +11,9 @@
   function createReconciliationModule() {
     "use strict";
 
-    const STATE_VERSION = 2;
+    const STATE_VERSION = 3;
     const LEGACY_STATE_VERSION = 1;
+    const OBSERVED_PAYMENT_STATE_VERSION = 2;
     const MAX_OBSERVED_VARIATIONS = 1000;
     const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
@@ -136,7 +137,12 @@
       return value;
     }
 
-    function hydratePersistedConflict(conflict, path, auction) {
+    function hydratePersistedConflict(
+      conflict,
+      path,
+      auction,
+      stateVersion,
+    ) {
       if (!isPlainRecord(conflict)) {
         failInvalidState(`${path} must be an object.`);
       }
@@ -183,6 +189,20 @@
         return { code: "payment_completed_after_marked_unpaid" };
       }
 
+      if (conflict.code === "payment_completed_after_canceled") {
+        if (stateVersion !== STATE_VERSION) {
+          failInvalidState(`${path}.code is not supported by this state version.`);
+        }
+
+        requirePersistedRecord(conflict, path, ["code"]);
+
+        if (auction.paymentStatus !== "payment_complete") {
+          failInvalidState(`${path} does not match its completed payment.`);
+        }
+
+        return { code: "payment_completed_after_canceled" };
+      }
+
       failInvalidState(`${path}.code is not supported.`);
     }
 
@@ -204,7 +224,7 @@
         "variationNumber",
       ];
 
-      if (stateVersion === STATE_VERSION) {
+      if (stateVersion !== LEGACY_STATE_VERSION) {
         expectedKeys.push("observedPaymentStatus");
       }
 
@@ -239,10 +259,11 @@
         failInvalidState(`${path}.mappingStatus is not supported.`);
       }
 
-      if (![
-        "payment_complete",
-        "unknown",
-      ].includes(auction.paymentStatus)) {
+      const supportedPaymentStatuses = stateVersion === STATE_VERSION
+        ? ["canceled", "payment_complete", "unknown"]
+        : ["payment_complete", "unknown"];
+
+      if (!supportedPaymentStatuses.includes(auction.paymentStatus)) {
         failInvalidState(`${path}.paymentStatus is not supported.`);
       }
 
@@ -260,12 +281,38 @@
         failInvalidState(`${path}.observedPaymentStatus is not supported.`);
       }
 
+      const paymentStatus =
+        stateVersion === OBSERVED_PAYMENT_STATE_VERSION &&
+        auction.paymentStatus === "unknown" &&
+        observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.CANCELED
+          ? "canceled"
+          : auction.paymentStatus;
+
       if (
-        auction.paymentStatus === "payment_complete" &&
+        paymentStatus === "payment_complete" &&
         observedPaymentStatus !== OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
       ) {
         failInvalidState(
           `${path}.observedPaymentStatus must reflect its completed payment.`,
+        );
+      }
+
+      if (
+        paymentStatus === "canceled" &&
+        observedPaymentStatus !== OBSERVED_PAYMENT_STATUSES.CANCELED
+      ) {
+        failInvalidState(
+          `${path}.observedPaymentStatus must reflect its canceled payment.`,
+        );
+      }
+
+      if (
+        stateVersion === STATE_VERSION &&
+        observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.CANCELED &&
+        paymentStatus !== "canceled"
+      ) {
+        failInvalidState(
+          `${path}.paymentStatus must reflect its observed cancellation.`,
         );
       }
 
@@ -279,7 +326,7 @@
       let soldPriceCents = null;
       let committedUnitCostCents = null;
 
-      if (auction.paymentStatus === "unknown") {
+      if (paymentStatus !== "payment_complete") {
         if (
           auction.soldPriceCents !== null ||
           auction.committedUnitCostCents !== null
@@ -326,7 +373,7 @@
         variationNumber,
         sku,
         mappingStatus: auction.mappingStatus,
-        paymentStatus: auction.paymentStatus,
+        paymentStatus,
         observedPaymentStatus,
         soldPriceCents,
         committedUnitCostCents,
@@ -338,6 +385,7 @@
           conflict,
           `${path}.conflicts[${index}]`,
           hydratedAuction,
+          stateVersion,
         );
         const conflictKey = `${hydratedConflict.code}:${hydratedConflict.observedSoldPriceCents ?? ""}`;
 
@@ -350,7 +398,7 @@
       });
 
       if (
-        auction.paymentStatus === "unknown" &&
+        paymentStatus !== "payment_complete" &&
         hydratedAuction.conflicts.length > 0
       ) {
         failInvalidState(`${path} has conflicts without a completed payment.`);
@@ -386,6 +434,7 @@
 
         if (
           candidate.version !== LEGACY_STATE_VERSION &&
+          candidate.version !== OBSERVED_PAYMENT_STATE_VERSION &&
           candidate.version !== STATE_VERSION
         ) {
           fail(
@@ -633,6 +682,10 @@
         return "unmapped_completed";
       }
 
+      if (auction.paymentStatus === "canceled") {
+        return "canceled";
+      }
+
       if (auction.mappingStatus === "marked_unpaid") {
         return "marked_unpaid";
       }
@@ -664,7 +717,7 @@
           stream.variations.filter(
             (auction) =>
               auction.sku === sku &&
-              auction.paymentStatus !== "payment_complete" &&
+              auction.paymentStatus === "unknown" &&
               auction.mappingStatus === "mapped",
           ).length,
         0,
@@ -716,7 +769,10 @@
       if (currentAuction?.sku === sku) {
         if (currentAuction.paymentStatus === "payment_complete") {
           currentAllocation = "sold";
-        } else if (currentAuction.mappingStatus === "mapped") {
+        } else if (
+          currentAuction.paymentStatus === "unknown" &&
+          currentAuction.mappingStatus === "mapped"
+        ) {
           currentAllocation = "reserved";
         }
       }
@@ -800,15 +856,41 @@
         fail("UNKNOWN_SKU", `Inventory does not contain SKU ${sku}.`);
       }
 
-      const auction = getOrCreateAuction(
+      let auction = findAuction(state, key.streamId, key.variationNumber);
+
+      if (auction?.sku === sku) {
+        return createAuctionView(state, auction);
+      }
+
+      const historicalCorrection = Boolean(
+        auction &&
+        (
+          auction.paymentStatus === "payment_complete" ||
+          auction.paymentStatus === "canceled" ||
+          auction.mappingStatus === "marked_unpaid"
+        ),
+      );
+
+      if (!historicalCorrection) {
+        const availability = getInventoryAvailability(state, {
+          sku,
+          streamId: key.streamId,
+          variationNumber: key.variationNumber,
+        });
+
+        if (availability.availableForCurrentAuctionQuantity <= 0) {
+          fail(
+            "NO_STOCK_AVAILABLE",
+            `Inventory does not have an available unit for SKU ${sku}.`,
+          );
+        }
+      }
+
+      auction ??= getOrCreateAuction(
         state,
         key.streamId,
         key.variationNumber,
       );
-
-      if (auction.sku === sku) {
-        return createAuctionView(state, auction);
-      }
 
       auction.sku = sku;
 
@@ -956,10 +1038,23 @@
           variationNumber,
         );
 
-        if (
-          auction.paymentStatus === "payment_complete" &&
-          observedPaymentStatus !== OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
-        ) {
+        if (auction.paymentStatus === "payment_complete") {
+          if (
+            observedPaymentStatus ===
+            OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+          ) {
+            return;
+          }
+
+          ignoredCount += 1;
+          return;
+        }
+
+        if (auction.paymentStatus === "canceled") {
+          if (observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.CANCELED) {
+            return;
+          }
+
           ignoredCount += 1;
           return;
         }
@@ -969,6 +1064,13 @@
         }
 
         auction.observedPaymentStatus = observedPaymentStatus;
+
+        if (observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.CANCELED) {
+          auction.paymentStatus = "canceled";
+          auction.soldPriceCents = null;
+          auction.committedUnitCostCents = null;
+        }
+
         updatedCount += 1;
       });
 
@@ -1038,6 +1140,12 @@
         });
       }
 
+      if (auction.paymentStatus === "canceled") {
+        addConflict(auction, {
+          code: "payment_completed_after_canceled",
+        });
+      }
+
       auction.paymentStatus = "payment_complete";
       auction.observedPaymentStatus =
         OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
@@ -1063,6 +1171,13 @@
         fail(
           "PAYMENT_ALREADY_COMPLETE",
           "A completed TikTok payment cannot be marked unpaid locally.",
+        );
+      }
+
+      if (auction.paymentStatus === "canceled") {
+        fail(
+          "PAYMENT_ALREADY_CANCELED",
+          "A canceled TikTok payment cannot be marked unpaid locally.",
         );
       }
 

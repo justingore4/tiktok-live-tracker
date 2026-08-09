@@ -24,6 +24,7 @@
       "undoMarkUnpaid",
     ];
     const STATUS_LABELS = Object.freeze({
+      canceled: "Canceled",
       committed: "Payment complete",
       marked_unpaid: "Marked unpaid",
       pending: "Waiting for payment",
@@ -304,6 +305,7 @@
         );
         const auction = reconciliation.getAuction(state, auctionKey());
         const allowsHistoricalCorrection =
+          auction?.paymentStatus === "canceled" ||
           auction?.paymentStatus === "payment_complete" ||
           auction?.mappingStatus === "marked_unpaid";
 
@@ -459,6 +461,7 @@
         }
 
         const historicalCorrection =
+          previousAuction?.paymentStatus === "canceled" ||
           previousAuction?.paymentStatus === "payment_complete" ||
           previousAuction?.mappingStatus === "marked_unpaid";
         const availability = reconciliation.getInventoryAvailability(
@@ -484,10 +487,22 @@
         reconciliation.mapVariation(state, auctionKey({ sku }));
 
         if (simulatedPaymentCheckpoint) {
-          reconciliation.mapVariation(
-            simulatedPaymentCheckpoint.state,
-            auctionKey({ sku }),
-          );
+          try {
+            reconciliation.mapVariation(
+              simulatedPaymentCheckpoint.state,
+              auctionKey({ sku }),
+            );
+          } catch (error) {
+            if (error?.code !== "NO_STOCK_AVAILABLE") {
+              throw error;
+            }
+
+            // A completed demo sale may be corrected to a sold-out SKU for
+            // historical accuracy, but its pre-completion checkpoint is still
+            // pending and cannot safely reserve that SKU. Keep the correction
+            // and retire only the now-invalid local undo checkpoint.
+            simulatedPaymentCheckpoints.delete(selectedEventKey());
+          }
         }
 
         let action = "mapped";
@@ -497,6 +512,10 @@
           !previousAuction.sku
         ) {
           action = "completed_sale_mapped";
+        } else if (previousAuction?.paymentStatus === "canceled") {
+          action = previousAuction.sku
+            ? "canceled_mapping_corrected"
+            : "canceled_order_mapped";
         } else if (previousAuction?.mappingStatus === "marked_unpaid") {
           action = "unpaid_mapping_corrected";
         } else if (previousAuction?.sku) {

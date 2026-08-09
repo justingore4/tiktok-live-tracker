@@ -199,6 +199,11 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
   assert.match(
     html,
+    /resolve every pending[\s\S]+inventory reservation[\s\S]+assign an item to every completed sale/i,
+  );
+  assert.match(html, /Canceled orders do not block End\./);
+  assert.match(
+    html,
     /id="saved-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
   );
   assert.match(html, /id="retry-saved-session"[^>]+type="button"/);
@@ -218,6 +223,14 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
   assert.match(html, /<button class="inventory-card"[^>]+aria-pressed="false"/);
+  assert.match(
+    html,
+    /data-field="stock"[\s\S]+data-field="stock-primary"[\s\S]+data-field="stock-secondary"[\s\S]+hidden/,
+  );
+  assert.match(
+    html,
+    /Remaining inventory changes only after Payment complete\.[\s\S]+Pending mappings[\s\S]+separately as reservations[\s\S]+reduce what is available[\s\S]+to tag\./,
+  );
   assert.match(html, /Click the selected card again to remove its item/);
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
@@ -275,6 +288,27 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
   );
+  assert.match(
+    panelSource,
+    /const stockAriaLabel = stock\.ariaLabel \?\? stock\.label/,
+  );
+  assert.match(
+    panelSource,
+    /\[data-field="stock-primary"\]'\)\.textContent =[\s\S]+stock\.primaryLabel \?\? stock\.label/,
+  );
+  assert.match(
+    panelSource,
+    /\[data-field="stock-secondary"\]'[\s\S]+secondaryStockLabel\.textContent = stock\.secondaryLabel \?\? ""[\s\S]+secondaryStockLabel\.hidden = !stock\.secondaryLabel/,
+  );
+  assert.match(
+    panelSource,
+    /setAttribute\([\s\S]+"aria-label"[\s\S]+\$\{stockAriaLabel\}/,
+  );
+  assert.match(
+    styleSource,
+    /\.size-label\s*{[\s\S]*?flex-direction: column;[\s\S]*?}[\s\S]+\.stock-label\s*{[\s\S]*?flex-direction: column;/,
+  );
+  assert.match(styleSource, /\.stock-line\s*{[\s\S]*?overflow-wrap: anywhere;/);
   assert.match(panelSource, /function renderVariationNavigation\(view\)/);
   assert.match(
     panelSource,
@@ -343,8 +377,19 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.retry\(\)/);
-  assert.match(panelSource, /getInventoryBlockingVariations\(\)/);
-  assert.match(panelSource, /variation\.status === "pending"/);
+  const endBlockingSource = panelSource.match(
+    /function getEndBlockingVariations\(\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  assert.ok(endBlockingSource);
+  assert.match(endBlockingSource, /variation\.status === "pending"/);
+  assert.match(
+    endBlockingSource,
+    /variation\.status === "unmapped_completed"/,
+  );
+  assert.doesNotMatch(endBlockingSource, /canceled/);
+  assert.match(panelSource, /getEndBlockingVariations\(\)/);
+  assert.match(panelSource, /completed sale needs an item/);
+  assert.match(panelSource, /pending reservation/);
   assert.match(panelSource, /getRecordedVariations\(view\)/);
   assert.match(panelSource, /variation\.recorded/);
   assert.match(panelSource, /Waiting for Sold Items variations/);
@@ -374,6 +419,21 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /activeMode !== "offline_demo"/);
   assert.doesNotMatch(panelSource, /persistentController\.[^(]*Payment/);
   assert.match(panelSource, /result\.action === "completed_sale_mapped"/);
+  assert.match(workflowSource, /canceled: "Canceled"/);
+  assert.match(
+    workflowSource,
+    /auction\?\.paymentStatus === "canceled" \|\|[\s\S]+auction\?\.paymentStatus === "payment_complete"/,
+  );
+  assert.match(
+    workflowSource,
+    /previousAuction\?\.paymentStatus === "canceled" \|\|[\s\S]+previousAuction\?\.paymentStatus === "payment_complete"/,
+  );
+  assert.match(workflowSource, /"canceled_order_mapped"/);
+  assert.match(workflowSource, /"canceled_mapping_corrected"/);
+  assert.match(
+    workflowSource,
+    /error\?\.code !== "NO_STOCK_AVAILABLE"[\s\S]+simulatedPaymentCheckpoints\.delete\(selectedEventKey\(\)\)/,
+  );
   assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
   assert.doesNotMatch(
     panelSource,
@@ -396,6 +456,22 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(workflowSource, /"Payment status unavailable"/);
   assert.match(panelSource, /"Sale assigned"/);
   assert.match(panelSource, /"Item reserved"/);
+  assert.match(
+    panelSource,
+    /"Item linked · reservation released · stock unchanged"/,
+  );
+  assert.match(panelSource, /selectedLabel\.textContent = "Linked"/);
+  assert.match(panelSource, /is linked to canceled variation/);
+  assert.match(panelSource, /Stock counts will not change/);
+  assert.match(panelSource, /const canceled = view\.auction\?\.status === "canceled"/);
+  assert.match(panelSource, /lifecycleControls\.hidden =[\s\S]+canceled \|\|/);
+  assert.match(panelSource, /payment_completed_after_canceled/);
+  assert.match(
+    panelSource,
+    /TikTok completion won, inventory was counted, and the order was flagged for review/,
+  );
+  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link saved locally/);
+  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link removed/);
   assert.match(
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,

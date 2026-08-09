@@ -132,11 +132,12 @@
         >
           <h3 id="stream-session-end-title">End this tracker stream?</h3>
           <p>
-            Wait for expected Sold Items payment updates and resolve every
-            inventory-reserved variation first. Captured history, including
-            item-needed payments, will remain saved, but ended streams cannot be
-            reopened in this prototype. Reload the TikTok dashboard before starting
-            a tracker session for another LIVE. TikTok LIVE will keep running.
+            Wait for expected Sold Items payment updates, resolve every pending
+            inventory reservation, and assign an item to every completed sale first.
+            Canceled orders do not block End. Captured history will remain saved, but
+            ended streams cannot be reopened in this prototype. Reload the TikTok
+            dashboard before starting a tracker session for another LIVE. TikTok LIVE
+            will keep running.
           </p>
           <div class="stream-session-confirm-actions">
             <button
@@ -392,8 +393,9 @@
         </div>
 
         <p class="selection-note">
-          Available counts reserve pending tags. Only completed payments reduce
-          remaining inventory. Click the selected card again to remove its item.
+          Remaining inventory changes only after Payment complete. Pending mappings
+          appear separately as reservations and temporarily reduce what is available
+          to tag. Click the selected card again to remove its item.
         </p>
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>
@@ -433,8 +435,18 @@
             <span class="stock-indicator" aria-hidden="true"></span>
           </span>
           <span class="card-meta">
-            <span class="size-label">Size <strong data-field="size"></strong></span>
-            <span class="stock-label" data-field="stock"></span>
+            <span class="size-label">
+              <span>Size</span>
+              <strong data-field="size"></strong>
+            </span>
+            <span class="stock-label" data-field="stock">
+              <span class="stock-line" data-field="stock-primary"></span>
+              <span
+                class="stock-line"
+                data-field="stock-secondary"
+                hidden
+              ></span>
+            </span>
           </span>
         </button>
       </div>
