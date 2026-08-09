@@ -103,17 +103,21 @@ mapped sale, and creates a `payment_completed_after_canceled` warning that TikTo
 completion won and inventory was counted. Repeated observations are no-ops. A conflicting
 later completed price retains the first price and creates a reconciliation conflict.
 
-These captured facts hydrate into reconciliation state version 3. Strict version-1 and
-version-2 snapshots migrate to detached version-3 state, while the outer browser-storage
-envelope remains schema version 1.
+These captured facts hydrate into reconciliation state version 4. Each stream record has
+an immutable inventory-baseline pin, and capture verifies or repairs the active stream's
+pin before applying a variation or payment fact. Strict version-1 through version-3
+snapshots migrate to one deterministic legacy baseline and pin every legacy stream to
+it, while the outer browser-storage envelope remains schema version 1. Malformed or
+dangling baseline, SKU, cost, and stream relationships fail closed.
 
 The content client marks an event delivered only after the worker acknowledges it. A
 failed observation or payment is requeued with a delay that backs off from one to five
 seconds while the same Sold Items root stays active. Root replacement triggers a fresh
 backfill, and persisted reconciliation state makes that repeat safe.
 
-If no local tracker stream is active, or saved session/state cannot be verified, no
-canonical write occurs. The current root's facts remain queued for retry.
+If no local tracker stream is active, no nonempty active inventory baseline exists, or
+saved session/state/pin cannot be verified, no canonical write occurs. The current
+root's facts remain queued for retry.
 
 After the worker accepts a capture fact through the durable reconciliation boundary, it
 sends the open side panel a data-free `capture_state_changed` invalidation. The panel
@@ -168,7 +172,8 @@ tracker stream.
     and a visible warning says inventory was counted.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
-    Item tagging and Google Sheets can be tested more broadly later.
+    Repeat these checks across later tracker streams as baseline testing expands. Google
+    Sheets cannot be tested until the separate connection stage is implemented.
 
 The live refetch does not claim the newest saved variation is TikTok's current bidding
 auction. It does automatically display a newly persisted higher variation for faster
@@ -208,6 +213,14 @@ The worker-generated local stream ID is durable but is not a verified TikTok roo
 Until a later identity stage finds such an ID, follow these rules:
 
 - Use one local tracker stream for one real TikTok LIVE.
+- Start preflights reconciliation state. On truly uninitialized local storage it creates
+  the transitional mock inventory baseline; otherwise it preserves the existing active
+  baseline. The worker then requires that baseline and permanently pins the new stream
+  to it.
+- Do not try to recount or activate another inventory baseline during a tracker stream.
+  The worker rejects baseline creation while a session is active. End the session only
+  after its capture and employee work is safely resolved; a later recount belongs to a
+  new baseline and a future stream.
 - A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
   canonical duplicates are ignored.
 - Keep the local tracker stream active until expected payment transitions have appeared
@@ -259,6 +272,7 @@ node --test .\tests\capture-client.test.cjs
 node --test .\tests\capture-integration.test.cjs
 node --test .\tests\service-worker.test.cjs
 node --test .\tests\active-stream-integration.test.cjs
+node --test .\tests\inventory-baseline-integration.test.cjs
 ```
 
 These tests use fixtures and in-memory storage. They do not require TikTok, Google
@@ -302,9 +316,11 @@ The next capture stage should validate and implement:
   recovered for an end-of-stream pass; and
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
-The Google Sheets inventory template is now defined, but connection and import remain a
-later stage and are not part of capture work. That inventory-only contract does not
-expand capture authority: the content script still must not read Sheet data, buyer
+The Google Sheets inventory template, immutable reconciliation baselines, and stream pins
+are now defined and implemented locally. Google OAuth, Sheet fetching, preview and
+confirmation UI, and the adapter that commits a confirmed Sheet as a new baseline remain
+the next Sheets stage; none is part of capture work. This inventory-only boundary does
+not expand capture authority: the content script still must not read Sheet data, buyer
 identity, inventory mappings, or credentials, and it must not contact Google.
 
 ## Current limitations

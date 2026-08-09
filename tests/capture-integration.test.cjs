@@ -165,6 +165,12 @@ test("binds batch observations to the worker-owned active stream", async () => {
   ]);
   assert.deepEqual(harness.stateCalls, [
     {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: STREAM_ONE,
+    },
+    {
       type: reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
       streamId: STREAM_ONE,
       variationNumbers: [44, 43, 42],
@@ -186,6 +192,12 @@ test("binds completed payments to the worker-owned active stream", async () => {
     { status: "accepted" },
   );
   assert.deepEqual(harness.stateCalls, [
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: STREAM_ONE,
+    },
     {
       type:
         reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
@@ -221,6 +233,12 @@ test("binds sanitized payment-status batches to the worker-owned active stream",
     { status: "accepted" },
   );
   assert.deepEqual(harness.stateCalls, [
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: STREAM_ONE,
+    },
     {
       type: "observe_payment_statuses",
       streamId: STREAM_ONE,
@@ -297,7 +315,7 @@ test("serializes session resolution and persistence in one FIFO", async () => {
   await Promise.all([first, second]);
 
   assert.equal(harness.activeCalls.length, 2);
-  assert.deepEqual(harness.stateCalls[1], {
+  assert.deepEqual(harness.stateCalls[3], {
     type: reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
     streamId: STREAM_ONE,
     variationNumber: 44,
@@ -333,7 +351,7 @@ test("a failed write does not poison the following capture event", async () => {
     }),
     { status: "accepted" },
   );
-  assert.equal(harness.stateCalls.length, 2);
+  assert.equal(harness.stateCalls.length, 3);
 });
 
 test("rejects invalid events before resolving active state", async () => {
@@ -410,7 +428,7 @@ test("persists canonical capture truth idempotently across worker restarts", asy
     soldPriceCents: 700,
   });
 
-  assert.equal(memoryStore.calls.save.length, 2);
+  assert.equal(memoryStore.calls.save.length, 3);
 
   integration = createPersistentIntegration(memoryStore, () => activeState);
   await integration.dispatch({
@@ -429,7 +447,7 @@ test("persists canonical capture truth idempotently across worker restarts", asy
   );
 
   assert.equal(memoryStore.calls.load, 2);
-  assert.equal(memoryStore.calls.save.length, 3);
+  assert.equal(memoryStore.calls.save.length, 4);
   assert.equal(firstStreamAuction.soldPriceCents, 700);
   assert.deepEqual(firstStreamAuction.conflicts, [
     {

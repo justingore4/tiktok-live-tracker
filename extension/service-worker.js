@@ -218,6 +218,246 @@ function validateSender(sender, command, boundary) {
       "Captured TikTok events cannot be issued by the side panel.",
     );
   }
+
+  if (
+    boundary.protocol === reconciliationCoordinator &&
+    command.type ===
+      reconciliationCoordinator.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE
+  ) {
+    failBoundary(
+      boundary.protocol,
+      "UNAUTHORIZED_MESSAGE_SENDER",
+      "Inventory baseline pins are owned by the extension service worker.",
+    );
+  }
+}
+
+function hydrateStreamSessionResponse(response) {
+  try {
+    return streamSession.hydrateStreamSessionState(response?.state);
+  } catch (_error) {
+    failBoundary(
+      streamSessionCoordinator,
+      "ACTIVE_STREAM_STATE_UNAVAILABLE",
+      "The active tracker stream could not be verified.",
+    );
+  }
+}
+
+function hydrateReconciliationResponse(response) {
+  if (response?.state === null) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_REQUIRED",
+      "Prepare inventory before starting a tracker stream.",
+    );
+  }
+
+  try {
+    return reconciliation.hydrateReconciliationState(response?.state);
+  } catch (_error) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_UNAVAILABLE",
+      "The prepared inventory baseline could not be verified.",
+    );
+  }
+}
+
+async function getStreamSessionResponse() {
+  const response = await activeStreamCoordinator.dispatch({
+    type:
+      streamSessionCoordinator.COMMAND_TYPES.GET_STREAM_SESSION,
+  });
+  const state = hydrateStreamSessionResponse(response);
+
+  return { response, state };
+}
+
+async function requirePreparedInventoryBaseline() {
+  const response = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  const state = hydrateReconciliationResponse(response);
+  const baselineId = state.activeInventoryBaselineId;
+  const baseline = Array.isArray(state.inventoryBaselines)
+    ? state.inventoryBaselines.find(
+        (candidate) => candidate.baselineId === baselineId,
+      )
+    : null;
+
+  if (
+    typeof baselineId !== "string" ||
+    baselineId.trim() === "" ||
+    !baseline ||
+    !Array.isArray(baseline.inventory) ||
+    baseline.inventory.length === 0
+  ) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_REQUIRED",
+      "Prepare inventory before starting a tracker stream.",
+    );
+  }
+
+  return baselineId;
+}
+
+async function pinStreamToPreparedInventory(streamId) {
+  return stateCoordinator.dispatch({
+    type:
+      reconciliationCoordinator.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+    streamId,
+  });
+}
+
+async function dispatchStreamSessionCommand(command) {
+  if (
+    command.type ===
+    streamSessionCoordinator.COMMAND_TYPES.START_STREAM
+  ) {
+    await requirePreparedInventoryBaseline();
+    const response = await activeStreamCoordinator.dispatch(command);
+    const state = hydrateStreamSessionResponse(response);
+
+    if (state.activeSession === null) {
+      failBoundary(
+        streamSessionCoordinator,
+        "ACTIVE_STREAM_STATE_UNAVAILABLE",
+        "The started tracker stream could not be verified.",
+      );
+    }
+
+    await pinStreamToPreparedInventory(state.activeSession.streamId);
+    return response;
+  }
+
+  if (
+    command.type ===
+    streamSessionCoordinator.COMMAND_TYPES.GET_STREAM_SESSION
+  ) {
+    const { response, state } = await getStreamSessionResponse();
+
+    if (state.activeSession !== null) {
+      await pinStreamToPreparedInventory(state.activeSession.streamId);
+    }
+
+    return response;
+  }
+
+  return activeStreamCoordinator.dispatch(command);
+}
+
+function createsInventoryBaseline(command) {
+  return (
+    command.type ===
+    reconciliationCoordinator.COMMAND_TYPES.CREATE_INVENTORY_BASELINE
+  );
+}
+
+function initializesInventoryState(command) {
+  return (
+    command.type ===
+    reconciliationCoordinator.COMMAND_TYPES.INITIALIZE_STATE
+  );
+}
+
+async function initializeInventoryState(command) {
+  const { state: streamState } = await getStreamSessionResponse();
+
+  if (streamState.activeSession === null) {
+    return stateCoordinator.dispatch(command);
+  }
+
+  const storedResponse = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+
+  if (storedResponse?.state !== null) {
+    failBoundary(
+      reconciliationCoordinator,
+      "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before preparing another inventory baseline.",
+    );
+  }
+
+  const initializedResponse = await stateCoordinator.dispatch(command);
+
+  hydrateReconciliationResponse(initializedResponse);
+
+  const pinnedResponse = await pinStreamToPreparedInventory(
+    streamState.activeSession.streamId,
+  );
+
+  return {
+    state: pinnedResponse.state,
+    result: initializedResponse.result,
+  };
+}
+
+function mutatesEmployeeStream(command) {
+  return [
+    reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
+    reconciliationCoordinator.COMMAND_TYPES.UNMAP_VARIATION,
+    reconciliationCoordinator.COMMAND_TYPES.MARK_UNPAID,
+    reconciliationCoordinator.COMMAND_TYPES.UNDO_MARK_UNPAID,
+  ].includes(command.type);
+}
+
+async function dispatchReconciliationCommand(command) {
+  if (initializesInventoryState(command)) {
+    return initializeInventoryState(command);
+  }
+
+  if (createsInventoryBaseline(command)) {
+    const { state } = await getStreamSessionResponse();
+
+    if (state.activeSession !== null) {
+      failBoundary(
+        reconciliationCoordinator,
+        "ACTIVE_STREAM_ALREADY_EXISTS",
+        "End the active tracker stream before preparing another inventory baseline.",
+      );
+    }
+  }
+
+  if (mutatesEmployeeStream(command)) {
+    const { state } = await getStreamSessionResponse();
+
+    if (state.activeSession === null) {
+      failBoundary(
+        reconciliationCoordinator,
+        "NO_ACTIVE_STREAM",
+        "Start or resume a tracker stream before changing inventory mappings.",
+      );
+    }
+
+    if (command.streamId !== state.activeSession.streamId) {
+      failBoundary(
+        reconciliationCoordinator,
+        "ACTIVE_STREAM_MISMATCH",
+        "The requested inventory change does not belong to the active tracker stream.",
+      );
+    }
+
+    await pinStreamToPreparedInventory(state.activeSession.streamId);
+  }
+
+  return stateCoordinator.dispatch(command);
+}
+
+function dispatchBoundaryCommand(boundary, command) {
+  if (boundary.protocol === streamSessionCoordinator) {
+    return dispatchStreamSessionCommand(command);
+  }
+
+  if (boundary.protocol === reconciliationCoordinator) {
+    return dispatchReconciliationCommand(command);
+  }
+
+  return boundary.coordinator.dispatch(command);
 }
 
 function serializeError(error, boundary) {
@@ -282,7 +522,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const command = validateMessage(message, boundary);
 
       validateSender(sender, command, boundary);
-      return boundary.coordinator.dispatch(command);
+      return dispatchBoundaryCommand(boundary, command);
     });
 
   messageTail = execution.catch(() => undefined);

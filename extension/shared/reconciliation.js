@@ -11,9 +11,23 @@
   function createReconciliationModule() {
     "use strict";
 
-    const STATE_VERSION = 3;
+    const STATE_VERSION = 4;
     const LEGACY_STATE_VERSION = 1;
     const OBSERVED_PAYMENT_STATE_VERSION = 2;
+    const CANCELED_PAYMENT_STATE_VERSION = 3;
+    const LEGACY_INVENTORY_BASELINE_ID =
+      "inventory-baseline:00000000-0000-4000-8000-000000000000";
+    const INVENTORY_BASELINE_ID_PATTERN =
+      /^inventory-baseline:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const SOURCE_FINGERPRINT_PATTERN = /^fnv1a64:[0-9a-f]{16}$/;
+    const IMPORTED_SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
+    const IMPORTED_TEXT_LIMITS = Object.freeze({
+      item: 160,
+      style: 160,
+      size: 80,
+    });
+    const UNSAFE_CONTROL_CHARACTER_PATTERN =
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
     const MAX_OBSERVED_VARIATIONS = 1000;
     const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
@@ -45,7 +59,7 @@
       if (
         !state ||
         state.version !== STATE_VERSION ||
-        !Array.isArray(state.inventory) ||
+        !Array.isArray(state.inventoryBaselines) ||
         !Array.isArray(state.streams)
       ) {
         fail("INVALID_STATE", "A valid reconciliation state is required.");
@@ -190,7 +204,7 @@
       }
 
       if (conflict.code === "payment_completed_after_canceled") {
-        if (stateVersion !== STATE_VERSION) {
+        if (stateVersion < CANCELED_PAYMENT_STATE_VERSION) {
           failInvalidState(`${path}.code is not supported by this state version.`);
         }
 
@@ -259,7 +273,8 @@
         failInvalidState(`${path}.mappingStatus is not supported.`);
       }
 
-      const supportedPaymentStatuses = stateVersion === STATE_VERSION
+      const supportedPaymentStatuses =
+        stateVersion >= CANCELED_PAYMENT_STATE_VERSION
         ? ["canceled", "payment_complete", "unknown"]
         : ["payment_complete", "unknown"];
 
@@ -307,7 +322,7 @@
       }
 
       if (
-        stateVersion === STATE_VERSION &&
+        stateVersion >= CANCELED_PAYMENT_STATE_VERSION &&
         observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.CANCELED &&
         paymentStatus !== "canceled"
       ) {
@@ -420,13 +435,236 @@
       return hydratedAuction;
     }
 
+    function hydrateLegacyInventory(items) {
+      if (!Array.isArray(items)) {
+        failInvalidState("state.inventory must be an array.");
+      }
+
+      const seenSkus = new Set();
+
+      return items.map((item, index) => {
+        const path = `state.inventory[${index}]`;
+
+        requirePersistedRecord(item, path, [
+          "name",
+          "quantityReceived",
+          "size",
+          "sku",
+          "unitCostCents",
+        ]);
+        const hydratedItem = {
+          sku: requirePersistedString(item.sku, `${path}.sku`),
+          item: requirePersistedString(item.name, `${path}.name`),
+          style: "",
+          size: requirePersistedString(item.size, `${path}.size`, true),
+          quantityOnHandAtImport: requirePersistedInteger(
+            item.quantityReceived,
+            `${path}.quantityReceived`,
+            0,
+          ),
+          unitCostCents: requirePersistedInteger(
+            item.unitCostCents,
+            `${path}.unitCostCents`,
+            0,
+          ),
+        };
+
+        if (seenSkus.has(hydratedItem.sku)) {
+          failInvalidState(
+            `state.inventory contains duplicate SKU ${hydratedItem.sku}.`,
+          );
+        }
+
+        seenSkus.add(hydratedItem.sku);
+        return hydratedItem;
+      });
+    }
+
+    function hydrateBaselineInventory(items, path, allowEmptySize = false) {
+      if (!Array.isArray(items)) {
+        failInvalidState(`${path} must be an array.`);
+      }
+
+      const seenSkus = new Set();
+
+      return items.map((item, index) => {
+        const itemPath = `${path}[${index}]`;
+
+        requirePersistedRecord(item, itemPath, [
+          "item",
+          "quantityOnHandAtImport",
+          "size",
+          "sku",
+          "style",
+          "unitCostCents",
+        ]);
+        const hydratedItem = {
+          sku: requirePersistedString(item.sku, `${itemPath}.sku`),
+          item: requirePersistedString(item.item, `${itemPath}.item`),
+          style: requirePersistedString(
+            item.style,
+            `${itemPath}.style`,
+            true,
+          ),
+          size: requirePersistedString(
+            item.size,
+            `${itemPath}.size`,
+            allowEmptySize,
+          ),
+          quantityOnHandAtImport: requirePersistedInteger(
+            item.quantityOnHandAtImport,
+            `${itemPath}.quantityOnHandAtImport`,
+            0,
+          ),
+          unitCostCents: requirePersistedInteger(
+            item.unitCostCents,
+            `${itemPath}.unitCostCents`,
+            0,
+          ),
+        };
+
+        if (seenSkus.has(hydratedItem.sku)) {
+          failInvalidState(`${path} contains duplicate SKU ${hydratedItem.sku}.`);
+        }
+
+        seenSkus.add(hydratedItem.sku);
+        return hydratedItem;
+      });
+    }
+
+    function importedInventoryContractIssue(inventory) {
+      const identities = new Set();
+      let totalQuantity = 0n;
+      let totalInventoryCost = 0n;
+
+      for (const entry of inventory) {
+        if (!IMPORTED_SKU_PATTERN.test(entry.sku)) {
+          return `SKU ${entry.sku} does not match the imported inventory contract.`;
+        }
+
+        for (const [field, allowEmpty] of [
+          ["item", false],
+          ["style", true],
+          ["size", false],
+        ]) {
+          const value = entry[field];
+          const canonical = value
+            .normalize("NFC")
+            .trim()
+            .replace(/\s+/g, " ");
+
+          if (
+            value !== canonical ||
+            (!allowEmpty && value === "") ||
+            value.startsWith("=") ||
+            value.length > IMPORTED_TEXT_LIMITS[field] ||
+            UNSAFE_CONTROL_CHARACTER_PATTERN.test(value)
+          ) {
+            return `${field} does not match the imported inventory contract.`;
+          }
+        }
+
+        const identity = [entry.item, entry.style, entry.size]
+          .map((value) => value.toLocaleLowerCase("en-US"))
+          .join("\u0000");
+
+        if (identities.has(identity)) {
+          return "item, style, and size must identify a unique inventory entry.";
+        }
+
+        identities.add(identity);
+        totalQuantity += BigInt(entry.quantityOnHandAtImport);
+        totalInventoryCost +=
+          BigInt(entry.quantityOnHandAtImport) * BigInt(entry.unitCostCents);
+      }
+
+      if (
+        totalQuantity > BigInt(Number.MAX_SAFE_INTEGER) ||
+        totalInventoryCost > BigInt(Number.MAX_SAFE_INTEGER)
+      ) {
+        return "Inventory quantity and cost totals must remain safe integers.";
+      }
+
+      return null;
+    }
+
+    function hydrateStreams(candidate, inventoryBaselines, legacy) {
+      if (!Array.isArray(candidate.streams)) {
+        failInvalidState("state.streams must be an array.");
+      }
+
+      const baselinesById = new Map(
+        inventoryBaselines.map((baseline) => [baseline.baselineId, baseline]),
+      );
+      const streamIds = new Set();
+
+      return candidate.streams.map((stream, streamIndex) => {
+        const path = `state.streams[${streamIndex}]`;
+        const expectedKeys = legacy
+          ? ["streamId", "variations"]
+          : ["inventoryBaselineId", "streamId", "variations"];
+
+        requirePersistedRecord(stream, path, expectedKeys);
+        const streamId = requirePersistedString(
+          stream.streamId,
+          `${path}.streamId`,
+        );
+
+        if (streamIds.has(streamId)) {
+          failInvalidState(`state.streams contains duplicate stream ${streamId}.`);
+        }
+
+        streamIds.add(streamId);
+        const inventoryBaselineId = legacy
+          ? LEGACY_INVENTORY_BASELINE_ID
+          : requirePersistedString(
+              stream.inventoryBaselineId,
+              `${path}.inventoryBaselineId`,
+            );
+        const baseline = baselinesById.get(inventoryBaselineId);
+
+        if (!baseline) {
+          failInvalidState(
+            `${path}.inventoryBaselineId does not reference an inventory baseline.`,
+          );
+        }
+
+        if (!Array.isArray(stream.variations)) {
+          failInvalidState(`${path}.variations must be an array.`);
+        }
+
+        const inventoryBySku = new Map(
+          baseline.inventory.map((item) => [item.sku, item]),
+        );
+        const variationNumbers = new Set();
+        const variations = stream.variations.map((auction, auctionIndex) => {
+          const hydratedAuction = hydratePersistedAuction(
+            auction,
+            `${path}.variations[${auctionIndex}]`,
+            streamId,
+            inventoryBySku,
+            candidate.version,
+          );
+
+          if (variationNumbers.has(hydratedAuction.variationNumber)) {
+            failInvalidState(
+              `${path}.variations contains duplicate variation ${hydratedAuction.variationNumber}.`,
+            );
+          }
+
+          variationNumbers.add(hydratedAuction.variationNumber);
+          return hydratedAuction;
+        });
+
+        return { streamId, inventoryBaselineId, variations };
+      });
+    }
+
     function hydrateReconciliationState(candidate) {
       try {
-        requirePersistedRecord(candidate, "state", [
-          "inventory",
-          "streams",
-          "version",
-        ]);
+        if (!isPlainRecord(candidate)) {
+          failInvalidState("state must be an object.");
+        }
 
         if (!Number.isSafeInteger(candidate.version)) {
           failInvalidState("state.version must be a safe integer.");
@@ -435,6 +673,7 @@
         if (
           candidate.version !== LEGACY_STATE_VERSION &&
           candidate.version !== OBSERVED_PAYMENT_STATE_VERSION &&
+          candidate.version !== CANCELED_PAYMENT_STATE_VERSION &&
           candidate.version !== STATE_VERSION
         ) {
           fail(
@@ -443,95 +682,177 @@
           );
         }
 
-        if (!Array.isArray(candidate.inventory)) {
-          failInvalidState("state.inventory must be an array.");
-        }
-
-        if (!Array.isArray(candidate.streams)) {
-          failInvalidState("state.streams must be an array.");
-        }
-
-        const inventorySkus = new Set();
-        const inventory = candidate.inventory.map((item, index) => {
-          const path = `state.inventory[${index}]`;
-
-          requirePersistedRecord(item, path, [
-            "name",
-            "quantityReceived",
-            "size",
-            "sku",
-            "unitCostCents",
+        if (candidate.version < STATE_VERSION) {
+          requirePersistedRecord(candidate, "state", [
+            "inventory",
+            "streams",
+            "version",
           ]);
-          const hydratedItem = {
-            sku: requirePersistedString(item.sku, `${path}.sku`),
-            name: requirePersistedString(item.name, `${path}.name`),
-            size: requirePersistedString(item.size, `${path}.size`, true),
-            quantityReceived: requirePersistedInteger(
-              item.quantityReceived,
-              `${path}.quantityReceived`,
-              0,
-            ),
-            unitCostCents: requirePersistedInteger(
-              item.unitCostCents,
-              `${path}.unitCostCents`,
-              0,
-            ),
+          const inventory = hydrateLegacyInventory(candidate.inventory);
+          const inventoryBaselines = [{
+            baselineId: LEGACY_INVENTORY_BASELINE_ID,
+            sourceFingerprint: null,
+            inventory,
+          }];
+          const streams = hydrateStreams(candidate, inventoryBaselines, true);
+
+          return {
+            version: STATE_VERSION,
+            activeInventoryBaselineId: LEGACY_INVENTORY_BASELINE_ID,
+            inventoryBaselines,
+            streams,
           };
+        }
 
-          if (inventorySkus.has(hydratedItem.sku)) {
-            failInvalidState(`state.inventory contains duplicate SKU ${hydratedItem.sku}.`);
-          }
+        requirePersistedRecord(candidate, "state", [
+          "activeInventoryBaselineId",
+          "inventoryBaselines",
+          "streams",
+          "version",
+        ]);
 
-          inventorySkus.add(hydratedItem.sku);
-          return hydratedItem;
-        });
-        const inventoryBySku = new Map(
-          inventory.map((item) => [item.sku, item]),
-        );
-        const streamIds = new Set();
-        const streams = candidate.streams.map((stream, streamIndex) => {
-          const path = `state.streams[${streamIndex}]`;
+        if (!Array.isArray(candidate.inventoryBaselines)) {
+          failInvalidState("state.inventoryBaselines must be an array.");
+        }
 
-          requirePersistedRecord(stream, path, ["streamId", "variations"]);
-          const streamId = requirePersistedString(
-            stream.streamId,
-            `${path}.streamId`,
-          );
+        const baselineIds = new Set();
+        const inventoryBaselines = candidate.inventoryBaselines.map(
+          (baseline, baselineIndex) => {
+            const path = `state.inventoryBaselines[${baselineIndex}]`;
 
-          if (streamIds.has(streamId)) {
-            failInvalidState(`state.streams contains duplicate stream ${streamId}.`);
-          }
-
-          streamIds.add(streamId);
-
-          if (!Array.isArray(stream.variations)) {
-            failInvalidState(`${path}.variations must be an array.`);
-          }
-
-          const variationNumbers = new Set();
-          const variations = stream.variations.map((auction, auctionIndex) => {
-            const hydratedAuction = hydratePersistedAuction(
-              auction,
-              `${path}.variations[${auctionIndex}]`,
-              streamId,
-              inventoryBySku,
-              candidate.version,
+            requirePersistedRecord(baseline, path, [
+              "baselineId",
+              "inventory",
+              "sourceFingerprint",
+            ]);
+            const baselineId = requirePersistedString(
+              baseline.baselineId,
+              `${path}.baselineId`,
             );
 
-            if (variationNumbers.has(hydratedAuction.variationNumber)) {
+            if (!INVENTORY_BASELINE_ID_PATTERN.test(baselineId)) {
+              failInvalidState(`${path}.baselineId is not supported.`);
+            }
+
+            if (baselineIds.has(baselineId)) {
               failInvalidState(
-                `${path}.variations contains duplicate variation ${hydratedAuction.variationNumber}.`,
+                `state.inventoryBaselines contains duplicate baseline ${baselineId}.`,
               );
             }
 
-            variationNumbers.add(hydratedAuction.variationNumber);
-            return hydratedAuction;
+            baselineIds.add(baselineId);
+            let sourceFingerprint = null;
+
+            if (baseline.sourceFingerprint !== null) {
+              sourceFingerprint = requirePersistedString(
+                baseline.sourceFingerprint,
+                `${path}.sourceFingerprint`,
+              );
+
+              if (!SOURCE_FINGERPRINT_PATTERN.test(sourceFingerprint)) {
+                failInvalidState(`${path}.sourceFingerprint is not supported.`);
+              }
+            }
+
+            if (
+              (baselineId === LEGACY_INVENTORY_BASELINE_ID) !==
+              (sourceFingerprint === null)
+            ) {
+              failInvalidState(
+                `${path} has inconsistent legacy baseline provenance.`,
+              );
+            }
+
+            const inventory = hydrateBaselineInventory(
+              baseline.inventory,
+              `${path}.inventory`,
+              sourceFingerprint === null,
+            );
+
+            if (sourceFingerprint !== null) {
+              if (inventory.length === 0) {
+                failInvalidState(`${path}.inventory must not be empty.`);
+              }
+
+              const contractIssue = importedInventoryContractIssue(inventory);
+
+              if (contractIssue !== null) {
+                failInvalidState(`${path}.inventory ${contractIssue}`);
+              }
+            }
+
+            return {
+              baselineId,
+              sourceFingerprint,
+              inventory,
+            };
+          },
+        );
+        const importedSkuIdentities = new Map();
+        const importedIdentitySkus = new Map();
+
+        inventoryBaselines
+          .filter((baseline) => baseline.sourceFingerprint !== null)
+          .forEach((baseline, baselineIndex) => {
+            baseline.inventory.forEach((entry) => {
+              const identity = [entry.item, entry.style, entry.size]
+                .map((value) => value.toLocaleLowerCase("en-US"))
+                .join("\u0000");
+              const previousIdentity = importedSkuIdentities.get(entry.sku);
+              const previousSku = importedIdentitySkus.get(identity);
+
+              if (previousIdentity !== undefined && previousIdentity !== identity) {
+                failInvalidState(
+                  `state.inventoryBaselines[${baselineIndex}] recycles SKU ${entry.sku}.`,
+                );
+              }
+
+              if (previousSku !== undefined && previousSku !== entry.sku) {
+                failInvalidState(
+                  `state.inventoryBaselines[${baselineIndex}] reassigns an inventory identity.`,
+                );
+              }
+
+              importedSkuIdentities.set(entry.sku, identity);
+              importedIdentitySkus.set(identity, entry.sku);
+            });
           });
+        let activeInventoryBaselineId = null;
 
-          return { streamId, variations };
-        });
+        if (candidate.activeInventoryBaselineId !== null) {
+          activeInventoryBaselineId = requirePersistedString(
+            candidate.activeInventoryBaselineId,
+            "state.activeInventoryBaselineId",
+          );
 
-        return { version: STATE_VERSION, inventory, streams };
+          if (!baselineIds.has(activeInventoryBaselineId)) {
+            failInvalidState(
+              "state.activeInventoryBaselineId does not reference an inventory baseline.",
+            );
+          }
+        }
+
+        if (
+          (inventoryBaselines.length === 0) !==
+          (activeInventoryBaselineId === null)
+        ) {
+          failInvalidState(
+            "state.activeInventoryBaselineId must identify the active baseline.",
+          );
+        }
+
+        const streams = hydrateStreams(candidate, inventoryBaselines, false);
+
+        if (inventoryBaselines.length === 0 && streams.length > 0) {
+          failInvalidState("state cannot contain streams without inventory baselines.");
+        }
+
+        return {
+          version: STATE_VERSION,
+          activeInventoryBaselineId,
+          inventoryBaselines,
+          streams,
+        };
       } catch (error) {
         if (
           error instanceof ReconciliationError &&
@@ -547,34 +868,109 @@
       }
     }
 
-    function cloneInventoryItem(item, index) {
-      if (!item || typeof item !== "object" || Array.isArray(item)) {
+    function cloneLegacyInventoryItem(item, index) {
+      if (!isPlainRecord(item)) {
         fail("INVALID_INVENTORY", `Inventory item ${index + 1} must be an object.`);
       }
 
-      const sku = requireNonEmptyString(item.sku, `inventory[${index}].sku`);
-      const name = requireNonEmptyString(
-        item.name ?? sku,
-        `inventory[${index}].name`,
-      );
-      const size = String(item.size ?? "").trim();
-      const quantityReceived = requireSafeInteger(
-        item.quantityReceived,
-        `inventory[${index}].quantityReceived`,
-        0,
-      );
-      const unitCostCents = requireSafeInteger(
-        item.unitCostCents,
-        `inventory[${index}].unitCostCents`,
-        0,
-      );
+      return {
+        sku: requireNonEmptyString(item.sku, `inventory[${index}].sku`),
+        item: requireNonEmptyString(
+          item.item ?? item.name ?? item.sku,
+          `inventory[${index}].item`,
+        ),
+        style: String(item.style ?? "").trim(),
+        size: String(item.size ?? "").trim(),
+        quantityOnHandAtImport: requireSafeInteger(
+          item.quantityOnHandAtImport ?? item.quantityReceived,
+          `inventory[${index}].quantityOnHandAtImport`,
+          0,
+        ),
+        unitCostCents: requireSafeInteger(
+          item.unitCostCents,
+          `inventory[${index}].unitCostCents`,
+          0,
+        ),
+      };
+    }
+
+    function cloneBaselineInventoryItem(item, index) {
+      if (!isPlainRecord(item)) {
+        fail(
+          "INVALID_INVENTORY_BASELINE",
+          `inventory[${index}] must be an object.`,
+        );
+      }
+
+      const expectedKeys = [
+        "item",
+        "quantityOnHandAtImport",
+        "size",
+        "sku",
+        "style",
+        "unitCostCents",
+      ].sort();
+      const actualKeys = Object.keys(item).sort();
+
+      if (
+        actualKeys.length !== expectedKeys.length ||
+        actualKeys.some((key, keyIndex) => key !== expectedKeys[keyIndex])
+      ) {
+        fail(
+          "INVALID_INVENTORY_BASELINE",
+          `inventory[${index}] has an invalid shape.`,
+        );
+      }
+
+
+      if (
+        typeof item.sku !== "string" ||
+        typeof item.item !== "string" ||
+        typeof item.style !== "string" ||
+        typeof item.size !== "string"
+      ) {
+        fail(
+          "INVALID_INVENTORY_BASELINE",
+          `inventory[${index}] text fields must be strings.`,
+        );
+      }
 
       return {
-        sku,
-        name,
-        size,
-        quantityReceived,
-        unitCostCents,
+        sku: item.sku,
+        item: item.item,
+        style: item.style,
+        size: item.size,
+        quantityOnHandAtImport: requireSafeInteger(
+          item.quantityOnHandAtImport,
+          `inventory[${index}].quantityOnHandAtImport`,
+          0,
+        ),
+        unitCostCents: requireSafeInteger(
+          item.unitCostCents,
+          `inventory[${index}].unitCostCents`,
+          0,
+        ),
+      };
+    }
+
+    function requireUniqueInventorySkus(inventory) {
+      const seenSkus = new Set();
+
+      inventory.forEach((item) => {
+        if (seenSkus.has(item.sku)) {
+          fail("DUPLICATE_SKU", `Inventory SKU ${item.sku} appears more than once.`);
+        }
+
+        seenSkus.add(item.sku);
+      });
+    }
+
+    function createEmptyReconciliationState() {
+      return {
+        version: STATE_VERSION,
+        activeInventoryBaselineId: null,
+        inventoryBaselines: [],
+        streams: [],
       };
     }
 
@@ -583,41 +979,247 @@
         fail("INVALID_INVENTORY", "Inventory must be an array.");
       }
 
-      const normalizedInventory = inventory.map(cloneInventoryItem);
-      const seenSkus = new Set();
+      const normalizedInventory = inventory.map(cloneLegacyInventoryItem);
 
-      normalizedInventory.forEach((item) => {
-        if (seenSkus.has(item.sku)) {
-          fail("DUPLICATE_SKU", `Inventory SKU ${item.sku} appears more than once.`);
-        }
-
-        seenSkus.add(item.sku);
-      });
+      requireUniqueInventorySkus(normalizedInventory);
 
       return {
         version: STATE_VERSION,
-        inventory: normalizedInventory,
+        activeInventoryBaselineId: LEGACY_INVENTORY_BASELINE_ID,
+        inventoryBaselines: [{
+          baselineId: LEGACY_INVENTORY_BASELINE_ID,
+          sourceFingerprint: null,
+          inventory: normalizedInventory,
+        }],
         streams: [],
       };
     }
 
-    function findInventoryItem(state, sku) {
-      return state.inventory.find((item) => item.sku === sku) ?? null;
+    function createInventoryBaseline(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_INVENTORY_BASELINE", "An inventory baseline is required.");
+      }
+
+      const actualKeys = Object.keys(input).sort();
+      const expectedKeys = [
+        "baselineId",
+        "inventory",
+        "sourceFingerprint",
+      ].sort();
+
+      if (
+        actualKeys.length !== expectedKeys.length ||
+        actualKeys.some((key, index) => key !== expectedKeys[index])
+      ) {
+        fail("INVALID_INVENTORY_BASELINE", "The inventory baseline has an invalid shape.");
+      }
+
+      const baselineId = requireNonEmptyString(input.baselineId, "baselineId");
+
+      if (
+        !INVENTORY_BASELINE_ID_PATTERN.test(baselineId) ||
+        baselineId === LEGACY_INVENTORY_BASELINE_ID
+      ) {
+        fail("INVALID_BASELINE_ID", "baselineId must be an inventory baseline UUID.");
+      }
+
+      const sourceFingerprint = requireNonEmptyString(
+        input.sourceFingerprint,
+        "sourceFingerprint",
+      );
+
+      if (!SOURCE_FINGERPRINT_PATTERN.test(sourceFingerprint)) {
+        fail(
+          "INVALID_SOURCE_FINGERPRINT",
+          "sourceFingerprint must be a supported inventory fingerprint.",
+        );
+      }
+
+      if (!Array.isArray(input.inventory) || input.inventory.length === 0) {
+        fail(
+          "INVALID_INVENTORY_BASELINE",
+          "inventory must contain at least one entry.",
+        );
+      }
+
+      const inventory = input.inventory.map(cloneBaselineInventoryItem);
+
+      requireUniqueInventorySkus(inventory);
+      const contractIssue = importedInventoryContractIssue(inventory);
+
+      if (contractIssue !== null) {
+        fail("INVALID_INVENTORY_BASELINE", contractIssue);
+      }
+
+      const candidate = { baselineId, sourceFingerprint, inventory };
+      const existing = state.inventoryBaselines.find(
+        (baseline) => baseline.baselineId === baselineId,
+      );
+
+      if (existing) {
+        if (JSON.stringify(existing) === JSON.stringify(candidate)) {
+          return { status: "already_exists", baselineId };
+        }
+
+        fail(
+          "BASELINE_ID_CONFLICT",
+          "The inventory baseline ID already identifies different inventory.",
+        );
+      }
+
+      const importedHistory = state.inventoryBaselines.filter(
+        (baseline) => baseline.sourceFingerprint !== null,
+      );
+
+      for (const historicalBaseline of importedHistory) {
+        for (const historicalItem of historicalBaseline.inventory) {
+          const matchingSku = inventory.find(
+            (item) => item.sku === historicalItem.sku,
+          );
+
+          if (
+            matchingSku &&
+            (
+              matchingSku.item !== historicalItem.item ||
+              matchingSku.style !== historicalItem.style ||
+              matchingSku.size !== historicalItem.size
+            )
+          ) {
+            fail(
+              "SKU_IDENTITY_CONFLICT",
+              `Inventory SKU ${historicalItem.sku} cannot identify a different item, style, or size.`,
+            );
+          }
+
+          const historicalIdentity = [
+            historicalItem.item,
+            historicalItem.style,
+            historicalItem.size,
+          ].map((value) => value.toLocaleLowerCase("en-US")).join("\u0000");
+          const reassignedIdentity = inventory.find((item) =>
+            [item.item, item.style, item.size]
+              .map((value) => value.toLocaleLowerCase("en-US"))
+              .join("\u0000") === historicalIdentity &&
+            item.sku !== historicalItem.sku,
+          );
+
+          if (reassignedIdentity) {
+            fail(
+              "INVENTORY_IDENTITY_CONFLICT",
+              "An imported item, style, and size cannot be reassigned to another SKU.",
+            );
+          }
+        }
+      }
+
+      state.inventoryBaselines.push(candidate);
+      state.activeInventoryBaselineId = baselineId;
+
+      return { status: "created", baselineId };
+    }
+
+    function findInventoryBaseline(state, baselineId) {
+      return state.inventoryBaselines.find(
+        (baseline) => baseline.baselineId === baselineId,
+      ) ?? null;
+    }
+
+    function requireActiveInventoryBaseline(state) {
+      const baseline = findInventoryBaseline(
+        state,
+        state.activeInventoryBaselineId,
+      );
+
+      if (!baseline) {
+        fail(
+          "INVENTORY_BASELINE_NOT_INITIALIZED",
+          "An inventory baseline must be active before a stream can be pinned.",
+        );
+      }
+
+      return baseline;
+    }
+
+    function findInventoryItem(state, sku, baselineId) {
+      const baseline = findInventoryBaseline(
+        state,
+        baselineId ?? state.activeInventoryBaselineId,
+      );
+
+      return baseline?.inventory.find((item) => item.sku === sku) ?? null;
     }
 
     function findStream(state, streamId) {
       return state.streams.find((stream) => stream.streamId === streamId) ?? null;
     }
 
+    function pinStreamToInventoryBaseline(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A stream pin input is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const baseline = requireActiveInventoryBaseline(state);
+      const existing = findStream(state, streamId);
+
+      if (existing) {
+        if (existing.inventoryBaselineId !== baseline.baselineId) {
+          fail(
+            "STREAM_BASELINE_CONFLICT",
+            "A stream's inventory baseline cannot be changed after it is pinned.",
+          );
+        }
+
+        return { status: "already_pinned", baselineId: baseline.baselineId };
+      }
+
+      state.streams.push({
+        streamId,
+        inventoryBaselineId: baseline.baselineId,
+        variations: [],
+      });
+
+      return { status: "pinned", baselineId: baseline.baselineId };
+    }
+
     function getOrCreateStream(state, streamId) {
       let stream = findStream(state, streamId);
 
       if (!stream) {
-        stream = { streamId, variations: [] };
+        const baseline = requireActiveInventoryBaseline(state);
+
+        stream = {
+          streamId,
+          inventoryBaselineId: baseline.baselineId,
+          variations: [],
+        };
         state.streams.push(stream);
       }
 
       return stream;
+    }
+
+    function getInventoryBaselineForStream(state, streamId) {
+      const stream = findStream(state, streamId);
+
+      if (!stream) {
+        return requireActiveInventoryBaseline(state);
+      }
+
+      const baseline = findInventoryBaseline(
+        state,
+        stream.inventoryBaselineId,
+      );
+
+      if (!baseline) {
+        fail("INVALID_STATE", "The stream inventory baseline is unavailable.");
+      }
+
+      return baseline;
     }
 
     function findAuction(state, streamId, variationNumber) {
@@ -670,6 +1272,7 @@
       auction.committedUnitCostCents = findInventoryItem(
         state,
         auction.sku,
+        getInventoryBaselineForStream(state, auction.streamId).baselineId,
       ).unitCostCents;
     }
 
@@ -697,29 +1300,35 @@
       return "unmapped";
     }
 
-    function countCommittedUnits(state, sku) {
+    function countCommittedUnits(state, baselineId, sku) {
       return state.streams.reduce(
         (streamTotal, stream) =>
           streamTotal +
+          (stream.inventoryBaselineId === baselineId
+            ?
           stream.variations.filter(
             (auction) =>
               auction.sku === sku &&
               auction.paymentStatus === "payment_complete",
-          ).length,
+          ).length
+            : 0),
         0,
       );
     }
 
-    function countReservedUnits(state, sku) {
+    function countReservedUnits(state, baselineId, sku) {
       return state.streams.reduce(
         (streamTotal, stream) =>
           streamTotal +
+          (stream.inventoryBaselineId === baselineId
+            ?
           stream.variations.filter(
             (auction) =>
               auction.sku === sku &&
               auction.paymentStatus === "unknown" &&
               auction.mappingStatus === "mapped",
-          ).length,
+          ).length
+            : 0),
         0,
       );
     }
@@ -732,32 +1341,57 @@
       }
 
       const sku = requireNonEmptyString(input.sku, "sku");
-      const inventoryItem = findInventoryItem(state, sku);
+      const hasStreamId = input.streamId !== undefined;
+      const hasVariationNumber = input.variationNumber !== undefined;
+      const hasInventoryBaselineId =
+        input.inventoryBaselineId !== undefined;
+
+      if (
+        hasStreamId !== hasVariationNumber ||
+        (hasInventoryBaselineId && hasStreamId)
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          "Provide either inventoryBaselineId or streamId and variationNumber together.",
+        );
+      }
+
+      const streamId = hasStreamId ? requireStreamId(input.streamId) : null;
+      let baseline;
+
+      if (hasInventoryBaselineId) {
+        const baselineId = requireNonEmptyString(
+          input.inventoryBaselineId,
+          "inventoryBaselineId",
+        );
+
+        baseline = findInventoryBaseline(state, baselineId);
+
+        if (!baseline) {
+          fail("UNKNOWN_INVENTORY_BASELINE", "The inventory baseline does not exist.");
+        }
+      } else {
+        baseline = hasStreamId
+          ? getInventoryBaselineForStream(state, streamId)
+          : requireActiveInventoryBaseline(state);
+      }
+      const inventoryItem = findInventoryItem(state, sku, baseline.baselineId);
 
       if (!inventoryItem) {
         fail("UNKNOWN_SKU", `Inventory does not contain SKU ${sku}.`);
       }
 
-      const hasStreamId = input.streamId !== undefined;
-      const hasVariationNumber = input.variationNumber !== undefined;
-
-      if (hasStreamId !== hasVariationNumber) {
-        fail(
-          "INVALID_ARGUMENT",
-          "streamId and variationNumber must be provided together.",
-        );
-      }
-
       const currentAuction = hasStreamId
         ? findAuction(
             state,
-            requireStreamId(input.streamId),
+            streamId,
             requireVariationNumber(input.variationNumber),
           )
         : null;
-      const soldQuantity = countCommittedUnits(state, sku);
-      const reservedQuantity = countReservedUnits(state, sku);
-      const remainingQuantity = inventoryItem.quantityReceived - soldQuantity;
+      const soldQuantity = countCommittedUnits(state, baseline.baselineId, sku);
+      const reservedQuantity = countReservedUnits(state, baseline.baselineId, sku);
+      const remainingQuantity =
+        inventoryItem.quantityOnHandAtImport - soldQuantity;
       const availableToTagQuantity = remainingQuantity - reservedQuantity;
       const oversoldQuantity = Math.max(0, -remainingQuantity);
       const reservationShortfallQuantity = Math.max(
@@ -779,7 +1413,14 @@
 
       return {
         sku,
-        quantityReceived: inventoryItem.quantityReceived,
+        name: inventoryItem.style
+          ? `${inventoryItem.item} - ${inventoryItem.style}`
+          : inventoryItem.item,
+        item: inventoryItem.item,
+        style: inventoryItem.style,
+        size: inventoryItem.size,
+        quantityOnHandAtImport: inventoryItem.quantityOnHandAtImport,
+        quantityReceived: inventoryItem.quantityOnHandAtImport,
         soldQuantity,
         reservedQuantity,
         remainingQuantity,
@@ -850,7 +1491,8 @@
       requireState(state);
       const key = validateAuctionKey(input);
       const sku = requireNonEmptyString(input.sku, "sku");
-      const inventoryItem = findInventoryItem(state, sku);
+      const baseline = getInventoryBaselineForStream(state, key.streamId);
+      const inventoryItem = findInventoryItem(state, sku, baseline.baselineId);
 
       if (!inventoryItem) {
         fail("UNKNOWN_SKU", `Inventory does not contain SKU ${sku}.`);
@@ -1211,17 +1853,6 @@
       return auction ? createAuctionView(state, auction) : null;
     }
 
-    function selectedStreams(state, options) {
-      if (options.streamId === undefined) {
-        return state.streams;
-      }
-
-      const streamId = requireStreamId(options.streamId);
-      const stream = findStream(state, streamId);
-
-      return stream ? [stream] : [];
-    }
-
     function calculateSummary(state, options = {}) {
       requireState(state);
 
@@ -1229,25 +1860,38 @@
         fail("INVALID_ARGUMENT", "Summary options must be an object.");
       }
 
-      const allAuctions = state.streams
+      const selectedStream = options.streamId === undefined
+        ? null
+        : findStream(state, requireStreamId(options.streamId));
+      const baseline = selectedStream
+        ? getInventoryBaselineForStream(state, selectedStream.streamId)
+        : requireActiveInventoryBaseline(state);
+      const selectedStreams = options.streamId === undefined
+        ? state.streams.filter(
+            (stream) => stream.inventoryBaselineId === baseline.baselineId,
+          )
+        : selectedStream
+          ? [selectedStream]
+          : [];
+      const auctions = selectedStreams
         .flatMap((stream) => stream.variations)
-        .map((auction) => createAuctionView(state, auction));
-      const selectedStreamIds = new Set(
-        selectedStreams(state, options).map((stream) => stream.streamId),
-      );
-      const auctions = allAuctions
-        .filter((auction) => selectedStreamIds.has(auction.streamId))
+        .map((auction) => createAuctionView(state, auction))
         .sort(
           (left, right) =>
             left.streamId.localeCompare(right.streamId) ||
             left.variationNumber - right.variationNumber,
         );
 
-      const inventory = state.inventory.map((item) => {
-        const availability = getInventoryAvailability(state, { sku: item.sku });
+      const inventory = baseline.inventory.map((item) => {
+        const availability = getInventoryAvailability(state, {
+          sku: item.sku,
+          inventoryBaselineId: baseline.baselineId,
+        });
 
         return {
           ...item,
+          name: item.style ? `${item.item} - ${item.style}` : item.item,
+          quantityReceived: item.quantityOnHandAtImport,
           soldQuantity: availability.soldQuantity,
           reservedQuantity: availability.reservedQuantity,
           remainingQuantity: availability.remainingQuantity,
@@ -1257,9 +1901,11 @@
             availability.reservationShortfallQuantity,
         };
       });
-      const itemPerformance = state.inventory.map((item) => ({
+      const itemPerformance = baseline.inventory.map((item) => ({
         sku: item.sku,
-        name: item.name,
+        name: item.style ? `${item.item} - ${item.style}` : item.item,
+        item: item.item,
+        style: item.style,
         size: item.size,
         soldQuantity: 0,
         revenueCents: 0,
@@ -1351,7 +1997,8 @@
 
       return {
         streamId: options.streamId ?? null,
-        inventoryScope: "all_streams",
+        inventoryScope: "inventory_baseline",
+        inventoryBaselineId: baseline.baselineId,
         inventory,
         itemPerformance,
         auctions,
@@ -1365,9 +2012,12 @@
       OBSERVED_PAYMENT_STATUSES,
       ReconciliationError,
       STATE_VERSION,
+      createEmptyReconciliationState,
       createReconciliationState,
+      createInventoryBaseline,
       hydrateReconciliationState,
       getInventoryAvailability,
+      pinStreamToInventoryBaseline,
       observePaymentStatuses,
       observeVariations,
       mapVariation,

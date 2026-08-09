@@ -155,6 +155,36 @@ function createController(stateCoordinator, options = {}) {
   });
 }
 
+async function startPreparedStream(
+  stateCoordinator,
+  activeStreamCoordinator,
+  inventory = MOCK_INVENTORY,
+) {
+  const client = reconciliationClient.createReconciliationClient({
+    runtime: createRuntime(stateCoordinator),
+    protocol: reconciliationCoordinator,
+  });
+
+  await persistentTaggerController.ensureInventoryInitialized({
+    client,
+    inventory: clone(inventory),
+  });
+  const session = await activeStreamCoordinator.dispatch({
+    type: streamSessionCoordinator.COMMAND_TYPES.START_STREAM,
+  });
+  const streamId = session.state.activeSession?.streamId;
+
+  assert.equal(typeof streamId, "string");
+  await stateCoordinator.dispatch({
+    type:
+      reconciliationCoordinator.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+    streamId,
+  });
+
+  return session;
+}
+
 function inventoryEntry(snapshot, sku) {
   return snapshot.view.inventory.find((entry) => entry.sku === sku);
 }
@@ -192,7 +222,7 @@ test("live capture and persistent tagging reconcile six inventory entries withou
   );
   const controller = createController(firstStateCoordinator);
 
-  await activeStreamCoordinator.dispatch({ type: "start_stream" });
+  await startPreparedStream(firstStateCoordinator, activeStreamCoordinator);
   let snapshot = await controller.start();
 
   assert.equal(snapshot.phase, "ready");
@@ -415,7 +445,7 @@ test("a live canceled payment releases its reservation and a late priced complet
   );
   const controller = createController(stateCoordinator);
 
-  await activeStreamCoordinator.dispatch({ type: "start_stream" });
+  await startPreparedStream(stateCoordinator, activeStreamCoordinator);
   await controller.start();
   await capture.dispatch({
     type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,
@@ -571,7 +601,7 @@ test("two persistent taggers racing for the Nike hoodie last unit commit one res
     controllerOptions,
   );
 
-  await activeStreamCoordinator.dispatch({ type: "start_stream" });
+  await startPreparedStream(stateCoordinator, activeStreamCoordinator);
   await Promise.all([firstController.start(), secondController.start()]);
   await capture.dispatch({
     type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,

@@ -373,6 +373,16 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /streamSessionController\.subscribe\(renderStreamSnapshot\)/,
   );
+  assert.match(
+    panelSource,
+    /persistentTaggerControllerModule\.ensureInventoryInitialized\(\{[\s\S]+client: persistentClient,[\s\S]+inventory: viewModel\.MOCK_INVENTORY/,
+  );
+  assert.ok(
+    panelSource.indexOf(
+      "persistentTaggerControllerModule.ensureInventoryInitialized",
+    ) < panelSource.indexOf("streamSessionController.startNewStream()"),
+    "the opening inventory baseline must exist before stream start pins it",
+  );
   assert.match(panelSource, /streamSessionController\.startNewStream\(\)/);
   assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
@@ -413,6 +423,32 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(
     panelSource,
     /retryStreamSessionButton\.addEventListener\("click",[\s\S]+streamSessionStatus\.hidden = false;[\s\S]+streamSessionError\.hidden = true;[\s\S]+streamSessionStatus\.focus\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /const RECOVERABLE_STREAM_BASELINE_ERROR_CODES = new Set\(\[[\s\S]+"STATE_NOT_INITIALIZED"[\s\S]+"INVENTORY_BASELINE_REQUIRED"/,
+  );
+  assert.match(
+    panelSource,
+    /function shouldPrepareInventoryForStreamRetry\(snapshot\) \{[\s\S]+snapshot\?\.error\?\.scope === "load"[\s\S]+RECOVERABLE_STREAM_BASELINE_ERROR_CODES\.has\(snapshot\.error\.code\)/,
+  );
+  const streamRetrySource = panelSource.match(
+    /retryStreamSessionButton\.addEventListener\("click",[\s\S]*?retrySavedSessionButton\.addEventListener/,
+  )?.[0];
+  assert.ok(streamRetrySource);
+  assert.match(
+    streamRetrySource,
+    /shouldPrepareInventoryForStreamRetry\(streamSnapshot\)/,
+  );
+  assert.match(
+    streamRetrySource,
+    /if \(!prepareMissingInventory\) \{[\s\S]+return null;[\s\S]+persistentTaggerControllerModule\.ensureInventoryInitialized\(\{[\s\S]+client: persistentClient,[\s\S]+inventory: viewModel\.MOCK_INVENTORY/,
+  );
+  assert.ok(
+    streamRetrySource.indexOf(
+      "persistentTaggerControllerModule.ensureInventoryInitialized",
+    ) < streamRetrySource.indexOf("streamSessionController.retry()"),
+    "a missing baseline must initialize before retry reissues the saved stream GET",
   );
   assert.match(panelSource, /savedSessionError\.focus\(\)/);
   assert.match(panelSource, /pendingSavedAction \|\| savedSnapshot\?\.busy/);

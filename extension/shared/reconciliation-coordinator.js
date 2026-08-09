@@ -17,6 +17,9 @@
     const COMMAND_TYPES = Object.freeze({
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
+      CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
+      PIN_STREAM_TO_INVENTORY_BASELINE:
+        "pin_stream_to_inventory_baseline",
       OBSERVE_VARIATIONS: "observe_variations",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       MAP_VARIATION: "map_variation",
@@ -28,6 +31,16 @@
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STATE]: ["type"],
       [COMMAND_TYPES.INITIALIZE_STATE]: ["inventory", "type"],
+      [COMMAND_TYPES.CREATE_INVENTORY_BASELINE]: [
+        "baselineId",
+        "inventory",
+        "sourceFingerprint",
+        "type",
+      ],
+      [COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE]: [
+        "streamId",
+        "type",
+      ],
       [COMMAND_TYPES.OBSERVE_VARIATIONS]: [
         "streamId",
         "type",
@@ -68,12 +81,15 @@
     });
     const REQUIRED_RECONCILIATION_METHODS = [
       "createReconciliationState",
+      "createEmptyReconciliationState",
+      "createInventoryBaseline",
       "hydrateReconciliationState",
       "mapVariation",
       "markUnpaid",
       "observePaymentStatuses",
       "observeVariations",
       "recordPaymentComplete",
+      "pinStreamToInventoryBaseline",
       "unmapVariation",
       "undoMarkUnpaid",
     ];
@@ -171,6 +187,33 @@
         );
       }
 
+      if (command.type === COMMAND_TYPES.CREATE_INVENTORY_BASELINE) {
+        if (
+          typeof command.baselineId !== "string" ||
+          command.baselineId.trim() === "" ||
+          typeof command.sourceFingerprint !== "string" ||
+          command.sourceFingerprint.trim() === "" ||
+          !Array.isArray(command.inventory) ||
+          command.inventory.length === 0
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "create_inventory_baseline requires an ID, fingerprint, and nonempty inventory.",
+          );
+        }
+      }
+
+      if (
+        command.type === COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE &&
+        (typeof command.streamId !== "string" ||
+          command.streamId.trim() === "")
+      ) {
+        fail(
+          "INVALID_COMMAND",
+          "pin_stream_to_inventory_baseline requires a non-empty streamId.",
+        );
+      }
+
       if (command.type === COMMAND_TYPES.OBSERVE_VARIATIONS) {
         if (
           typeof command.streamId !== "string" ||
@@ -253,6 +296,13 @@
       return JSON.stringify(first) === JSON.stringify(second);
     }
 
+    function activeInventory(state) {
+      return state.inventoryBaselines.find(
+        (baseline) =>
+          baseline.baselineId === state.activeInventoryBaselineId,
+      )?.inventory ?? null;
+    }
+
     function createReconciliationCoordinator(options) {
       const { reconciliation, stateStore } = validateDependencies(options);
       let loaded = false;
@@ -304,7 +354,14 @@
         );
 
         if (canonicalState !== null) {
-          if (inventoryMatches(canonicalState.inventory, candidate.inventory)) {
+          if (
+            canonicalState.inventoryBaselines.length === 1 &&
+            canonicalState.inventoryBaselines[0].sourceFingerprint === null &&
+            inventoryMatches(
+              activeInventory(canonicalState),
+              activeInventory(candidate),
+            )
+          ) {
             return createResponse({ status: "already_initialized" });
           }
 
@@ -318,6 +375,29 @@
         canonicalState = candidate;
 
         return createResponse({ status: "initialized" });
+      }
+
+      async function createInventoryBaseline(command) {
+        const candidate = canonicalState === null
+          ? reconciliation.createEmptyReconciliationState()
+          : reconciliation.hydrateReconciliationState(canonicalState);
+        const result = reconciliation.createInventoryBaseline(candidate, {
+          baselineId: command.baselineId,
+          sourceFingerprint: command.sourceFingerprint,
+          inventory: command.inventory,
+        });
+
+        if (
+          canonicalState !== null &&
+          JSON.stringify(candidate) === JSON.stringify(canonicalState)
+        ) {
+          return createResponse(result);
+        }
+
+        await stateStore.saveState(candidate);
+        canonicalState = candidate;
+
+        return createResponse(result);
       }
 
       async function mutateState(operation) {
@@ -344,6 +424,14 @@
             return createResponse();
           case COMMAND_TYPES.INITIALIZE_STATE:
             return initializeState(command);
+          case COMMAND_TYPES.CREATE_INVENTORY_BASELINE:
+            return createInventoryBaseline(command);
+          case COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE:
+            return mutateState((state) =>
+              reconciliation.pinStreamToInventoryBaseline(state, {
+                streamId: command.streamId,
+              }),
+            );
           case COMMAND_TYPES.OBSERVE_VARIATIONS:
             return mutateState((state) =>
               reconciliation.observeVariations(state, {

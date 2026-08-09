@@ -69,10 +69,34 @@ function createEnvelope(state = createState()) {
   };
 }
 
-function createLegacyState() {
-  const state = createState();
+function activeBaseline(state) {
+  return state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === state.activeInventoryBaselineId,
+  );
+}
 
-  state.version = 1;
+function toLegacyState(state, version) {
+  const baseline = activeBaseline(state);
+
+  return {
+    version,
+    inventory: baseline.inventory.map((entry) => ({
+      sku: entry.sku,
+      name: entry.style ? `${entry.item} - ${entry.style}` : entry.item,
+      size: entry.size,
+      quantityReceived: entry.quantityOnHandAtImport,
+      unitCostCents: entry.unitCostCents,
+    })),
+    streams: state.streams.map(({ streamId, variations }) => ({
+      streamId,
+      variations: clone(variations),
+    })),
+  };
+}
+
+function createLegacyState() {
+  const state = toLegacyState(createState(), 1);
+
   state.streams.forEach((stream) => {
     stream.variations.forEach((auction) => {
       if (auction.paymentStatus === "canceled") {
@@ -86,9 +110,8 @@ function createLegacyState() {
 }
 
 function createV2State() {
-  const state = createState();
+  const state = toLegacyState(createState(), 2);
 
-  state.version = 2;
   state.streams[0].variations[0].paymentStatus = "unknown";
   return state;
 }
@@ -165,7 +188,7 @@ test("saves and loads a complete detached reconciliation snapshot", async () => 
   });
   assert.deepEqual(state, original);
 
-  state.inventory[0].name = "Caller changed this later";
+  activeBaseline(state).inventory[0].item = "Caller changed this later";
   state.streams[0].variations[0].sku = "GREY-HOODIE-L";
 
   const firstLoad = await store.loadState();
@@ -181,7 +204,7 @@ test("saves and loads a complete detached reconciliation snapshot", async () => 
     memoryStorage.getValues()[STORAGE_KEY].reconciliationState,
   );
 
-  firstLoad.inventory[0].name = "Loaded copy changed";
+  activeBaseline(firstLoad).inventory[0].item = "Loaded copy changed";
   firstLoad.streams[0].variations[0].sku = "GREY-HOODIE-L";
 
   assert.deepEqual(await store.loadState(), original);
@@ -258,7 +281,7 @@ test("lazily migrates strict legacy v1 state inside the v1 storage envelope", as
   );
 });
 
-test("lazily migrates v2 observed cancellation to canonical v3", async () => {
+test("lazily migrates v2 observed cancellation to canonical v4", async () => {
   const v2State = createV2State();
   const memoryStorage = createMemoryStorage({
     [STORAGE_KEY]: createEnvelope(v2State),
@@ -354,7 +377,7 @@ test("distinguishes invalid and unsupported storage schema versions", async () =
 
 test("reports unsupported reconciliation versions through the state boundary", async () => {
   const futureState = createState();
-  futureState.version = 4;
+  futureState.version = reconciliation.STATE_VERSION + 1;
   const memoryStorage = createMemoryStorage({
     [STORAGE_KEY]: createEnvelope(futureState),
   });
@@ -373,13 +396,14 @@ test("reports unsupported reconciliation versions through the state boundary", a
 
 const corruptStateCases = [
   ["non-array inventory", (state) => {
-    state.inventory = {};
+    activeBaseline(state).inventory = {};
   }],
   ["malformed inventory row", (state) => {
-    state.inventory[0] = null;
+    activeBaseline(state).inventory[0] = null;
   }],
   ["duplicate inventory SKU", (state) => {
-    state.inventory.push(clone(state.inventory[0]));
+    const inventory = activeBaseline(state).inventory;
+    inventory.push(clone(inventory[0]));
   }],
   ["duplicate stream ID", (state) => {
     state.streams.push(clone(state.streams[0]));
@@ -612,7 +636,7 @@ test("rejects invalid state before writing and preserves the prior snapshot", as
     [STORAGE_KEY]: priorEnvelope,
   });
   const invalidState = createState();
-  invalidState.inventory[0].quantityReceived = -1;
+  activeBaseline(invalidState).inventory[0].quantityOnHandAtImport = -1;
 
   await assertStorageError(
     () => createStore(memoryStorage).saveState(invalidState),
@@ -624,7 +648,7 @@ test("rejects invalid state before writing and preserves the prior snapshot", as
 
 test("rejects an unsupported reconciliation version before writing", async () => {
   const futureState = createState();
-  futureState.version = 4;
+  futureState.version = reconciliation.STATE_VERSION + 1;
   const memoryStorage = createMemoryStorage();
 
   await assertStorageError(

@@ -10,7 +10,9 @@ tracker combines those facts to calculate inventory and gross profit.
 > `Payment complete` prices through the service worker.
 > An open Live session side panel refetches saved state as those records change, without
 > requiring a TikTok-page refresh or panel reopen. A dedicated employee work queue,
-> verified TikTok stream identity, and Google Sheets are not connected yet.
+> verified TikTok stream identity, and the Google Sheets connection are not implemented
+> yet. Immutable inventory baselines and per-stream baseline pinning are now implemented
+> locally in preparation for that connection.
 
 ## How it works
 
@@ -104,6 +106,9 @@ variation number.
   scopes separate. Canonical stream assignment is instead performed by the worker.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
+  - stores immutable inventory baselines and pins each tracker stream to exactly one;
+  - scopes stock, pending reservations, and committed costs to the pinned baseline so a
+    later physical recount does not subtract historical sales twice;
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, completed GMV, and gross profit;
@@ -119,14 +124,19 @@ variation number.
   - keeps auctions distinct by `(streamId, variationNumber)`.
 - A versioned persistence adapter that validates and saves detached reconciliation
   snapshots, reports typed storage/corruption/version errors, and never silently
-  replaces corrupt or future-version data. Reconciliation state is version 3, with strict
-  version-1 and version-2 migration; the outer storage envelope remains schema version 1.
+  replaces corrupt or future-version data. Reconciliation state is version 4, with strict
+  version-1 through version-3 migration into one deterministic legacy baseline; the outer
+  storage envelope remains schema version 1.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
-  state when a command or write fails.
+  state when a command or write fails. Baseline creation is blocked while a local tracker
+  stream is active.
 - A separate versioned active-stream record and coordinator. The worker generates its
   `local-stream:<uuid>` identity, saves it before reporting Start, restores it for Resume,
-  and requires the expected ID before End so a stale panel cannot end a newer session.
+  requires the expected ID before End so a stale panel cannot end a newer session, and
+  verifies or repairs the active stream's immutable baseline pin on Start and Resume. A
+  guarded Retry also repairs an older active session whose reconciliation state was
+  never initialized, without replacing any existing canonical data.
 - A strict tagger runtime client and controller that send only mapping, unmapping,
   mark-unpaid, and undo-unpaid commands through that coordinator. The tagger never
   accesses browser storage directly and cannot create authoritative payment-complete
@@ -145,7 +155,8 @@ variation number.
   observed-only and do not release inventory or start a timeout.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
-- Google Sheets inventory import and results export.
+- Google authorization, Sheet reading, import preview/confirmation UI, and results
+  export. The local immutable-baseline model is implemented, but no Sheet is connected.
 - End-of-stream analytics and live-stream validation.
 
 ## Development roadmap
@@ -177,7 +188,9 @@ variation number.
 5. Connect Google Sheets inventory in three focused stages:
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
       opening-baseline semantics, and a Google Sheets-compatible CSV template;
-   2. version inventory baselines across tracker streams; and
+   2. **Completed:** version immutable inventory baselines, pin each tracker stream to
+      one baseline, and scope stock, reservations, costs, and corrections to that pin;
+      and
    3. authorize, preview, confirm, and initialize inventory from Google Sheets.
 6. Export reconciled results to Google Sheets.
 7. Add end-of-stream reconciliation and analytics reporting.
@@ -192,7 +205,7 @@ variation number.
 | `extension/shared/capture-*.js` | Strict page-to-worker protocol and active-stream binding | Implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/inventory-sheet-import.js` | Pure Google Sheets inventory validation and detached preview contract | Implemented; connection pending |
-| `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
+| `extension/shared/reconciliation.js` | Versioned inventory baselines, stream pins, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
 | `extension/shared/stream-session*.js` | Versioned active-stream state, storage, and serialized lifecycle commands | Implemented in service worker |
@@ -241,9 +254,13 @@ stream test, remove the unpacked extension from `chrome://extensions` and load i
 or clear its local extension storage, only if you intentionally want to discard that
 prototype data. There is no silent reset.
 
-6. In **Live session**, select **Start stream**. Confirm the tracker says the local stream
-   is active; this does not start TikTok LIVE. Until capture records a Sold Items row,
-   confirm the variation selector waits for one and inventory mapping is unavailable.
+6. In **Live session**, select **Start stream**. On a clean local install, the side panel
+   first prepares the transitional mock inventory as an immutable baseline; it never
+   replaces an existing baseline. The worker then requires a nonempty active baseline,
+   starts the local stream, and pins that stream to the baseline. Confirm the tracker says
+   the local stream is active; this does not start TikTok LIVE. Until capture records a
+   Sold Items row, confirm the variation selector waits for one and inventory mapping is
+   unavailable.
 7. Close and reopen the side panel. Select **Resume active stream** and confirm the same
    local stream is restored without creating a fake live variation.
 8. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
@@ -318,12 +335,13 @@ can reverse a captured completed payment.
 
 ## Credentials and privacy
 
-No Google credentials are needed for the current offline prototype. The
+No Google credentials are needed for the current local prototype. The
 [inventory template](docs/google-sheets-inventory-template.csv) and its
 [validation contract](docs/architecture.md#7-google-sheets-inventory-import-contract)
-can be parsed and validated locally, but there is no Google authorization, network
-request, or committed tracker-state import in this stage. Google Sheets authentication
-remains unresolved until the connection stage:
+can be parsed and validated locally, and reconciliation state can now hold immutable
+versioned inventory baselines. There is still no Google authorization, network request,
+Sheet preview/confirmation UI, or Sheet-to-state import flow. Google Sheets
+authentication remains unresolved until the connection stage:
 
 - A browser-only version should use user OAuth and must not contain a service-account
   private key.
@@ -340,9 +358,9 @@ Sheets.
 The inventory template contains only stable SKU, employee-facing item/style/size,
 physical quantity on hand at import, and unit cost. It intentionally excludes buyer,
 variation, payment, stream, and credential data. The quantity is a confirmed opening
-stock baseline; it is not a running value to edit after each sale. A future importer must
-validate every row and show a detached preview before one explicit confirmation commits
-the entire baseline.
+stock baseline; it is not a running value to edit after each sale. The connection stage
+must validate every row and show a detached preview before one explicit confirmation
+appends and activates the entire baseline. It must never mutate an existing baseline.
 
 ## Documentation
 

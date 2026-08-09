@@ -120,6 +120,22 @@ function initializeCommand(inventory = INVENTORY) {
   };
 }
 
+function activeBaseline(state) {
+  return state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === state.activeInventoryBaselineId,
+  );
+}
+
+function legacyInventoryProjection(state) {
+  return activeBaseline(state).inventory.map((entry) => ({
+    sku: entry.sku,
+    name: entry.style ? `${entry.item} - ${entry.style}` : entry.item,
+    size: entry.size,
+    quantityReceived: entry.quantityOnHandAtImport,
+    unitCostCents: entry.unitCostCents,
+  }));
+}
+
 function getStateCommand() {
   return { type: COMMAND_TYPES.GET_STATE };
 }
@@ -201,6 +217,34 @@ test("returns an explicit uninitialized state when storage is empty", async () =
   assert.equal(memoryStore.calls.save.length, 0);
 });
 
+test("creates the first confirmed inventory baseline without seeding legacy inventory", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+  const baselineId =
+    "inventory-baseline:50000000-0000-4000-8000-000000000000";
+  const created = await coordinator.dispatch({
+    type: COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+    baselineId,
+    sourceFingerprint: "fnv1a64:5234567890abcdef",
+    inventory: [{
+      sku: "BLACK-TEE-M",
+      item: "Black Tee",
+      style: "black",
+      size: "M",
+      quantityOnHandAtImport: 4,
+      unitCostCents: 1250,
+    }],
+  });
+
+  assert.deepEqual(created.result, { status: "created", baselineId });
+  assert.equal(created.state.activeInventoryBaselineId, baselineId);
+  assert.equal(created.state.inventoryBaselines.length, 1);
+  assert.equal(created.state.inventoryBaselines[0].sourceFingerprint,
+    "fnv1a64:5234567890abcdef");
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.deepEqual(memoryStore.getPersistedState(), created.state);
+});
+
 test("initializes once, persists immediately, and treats identical retry as a no-op", async () => {
   const memoryStore = createMemoryStateStore();
   const coordinator = createCoordinator(memoryStore);
@@ -210,7 +254,7 @@ test("initializes once, persists immediately, and treats identical retry as a no
 
   assert.equal(initialized.result.status, "initialized");
   assert.equal(repeated.result.status, "already_initialized");
-  assert.deepEqual(initialized.state.inventory, INVENTORY);
+  assert.deepEqual(legacyInventoryProjection(initialized.state), INVENTORY);
   assert.equal(memoryStore.calls.load, 1);
   assert.equal(memoryStore.calls.save.length, 1);
   assert.deepEqual(memoryStore.getPersistedState(), initialized.state);
@@ -874,13 +918,13 @@ test("returned snapshots and results cannot mutate canonical state", async () =>
   const coordinator = createCoordinator(memoryStore);
   const mapped = await coordinator.dispatch(mapCommand(50));
 
-  mapped.state.inventory[0].name = "Changed by caller";
+  activeBaseline(mapped.state).inventory[0].item = "Changed by caller";
   mapped.state.streams[0].variations[0].sku = "GREY-HOODIE-L";
   mapped.result.conflicts.push({ code: "fake" });
 
   const fresh = await coordinator.dispatch(getStateCommand());
 
-  assert.equal(fresh.state.inventory[0].name, "Black Tee");
+  assert.equal(activeBaseline(fresh.state).inventory[0].item, "Black Tee");
   assert.equal(fresh.state.streams[0].variations[0].sku, "BLACK-TEE-M");
   assert.deepEqual(fresh.state.streams[0].variations[0].conflicts, []);
   assert.deepEqual(JSON.parse(JSON.stringify(fresh)), fresh);

@@ -40,6 +40,10 @@
     "payment_complete",
     "unrecognized",
   ]);
+  const RECOVERABLE_STREAM_BASELINE_ERROR_CODES = new Set([
+    "STATE_NOT_INITIALIZED",
+    "INVENTORY_BASELINE_REQUIRED",
+  ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -179,7 +183,9 @@
     !streamSessionClientModule ||
     !streamSessionControllerModule ||
     !mappingWorkflow ||
-    !persistentTaggerControllerModule
+    !persistentTaggerControllerModule ||
+    typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
+      "function"
   ) {
     console.error("[TikTok Live Tracker] Tagger lifecycle failed to load.");
     savedSessionStatus.hidden = true;
@@ -232,6 +238,13 @@
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function shouldPrepareInventoryForStreamRetry(snapshot) {
+    return (
+      snapshot?.error?.scope === "load" &&
+      RECOVERABLE_STREAM_BASELINE_ERROR_CODES.has(snapshot.error.code)
+    );
   }
 
   function hasExactKeys(value, expectedKeys) {
@@ -1867,7 +1880,15 @@
   startStreamButton.addEventListener("click", () => {
     focusSavedWorkspaceAfterRetry = true;
     streamSessionStatus.focus();
+    mappingAnnouncement.textContent =
+      "Preparing local inventory before starting the tracker stream.";
     Promise.resolve()
+      .then(() =>
+        persistentTaggerControllerModule.ensureInventoryInitialized({
+          client: persistentClient,
+          inventory: viewModel.MOCK_INVENTORY,
+        }),
+      )
       .then(() => streamSessionController.startNewStream())
       .then((snapshot) => {
         if (snapshot.phase === "ready" && snapshot.resumed) {
@@ -1876,6 +1897,9 @@
         }
       })
       .catch((error) => {
+        mappingAnnouncement.textContent =
+          error?.message ??
+          "Local inventory could not be prepared, so the tracker stream was not started.";
         console.error(
           "[TikTok Live Tracker] Unexpected stream-start failure.",
           error,
@@ -1962,6 +1986,9 @@
   });
 
   retryStreamSessionButton.addEventListener("click", () => {
+    const prepareMissingInventory =
+      shouldPrepareInventoryForStreamRetry(streamSnapshot);
+
     hasFocusedStreamError = false;
     streamSessionStatus.hidden = false;
     streamSessionError.hidden = true;
@@ -1970,6 +1997,18 @@
       "Checking the saved local stream before allowing more changes.";
     streamSessionStatus.focus();
     Promise.resolve()
+      .then(() => {
+        if (!prepareMissingInventory) {
+          return null;
+        }
+
+        mappingAnnouncement.textContent =
+          "Preparing local inventory before restoring the saved tracker stream.";
+        return persistentTaggerControllerModule.ensureInventoryInitialized({
+          client: persistentClient,
+          inventory: viewModel.MOCK_INVENTORY,
+        });
+      })
       .then(() => streamSessionController.retry())
       .then((snapshot) => {
         if (snapshot.phase !== "ready") {
@@ -1983,6 +2022,10 @@
         }
       })
       .catch((error) => {
+        renderStreamSnapshot(streamSessionController.getSnapshot());
+        mappingAnnouncement.textContent =
+          error?.message ??
+          "Local inventory could not be prepared, so the tracker stream was not restored.";
         console.error(
           "[TikTok Live Tracker] Unexpected stream-session retry failure.",
           error,
