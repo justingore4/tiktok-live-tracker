@@ -340,7 +340,6 @@
     function createPersistentTaggerController(options) {
       const { client, mappingWorkflow, reconciliation } =
         validateDependencies(options);
-      const inventory = normalizeInventory(options.inventory);
       const streamId = requireNonEmptyString(options.streamId, "streamId");
       const currentVariationNumber = requirePositiveInteger(
         options.currentVariationNumber,

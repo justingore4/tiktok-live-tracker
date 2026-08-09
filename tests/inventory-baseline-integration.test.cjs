@@ -185,6 +185,19 @@ function mapCommand(streamId, variationNumber, sku = "BLACK-TEE-M") {
   };
 }
 
+function observeProcessingCommand(streamId, variationNumber) {
+  return {
+    type: COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+    streamId,
+    statuses: [
+      {
+        variationNumber,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  };
+}
+
 test("creates one immutable opening baseline for a fresh state", () => {
   const source = clone(LEGACY_OPENING_INVENTORY);
   const state = reconciliation.createReconciliationState(source);
@@ -665,6 +678,8 @@ test("same-baseline concurrent mappings cannot claim the final unit twice", asyn
 
   await coordinator.dispatch(pinStreamCommand("stream-a"));
   await coordinator.dispatch(pinStreamCommand("stream-b"));
+  await coordinator.dispatch(observeProcessingCommand("stream-a", 1));
+  await coordinator.dispatch(observeProcessingCommand("stream-b", 2));
 
   const results = await Promise.allSettled([
     coordinator.dispatch(mapCommand("stream-a", 1)),

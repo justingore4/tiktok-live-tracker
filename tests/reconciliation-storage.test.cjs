@@ -215,6 +215,55 @@ test("saves and loads a complete detached reconciliation snapshot", async () => 
   assert.equal(memoryStorage.getValues().unrelated, "preserved");
 });
 
+test("restores derived reservations only for processing and fixing payments", async () => {
+  const state = reconciliation.createReconciliationState(INVENTORY);
+
+  reconciliation.mapVariation(state, {
+    streamId: "morning-stream",
+    variationNumber: 10,
+    sku: "BLACK-TEE-M",
+  });
+  reconciliation.observePaymentStatuses(state, {
+    streamId: "morning-stream",
+    statuses: [
+      {
+        variationNumber: 11,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+    ],
+  });
+  reconciliation.mapVariation(state, {
+    streamId: "morning-stream",
+    variationNumber: 11,
+    sku: "BLACK-TEE-M",
+  });
+
+  const memoryStorage = createMemoryStorage();
+  const store = createStore(memoryStorage);
+
+  await store.saveState(state);
+  const restored = await store.loadState();
+  const summary = reconciliation.calculateSummary(restored, {
+    streamId: "morning-stream",
+  });
+
+  assert.deepEqual(
+    summary.auctions.map(({ variationNumber, status }) => ({
+      variationNumber,
+      status,
+    })),
+    [
+      { variationNumber: 10, status: "mapped" },
+      { variationNumber: 11, status: "pending" },
+    ],
+  );
+  assert.equal(summary.inventory[0].reservedQuantity, 1);
+  assert.equal(summary.inventory[0].remainingQuantity, 3);
+  assert.equal(summary.inventory[0].availableToTagQuantity, 2);
+  assert.equal(summary.totals.pendingMappedCount, 1);
+});
+
 test("returns null only when the namespaced storage key is absent", async () => {
   const memoryStorage = createMemoryStorage({ unrelated: "preserved" });
   const store = createStore(memoryStorage);

@@ -1063,7 +1063,7 @@ test("persists mark-unpaid and undo commands for the selected variation", async 
   const restored = await controller.undoSelectedUnpaid();
 
   assert.equal(unpaid.view.auction.status, "marked_unpaid");
-  assert.equal(restored.view.auction.status, "pending");
+  assert.equal(restored.view.auction.status, "mapped");
   assert.deepEqual(memory.calls.slice(-2), [
     {
       method: "markUnpaid",

@@ -4,8 +4,12 @@
   "version": "0.1.0",
   "description": "Tag live-stream items as they sell and reconcile them against TikTok payment confirmations.",
   "minimum_chrome_version": "114",
-  "permissions": ["storage", "sidePanel"],
-  "host_permissions": [],
+  "permissions": ["storage", "sidePanel", "identity"],
+  "host_permissions": ["https://sheets.googleapis.com/*"],
+  "oauth2": {
+    "client_id": "627721501298-uo4j3mb29cdkhiv565hhnj62usf6ql8q.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+  },
   "background": {
     "service_worker": "service-worker.js"
   },

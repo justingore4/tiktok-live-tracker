@@ -36,10 +36,11 @@ incidental buyer names, avatars, and product text, but those values are never se
 as fields, logged raw, transmitted, or persisted.
 
 `Payment processing`, `Payment fixing`, `Payment failed`, and unrecognized labels remain
-nonterminal observations. They do not release inventory, mark an order unpaid, or start a
-timeout; a mapped unit stays reserved while remaining stock stays unchanged. Exact
-`Canceled` is different: it is a canonical terminal allocation result that keeps any item
-link for history, releases its reservation, and counts no sale, revenue, cost, or profit.
+nonterminal observations. Only exact `Payment processing` and `Payment fixing` create a
+pending inventory reservation for a mapped item. Failed, unrecognized, not-yet-observed,
+and price-less completion observations keep the item selection without showing or
+consuming a pending reservation. Exact `Canceled` is a canonical terminal allocation
+result that keeps any item link for history and counts no sale, revenue, cost, or profit.
 No dashboard area outside Sold Items is a planned source.
 
 ## Current capture pipeline
@@ -91,17 +92,19 @@ the top frame of the exact product-dashboard URL. It resolves the currently acti
 - exact `Canceled` as canonical cancellation for inventory allocation; and
 - every exact green completion with a parsed price as authoritative payment truth.
 
-Observed processing, fixing, failed, or unrecognized status does not change inventory or
-profit and keeps a mapped unit reserved. Exact cancellation releases the reservation but
-preserves the item link and history; it does not decrement remaining stock or contribute
-sales, revenue, cost, or profit. A completed payment contributes to completed GMV, but
-inventory and gross profit commit only after the employee maps the variation to an
-inventory item. A complete badge whose price is temporarily unavailable remains a
-provisional displayed observation; later status changes are still accepted until a priced
-completion is durably saved. A later priced completion overrides cancellation, commits a
-mapped sale, and creates a `payment_completed_after_canceled` warning that TikTok's
-completion won and inventory was counted. Repeated observations are no-ops. A conflicting
-later completed price retains the first price and creates a reconciliation conflict.
+Observed processing, fixing, failed, or unrecognized status does not decrement remaining
+inventory or change profit. Processing and fixing reserve a mapped unit; failed and
+unrecognized observations keep the item selected without a pending reservation. Exact
+cancellation preserves the item link and history without decrementing remaining stock or
+contributing sales, revenue, cost, or profit. A completed payment contributes to completed
+GMV, but inventory and gross profit commit only after the employee maps the variation to
+an inventory item. A complete badge whose price is temporarily unavailable remains a
+provisional displayed observation without a pending reservation; later status changes are
+still accepted until a priced completion is durably saved. A later priced completion
+overrides cancellation, commits a mapped sale, and creates a
+`payment_completed_after_canceled` warning that TikTok's completion won and inventory was
+counted. Repeated observations are no-ops. A conflicting later completed price retains the
+first price and creates a reconciliation conflict.
 
 These captured facts hydrate into reconciliation state version 4. Each stream record has
 an immutable inventory-baseline pin, and capture verifies or repairs the active stream's
@@ -132,14 +135,79 @@ source label, and local observation time; they contain no buyer or DOM content a
 not choose canonical identity. Only the worker binds capture facts to the active local
 tracker stream.
 
+## Configure and manually test Google Sheets inventory
+
+The live tracker now requires one confirmed Google Sheets inventory baseline before a
+new Start. The checked-in manifest intentionally contains
+`REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com`; a real Sheet request
+fails closed until that public placeholder is replaced.
+
+1. Load `extension` from `chrome://extensions` and copy its exact extension ID.
+2. In a Google Cloud project, enable the Google Sheets API, configure the OAuth consent
+   screen, and add the testing Google account as a test user when the app is in Testing.
+3. Create an OAuth client of type **Chrome Extension** for that exact ID. Replace the
+   placeholder under `oauth2.client_id` in `extension/manifest.json`, then reload the
+   extension. No client secret, service-account key, `.env` value, or access token is
+   required in the repository.
+4. Import [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv)
+   into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
+   headers, and replace the dummy rows with the physical opening count and unit cost.
+   Give the authorizing Google account read access.
+5. With no local tracker stream active, open **Live session**, paste the Sheet ID or its
+   HTTPS `docs.google.com` sharing link, and select **Connect and preview**. The manifest
+   grants `identity`, the exact `https://sheets.googleapis.com/*` host, and only
+   `https://www.googleapis.com/auth/spreadsheets.readonly`. That Google scope can read
+   spreadsheets available to the connected account, but the importer requests only the
+   selected ID and fixed `'Inventory'!A:ZZZ` range.
+6. Verify the full normalized table, row count, opening-unit total, and opening-cost
+   total. Select **Confirm inventory baseline**. Confirmation re-reads the Sheet before
+   atomically saving a new immutable local baseline; Start becomes available only after
+   that succeeds. The importer accepts at most 1,000 inventory rows beyond the header;
+   an oversized Sheet is rejected without a partial preview or import.
+
+Run these fail-closed checks before relying on the importer:
+
+- Delete or rename a required header, duplicate a SKU, enter a formula, or use an invalid
+  quantity. Preview must show bounded row/column diagnostics, import nothing, and leave
+  Start unavailable when there was no earlier confirmed baseline.
+- Create a valid preview, then change any cell before confirmation. Confirmation must
+  report a stale preview, create no baseline, and require another preview.
+- Create a preview, reload the extension worker or wait more than ten minutes, then try
+  to confirm. The opaque preview nonce is memory-only, so a fresh preview is required.
+- Revoke authorization or let it expire between preview and confirmation. Confirmation
+  must not open an interactive prompt or import cached rows; reconnect and preview again.
+- Begin preview/confirmation and Start close together. The worker FIFO must either finish
+  confirmation before Start, start only from an already confirmed earlier baseline, or
+  reject Start when no imported baseline exists. Any Start invalidates the pending
+  preview, so it cannot be confirmed after a complete Start/End cycle. A partial preview
+  must never become a stream baseline.
+- After confirmation, close and reopen the panel. Import status must restore the locally
+  saved baseline summary. Start a stream, then confirm the import controls are hidden and
+  worker import commands are rejected until End.
+- Inspect the side-panel and service-worker Console. Sheet rows, sharing links, Google
+  access tokens, API error bodies, and credentials must not be logged. Only normalized
+  confirmed inventory and its non-secret fingerprint are persisted locally.
+
+After Start, inventory, reservations, payment reconciliation, and basic profit use the
+local pinned baseline. The extension makes no live Google request and implements no
+Google Sheets result export. A new physical recount is another pre-stream import after
+End; it cannot alter the baseline pinned to an active or historical stream.
+
+For distribution, the OAuth client must use the final Chrome Web Store item ID rather
+than a temporary unpacked ID. The Store listing also needs accurate privacy disclosures
+and a privacy policy. The read-only Sheets scope is sensitive, so Google may require OAuth
+verification and Limited Use evidence before broad production access. A local consent
+screen test-user run does not complete those release reviews.
+
 ## Load and test during a real stream
 
 1. Open `chrome://extensions`, enable **Developer mode**, and load or reload this
    repository's `extension` directory.
 2. Refresh any TikTok dashboard tab that was already open so it receives the current
    content scripts.
-3. Open the extension side panel, choose **Live session**, and Start or Resume one local
-   tracker stream. This does not start or control TikTok LIVE.
+3. Complete the inventory-import checks above, then choose **Live session** and Start a
+   local tracker stream from the confirmed baseline, or Resume the already-active stream.
+   This does not start or control TikTok LIVE.
 4. Open `https://shop.tiktok.com/streamer/live/product/dashboard` and select TikTok's
    left-side **Sold items** view.
 5. Open DevTools → **Console** and confirm:
@@ -161,9 +229,10 @@ tracker stream.
 9. For `Payment complete`, confirm its final price is visible even before an inventory
    item is selected. Reopen and Resume once to verify the same number, status, and price
    remain durable.
-10. On a mapped processing, fixing, failed, or unrecognized row, confirm its card keeps the
-    full remaining quantity visible and reports the pending reservation separately. It
-    must not count a sale or reduce remaining stock.
+10. On a mapped processing or fixing row, confirm its card keeps the full remaining
+    quantity visible and reports the pending reservation separately. It must not count a
+    sale or reduce remaining stock. When that same row changes to failed or unrecognized,
+    confirm the item stays selected but the pending count disappears.
 11. When that row becomes exact `Canceled`, confirm the item link remains visible, its
     reservation is released, and remaining stock, sale count, revenue, cost, and profit do
     not change. A canceled variation must not require resolution before End.
@@ -172,8 +241,7 @@ tracker stream.
     and a visible warning says inventory was counted.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
-    Repeat these checks across later tracker streams as baseline testing expands. Google
-    Sheets cannot be tested until the separate connection stage is implemented.
+    Repeat these checks across later tracker streams and imported baselines.
 
 The live refetch does not claim the newest saved variation is TikTok's current bidding
 auction. It does automatically display a newly persisted higher variation for faster
@@ -213,25 +281,30 @@ The worker-generated local stream ID is durable but is not a verified TikTok roo
 Until a later identity stage finds such an ID, follow these rules:
 
 - Use one local tracker stream for one real TikTok LIVE.
-- Start preflights reconciliation state. On truly uninitialized local storage it creates
-  the transitional mock inventory baseline; otherwise it preserves the existing active
-  baseline. The worker then requires that baseline and permanently pins the new stream
-  to it.
+- Start preflights reconciliation state and requires a nonempty active baseline created
+  by confirmed Google Sheets import. It never promotes offline-demo inventory. The worker
+  permanently pins the new stream to that imported baseline. Only an already-active
+  legacy session with truly absent reconciliation state may use the narrow mock-repair
+  Retry path; that compatibility path cannot start a new session or replace saved state.
 - Do not try to recount or activate another inventory baseline during a tracker stream.
   The worker rejects baseline creation while a session is active. End the session only
   after its capture and employee work is safely resolved; a later recount belongs to a
   new baseline and a future stream.
 - A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
   canonical duplicates are ignored.
-- Keep the local tracker stream active until expected payment transitions have appeared
-  and capture delivery has had time to finish or retry. There is no visible
-  queue-drained indicator yet. If a tracker delivery error appears, leave the session
-  active through at least the capped retry interval and verify that the open panel
-  receives the expected record before using End.
-- End is blocked while any mapped variation still has a pending reservation or any
-  completed sale still needs an item. Canonical canceled variations do not block End.
+- There is no visible queue-drained indicator yet. When practical, keep the local tracker
+  stream active until expected payment transitions appear and capture delivery has had
+  time to finish or retry. If a tracker delivery error appears, leaving the session active
+  through at least the capped retry interval helps preserve the late record, but this is
+  operational guidance rather than an End prerequisite.
+- End is always available for a known active local stream. Processing/fixing reservations,
+  completed sales without items, and every other reconciliation state remain visible but
+  do not block the confirmation. The employee can also End without first resuming the
+  inventory workspace.
 - Ending a local tracker stream does not delete captured history and does not end TikTok
-  LIVE, but ended streams cannot yet be reopened in the tagger.
+  LIVE. It stops new capture for that local stream. Ended streams cannot yet be reopened
+  in the tagger, so employees should make any corrections they still need before End when
+  practical even though the UI does not enforce that workflow.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
   new stream rather than displaying stale prior rows, and only then Start a new local
   tracker stream.
@@ -273,10 +346,14 @@ node --test .\tests\capture-integration.test.cjs
 node --test .\tests\service-worker.test.cjs
 node --test .\tests\active-stream-integration.test.cjs
 node --test .\tests\inventory-baseline-integration.test.cjs
+node --test .\tests\inventory-import-protocol.test.cjs
+node --test .\tests\google-sheets-inventory-import.test.cjs
+node --test .\tests\inventory-import-client.test.cjs
+node --test .\tests\inventory-import-controller.test.cjs
 ```
 
 These tests use fixtures and in-memory storage. They do not require TikTok, Google
-Sheets, or a live stream.
+Sheets network access, an OAuth client, or a live stream.
 
 ## Console troubleshooting
 
@@ -304,9 +381,10 @@ The next capture stage should validate and implement:
 - a prioritized employee work queue driven only by the now-live-refreshed, persisted Sold
   Items variations;
 - visible capture connection, retry, and queue-drained state;
-- the transition timing, color-independent meaning, and any additional business effect of
-  processing, fixing, failed, unrecognized, and other additional payment labels; exact
-  `Canceled` already has canonical allocation semantics;
+- the transition timing and color-independent meaning of processing, fixing, failed,
+  unrecognized, and other additional payment labels; the current inventory rule reserves
+  only processing/fixing, while exact `Canceled` already has canonical allocation
+  semantics;
 - a stable TikTok-provided stream/session identifier across SPA navigation and full
   refresh that differs across two LIVE sessions;
 - automatic protection against assigning stale rendered rows to a new local stream;
@@ -316,20 +394,21 @@ The next capture stage should validate and implement:
   recovered for an end-of-stream pass; and
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
-The Google Sheets inventory template, immutable reconciliation baselines, and stream pins
-are now defined and implemented locally. Google OAuth, Sheet fetching, preview and
-confirmation UI, and the adapter that commits a confirmed Sheet as a new baseline remain
-the next Sheets stage; none is part of capture work. This inventory-only boundary does
-not expand capture authority: the content script still must not read Sheet data, buyer
-identity, inventory mappings, or credentials, and it must not contact Google.
+Google Sheets OAuth, fixed-range reading, detached preview, explicit confirmation,
+immutable baseline creation, and stream pinning are now implemented before Start. This
+inventory-only boundary does not expand capture authority: the content script still must
+not read Sheet data, buyer identity, inventory mappings, or credentials, and it cannot
+contact Google. Only the worker performs the selected pre-stream read. Outbound Sheets
+export and any live Google dependency remain intentionally absent.
 
 ## Current limitations
 
 - Parsing assumes English dashboard text and US-dollar formatting.
 - Exact Sold Items variation labels and sanitized payment statuses are persisted. Only a
   priced `Payment complete` can commit a sale, inventory decrement, revenue, and profit.
-  Exact `Canceled` is authoritative only for releasing allocation without counting a
-  sale; processing, fixing, failed, and unrecognized remain nonterminal observations.
+  Exact `Canceled` is authoritative without counting a sale. Processing and fixing are
+  the only observations that create pending reservations; failed and unrecognized remain
+  mapped, nonterminal, and unreserved.
 - The `m4b_space` selector has been observed on one real stream and still needs broader
   validation.
 - The local stream ID is tracker-owned, not TikTok-verified.
@@ -338,3 +417,5 @@ identity, inventory mappings, or credentials, and it must not contact Google.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.
+  The separate worker-owned importer contacts the Sheets API only before a stream is
+  started or after it has ended.

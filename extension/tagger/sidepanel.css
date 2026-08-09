@@ -217,6 +217,333 @@ button {
   line-height: 1.45;
 }
 
+.inventory-import-panel {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background: rgb(18 23 32 / 92%);
+}
+
+.inventory-import-panel[aria-busy="true"] {
+  cursor: progress;
+}
+
+.inventory-import-heading,
+.inventory-import-preview-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inventory-import-heading h2,
+.inventory-import-preview-heading h3,
+.inventory-import-description,
+.inventory-import-progress h3,
+.inventory-import-progress p,
+.inventory-import-error h3,
+.inventory-import-error p,
+.inventory-import-confirmation h3,
+.inventory-import-confirmation p,
+.inventory-import-warning {
+  margin: 0;
+}
+
+.inventory-import-heading h2 {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.inventory-import-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background);
+  font-size: 9px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.inventory-import-badge[data-state="ready"] {
+  border-color: rgb(39 211 180 / 42%);
+  color: #91e9d8;
+  background: rgb(39 211 180 / 10%);
+}
+
+.inventory-import-badge[data-state="error"] {
+  border-color: rgb(244 189 80 / 48%);
+  color: #ffd88a;
+  background: rgb(244 189 80 / 10%);
+}
+
+.inventory-import-description {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.inventory-import-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.inventory-import-form label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.inventory-import-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 10px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  outline: none;
+  color: var(--text);
+  background: var(--background);
+  font-size: 11px;
+}
+
+.inventory-import-form input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px rgb(141 204 255 / 14%);
+}
+
+.inventory-import-form input[aria-invalid="true"] {
+  border-color: var(--amber);
+}
+
+.inventory-import-form .field-help,
+.inventory-import-form .field-error {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.inventory-import-form .primary-action {
+  width: 100%;
+}
+
+.inventory-import-progress,
+.inventory-import-confirmation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-top: 13px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background);
+}
+
+.inventory-import-progress h3,
+.inventory-import-confirmation h3 {
+  font-size: 11px;
+}
+
+.inventory-import-progress p,
+.inventory-import-confirmation p {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.inventory-import-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: inventory-import-spin 0.85s linear infinite;
+}
+
+@keyframes inventory-import-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.inventory-import-error {
+  margin-top: 13px;
+  padding: 11px;
+  border: 1px solid rgb(244 189 80 / 42%);
+  border-radius: 10px;
+  background: rgb(244 189 80 / 8%);
+}
+
+.inventory-import-error h3 {
+  color: #ffd88a;
+  font-size: 11px;
+}
+
+.inventory-import-error p,
+.inventory-import-issues {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.inventory-import-issues {
+  max-height: 150px;
+  margin-bottom: 0;
+  padding-left: 18px;
+  overflow: auto;
+}
+
+.inventory-import-issues li + li {
+  margin-top: 4px;
+}
+
+.inventory-import-error-actions,
+.inventory-import-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.inventory-import-preview {
+  margin-top: 13px;
+}
+
+.inventory-import-preview-heading h3 {
+  font-size: 12px;
+}
+
+.text-action {
+  padding: 3px;
+  border: 0;
+  color: var(--blue-bright);
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.text-action:hover {
+  text-decoration: underline;
+}
+
+.text-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.inventory-import-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.inventory-import-summary div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--background);
+}
+
+.inventory-import-summary dt {
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inventory-import-summary dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.inventory-preview-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--background);
+}
+
+.inventory-preview-table {
+  width: 100%;
+  min-width: 500px;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+
+.inventory-preview-table th,
+.inventory-preview-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.inventory-preview-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  font-weight: 760;
+}
+
+.inventory-preview-table td {
+  max-width: 150px;
+  overflow-wrap: anywhere;
+}
+
+.inventory-preview-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.inventory-import-warning {
+  margin-top: 10px;
+  padding: 9px;
+  border-left: 3px solid var(--amber);
+  color: #eed8a6;
+  background: rgb(244 189 80 / 7%);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.inventory-import-confirmation {
+  border-color: rgb(39 211 180 / 38%);
+  background: rgb(39 211 180 / 7%);
+}
+
+.inventory-import-confirmation-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  color: #061019;
+  background: var(--cyan);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.inventory-import-panel button:disabled,
+.inventory-import-panel input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .stream-session-panel {
   margin-bottom: 14px;
   padding: 14px;
@@ -1500,6 +1827,8 @@ button {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

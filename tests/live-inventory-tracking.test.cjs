@@ -475,12 +475,22 @@ test("a live canceled payment releases its reservation and a late priced complet
     snapshot = await controller.refresh();
 
     assert.equal(snapshot.view.auction.observedPaymentStatus, status);
-    assert.deepEqual(inventoryQuantities(snapshot, STUSSY_L_SKU), {
-      availableToTagQuantity: 4,
-      remainingQuantity: 5,
-      reservedQuantity: 1,
-      soldQuantity: 0,
-    });
+    assert.deepEqual(
+      inventoryQuantities(snapshot, STUSSY_L_SKU),
+      status === captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING
+        ? {
+            availableToTagQuantity: 4,
+            remainingQuantity: 5,
+            reservedQuantity: 1,
+            soldQuantity: 0,
+          }
+        : {
+            availableToTagQuantity: 5,
+            remainingQuantity: 5,
+            reservedQuantity: 0,
+            soldQuantity: 0,
+          },
+    );
   }
 
   await capturePaymentStatus(

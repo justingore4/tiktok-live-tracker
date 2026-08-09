@@ -52,6 +52,172 @@
       </section>
 
       <section
+        id="inventory-import-panel"
+        class="inventory-import-panel"
+        aria-labelledby="inventory-import-title"
+        aria-busy="true"
+      >
+        <div class="inventory-import-heading">
+          <div>
+            <p class="eyebrow">Pre-stream inventory</p>
+            <h2 id="inventory-import-title">Google Sheets inventory</h2>
+          </div>
+          <span
+            id="inventory-import-badge"
+            class="inventory-import-badge"
+            data-state="checking"
+          >
+            Checking
+          </span>
+        </div>
+
+        <p id="inventory-import-description" class="inventory-import-description">
+          Connect the spreadsheet that contains your <strong>Inventory</strong>
+          tab. The tracker reads that tab, validates all six columns, and keeps
+          the confirmed normalized baseline locally for future streams.
+        </p>
+
+        <form id="inventory-import-form" class="inventory-import-form" novalidate>
+          <label for="inventory-sheet-reference">Google Sheet ID or sharing link</label>
+          <input
+            id="inventory-sheet-reference"
+            name="inventory-sheet-reference"
+            type="text"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Paste a Google Sheet link or ID"
+            aria-describedby="inventory-sheet-help inventory-sheet-error"
+          >
+          <p id="inventory-sheet-help" class="field-help">
+            Only the Inventory tab is read. Access is requested through Google;
+            the tracker never stores your sharing link or authorization token.
+          </p>
+          <p
+            id="inventory-sheet-error"
+            class="field-error"
+            role="alert"
+            hidden
+          ></p>
+          <button id="preview-inventory" class="primary-action" type="submit">
+            Connect and preview
+          </button>
+        </form>
+
+        <div
+          id="inventory-import-progress"
+          class="inventory-import-progress"
+          role="status"
+          tabindex="-1"
+          aria-live="polite"
+          aria-atomic="true"
+          hidden
+        >
+          <span class="inventory-import-spinner" aria-hidden="true"></span>
+          <div>
+            <h3 id="inventory-import-progress-title">Connecting to Google Sheets...</h3>
+            <p id="inventory-import-progress-message">
+              Waiting for authorization and the Inventory tab.
+            </p>
+          </div>
+        </div>
+
+        <div
+          id="inventory-import-error"
+          class="inventory-import-error"
+          role="alert"
+          tabindex="-1"
+          hidden
+        >
+          <h3 id="inventory-import-error-title">Inventory could not be previewed</h3>
+          <p id="inventory-import-error-message">
+            Nothing was imported. Correct the Sheet and try again.
+          </p>
+          <ul id="inventory-import-issues" class="inventory-import-issues" hidden></ul>
+          <div class="inventory-import-error-actions">
+            <button id="retry-inventory-import" class="secondary-action" type="button">
+              Retry
+            </button>
+            <button id="edit-inventory-reference" class="secondary-action" type="button">
+              Edit Sheet link
+            </button>
+          </div>
+        </div>
+
+        <div id="inventory-import-preview" class="inventory-import-preview" hidden>
+          <div class="inventory-import-preview-heading">
+            <div>
+              <p class="eyebrow">Validated preview</p>
+              <h3>Review the opening inventory</h3>
+            </div>
+            <button id="change-inventory-sheet" class="text-action" type="button">
+              Change Sheet
+            </button>
+          </div>
+          <dl class="inventory-import-summary" aria-label="Inventory preview summary">
+            <div>
+              <dt>Rows</dt>
+              <dd id="inventory-preview-row-count">0</dd>
+            </div>
+            <div>
+              <dt>Opening units</dt>
+              <dd id="inventory-preview-unit-count">0</dd>
+            </div>
+            <div>
+              <dt>Opening cost</dt>
+              <dd id="inventory-preview-total-cost">$0.00</dd>
+            </div>
+          </dl>
+          <div class="inventory-preview-table-wrap" tabindex="0" aria-label="Normalized inventory rows">
+            <table class="inventory-preview-table">
+              <thead>
+                <tr>
+                  <th scope="col">SKU</th>
+                  <th scope="col">Item</th>
+                  <th scope="col">Style</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Qty</th>
+                  <th scope="col">Cost</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-preview-rows"></tbody>
+            </table>
+          </div>
+          <p id="inventory-import-warning" class="inventory-import-warning">
+            Confirm only after these opening quantities match the physical stock
+            on hand now. Confirmation creates a new immutable baseline for future
+            tracker streams; it does not change earlier streams.
+          </p>
+          <div class="inventory-import-confirm-actions">
+            <button id="confirm-inventory-import" class="primary-action" type="button">
+              Confirm inventory baseline
+            </button>
+            <button id="cancel-inventory-preview" class="secondary-action" type="button">
+              Cancel preview
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="inventory-import-confirmation"
+          class="inventory-import-confirmation"
+          role="status"
+          tabindex="-1"
+          aria-live="polite"
+          aria-atomic="true"
+          hidden
+        >
+          <span class="inventory-import-confirmation-mark" aria-hidden="true">✓</span>
+          <div>
+            <h3>Inventory baseline ready</h3>
+            <p id="inventory-import-confirmation-message">
+              You can now start a tracker stream using this inventory.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section
         id="stream-session-panel"
         class="stream-session-panel"
         aria-labelledby="stream-session-title"
@@ -132,12 +298,12 @@
         >
           <h3 id="stream-session-end-title">End this tracker stream?</h3>
           <p>
-            Wait for expected Sold Items payment updates, resolve every pending
-            inventory reservation, and assign an item to every completed sale first.
-            Canceled orders do not block End. Captured history will remain saved, but
-            ended streams cannot be reopened in this prototype. Reload the TikTok
-            dashboard before starting a tracker session for another LIVE. TikTok LIVE
-            will keep running.
+            Unresolved variations do not block End, including pending payments and
+            completed sales without an item. Captured order history will remain saved,
+            but ended streams cannot be reopened in this prototype.
+            Ending stops new capture for this local tracker stream and does not end
+            TikTok LIVE. Reload the TikTok dashboard before starting a tracker session
+            for another LIVE.
           </p>
           <div class="stream-session-confirm-actions">
             <button
@@ -345,14 +511,14 @@
           </button>
           <p id="unpaid-note" class="unpaid-note" hidden>
             This auction did not sell. Remaining inventory and profit stay
-            unchanged, and its pending reservation is released.
+            unchanged, and no inventory remains pending.
           </p>
           <button id="undo-unpaid" class="secondary-action" type="button" hidden>
             Undo unpaid
           </button>
           <p id="undo-payment-note" class="demo-controls-note" hidden>
-            Offline demo only. Return this sale to Waiting for payment, keep
-            the selected item reserved, and do not change TikTok.
+            Offline demo only. Remove the simulated payment, keep the item
+            selected, and do not change TikTok.
           </p>
           <button
             id="undo-simulated-payment"
@@ -393,9 +559,10 @@
         </div>
 
         <p class="selection-note">
-          Remaining inventory changes only after Payment complete. Pending mappings
-          appear separately as reservations and temporarily reduce what is available
-          to tag. Click the selected card again to remove its item.
+          Remaining inventory changes only after Payment complete. Pending appears
+          only while TikTok shows Payment processing or Payment fixing, and temporarily
+          reduces what is available to tag. Click the selected card again to remove
+          its item.
         </p>
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>
@@ -456,9 +623,12 @@
     <script src="../shared/reconciliation.js"></script>
     <script src="../shared/reconciliation-coordinator.js"></script>
     <script src="../shared/stream-session-coordinator.js"></script>
+    <script src="../shared/inventory-import-protocol.js"></script>
     <script src="reconciliation-client.js"></script>
     <script src="stream-session-client.js"></script>
     <script src="stream-session-controller.js"></script>
+    <script src="inventory-import-client.js"></script>
+    <script src="inventory-import-controller.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>

@@ -102,7 +102,39 @@ test("ending and starting tracker streams preserves reconciliation history", asy
     variationNumber: 203,
     sku: "TEST-SKU-M",
   });
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+    streamId: FIRST_ID,
+    statuses: [
+      {
+        variationNumber: 203,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  });
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
+    streamId: FIRST_ID,
+    variationNumber: 204,
+    soldPriceCents: 2500,
+  });
   const beforeEnd = await stateCoordinator.dispatch({ type: "get_state" });
+  const beforeEndSummary = reconciliation.calculateSummary(beforeEnd.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(
+    beforeEndSummary.auctions.find(
+      ({ variationNumber }) => variationNumber === 203,
+    ).status,
+    "pending",
+  );
+  assert.equal(
+    beforeEndSummary.auctions.find(
+      ({ variationNumber }) => variationNumber === 204,
+    ).status,
+    "unmapped_completed",
+  );
 
   await activeStreams.dispatch({ type: "end_stream", streamId: FIRST_ID });
   const afterEnd = await stateCoordinator.dispatch({ type: "get_state" });
@@ -254,4 +286,86 @@ test("captured Sold Items observations survive worker restart under the active s
     costOfGoodsCents: 0,
     profitCents: 0,
   });
+});
+
+test("variation 147 completion commits four left when the employee maps it afterward", async () => {
+  const storageArea = createStorageArea();
+  const stateCoordinator =
+    reconciliationCoordinator.createReconciliationCoordinator({
+      reconciliation,
+      stateStore: reconciliationStorage.createReconciliationStateStore({
+        storageArea,
+        reconciliation,
+      }),
+    });
+  const activeStreams = createStreamCoordinator(storageArea, [FIRST_ID]);
+  const capture = createCaptureBridge(activeStreams, stateCoordinator);
+
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.INITIALIZE_STATE,
+    inventory: [
+      {
+        sku: "STUSSY-TEE-BLACK-L",
+        name: "Stussy tee - black",
+        size: "L",
+        quantityReceived: 5,
+        unitCostCents: 1200,
+      },
+    ],
+  });
+  await activeStreams.dispatch({
+    type: streamSessionCoordinator.COMMAND_TYPES.START_STREAM,
+  });
+  await capture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,
+    variationNumbers: [147],
+  });
+  await capture.dispatch({
+    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
+    variationNumber: 147,
+    soldPriceCents: 1100,
+  });
+
+  const beforeMapping = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  let summary = reconciliation.calculateSummary(beforeMapping.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(summary.auctions[0].status, "unmapped_completed");
+  assert.equal(summary.inventory[0].remainingQuantity, 5);
+  assert.equal(summary.inventory[0].reservedQuantity, 0);
+
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
+    streamId: FIRST_ID,
+    variationNumber: 147,
+    sku: "STUSSY-TEE-BLACK-L",
+  });
+
+  const afterMapping = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  summary = reconciliation.calculateSummary(afterMapping.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.deepEqual(
+    {
+      observedPaymentStatus: summary.auctions[0].observedPaymentStatus,
+      paymentStatus: summary.auctions[0].paymentStatus,
+      soldPriceCents: summary.auctions[0].soldPriceCents,
+      status: summary.auctions[0].status,
+    },
+    {
+      observedPaymentStatus: "payment_complete",
+      paymentStatus: "payment_complete",
+      soldPriceCents: 1100,
+      status: "committed",
+    },
+  );
+  assert.equal(summary.inventory[0].soldQuantity, 1);
+  assert.equal(summary.inventory[0].remainingQuantity, 4);
+  assert.equal(summary.inventory[0].reservedQuantity, 0);
 });

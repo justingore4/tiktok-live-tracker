@@ -42,6 +42,10 @@
     const OBSERVED_PAYMENT_STATUS_VALUES = new Set(
       Object.values(OBSERVED_PAYMENT_STATUSES),
     );
+    const PENDING_RESERVATION_PAYMENT_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+    ]);
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -1276,6 +1280,17 @@
       ).unitCostCents;
     }
 
+    function hasPendingReservation(auction) {
+      return Boolean(
+        auction.sku &&
+        auction.mappingStatus === "mapped" &&
+        auction.paymentStatus === "unknown" &&
+        PENDING_RESERVATION_PAYMENT_STATUSES.has(
+          auction.observedPaymentStatus,
+        ),
+      );
+    }
+
     function deriveAuctionStatus(auction) {
       if (auction.paymentStatus === "payment_complete" && auction.sku) {
         return "committed";
@@ -1293,8 +1308,12 @@
         return "marked_unpaid";
       }
 
-      if (auction.sku) {
+      if (hasPendingReservation(auction)) {
         return "pending";
+      }
+
+      if (auction.sku) {
+        return "mapped";
       }
 
       return "unmapped";
@@ -1324,9 +1343,7 @@
             ?
           stream.variations.filter(
             (auction) =>
-              auction.sku === sku &&
-              auction.paymentStatus === "unknown" &&
-              auction.mappingStatus === "mapped",
+              auction.sku === sku && hasPendingReservation(auction),
           ).length
             : 0),
         0,
@@ -1403,10 +1420,7 @@
       if (currentAuction?.sku === sku) {
         if (currentAuction.paymentStatus === "payment_complete") {
           currentAllocation = "sold";
-        } else if (
-          currentAuction.paymentStatus === "unknown" &&
-          currentAuction.mappingStatus === "mapped"
-        ) {
+        } else if (hasPendingReservation(currentAuction)) {
           currentAllocation = "reserved";
         }
       }
@@ -1809,7 +1823,11 @@
         );
       }
 
-      if (auction.paymentStatus === "payment_complete") {
+      if (
+        auction.paymentStatus === "payment_complete" ||
+        auction.observedPaymentStatus ===
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+      ) {
         fail(
           "PAYMENT_ALREADY_COMPLETE",
           "A completed TikTok payment cannot be marked unpaid locally.",

@@ -68,7 +68,9 @@ canonical sale truth:
 
 Canonical `paymentStatus` is `unknown`, `canceled`, or `payment_complete`. Processing,
 fixing, failed, and unrecognized remain nonterminal observations under canonical
-`unknown`; when mapped, they keep one unit reserved without reducing remaining stock.
+`unknown`. Only a mapped processing or fixing record reserves one unit. A mapped
+not-yet-observed, failed, unrecognized, or unpriced-complete record stays linked but
+unreserved.
 Exact `Canceled` promotes the record to canonical `canceled`, preserves its item link for
 history, and releases its reservation without counting a sale, revenue, cost, or profit.
 Only a `Payment complete` badge with a parsed final price promotes the record to canonical
@@ -87,7 +89,8 @@ The engine derives a user-facing auction status from both axes:
 | Derived status | Meaning |
 | --- | --- |
 | `unmapped` | No completed payment and no inventory mapping |
-| `pending` | Inventory is mapped, but TikTok has not shown payment complete |
+| `mapped` | Inventory is selected, but the observation does not create a reservation |
+| `pending` | Inventory is mapped and TikTok shows `Payment processing` or `Payment fixing` |
 | `marked_unpaid` | Locally closed as unpaid; remaining stock is unchanged and its reservation is released |
 | `canceled` | TikTok canonically canceled the auction; its item link is retained, its reservation is released, and no sale is counted |
 | `unmapped_completed` | TikTok shows payment complete, but the inventory item is unknown |
@@ -100,8 +103,9 @@ The engine derives a user-facing auction status from both axes:
 
 Consequences:
 
-1. Processing, fixing, failed, and unrecognized observations never decrement remaining
-   stock; a mapped record continues to reserve its unit.
+1. Processing and fixing observations never decrement remaining stock; a mapped record
+   reserves one unit until the status changes. Failed, not-yet-observed, unrecognized,
+   and unpriced-complete mappings stay linked without a reservation.
 2. Exact `Canceled` releases that reservation automatically while retaining the SKU as
    historical attribution. The cancellation itself never contributes a sale or money.
 3. A green-but-unmapped auction still contributes to completed GMV and must be shown as
@@ -116,7 +120,7 @@ Consequences:
    completion wins, the sale commits, and the engine records a
    `payment_completed_after_canceled` conflict. Once complete, later non-complete
    observations cannot reverse it.
-7. Clicking an already-selected inventory item removes only the mapping. A pending
+7. Clicking an already-selected inventory item removes only the mapping. Any pending
    reservation is released; a completed auction keeps its final price and completed GMV
    but becomes `unmapped_completed` until it is tagged again. An existing unpaid decision
    is preserved and can still be undone.
@@ -164,7 +168,7 @@ Implemented behavior includes:
   is a conflict.
 - Accepting employee mapping and completed-payment events in either order.
 - Persisting processing, fixing, failed, and unrecognized as nonterminal observed statuses
-  without changing inventory or money.
+  without changing remaining inventory or money; only processing/fixing reserve availability.
 - Promoting exact `Canceled` to a canonical terminal allocation result that preserves the
   mapping, releases its reservation, and contributes no sale or money.
 - Letting a later priced completion override cancellation while warning that TikTok's
@@ -180,8 +184,8 @@ Implemented behavior includes:
   profit.
 - Leaving remaining inventory and profit unchanged for pending, canceled, and
   marked-unpaid records.
-- Tracking mapped pending units as reservations; the tagger uses the derived availability
-  to stop another pending auction from claiming the same last unit.
+- Tracking mapped processing/fixing units as pending reservations; the tagger uses the
+  derived availability to stop another pending auction from claiming the same last unit.
 - Recording a real completed sale even if inventory becomes negative, while surfacing an
   oversold warning.
 - Rejecting a new or pending mapping to an exhausted SKU without changing state.
@@ -197,12 +201,14 @@ remainingQuantity = quantityOnHandAtImport - completed sales under the pinned ba
 availableToTagQuantity = remainingQuantity - pending reservations
 ```
 
-Pending mappings therefore reduce what the employee can tag next, but they do not count
-as sold or reduce reported remaining inventory. Cards expose these values separately,
+Only mapped processing/fixing records reduce what the employee can tag next, but they do
+not count as sold or reduce reported remaining inventory. Cards expose these values separately,
 for example `5 left` stacked above `1 pending`, rather than presenting availability as
-remaining stock. Exact cancellation releases the reservation while retaining the item
-link; marking an auction unpaid also releases it, undo restores it, and payment completion
-converts the reservation into a completed sale.
+remaining stock. Failed, not-yet-observed, unrecognized, and unpriced-complete selections
+show no pending count. Exact cancellation releases any reservation while retaining the
+item link; marking an auction unpaid also releases one if present, undo derives it again
+from the observed status, and priced payment completion converts a reservation into a
+completed sale.
 
 ### Baseline and summary scope
 
@@ -331,7 +337,8 @@ and automatic page-to-session association remain later identity work.
 | Dashboard fact | Current action | Status |
 | --- | --- | --- |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
-| Exact processing, fixing, failed, or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; nonterminal, so a mapped unit stays reserved and remaining is unchanged |
+| Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit is pending while remaining is unchanged |
+| Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; an item selection stays linked but unreserved |
 | Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | A Sold Items variation or payment update is persisted | Invalidate and refetch the open tagger's canonical view; select a newly recorded variation while retaining selection for status-only updates | Implemented; no additional dashboard source |
@@ -380,8 +387,8 @@ Shared tagger behavior includes:
   status-only changes keep the existing selection.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
-- Engine-derived remaining, pending-reservation, available-to-tag, and sold-out states;
-  cards visibly separate remaining stock from pending reservations.
+- Engine-derived remaining, processing/fixing reservation, available-to-tag, and sold-out
+  states; cards show pending only for processing/fixing reservations.
 - One-click mapping and correction of the selected current or previous variation;
   clicking the selected inventory card again removes that mapping.
 - A separate visible **TikTok payment** row for processing, fixing, failed, canceled,
@@ -400,7 +407,8 @@ Shared tagger behavior includes:
   payment state while preserving later mapping corrections and edits to other variations,
   removes that simulated revenue/profit deduction, and returns focus to item selection.
 - **Mark unpaid after buffer** and **Undo unpaid** behavior that leaves remaining inventory
-  and profit unchanged; marking unpaid releases the reservation and undo restores it.
+  and profit unchanged; marking unpaid releases any reservation and undo derives the
+  reservation again only when the observed status is processing/fixing.
 - Unmapping that releases pending reservations, preserves an unpaid decision, and returns
   a completed sale to the item-needed exception without changing its payment or GMV.
 - Mapping correction after completion, applied atomically by restoring the old SKU,
@@ -412,37 +420,42 @@ Shared tagger behavior includes:
   when it truthfully produces a shortage.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-Live-session mode first requires a persistent local tracker stream and a prepared
-inventory baseline. Before Start, the side panel reads canonical reconciliation state and
-initializes the transitional mock inventory only when storage is confirmed absent. It
-never replaces existing state. The worker independently requires a nonempty active
-baseline before creating and durably saving a `local-stream:<uuid>` identity, then pins
-that stream to the baseline. Reopening the panel offers Resume for the same identity; the
-worker verifies or repairs its missing pin before returning the active session. Capture
-also verifies the pin before recording a fact. An existing pin can never be changed.
+Live-session mode requires a persistent local tracker stream and an imported inventory
+baseline. Before Start, the side panel asks the worker for import readiness. The Start
+control remains unavailable until a confirmed active baseline has a nonempty Sheet
+fingerprint, and the worker independently enforces the same requirement before creating
+and durably saving a `local-stream:<uuid>` identity. It then pins that stream to the
+baseline. Offline-demo inventory cannot authorize a new Start.
+
+Reopening the panel offers Resume for the same identity; the worker verifies or repairs
+its missing pin before returning the active session. Capture also verifies the pin before
+recording a fact. An existing pin can never be changed. Compatibility remains deliberately
+narrow: an already-active legacy session may resume with its existing baseline, and the
+old mock baseline is used only to repair a previously active legacy session whose
+reconciliation record is truly absent. That recovery path cannot seed a new stream or
+replace non-null canonical state.
 
 End clears only the active-session pointer after confirmation. It does not delete the
 stream, its pin, baselines, or reconciliation history, and it does not start or end
 TikTok LIVE. Creating or activating another baseline is blocked while any local tracker
-stream is active, so a session cannot cross a recount boundary. Because ended streams
-cannot yet be reopened in the tagger, End is blocked while a variation still reserves
-inventory or a completed sale still needs an item. Canonical canceled variations do not
-block End. The employee should still wait for expected Sold Items payment transitions
-and capture retries before ending.
+stream is active, so a session cannot cross a recount boundary. End is always available
+for a known active local stream, including before the inventory workspace is resumed and
+while processing/fixing reservations or completed sales without items remain unresolved.
+Reconciliation history and its current inventory effects remain saved. Ended streams
+cannot yet be reopened in the tagger, so
+employees should finish any corrections they still need and wait for expected capture
+retries when practical, but neither condition is enforced as an End blocker.
 
-The mock baseline is a temporary bridge until the Google Sheets connection is built. It
-is created only for truly uninitialized local storage and never seeds fake auctions or
-completed payments. The live selector lists only persisted variations for the active
-local stream and keeps mapping unavailable until at least one such record exists. If the
-controller still holds its internal unrecorded startup placeholder, the first canonical
-view selects the newest recorded variation. Later refetches automatically select the
-newest newly recorded variation, while payment/status-only updates preserve the
-employee's current selection.
+The live selector lists only persisted variations for the active local stream and keeps
+mapping unavailable until at least one such record exists. If the controller still holds
+its internal unrecorded startup placeholder, the first canonical view selects the newest
+recorded variation. Later refetches automatically select the newest newly recorded
+variation, while payment/status-only updates preserve the employee's current selection.
 Selection navigation itself is local UI state and does not write to storage.
 
 The demo exists only while the side panel remains loaded. It uses mock inventory, treats
-`#203` as on screen, and seeds previous variations `#202`, `#201`, and `#200` with example
-completed, pending, and unpaid states. Navigation does not create or mutate auction
+`#203` as on screen, and presents previous variations `#202`, `#201`, and `#200` with
+completed, unselected, and unpaid examples. It seeds no pending reservation. Navigation does not create or mutate auction
 records; every demo variation shares one isolated reconciliation state so corrections
 immediately recalculate shared inventory and profit. Reloading resets changes to those
 demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
@@ -575,8 +588,8 @@ close a newer session. It saves before publishing exactly like the reconciliatio
 coordinator.
 
 The service worker owns baseline pinning; the side panel cannot issue the pin command.
-Start first verifies a nonempty active baseline, persists the session, and then pins that
-stream while the shared outer FIFO excludes competing lifecycle/import work. If the pin
+Start first verifies a nonempty imported active baseline, persists the session, and then
+pins that stream while the shared outer FIFO excludes competing lifecycle/import work. If the pin
 write is interrupted after the session save, a repeated Start, session GET used by
 Resume, or capture delivery verifies and repairs the missing pin. A conflicting existing
 pin fails closed. Baseline creation and replacement initialization are rejected while a
@@ -586,9 +599,9 @@ reconciliation state at all: Retry may create the transitional mock baseline and
 that same saved stream ID. It never replaces nonnull, malformed, or future-version data.
 
 Worker messages use strict versioned envelopes and return plain success or error data.
-Only the exact extension side-panel page is authorized to issue employee/read commands;
-it is explicitly forbidden from issuing variation, payment-status, or payment-complete
-truth.
+Only the exact extension side-panel page is authorized to issue employee/read and
+inventory-import commands; it is explicitly forbidden from issuing variation,
+payment-status, payment-complete truth, a baseline pin, or direct baseline creation.
 The separate capture envelope is accepted only from the extension content script in the
 top frame of the exact TikTok product-dashboard URL. The worker, not the page, supplies
 the active local stream ID. A shared outer FIFO orders stream lifecycle, capture, and
@@ -606,16 +619,15 @@ Local storage is restricted to trusted extension contexts so the dashboard conte
 script cannot read or write the canonical snapshot directly. State changes must pass
 through the worker's validated command boundary.
 
-The side panel first uses a dedicated stream-session client/controller. With no active
-session it offers Start; after a panel or browser restart it offers Resume; while resumed
-it offers an inline-confirmed End. Before Start, a preflight requests canonical state and
-creates the transitional mock baseline only when the worker explicitly reports that the
-reconciliation key is absent. Malformed, corrupt, future-version, and failed reads never
-trigger initialization or replacement. The same guarded preparation runs from Retry to
-repair an active session left by the older session-before-inventory startup sequence.
-Only a successfully started or resumed and pinned session mounts the persistent tagger
-controller, which renders inventory from the stream's pinned baseline rather than a
-mutable global inventory array.
+The side panel first uses dedicated import and stream-session client/controllers. With no
+active session it offers Sheets import and keeps Start unavailable until the worker
+reports a confirmed imported baseline. After a panel or browser restart it offers Resume;
+while resumed it offers an inline-confirmed End. Malformed, corrupt, future-version, and
+failed reads never trigger initialization or replacement. A guarded mock preparation
+runs only from Retry to repair an already-active session left by the older
+session-before-inventory startup sequence. Only a successfully started or resumed and
+pinned session mounts the persistent tagger controller, which renders inventory from the
+stream's pinned baseline rather than a mutable global inventory array.
 
 Mapping, unmapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the
 selected `(streamId, variationNumber)`. The UI keeps its last good view while a command
@@ -635,8 +647,8 @@ state. An already-mounted live controller may finish loading in the background w
 demo is open. The capture runtime client has the inverse narrow authority: it may submit
 only observed variation numbers, sanitized payment-status codes, and completed
 variation/price facts, never mappings, stream lifecycle commands, raw badge text, or
-arbitrary state. Outbound Google Sheets sync belongs to a
-later stage.
+arbitrary state. The pre-stream Sheets reader is a separate worker-owned boundary;
+outbound Google Sheets sync belongs to a later stage.
 
 Offline simulation checkpoints and resets must never overwrite captured or persisted
 canonical state. Exact pre-completion `Canceled` is now authoritative for allocation;
@@ -645,17 +657,18 @@ rather than reversing a `payment_complete` record.
 
 ### Google Sheets
 
-The inventory-import contract, CSV-compatible template, immutable reconciliation
-baseline model, and stream-pinning boundary are implemented. Google authorization,
-Sheet reading, preview/confirmation UI, and the adapter that turns a confirmed preview
-into a new baseline are not yet implemented. Google Sheets is planned as:
+Google Sheets is implemented as the pre-stream inventory import source. The employee
+authorizes a Google account through Chrome, supplies one spreadsheet ID, reviews the
+normalized `Inventory` preview, and explicitly confirms it as a new immutable local
+baseline. The service worker owns authorization, network access, preview state, baseline
+creation, and all active-stream checks; neither the dashboard content script nor the side
+panel receives an access token.
 
-- the pre-stream inventory import source; and
-- the sales, remaining-inventory, and reporting export destination.
-
-It should not be the live transactional source of truth during a stream. The browser
-will save locally first, then batch and retry Sheet writes so a temporary connection
-problem does not interrupt tagging.
+Google Sheets is not the live transactional source of truth. Once confirmed, the local
+baseline and stream pin drive tagging, inventory, and basic profit without another Google
+request. Sales, remaining-inventory, and reporting export are not implemented. A later
+export stage must save locally first, then batch and retry writes so a temporary
+connection problem cannot interrupt tagging.
 
 ## 7. Google Sheets inventory import contract
 
@@ -663,7 +676,8 @@ The canonical starter file is
 [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv). An
 employee can import that file into Google Sheets or reproduce its exact six-column
 header in an `Inventory` tab. This contract deliberately defines data and validation
-only; it grants no network access and the parser does not mutate tracker state.
+separately from network access; the pure parser does not authorize Google or mutate
+tracker state.
 
 ### `Inventory` tab
 
@@ -681,7 +695,7 @@ vary, but missing, duplicate, or unknown headers make the whole import invalid.
 
 An all-blank row is ignored. In a data row, every field except `style` is required.
 Formula cells are invalid: import values are data and must never be evaluated by the
-tracker. The later Google adapter must preserve enough formula information for this
+tracker. The Google adapter reads `userEnteredValue`, preserving formula cells for this
 validation instead of supplying only an evaluated result. Leading and trailing
 whitespace is trimmed from cells, and runs of whitespace
 inside employee-facing item/style/size text are collapsed. Those display fields use one
@@ -712,8 +726,8 @@ from the fresh physical count. New baseline creation is blocked while a local tr
 stream is active.
 
 `unit_cost` is the per-unit cost snapshot used for basic gross-profit calculations. The
-adapter will convert it exactly to the engine's integer `unitCostCents` value (`12.00`
-becomes `1200`) and reject values that cannot be represented as nonnegative safe integer
+adapter converts it exactly to the engine's integer `unitCostCents` value (`12.00`
+becomes `1200`) and rejects values that cannot be represented as nonnegative safe integer
 cents. Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are
 outside this first contract.
 
@@ -722,15 +736,14 @@ outside this first contract.
 The pure preview parser validates the header and every nonblank row before any inventory
 baseline may be appended. Validation includes required fields, types, SKU syntax and
 uniqueness, duplicate item/style/size detection, and safe integer bounds. If any error
-exists, the parser returns row-specific errors and commits nothing; the future connection
-adapter must never partially import valid rows from an invalid Sheet.
+exists, the parser returns row-specific errors and commits nothing; the connection
+adapter never partially imports valid rows from an invalid Sheet.
 
 The normalized preview is detached data. Merely opening or previewing a Sheet must not
 start a stream, activate a baseline, alter reconciliation state, or persist a partial
-baseline. A separate explicit employee confirmation will be required by the connection
-stage. Confirmation must create a fresh baseline identity, append the complete baseline,
-and activate it only for future streams; existing baselines and stream pins remain
-immutable.
+baseline. A separate explicit employee confirmation creates a fresh baseline identity,
+appends the complete baseline, and activates it only for future streams; existing
+baselines and stream pins remain immutable.
 
 For a valid two-dimensional `Inventory` value array, the pure parser returns a frozen,
 detached preview with:
@@ -749,13 +762,68 @@ identify equivalent normalized previews; they are not credentials, authorization
 or baseline identities. Two separately confirmed recounts may therefore use different
 baseline IDs even when their fingerprints are equal.
 
+### Connected import boundary
+
+The side panel accepts either the exact spreadsheet ID or a narrowly parsed HTTPS
+`docs.google.com/spreadsheets/.../d/<id>` sharing link. It rejects credentials in URLs,
+non-Google and lookalike hosts, insecure URLs, unexpected paths, and malformed IDs. Only
+the extracted ID crosses the strict versioned inventory-import message boundary. The
+worker accepts that boundary only from the exact extension side-panel URL; the dashboard
+content script cannot read Sheets or create a baseline, and the general reconciliation
+boundary refuses direct baseline-creation commands from the panel.
+
+The Manifest V3 worker uses `chrome.identity` and the public OAuth client configured in
+`manifest.json`. It requests only
+`https://www.googleapis.com/auth/spreadsheets.readonly` and fetches only
+`https://sheets.googleapis.com`. The request is a GET for the selected spreadsheet's
+fixed `'Inventory'!A:ZZZ` range. It asks for grid `userEnteredValue` data so formulas
+remain distinguishable and invalid rather than being accepted as their evaluated result.
+The adapter accepts at most 1,000 inventory rows beyond the header. Response bytes,
+columns, cell slots, issue counts, retries, and request duration are also bounded before
+data reaches the pure parser. An oversized or invalid Sheet fails as a whole; it is never
+truncated into an apparently confirmable baseline. API error bodies and raw Sheet
+contents are not exposed to the side panel or application logs.
+
+Preview and confirmation are distinct operations:
+
+1. Preview checks that no local tracker stream is active, authorizes interactively,
+   reads and validates the complete `Inventory` tab, and returns detached normalized rows
+   plus summary totals. It does not write reconciliation state.
+2. A valid preview receives an opaque random nonce with a ten-minute expiration. The
+   corresponding Sheet ID and normalized snapshot remain only in worker memory; the
+   panel also keeps only detached preview data in memory. A worker or panel restart
+   therefore requires a new preview.
+3. Confirmation checks the nonce and active-stream state, obtains authorization without
+   an interactive prompt, re-reads and re-validates the same fixed range, and compares the
+   complete normalized snapshot rather than trusting the fingerprint alone. A changed,
+   expired, invalid, or unavailable preview commits nothing and requires a fresh preview
+   when appropriate.
+4. Only an unchanged confirmation generates the worker-owned baseline UUID and invokes
+   the internal atomic baseline-creation command. A same-worker retry is idempotent; if
+   the worker restarts after persistence, import status discovers the already durable
+   active baseline rather than relying on the lost preview.
+
+Inventory import, active-stream lifecycle, capture, and baseline mutation commands share
+one worker FIFO. Import checks active state before and after each network read, while
+Start invalidates every pending preview and checks for a confirmed imported baseline
+before persisting a session. Therefore a concurrent Start either uses the fully confirmed
+baseline or wins first and causes the import to fail closed; a preview also cannot survive
+a complete intervening Start/End cycle. Start cannot pin a detached preview or a
+partially imported Sheet.
+
+The side panel also hides import controls while a stream is active, but worker checks are
+authoritative.
+
 ### Inventory-import privacy boundary
 
 The inventory contract contains no buyer identity, TikTok payment data, variation
 numbers, stream identifiers, credentials, access tokens, or DOM text. Preview and
-validation diagnostics should identify the row and field without logging full Sheet
-contents. A future browser-only connection should request the narrowest practical Google
-scope and keep access tokens out of repository files and exported diagnostics.
+validation diagnostics identify the row and field without logging full Sheet contents.
+The Google access token is received and used only inside the worker request path; it is
+never sent through runtime messages, rendered, persisted by the application, or placed in
+repository files. The selected normalized inventory baseline and its non-secret
+fingerprint are stored locally. No variation, buyer, payment, sale, stream, or report data
+is sent to Google, because outbound export is not implemented.
 
 ### `Sales` tab
 
@@ -767,7 +835,7 @@ scope and keep access tokens out of repository files and exported diagnostics.
 | `payment_status` | Canonical `unknown`, `canceled`, or `payment_complete` sale truth |
 | `observed_payment_status` | Latest sanitized Sold Items status: not observed, processing, fixing, failed, canceled, complete, or unrecognized |
 | `mapping_status` | `unmapped`, `mapped`, or `marked_unpaid` |
-| `status` | Derived engine status such as `pending`, `canceled`, `unmapped_completed`, or `committed` |
+| `status` | Derived engine status such as `mapped`, `pending`, `canceled`, `unmapped_completed`, or `committed` |
 | `sku` | Employee-selected inventory key; blank while unmapped |
 | `unit_cost` | Cost snapshot used for the current mapping |
 | `gross_profit` | Final completed sale price minus unit cost |
@@ -782,18 +850,32 @@ negative when the completed sale price is below unit cost.
 
 ## 8. Authentication and credential decision
 
-A service-account private key must not be placed in a browser extension because the
-installed extension bundle is readable on disk.
+The inventory importer uses **browser-only user OAuth**. `manifest.json` declares
+`identity`, the read-only Sheets scope, the exact Sheets API host permission, and a
+deliberate client-ID placeholder. Each development or release build must replace that
+placeholder with a Google OAuth client of type **Chrome Extension** whose configured
+extension ID exactly matches `chrome.runtime.id`. The client ID is public configuration;
+there is no client secret.
 
-Two valid future approaches are:
+For local testing, the Chrome Extension OAuth client may use the unpacked ID displayed on
+`chrome://extensions`. A distributable build must use the final Chrome Web Store item ID;
+development builds that must reproduce that ID need the corresponding public extension
+key. Enabling the Sheets API, configuring the OAuth consent screen, and adding test users
+while the app is in Testing are external setup steps. The checked-in placeholder fails
+closed before interactive authorization, so live Google testing cannot pass until those
+steps are complete.
 
-- **Browser-only user OAuth** — the employee connects an authorized Google account; no
-  private key ships with the extension.
-- **Backend-managed service account** — the extension sends data to a server that owns
-  the private key; this requires server hosting and maintenance.
+A service-account private key must never be placed in the extension because the installed
+bundle is readable on disk. `config/.env.example` is not consumed by the extension and
+intentionally contains no service-account placeholders. A future backend could own a
+service account only as a separately secured and documented architecture.
 
-No Google credentials are currently used. `config/.env.example` is a backend placeholder
-and should not be populated until this decision is made.
+Chrome Web Store publication and Google OAuth production approval are separate release
+gates. The Store listing needs an accurate privacy policy and disclosures for Google
+authentication, locally stored inventory, and observed website content. The read-only
+Sheets scope is sensitive, so broad production use may require Google OAuth verification
+and evidence that the app complies with Google's Limited Use requirements. A local test
+user flow does not satisfy those release gates.
 
 ## 9. Remaining live-validation questions
 
@@ -803,9 +885,10 @@ answer these questions; offline fixtures alone cannot complete the validation:
 
 - Do `Payment processing` and `Payment fixing`
   exactly match production text across accounts/locales, and what transitions are valid?
-- What business action, if any, should processing, fixing, failed, or unrecognized trigger
-  after live validation? They deliberately remain nonterminal observed-only states;
-  exact `Canceled` already has canonical inventory-allocation semantics.
+- Do production transitions confirm the current allocation rule: processing/fixing are
+  pending reservations, while failed, not-yet-observed, unrecognized, and unpriced-complete
+  selections remain linked but unreserved? Exact `Canceled` already has canonical
+  inventory-allocation semantics.
 - Does the observed `m4b_space` Sold Items identity remain unique across different
   accounts, streams, modes, scrolling states, and TikTok deployments?
 - Is the Sold Items list virtualized or replaced as it grows, and can every earlier row
@@ -845,6 +928,7 @@ Browser support beyond Chrome is a later decision.
       baseline contract;
    2. **Completed:** immutable versioned inventory baselines, permanent tracker-stream
       pins, baseline-scoped inventory/cost accounting, and strict legacy migration; and
-   3. authorization, Sheet reading, employee confirmation, and durable import.
+   3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
+      employee confirmation, and durable import.
 8. Export reconciled results to Google Sheets.
 9. End-of-stream reconciliation, analytics, and release hardening.

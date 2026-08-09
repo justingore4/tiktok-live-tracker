@@ -105,6 +105,30 @@ test("restores a durable stream as resume-available without writing", async () =
   assert.deepEqual(calls, [["get"]]);
 });
 
+test("ends a restored tracker stream without resuming its saved workspace", async () => {
+  const { calls, client } = createClient({
+    getSession() {
+      calls.push(["get"]);
+      return Promise.resolve(response(SESSION));
+    },
+  });
+  const controller = controllerModule.createStreamSessionController({ client });
+
+  const restored = await controller.start();
+
+  assert.equal(restored.resumed, false);
+  assert.equal(restored.activeSession.streamId, SESSION.streamId);
+
+  const ended = await controller.endActiveStream();
+
+  assert.equal(ended.activeSession, null);
+  assert.equal(ended.resumed, false);
+  assert.deepEqual(calls, [
+    ["get"],
+    ["end", { streamId: SESSION.streamId }],
+  ]);
+});
+
 test("starts, publishes, and ends one durable tracker stream", async () => {
   const { calls, client } = createClient();
   const controller = controllerModule.createStreamSessionController({ client });
