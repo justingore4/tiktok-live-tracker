@@ -299,6 +299,8 @@
           PAYMENT_STATUS_BY_TEXT.get(normalizedText.toLowerCase()) ??
           OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED;
         let candidate = tag.parentElement;
+        let locatedAssociation = null;
+        let soldPriceCents = null;
         const visited = new Set();
 
         for (
@@ -315,15 +317,38 @@
           visited.add(candidate);
           const variationLabels = exactVariationLabels(candidate);
           const paymentTags = exactPaymentTags(candidate);
-
-          if (
+          const isExactAssociation =
             variationLabels.length === 1 &&
             paymentTags.length === 1 &&
-            paymentTags[0] === tag
-          ) {
-            const variationNumber = variationLabels[0].variationNumber;
-            let soldPriceCents = null;
+            paymentTags[0] === tag;
 
+          if (!locatedAssociation && isExactAssociation) {
+            const variationNumber = variationLabels[0].variationNumber;
+
+            locatedAssociation = Object.freeze({
+              row: candidate,
+              variationNumber,
+            });
+
+            if (
+              observedPaymentStatus !==
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+            ) {
+              break;
+            }
+          } else if (
+            locatedAssociation &&
+            (!isExactAssociation ||
+              variationLabels[0].variationNumber !==
+                locatedAssociation.variationNumber)
+          ) {
+            // Do not cross into a parent containing another sale row. A
+            // completed badge may need a wider ancestor for the winner price,
+            // but that ancestor must still identify the same single row.
+            break;
+          }
+
+          if (locatedAssociation) {
             if (
               observedPaymentStatus ===
               OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
@@ -333,35 +358,40 @@
               );
 
               if (
-                sale?.variationNumber === variationNumber &&
+                sale?.variationNumber ===
+                  locatedAssociation.variationNumber &&
                 sale.paymentStatus ===
                   OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE &&
                 Number.isSafeInteger(sale.soldPriceCents) &&
                 sale.soldPriceCents > 0
               ) {
                 soldPriceCents = sale.soldPriceCents;
+                break;
               }
             }
-
-            const result = Object.freeze({
-              row: candidate,
-              variationNumber,
-              observedPaymentStatus,
-              soldPriceCents,
-            });
-
-            if (!candidatesByVariation.has(variationNumber)) {
-              candidatesByVariation.set(variationNumber, result);
-            } else if (
-              candidatesByVariation.get(variationNumber)?.row !== candidate
-            ) {
-              candidatesByVariation.set(variationNumber, null);
-            }
-
-            break;
           }
 
           candidate = candidate.parentElement;
+        }
+
+        if (!locatedAssociation) {
+          continue;
+        }
+
+        const { row, variationNumber } = locatedAssociation;
+        const result = Object.freeze({
+          row,
+          variationNumber,
+          observedPaymentStatus,
+          soldPriceCents,
+        });
+
+        if (!candidatesByVariation.has(variationNumber)) {
+          candidatesByVariation.set(variationNumber, result);
+        } else if (
+          candidatesByVariation.get(variationNumber)?.row !== row
+        ) {
+          candidatesByVariation.set(variationNumber, null);
         }
       }
 

@@ -75,6 +75,19 @@ test("converts supported currency strings to integer cents", () => {
   assert.equal(parseMoneyToCents("not money"), null);
 });
 
+test("parses visually separate variation and completed badge siblings flattened by textContent", () => {
+  assert.deepEqual(
+    parseSoldItemText(
+      "Dobo93 has won: $11.00 Variation: #147Payment complete",
+    ),
+    {
+      variationNumber: 147,
+      soldPriceCents: 1100,
+      paymentStatus: "payment_complete",
+    },
+  );
+});
+
 test("normalizes line breaks and repeated spaces", () => {
   assert.equal(normalizeWhitespace("  one\n\n two   three "), "one two three");
 });

@@ -13,8 +13,7 @@
     }),
     Object.freeze({
       variationNumber: 201,
-      sku: "NIKE-HOODIE-GREY-XL",
-      status: "pending",
+      status: "unmapped",
     }),
     Object.freeze({
       variationNumber: 200,
@@ -40,6 +39,18 @@
     "payment_complete",
     "unrecognized",
   ]);
+  const RECOVERABLE_STREAM_BASELINE_ERROR_CODES = new Set([
+    "STATE_NOT_INITIALIZED",
+    "INVENTORY_BASELINE_REQUIRED",
+  ]);
+  const REPREVIEW_REQUIRED_ERROR_CODES = new Set([
+    "PREVIEW_EXPIRED",
+    "PREVIEW_NOT_FOUND",
+    "STALE_PREVIEW",
+    "REAUTHORIZE_REQUIRED",
+    "GOOGLE_AUTH_SCOPE_MISSING",
+    "GOOGLE_SCOPE_NOT_GRANTED",
+  ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -53,6 +64,12 @@
     globalThis.TikTokLiveTrackerStreamSessionClient;
   const streamSessionControllerModule =
     globalThis.TikTokLiveTrackerStreamSessionController;
+  const inventoryImportProtocol =
+    globalThis.TikTokLiveTrackerInventoryImportProtocol;
+  const inventoryImportClientModule =
+    globalThis.TikTokLiveTrackerInventoryImportClient;
+  const inventoryImportControllerModule =
+    globalThis.TikTokLiveTrackerInventoryImportController;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
@@ -72,6 +89,81 @@
   );
   const retrySavedSessionButton = document.querySelector(
     "#retry-saved-session",
+  );
+  const inventoryImportPanel = document.querySelector(
+    "#inventory-import-panel",
+  );
+  const inventoryImportBadge = document.querySelector(
+    "#inventory-import-badge",
+  );
+  const inventoryImportForm = document.querySelector(
+    "#inventory-import-form",
+  );
+  const inventorySheetReference = document.querySelector(
+    "#inventory-sheet-reference",
+  );
+  const inventorySheetError = document.querySelector(
+    "#inventory-sheet-error",
+  );
+  const previewInventoryButton = document.querySelector(
+    "#preview-inventory",
+  );
+  const inventoryImportProgress = document.querySelector(
+    "#inventory-import-progress",
+  );
+  const inventoryImportProgressTitle = document.querySelector(
+    "#inventory-import-progress-title",
+  );
+  const inventoryImportProgressMessage = document.querySelector(
+    "#inventory-import-progress-message",
+  );
+  const inventoryImportError = document.querySelector(
+    "#inventory-import-error",
+  );
+  const inventoryImportErrorTitle = document.querySelector(
+    "#inventory-import-error-title",
+  );
+  const inventoryImportErrorMessage = document.querySelector(
+    "#inventory-import-error-message",
+  );
+  const inventoryImportIssues = document.querySelector(
+    "#inventory-import-issues",
+  );
+  const retryInventoryImportButton = document.querySelector(
+    "#retry-inventory-import",
+  );
+  const editInventoryReferenceButton = document.querySelector(
+    "#edit-inventory-reference",
+  );
+  const inventoryImportPreview = document.querySelector(
+    "#inventory-import-preview",
+  );
+  const changeInventorySheetButton = document.querySelector(
+    "#change-inventory-sheet",
+  );
+  const cancelInventoryPreviewButton = document.querySelector(
+    "#cancel-inventory-preview",
+  );
+  const confirmInventoryImportButton = document.querySelector(
+    "#confirm-inventory-import",
+  );
+  const inventoryPreviewRowCount = document.querySelector(
+    "#inventory-preview-row-count",
+  );
+  const inventoryPreviewUnitCount = document.querySelector(
+    "#inventory-preview-unit-count",
+  );
+  const inventoryPreviewTotalCost = document.querySelector(
+    "#inventory-preview-total-cost",
+  );
+  const inventoryPreviewRows = document.querySelector(
+    "#inventory-preview-rows",
+  );
+  const inventoryImportConfirmation = document.querySelector(
+    "#inventory-import-confirmation",
+  );
+  const inventoryImportConfirmationMessage = document.querySelector(
+    "#inventory-import-confirmation-message",
   );
   const streamSessionPanel = document.querySelector("#stream-session-panel");
   const streamSessionBadge = document.querySelector("#stream-session-badge");
@@ -178,8 +270,13 @@
     !streamSessionProtocol ||
     !streamSessionClientModule ||
     !streamSessionControllerModule ||
+    !inventoryImportProtocol ||
+    !inventoryImportClientModule ||
+    !inventoryImportControllerModule ||
     !mappingWorkflow ||
-    !persistentTaggerControllerModule
+    !persistentTaggerControllerModule ||
+    typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
+      "function"
   ) {
     console.error("[TikTok Live Tracker] Tagger lifecycle failed to load.");
     savedSessionStatus.hidden = true;
@@ -205,12 +302,22 @@
     streamSessionControllerModule.createStreamSessionController({
       client: streamSessionClient,
     });
+  const inventoryImportClient =
+    inventoryImportClientModule.createInventoryImportClient({
+      runtime: chrome.runtime,
+      protocol: inventoryImportProtocol,
+    });
+  const inventoryImportController =
+    inventoryImportControllerModule.createInventoryImportController({
+      client: inventoryImportClient,
+    });
   let activeMode = "saved_session";
   let demoSession = null;
   let persistentController = null;
   let unsubscribePersistentController = null;
   let mountedStreamId = null;
   let streamSnapshot = streamSessionController.getSnapshot();
+  let inventoryImportSnapshot = inventoryImportController.getSnapshot();
   let savedSnapshot = {
     phase: "idle",
     operation: null,
@@ -229,9 +336,18 @@
   let captureRefreshFocusSku = null;
   let captureRefreshHadVariationFocus = false;
   let lastRenderedSavedVariations = new Map();
+  let previousInventoryImportPhase = null;
+  let focusInventoryImportAfterRetry = false;
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function shouldPrepareInventoryForStreamRetry(snapshot) {
+    return (
+      snapshot?.error?.scope === "load" &&
+      RECOVERABLE_STREAM_BASELINE_ERROR_CODES.has(snapshot.error.code)
+    );
   }
 
   function hasExactKeys(value, expectedKeys) {
@@ -530,7 +646,6 @@
         client: persistentClient,
         reconciliation,
         mappingWorkflow,
-        inventory: viewModel.MOCK_INVENTORY,
         streamId: activeSession.streamId,
         currentVariationNumber: DEMO_CURRENT_VARIATION_NUMBER,
         variationNumbers: DEMO_VARIATION_NUMBERS,
@@ -573,14 +688,6 @@
     );
   }
 
-  function getEndBlockingVariations() {
-    return (savedSnapshot?.view?.variations ?? []).filter(
-      (variation) =>
-        variation.status === "pending" ||
-        variation.status === "unmapped_completed",
-    );
-  }
-
   function updateModeControls() {
     const savedMode = activeMode === "saved_session";
 
@@ -588,6 +695,10 @@
     demoModeButton.setAttribute("aria-pressed", String(!savedMode));
     demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
     streamSessionPanel.hidden = !savedMode;
+    inventoryImportPanel.hidden =
+      !savedMode ||
+      streamSnapshot.activeSession !== null ||
+      shouldPrepareInventoryForStreamRetry(streamSnapshot);
     modeDescription.textContent = savedMode
       ? "Start or resume a local tracker stream. Mappings and unpaid changes are saved and restored when this panel reopens."
       : `Temporary simulator. Demo actions are not saved or applied to TikTok.${streamSnapshot.activeSession ? " Your live tracker stream remains active in the background." : ""}`;
@@ -621,10 +732,13 @@
         session.selectVariation(seed.variationNumber),
         `select demo variation ${seed.variationNumber}`,
       );
-      requireDemoSeedResult(
-        session.selectSku(seed.sku),
-        `map demo variation ${seed.variationNumber}`,
-      );
+
+      if (seed.sku) {
+        requireDemoSeedResult(
+          session.selectSku(seed.sku),
+          `map demo variation ${seed.variationNumber}`,
+        );
+      }
 
       if (seed.status === "committed") {
         requireDemoSeedResult(
@@ -876,6 +990,12 @@
       return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
+    if (isObservedCompletionAwaitingPrice(view.auction)) {
+      return view.auction.sku
+        ? "TikTok shows Payment complete, but the final price is still syncing. The item stays selected without a pending reservation; inventory will update automatically when the completed sale finishes syncing."
+        : "TikTok shows Payment complete, but the final price is still syncing. Select the matching item; inventory will update automatically when the completed sale finishes syncing.";
+    }
+
     const negativeInventory = view.warnings.find(
       (warning) => warning.code === "negative_inventory",
     );
@@ -965,6 +1085,12 @@
       return auction.sku ? "Sale assigned" : "No item selected";
     }
 
+    if (isObservedCompletionAwaitingPrice(auction)) {
+      return auction.sku
+        ? "Final price syncing - item selected"
+        : "Final price syncing - no item selected";
+    }
+
     if (auction.paymentStatus === "canceled") {
       return auction.sku
         ? "Item linked · reservation released · stock unchanged"
@@ -979,7 +1105,20 @@
       return "No item selected";
     }
 
-    return "Item reserved";
+    return isInventoryReservationPending(auction)
+      ? "Pending"
+      : "Item selected";
+  }
+
+  function isInventoryReservationPending(auction) {
+    return auction?.status === "pending";
+  }
+
+  function isObservedCompletionAwaitingPrice(auction) {
+    return (
+      auction?.observedPaymentStatus === "payment_complete" &&
+      auction.paymentStatus !== "payment_complete"
+    );
   }
 
   function renderOrderStatuses(auction) {
@@ -1006,6 +1145,9 @@
     const committed = view.auction?.status === "committed";
     const canceled = view.auction?.status === "canceled";
     const markedUnpaid = view.auction?.status === "marked_unpaid";
+    const completionAwaitingPrice = isObservedCompletionAwaitingPrice(
+      view.auction,
+    );
     const offlineDemo = activeMode === "offline_demo";
     const canUndoSimulatedPayment =
       offlineDemo && view.controls.canUndoSimulatedPayment;
@@ -1018,11 +1160,12 @@
       ? "These controls simulate TikTok events in temporary memory and do not act on TikTok."
       : "Mark unpaid only after TikTok's payment buffer has expired. These employee changes are saved locally.";
     undoPaymentNote.textContent = view.mapping
-      ? "Offline demo only. Return this sale to Waiting for payment, keep the selected item reserved, and do not change TikTok."
+      ? "Offline demo only. Remove the simulated payment, keep the item selected, and do not change TikTok."
       : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
 
     lifecycleControls.hidden =
       canceled ||
+      completionAwaitingPrice ||
       (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
       (committed && !canUndoSimulatedPayment) ||
       (!offlineDemo && committed);
@@ -1033,11 +1176,13 @@
     bufferExpiredNote.hidden = !(
       offlineDemo &&
       view.demo.paymentBufferExpired &&
-      view.auction?.status === "pending"
+      (view.auction?.status === "mapped" ||
+        view.auction?.status === "pending")
     );
-    markUnpaidButton.hidden = offlineDemo
+    markUnpaidButton.hidden = completionAwaitingPrice || (offlineDemo
       ? !view.controls.canMarkUnpaid
-      : view.auction?.status !== "pending";
+      : view.auction?.status !== "pending");
+    markUnpaidButton.disabled = completionAwaitingPrice;
     unpaidNote.hidden = !markedUnpaid;
     undoUnpaidButton.hidden = offlineDemo
       ? !view.controls.canUndoUnpaid
@@ -1201,9 +1346,261 @@
     }
   }
 
+  function isInventoryReadyForStart(snapshot = inventoryImportSnapshot) {
+    return (
+      snapshot.hasConfirmedBaseline === true &&
+      snapshot.busy !== true &&
+      snapshot.preview === null &&
+      snapshot.phase !== "error"
+    );
+  }
+
+  function describeImportSummary(summary) {
+    if (!summary) {
+      return "The confirmed inventory is ready for the next tracker stream.";
+    }
+
+    const rowLabel = summary.rowCount === 1 ? "row" : "rows";
+    const unitLabel =
+      summary.totalQuantityOnHandAtImport === 1 ? "unit" : "units";
+
+    return `${summary.rowCount} ${rowLabel} and ${summary.totalQuantityOnHandAtImport} opening ${unitLabel} are ready for the next tracker stream.`;
+  }
+
+  function clearInventorySheetFieldError() {
+    inventorySheetReference.removeAttribute("aria-invalid");
+    inventorySheetError.hidden = true;
+    inventorySheetError.textContent = "";
+  }
+
+  function renderInventoryImportIssues(issues) {
+    inventoryImportIssues.replaceChildren();
+
+    issues.forEach((issue) => {
+      const item = document.createElement("li");
+      const location = [
+        issue.rowNumber === null ? null : `Row ${issue.rowNumber}`,
+        issue.column === null ? null : issue.column,
+      ].filter(Boolean).join(", ");
+
+      item.textContent = location
+        ? `${location}: ${issue.message}`
+        : issue.message;
+      inventoryImportIssues.append(item);
+    });
+
+    inventoryImportIssues.hidden = issues.length === 0;
+  }
+
+  function renderInventoryPreview(preview) {
+    const { inventory, summary } = preview;
+
+    inventoryPreviewRowCount.textContent = String(summary.rowCount);
+    inventoryPreviewUnitCount.textContent = String(
+      summary.totalQuantityOnHandAtImport,
+    );
+    inventoryPreviewTotalCost.textContent = viewModel.formatUsdCents(
+      summary.totalInventoryCostCents,
+    );
+    const rowsFragment = document.createDocumentFragment();
+
+    inventory.forEach((row) => {
+      const tableRow = document.createElement("tr");
+      [
+        row.sku,
+        row.item,
+        row.style || "None",
+        row.size,
+        String(row.quantityOnHandAtImport),
+        viewModel.formatUsdCents(row.unitCostCents),
+      ].forEach((value) => {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        tableRow.append(cell);
+      });
+      rowsFragment.append(tableRow);
+    });
+    inventoryPreviewRows.replaceChildren(rowsFragment);
+  }
+
+  function renderInventoryImportSnapshot(snapshot) {
+    inventoryImportSnapshot = snapshot;
+    const savedMode = activeMode === "saved_session";
+    const streamExists = streamSnapshot.activeSession !== null;
+    const busy = snapshot.busy === true;
+    const failed = snapshot.phase === "error";
+    const preview = snapshot.preview;
+    const showPanel =
+      savedMode &&
+      !streamExists &&
+      !shouldPrepareInventoryForStreamRetry(streamSnapshot);
+
+    inventoryImportPanel.hidden = !showPanel;
+
+    if (!showPanel) {
+      previousInventoryImportPhase = snapshot.phase;
+      return;
+    }
+
+    inventoryImportPanel.setAttribute("aria-busy", String(busy));
+    inventoryImportForm.hidden = preview !== null;
+    inventoryImportPreview.hidden = preview === null;
+    inventoryImportForm.toggleAttribute("inert", busy);
+    inventoryImportPreview.toggleAttribute("inert", busy);
+    inventoryImportProgress.hidden = !busy;
+    inventoryImportError.hidden = !failed;
+    inventoryImportConfirmation.hidden =
+      !snapshot.hasConfirmedBaseline || preview !== null || failed || busy;
+    inventorySheetReference.disabled = busy;
+    previewInventoryButton.disabled = busy;
+    retryInventoryImportButton.disabled = busy;
+    editInventoryReferenceButton.disabled = busy;
+    changeInventorySheetButton.disabled = busy;
+    cancelInventoryPreviewButton.disabled = busy;
+    confirmInventoryImportButton.disabled = busy || preview === null || failed;
+
+    inventoryImportBadge.dataset.state = failed
+      ? "error"
+      : busy
+        ? "checking"
+        : preview !== null
+          ? "preview"
+          : snapshot.hasConfirmedBaseline
+            ? "ready"
+            : "required";
+    inventoryImportBadge.textContent = failed
+      ? "Needs attention"
+      : busy
+        ? snapshot.operation === "confirm"
+          ? "Confirming"
+          : snapshot.operation === "preview"
+            ? "Connecting"
+            : "Checking"
+        : preview !== null
+          ? "Preview ready"
+          : snapshot.hasConfirmedBaseline
+            ? "Ready"
+            : "Import required";
+
+    if (busy) {
+      inventoryImportProgressTitle.textContent =
+        snapshot.operation === "confirm"
+          ? "Confirming inventory baseline..."
+          : snapshot.operation === "preview"
+            ? "Connecting to Google Sheets..."
+            : "Checking saved inventory...";
+      inventoryImportProgressMessage.textContent =
+        snapshot.operation === "confirm"
+          ? "Saving the validated opening inventory locally."
+          : snapshot.operation === "preview"
+            ? "Waiting for authorization and validating the Inventory tab."
+            : "Looking for a previously confirmed Google Sheets baseline.";
+    }
+
+    if (preview !== null) {
+      inventorySheetReference.value = "";
+      clearInventorySheetFieldError();
+      renderInventoryPreview(preview);
+
+      if (
+        previousInventoryImportPhase === "previewing" ||
+        (previousInventoryImportPhase === "error" &&
+          snapshot.phase === "ready")
+      ) {
+        confirmInventoryImportButton.focus();
+      }
+    }
+
+    if (failed) {
+      const issues = snapshot.error?.issues ?? [];
+      const invalidReference =
+        snapshot.error?.code === "INVALID_SPREADSHEET_REFERENCE" ||
+        snapshot.error?.code === "INVALID_SPREADSHEET_ID";
+
+      inventoryImportErrorTitle.textContent =
+        snapshot.error?.scope === "confirm"
+          ? "Inventory could not be confirmed"
+          : snapshot.error?.scope === "load"
+            ? "Saved inventory could not be checked"
+            : "Inventory could not be previewed";
+      inventoryImportErrorMessage.textContent = snapshot.error?.message ??
+        "Nothing was imported. Correct the Sheet and try again.";
+      retryInventoryImportButton.textContent =
+        REPREVIEW_REQUIRED_ERROR_CODES.has(snapshot.error?.code)
+        ? "Preview again"
+        : "Retry";
+      renderInventoryImportIssues(issues);
+
+      if (invalidReference) {
+        inventorySheetReference.setAttribute("aria-invalid", "true");
+        inventorySheetError.textContent = inventoryImportErrorMessage.textContent;
+        inventorySheetError.hidden = false;
+      }
+
+      if (previousInventoryImportPhase !== "error") {
+        if (invalidReference) {
+          inventorySheetReference.focus();
+        } else {
+          inventoryImportError.focus();
+        }
+      }
+    } else {
+      clearInventorySheetFieldError();
+      renderInventoryImportIssues([]);
+    }
+
+    if (
+      snapshot.hasConfirmedBaseline &&
+      preview === null &&
+      !failed &&
+      !busy
+    ) {
+      inventoryImportConfirmationMessage.textContent =
+        describeImportSummary(snapshot.confirmation?.summary);
+
+      if (
+        previousInventoryImportPhase === "confirming" ||
+        focusInventoryImportAfterRetry
+      ) {
+        inventoryImportConfirmation.focus();
+        focusInventoryImportAfterRetry = false;
+      }
+    }
+
+    previousInventoryImportPhase = snapshot.phase;
+
+    if (streamSnapshot.activeSession === null) {
+      startStreamButton.disabled =
+        streamSnapshot.busy || !isInventoryReadyForStart(snapshot);
+
+      if (streamSnapshot.phase === "ready") {
+        streamSessionStatusMessage.textContent = busy
+          ? "Wait for the inventory check to finish before starting a tracker stream."
+          : preview !== null
+            ? "Review and confirm the inventory preview, or cancel it, before starting."
+            : isInventoryReadyForStart(snapshot)
+              ? "Confirmed inventory is ready. Start a local stream when TikTok LIVE begins."
+              : "Connect, preview, and confirm Google Sheets inventory before starting a local tracker stream.";
+      }
+    }
+  }
+
   function renderStreamSnapshot(snapshot) {
+    const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
     updateModeControls();
+    inventoryImportController.setActiveStream(snapshot.activeSession !== null);
+
+    if (streamWasActive && snapshot.activeSession === null) {
+      Promise.resolve(inventoryImportController.refreshStatus()).catch(
+        (error) => {
+          console.error(
+            "[TikTok Live Tracker] Unexpected post-stream inventory-status failure.",
+            error,
+          );
+        },
+      );
+    }
 
     if (activeMode !== "saved_session") {
       return;
@@ -1234,10 +1631,10 @@
     startStreamButton.hidden = true;
     resumeStreamButton.hidden = true;
     endStreamButton.hidden = true;
-    startStreamButton.disabled = busy;
+    startStreamButton.disabled = busy || !isInventoryReadyForStart();
     resumeStreamButton.disabled = busy;
-    endStreamButton.disabled = busy || isSavedWorkspaceUnavailable();
-    confirmEndStreamButton.disabled = busy || isSavedWorkspaceUnavailable();
+    endStreamButton.disabled = busy;
+    confirmEndStreamButton.disabled = busy;
     cancelEndStreamButton.disabled = busy;
 
     if (failed) {
@@ -1304,8 +1701,11 @@
       streamSessionBadge.textContent = "Not started";
       streamSessionStatusTitle.textContent = "No active tracker stream";
       streamSessionStatusMessage.textContent =
-        "Start a local stream before capture can save Sold Items variations.";
+        isInventoryReadyForStart()
+          ? "Confirmed inventory is ready. Start a local stream when TikTok LIVE begins."
+          : "Connect, preview, and confirm Google Sheets inventory before starting a local tracker stream.";
       startStreamButton.hidden = false;
+      startStreamButton.disabled = !isInventoryReadyForStart();
       unmountPersistentController();
       return;
     }
@@ -1316,9 +1716,10 @@
       streamSessionBadge.textContent = "Ready to resume";
       streamSessionStatusTitle.textContent = "Active stream found";
       streamSessionStatusMessage.textContent =
-        `Started ${startedLabel}. Resume it to continue tagging.`;
-      resumeStreamButton.hidden = false;
-      streamSessionEndConfirmation.hidden = true;
+        `Started ${startedLabel}. Resume it to continue tagging, or end it without loading the inventory workspace.`;
+      resumeStreamButton.hidden = endConfirmationOpen;
+      endStreamButton.hidden = endConfirmationOpen;
+      streamSessionEndConfirmation.hidden = !endConfirmationOpen;
       unmountPersistentController();
       return;
     }
@@ -1347,7 +1748,7 @@
         : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     } else if (action.type === "mark_unpaid") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} marked unpaid and saved locally. Its pending reservation was released.`;
+        `Variation ${variationNumber} marked unpaid and saved locally. Its item stays linked without a pending reservation.`;
     } else if (action.type === "undo_mark_unpaid") {
       mappingAnnouncement.textContent =
         `Unpaid mark removed from variation ${variationNumber} and saved locally. Its TikTok payment status is unchanged.`;
@@ -1372,10 +1773,8 @@
       return;
     }
 
-    endStreamButton.disabled =
-      isSavedWorkspaceUnavailable() || streamSnapshot.busy;
-    confirmEndStreamButton.disabled =
-      isSavedWorkspaceUnavailable() || streamSnapshot.busy;
+    endStreamButton.disabled = streamSnapshot.busy;
+    confirmEndStreamButton.disabled = streamSnapshot.busy;
 
     if (snapshot.phase === "loading" && snapshot.operation === "refresh") {
       captureRefreshFocusSku =
@@ -1864,9 +2263,144 @@
     selectMode("offline_demo");
   });
 
+  inventorySheetReference.addEventListener("input", () => {
+    clearInventorySheetFieldError();
+  });
+
+  inventoryImportForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    if (streamSnapshot.activeSession !== null || inventoryImportSnapshot.busy) {
+      return;
+    }
+
+    clearInventorySheetFieldError();
+    mappingAnnouncement.textContent =
+      "Connecting to Google Sheets and validating the Inventory tab.";
+
+    try {
+      const operation = inventoryImportController.previewReference(
+        inventorySheetReference.value,
+      );
+
+      inventoryImportProgress.focus();
+      Promise.resolve(operation)
+        .then((snapshot) => {
+          if (snapshot.phase === "ready" && snapshot.preview !== null) {
+            confirmInventoryImportButton.focus();
+            mappingAnnouncement.textContent =
+              `Inventory preview ready with ${snapshot.preview.summary.rowCount} rows. Review every opening quantity before confirming.`;
+          }
+        })
+        .catch((error) => {
+          console.error(
+            "[TikTok Live Tracker] Unexpected inventory-preview failure.",
+            error,
+          );
+        });
+    } catch (error) {
+      mappingAnnouncement.textContent =
+        error?.message ?? "The inventory preview could not be started.";
+    }
+  });
+
+  function resetInventoryPreviewAndFocus() {
+    try {
+      inventoryImportController.resetPreview();
+      inventorySheetReference.value = "";
+      clearInventorySheetFieldError();
+      inventorySheetReference.focus();
+    } catch (error) {
+      mappingAnnouncement.textContent =
+        error?.message ?? "Wait for the inventory operation to finish.";
+    }
+  }
+
+  changeInventorySheetButton.addEventListener(
+    "click",
+    resetInventoryPreviewAndFocus,
+  );
+  cancelInventoryPreviewButton.addEventListener(
+    "click",
+    resetInventoryPreviewAndFocus,
+  );
+  editInventoryReferenceButton.addEventListener(
+    "click",
+    resetInventoryPreviewAndFocus,
+  );
+
+  confirmInventoryImportButton.addEventListener("click", () => {
+    if (
+      streamSnapshot.activeSession !== null ||
+      inventoryImportSnapshot.busy ||
+      inventoryImportSnapshot.preview === null
+    ) {
+      return;
+    }
+
+    focusInventoryImportAfterRetry = true;
+    mappingAnnouncement.textContent =
+      "Confirming the validated opening inventory for future tracker streams.";
+
+    try {
+      const operation = inventoryImportController.confirmPreview();
+
+      inventoryImportProgress.focus();
+      Promise.resolve(operation)
+        .then((snapshot) => {
+          if (snapshot.phase === "ready" && snapshot.hasConfirmedBaseline) {
+            mappingAnnouncement.textContent =
+              "Inventory baseline confirmed. Start is now available.";
+            renderStreamSnapshot(streamSessionController.getSnapshot());
+          }
+        })
+        .catch((error) => {
+          console.error(
+            "[TikTok Live Tracker] Unexpected inventory-confirmation failure.",
+            error,
+          );
+        });
+    } catch (error) {
+      mappingAnnouncement.textContent =
+        error?.message ?? "The inventory baseline could not be confirmed.";
+    }
+  });
+
+  retryInventoryImportButton.addEventListener("click", () => {
+    if (inventoryImportSnapshot.busy) {
+      return;
+    }
+
+    if (REPREVIEW_REQUIRED_ERROR_CODES.has(inventoryImportSnapshot.error?.code)) {
+      resetInventoryPreviewAndFocus();
+      mappingAnnouncement.textContent =
+        "Paste the Sheet link again to create a fresh inventory preview.";
+      return;
+    }
+
+    focusInventoryImportAfterRetry = true;
+    inventoryImportProgress.focus();
+    Promise.resolve(inventoryImportController.retry()).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected inventory-import retry failure.",
+        error,
+      );
+    });
+  });
+
   startStreamButton.addEventListener("click", () => {
+    if (!isInventoryReadyForStart()) {
+      mappingAnnouncement.textContent =
+        "Confirm Google Sheets inventory before starting a live tracker stream.";
+      inventoryImportPanel.scrollIntoView({ block: "start" });
+      inventorySheetReference.focus();
+      return;
+    }
+
     focusSavedWorkspaceAfterRetry = true;
     streamSessionStatus.focus();
+    mappingAnnouncement.textContent =
+      "Starting the tracker stream with the confirmed inventory baseline.";
     Promise.resolve()
       .then(() => streamSessionController.startNewStream())
       .then((snapshot) => {
@@ -1876,6 +2410,9 @@
         }
       })
       .catch((error) => {
+        mappingAnnouncement.textContent =
+          error?.message ??
+          "Local inventory could not be prepared, so the tracker stream was not started.";
         console.error(
           "[TikTok Live Tracker] Unexpected stream-start failure.",
           error,
@@ -1898,28 +2435,9 @@
   });
 
   endStreamButton.addEventListener("click", () => {
-    if (isSavedWorkspaceUnavailable() || streamSnapshot.busy) {
+    if (streamSnapshot.busy) {
       mappingAnnouncement.textContent =
-        "Restore or finish loading the saved workspace before ending the tracker stream.";
-      return;
-    }
-
-    const unresolvedVariations = getEndBlockingVariations();
-
-    if (unresolvedVariations.length > 0) {
-      const variationList = unresolvedVariations
-        .map((variation) =>
-          variation.status === "unmapped_completed"
-            ? `#${variation.variationNumber} (completed sale needs an item)`
-            : `#${variation.variationNumber} (pending reservation)`,
-        )
-        .join(", ");
-
-      streamSessionStatusMessage.textContent =
-        `Resolve ${variationList} before ending this tracker stream.`;
-      mappingAnnouncement.textContent =
-        `Tracker stream not ended. Resolve pending reservations and completed sales needing items first.`;
-      variationSelector.focus();
+        "Wait for the current tracker stream change to finish before ending.";
       return;
     }
 
@@ -1935,9 +2453,9 @@
   });
 
   confirmEndStreamButton.addEventListener("click", () => {
-    if (isSavedWorkspaceUnavailable() || streamSnapshot.busy) {
+    if (streamSnapshot.busy) {
       mappingAnnouncement.textContent =
-        "Restore or finish loading the saved workspace before ending the tracker stream.";
+        "Wait for the current tracker stream change to finish before ending.";
       return;
     }
 
@@ -1962,6 +2480,9 @@
   });
 
   retryStreamSessionButton.addEventListener("click", () => {
+    const prepareMissingInventory =
+      shouldPrepareInventoryForStreamRetry(streamSnapshot);
+
     hasFocusedStreamError = false;
     streamSessionStatus.hidden = false;
     streamSessionError.hidden = true;
@@ -1970,6 +2491,18 @@
       "Checking the saved local stream before allowing more changes.";
     streamSessionStatus.focus();
     Promise.resolve()
+      .then(() => {
+        if (!prepareMissingInventory) {
+          return null;
+        }
+
+        mappingAnnouncement.textContent =
+          "Recovering the legacy inventory for this already-active tracker stream.";
+        return persistentTaggerControllerModule.ensureInventoryInitialized({
+          client: persistentClient,
+          inventory: viewModel.MOCK_INVENTORY,
+        });
+      })
       .then(() => streamSessionController.retry())
       .then((snapshot) => {
         if (snapshot.phase !== "ready") {
@@ -1983,6 +2516,10 @@
         }
       })
       .catch((error) => {
+        renderStreamSnapshot(streamSessionController.getSnapshot());
+        mappingAnnouncement.textContent =
+          error?.message ??
+          "Local inventory could not be prepared, so the tracker stream was not restored.";
         console.error(
           "[TikTok Live Tracker] Unexpected stream-session retry failure.",
           error,
@@ -2016,6 +2553,13 @@
     },
     { once: true },
   );
+  inventoryImportController.subscribe(renderInventoryImportSnapshot);
+  Promise.resolve().then(() => inventoryImportController.start()).catch((error) => {
+    console.error(
+      "[TikTok Live Tracker] Unexpected inventory-status startup failure.",
+      error,
+    );
+  });
   streamSessionController.subscribe(renderStreamSnapshot);
   Promise.resolve().then(() => streamSessionController.start()).catch((error) => {
     console.error(

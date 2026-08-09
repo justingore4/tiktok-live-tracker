@@ -5,6 +5,9 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const captureProtocol = require("../extension/shared/capture-protocol.js");
+const inventoryImportProtocol = require(
+  "../extension/shared/inventory-import-protocol.js"
+);
 
 const workerSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "service-worker.js"),
@@ -27,7 +30,10 @@ function createWorkerHarness(options = {}) {
   const streamDispatchCalls = [];
   const captureDispatchCalls = [];
   const runtimeSendMessages = [];
+  const inventoryImportCalls = [];
   const consoleErrors = [];
+  const timerCalls = [];
+  const timerReceiverMarker = {};
   let requestedStorageAccess = null;
   const storageArea = {
     setAccessLevel(accessOptions) {
@@ -43,6 +49,34 @@ function createWorkerHarness(options = {}) {
   const stateStore = {};
   const streamStateStore = {};
   const extensionId = "test-extension-id";
+  const activeStreamId =
+    "local-stream:11111111-1111-4111-8111-111111111111";
+  const activeInventoryBaselineId =
+    "inventory-baseline:11111111-1111-4111-8111-111111111111";
+  const preparedReconciliationState = {
+    version: 4,
+    activeInventoryBaselineId,
+    inventoryBaselines: [
+      {
+        baselineId: activeInventoryBaselineId,
+        sourceFingerprint:
+          options.preparedSourceFingerprint === undefined
+            ? "fnv1a64:1111111111111111"
+            : options.preparedSourceFingerprint,
+        inventory: [
+          {
+            sku: "TEST-SKU",
+            item: "Test item",
+            style: "",
+            size: "OS",
+            quantityOnHandAtImport: 1,
+            unitCostCents: 100,
+          },
+        ],
+      },
+    ],
+    streams: [],
+  };
   const sidePanelUrl =
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
   let requestedPanelBehavior = null;
@@ -51,6 +85,17 @@ function createWorkerHarness(options = {}) {
   let streamStoreOptions = null;
   let streamCoordinatorOptions = null;
   let captureIntegrationOptions = null;
+  let inventoryImportOptions = null;
+  let remainingPinFailures = options.pinFailureCount ?? 0;
+  let persistedActiveSession = options.initialActiveSession
+    ? JSON.parse(JSON.stringify(options.initialActiveSession))
+    : null;
+  const statefulReconciliation = options.statefulReconciliation === true;
+  let persistedReconciliationState = statefulReconciliation
+    ? options.initialReconciliationState === undefined
+      ? null
+      : JSON.parse(JSON.stringify(options.initialReconciliationState))
+    : undefined;
 
   class FakeReconciliationError extends Error {
     constructor(code, message) {
@@ -101,8 +146,25 @@ function createWorkerHarness(options = {}) {
     }
   }
 
+  class FakeGoogleSheetsInventoryImportError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
   const reconciliation = {
     ReconciliationError: FakeReconciliationError,
+    hydrateReconciliationState(candidate) {
+      if (!candidate || typeof candidate !== "object") {
+        throw new FakeReconciliationError(
+          "INVALID_STATE",
+          "Invalid reconciliation state.",
+        );
+      }
+
+      return JSON.parse(JSON.stringify(candidate));
+    },
   };
   const storageModule = {
     ReconciliationStorageError: FakeStorageError,
@@ -115,12 +177,111 @@ function createWorkerHarness(options = {}) {
     async dispatch(command) {
       dispatchCalls.push(command);
 
+      if (options.beforeDispatch) {
+        await options.beforeDispatch(command);
+      }
+
+      if (
+        command.type ===
+          coordinatorModule.COMMAND_TYPES
+            .PIN_STREAM_TO_INVENTORY_BASELINE &&
+        options.pinDispatchError &&
+        remainingPinFailures > 0
+      ) {
+        remainingPinFailures -= 1;
+        throw options.pinDispatchError === "known"
+          ? new FakeStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not pin stream inventory.",
+            )
+          : options.pinDispatchError;
+      }
+
       if (options.dispatchError === "known") {
         throw new FakeStorageError("STORAGE_WRITE_FAILED", "Could not save.");
       }
 
       if (options.dispatchError === "unexpected") {
         throw new Error("sensitive failure details");
+      }
+
+      if (statefulReconciliation) {
+        if (command.type === coordinatorModule.COMMAND_TYPES.GET_STATE) {
+          return {
+            state: persistedReconciliationState === null
+              ? null
+              : JSON.parse(JSON.stringify(persistedReconciliationState)),
+            result: null,
+          };
+        }
+
+        if (
+          command.type === coordinatorModule.COMMAND_TYPES.INITIALIZE_STATE
+        ) {
+          if (persistedReconciliationState === null) {
+            persistedReconciliationState = JSON.parse(
+              JSON.stringify(preparedReconciliationState),
+            );
+            persistedReconciliationState.inventoryBaselines[0].inventory =
+              JSON.parse(JSON.stringify(command.inventory));
+          }
+
+          return {
+            state: JSON.parse(JSON.stringify(persistedReconciliationState)),
+            result: { status: "initialized" },
+          };
+        }
+
+        if (
+          command.type ===
+          coordinatorModule.COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE
+        ) {
+          if (persistedReconciliationState === null) {
+            throw new FakeCoordinatorError(
+              "STATE_NOT_INITIALIZED",
+              "Inventory must initialize reconciliation state before this command can run.",
+            );
+          }
+
+          const existingStream = persistedReconciliationState.streams.find(
+            (candidate) => candidate.streamId === command.streamId,
+          );
+
+          if (!existingStream) {
+            persistedReconciliationState.streams.push({
+              streamId: command.streamId,
+              inventoryBaselineId:
+                persistedReconciliationState.activeInventoryBaselineId,
+              variations: [],
+            });
+          }
+
+          return {
+            state: JSON.parse(JSON.stringify(persistedReconciliationState)),
+            result: {
+              status: existingStream ? "already_pinned" : "pinned",
+              baselineId:
+                persistedReconciliationState.activeInventoryBaselineId,
+            },
+          };
+        }
+
+        return {
+          state: persistedReconciliationState === null
+            ? null
+            : JSON.parse(JSON.stringify(persistedReconciliationState)),
+          result: null,
+        };
+      }
+
+      if (
+        command.type === coordinatorModule.COMMAND_TYPES.GET_STATE &&
+        options.usePreparedState
+      ) {
+        return {
+          state: JSON.parse(JSON.stringify(preparedReconciliationState)),
+          result: null,
+        };
       }
 
       return options.dispatchResult ?? { state: null, result: null };
@@ -130,10 +291,18 @@ function createWorkerHarness(options = {}) {
     MESSAGE_CHANNEL: "tiktok-live-tracker.reconciliation",
     MESSAGE_VERSION: 1,
     COMMAND_TYPES: {
+      GET_STATE: "get_state",
+      INITIALIZE_STATE: "initialize_state",
+      CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
+      PIN_STREAM_TO_INVENTORY_BASELINE:
+        "pin_stream_to_inventory_baseline",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
+      MAP_VARIATION: "map_variation",
+      MARK_UNPAID: "mark_unpaid",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       UNMAP_VARIATION: "unmap_variation",
+      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     },
     ReconciliationCoordinatorError: FakeCoordinatorError,
     createReconciliationCoordinator(receivedOptions) {
@@ -143,6 +312,20 @@ function createWorkerHarness(options = {}) {
   };
   const streamSession = {
     StreamSessionError: FakeStreamSessionError,
+    hydrateStreamSessionState(candidate) {
+      if (
+        !candidate ||
+        candidate.version !== 1 ||
+        !("activeSession" in candidate)
+      ) {
+        throw new FakeStreamSessionError(
+          "INVALID_STREAM_SESSION_STATE",
+          "Invalid stream-session state.",
+        );
+      }
+
+      return JSON.parse(JSON.stringify(candidate));
+    },
   };
   const streamStorageModule = {
     StreamSessionStorageError: FakeStreamStorageError,
@@ -170,8 +353,50 @@ function createWorkerHarness(options = {}) {
         throw new Error("sensitive stream failure details");
       }
 
-      return options.streamDispatchResult ?? {
-        state: { version: 1, activeSession: null },
+      if (options.streamDispatchResult) {
+        return options.streamDispatchResult;
+      }
+
+      if (
+        command.type === streamCoordinatorModule.COMMAND_TYPES.START_STREAM
+      ) {
+        const alreadyActive = persistedActiveSession !== null;
+
+        persistedActiveSession ??= {
+          streamId: activeStreamId,
+          startedAt: "2026-08-08T20:00:00.000Z",
+          identitySource: "local_session",
+        };
+
+        return {
+          state: {
+            version: 1,
+            activeSession: JSON.parse(
+              JSON.stringify(persistedActiveSession),
+            ),
+          },
+          result: { status: alreadyActive ? "already_active" : "started" },
+        };
+      }
+
+      if (
+        command.type === streamCoordinatorModule.COMMAND_TYPES.END_STREAM
+      ) {
+        persistedActiveSession = null;
+
+        return {
+          state: { version: 1, activeSession: null },
+          result: { status: "ended" },
+        };
+      }
+
+      return {
+        state: {
+          version: 1,
+          activeSession: persistedActiveSession === null
+            ? null
+            : JSON.parse(JSON.stringify(persistedActiveSession)),
+        },
         result: null,
       };
     },
@@ -219,7 +444,82 @@ function createWorkerHarness(options = {}) {
       return captureEventIntegration;
     },
   };
+  const googleSheetsInventoryImportModule = {
+    GoogleSheetsInventoryImportError: FakeGoogleSheetsInventoryImportError,
+    createGoogleSheetsInventoryImportService(receivedOptions) {
+      inventoryImportOptions = receivedOptions;
+
+      return {
+        invalidatePreviews() {
+          inventoryImportCalls.push({ type: "invalidate_previews" });
+        },
+        async getImportStatus() {
+          inventoryImportCalls.push({ type: "get_import_status" });
+          return options.importStatusResult ?? {
+            ready: false,
+            baselineId: null,
+            sourceFingerprint: null,
+            summary: null,
+          };
+        },
+        async previewGoogleSheet(spreadsheetId) {
+          inventoryImportCalls.push({
+            type: "preview_google_sheet",
+            spreadsheetId,
+          });
+          await receivedOptions.assertNoActiveStream();
+          return options.importPreviewResult ?? {
+            status: "invalid",
+            issues: [],
+          };
+        },
+        async confirmGoogleSheetImport(previewToken) {
+          inventoryImportCalls.push({
+            type: "confirm_google_sheet_import",
+            previewToken,
+          });
+          await receivedOptions.assertNoActiveStream();
+
+          if (options.importCreateCommand) {
+            await receivedOptions.createBaseline(
+              options.importCreateCommand,
+            );
+          }
+
+          return options.importConfirmResult ?? {
+            status: "imported",
+            baselineId:
+              "inventory-baseline:22222222-2222-4222-8222-222222222222",
+            sourceFingerprint: "fnv1a64:1111111111111111",
+            summary: {
+              rowCount: 1,
+              totalQuantityOnHandAtImport: 1,
+              totalInventoryCostCents: 100,
+            },
+          };
+        },
+      };
+    },
+  };
+  function receiverStrictSetTimeout(callback, delayMs) {
+    if (this?.__timerReceiverMarker !== timerReceiverMarker) {
+      throw new TypeError("Illegal invocation");
+    }
+
+    timerCalls.push({ type: "set", callback, delayMs });
+    return 77;
+  }
+
+  function receiverStrictClearTimeout(timeoutId) {
+    if (this?.__timerReceiverMarker !== timerReceiverMarker) {
+      throw new TypeError("Illegal invocation");
+    }
+
+    timerCalls.push({ type: "clear", timeoutId });
+  }
+
   const sandbox = {
+    __timerReceiverMarker: timerReceiverMarker,
     importScripts(...relativePaths) {
       imports.push(...relativePaths);
     },
@@ -231,6 +531,18 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
     TikTokLiveTrackerCaptureProtocol: captureProtocol,
     TikTokLiveTrackerCaptureIntegration: captureIntegrationModule,
+    TikTokLiveTrackerInventorySheetImport: {},
+    TikTokLiveTrackerInventoryImportProtocol: inventoryImportProtocol,
+    TikTokLiveTrackerGoogleSheetsInventoryImport:
+      googleSheetsInventoryImportModule,
+    AbortController,
+    clearTimeout: options.receiverStrictTimers
+      ? receiverStrictClearTimeout
+      : clearTimeout,
+    fetch: () => Promise.reject(new Error("Network is not used by this harness.")),
+    setTimeout: options.receiverStrictTimers
+      ? receiverStrictSetTimeout
+      : setTimeout,
     crypto: {
       randomUUID() {
         return "11111111-1111-4111-8111-111111111111";
@@ -240,6 +552,13 @@ function createWorkerHarness(options = {}) {
       storage: { local: storageArea },
       runtime: {
         id: extensionId,
+        getManifest() {
+          return {
+            oauth2: {
+              client_id: "123456789-test.apps.googleusercontent.com",
+            },
+          };
+        },
         getURL(relativePath) {
           return `chrome-extension://${extensionId}/${relativePath}`;
         },
@@ -259,6 +578,14 @@ function createWorkerHarness(options = {}) {
             return Promise.reject(options.runtimeSendMessageError);
           }
 
+          return Promise.resolve();
+        },
+      },
+      identity: {
+        getAuthToken() {
+          return Promise.resolve({ token: "test-token" });
+        },
+        removeCachedAuthToken() {
           return Promise.resolve();
         },
       },
@@ -311,6 +638,13 @@ function createWorkerHarness(options = {}) {
     };
   }
 
+  function createImportMessage(command, overrides = {}) {
+    return {
+      ...inventoryImportProtocol.createInventoryImportMessage(command),
+      ...overrides,
+    };
+  }
+
   function createCaptureSender(overrides = {}) {
     return createSender({
       url:
@@ -350,9 +684,13 @@ function createWorkerHarness(options = {}) {
     createStreamMessage,
     createCaptureMessage,
     createCaptureSender,
+    createImportMessage,
     createMessage,
     createSender,
     dispatchCalls,
+    activeInventoryBaselineId,
+    activeStreamId,
+    preparedReconciliationState,
     streamDispatchCalls,
     extensionId,
     getCoordinatorOptions: () => coordinatorOptions,
@@ -362,7 +700,10 @@ function createWorkerHarness(options = {}) {
     getStreamCoordinatorOptions: () => streamCoordinatorOptions,
     getStreamStoreOptions: () => streamStoreOptions,
     getCaptureIntegrationOptions: () => captureIntegrationOptions,
+    getInventoryImportOptions: () => inventoryImportOptions,
     imports,
+    inventoryImportCalls,
+    inventoryImportProtocol,
     listeners,
     reconciliation,
     runtimeSendMessages,
@@ -374,6 +715,7 @@ function createWorkerHarness(options = {}) {
     streamSession,
     streamStateStore,
     storageArea,
+    timerCalls,
   };
 }
 
@@ -389,6 +731,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/stream-session-coordinator.js",
     "shared/capture-protocol.js",
     "shared/capture-integration.js",
+    "shared/inventory-sheet-import.js",
+    "shared/inventory-import-protocol.js",
+    "shared/google-sheets-inventory-import.js",
   ]);
   assert.ok(
     harness.imports.every((relativePath) =>
@@ -462,6 +807,29 @@ test("loads state dependencies and wires the canonical coordinator", () => {
   );
 });
 
+test("wraps worker timers so adapter method calls keep the global receiver", () => {
+  const harness = createWorkerHarness({ receiverStrictTimers: true });
+  const importOptions = harness.getInventoryImportOptions();
+  const callback = () => {};
+
+  const timeoutId = importOptions.setTimeoutImpl(callback, 20_000);
+  importOptions.clearTimeoutImpl(timeoutId);
+
+  assert.equal(timeoutId, 77);
+  assert.deepEqual(harness.timerCalls, [
+    { type: "set", callback, delayMs: 20_000 },
+    { type: "clear", timeoutId: 77 },
+  ]);
+  assert.match(
+    workerSource,
+    /clearTimeoutImpl:\s*\(\.\.\.args\) => globalThis\.clearTimeout\(\.\.\.args\)/,
+  );
+  assert.match(
+    workerSource,
+    /setTimeoutImpl:\s*\(\.\.\.args\) => globalThis\.setTimeout\(\.\.\.args\)/,
+  );
+});
+
 test("keeps the async response channel open and returns plain success data", async () => {
   const expectedData = {
     state: { version: 1, inventory: [], streams: [] },
@@ -490,8 +858,632 @@ test("routes active-stream commands through their separate trusted boundary", as
 
   assert.equal(request.returnValue, true);
   assert.deepEqual(await request.response, { ok: true, data: expectedData });
-  assert.deepEqual(harness.streamDispatchCalls, [command]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.streamDispatchCalls)),
+    [command],
+  );
   assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("preflights inventory and pins the worker-owned stream during Start", async () => {
+  const order = [];
+  const harness = createWorkerHarness({
+    usePreparedState: true,
+    beforeDispatch(command) {
+      order.push(`reconciliation:${command.type}`);
+    },
+    beforeStreamDispatch(command) {
+      order.push(`stream:${command.type}`);
+    },
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+  const response = await request.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.result.status, "started");
+  assert.deepEqual(order, [
+    "stream:get_stream_session",
+    "reconciliation:get_state",
+    "stream:start_stream",
+    "reconciliation:pin_stream_to_inventory_baseline",
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [
+      { type: harness.coordinatorModule.COMMAND_TYPES.GET_STATE },
+      {
+        type:
+          harness.coordinatorModule.COMMAND_TYPES
+            .PIN_STREAM_TO_INVENTORY_BASELINE,
+        streamId: harness.activeStreamId,
+      },
+    ],
+  );
+});
+
+test("blocks Start before session persistence when inventory is not prepared", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "INVENTORY_BASELINE_REQUIRED",
+      message: "Prepare inventory before starting a tracker stream.",
+    },
+  });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [{ type: harness.coordinatorModule.COMMAND_TYPES.GET_STATE }],
+  );
+  assert.deepEqual(
+    harness.streamDispatchCalls.map((command) => command.type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+});
+
+test("GET repairs an active stream's missing inventory pin before returning", async () => {
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: "local-stream:33333333-3333-4333-8333-333333333333",
+      startedAt: "2026-08-08T21:00:00.000Z",
+      identitySource: "local_session",
+    },
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+    }),
+  );
+  const response = await request.response;
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [
+      {
+        type:
+          harness.coordinatorModule.COMMAND_TYPES
+            .PIN_STREAM_TO_INVENTORY_BASELINE,
+        streamId: "local-stream:33333333-3333-4333-8333-333333333333",
+      },
+    ],
+  );
+});
+
+test("recovers a legacy active stream when reconciliation state is truly missing", async () => {
+  const legacySession = {
+    streamId: "local-stream:88888888-8888-4888-8888-888888888888",
+    startedAt: "2026-08-08T19:30:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: legacySession,
+    statefulReconciliation: true,
+  });
+  const getStreamCommand = {
+    type:
+      harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+  };
+
+  const initialLoad = harness.send(
+    harness.createStreamMessage(getStreamCommand),
+  );
+
+  assert.deepEqual(await initialLoad.response, {
+    ok: false,
+    error: {
+      code: "STATE_NOT_INITIALIZED",
+      message:
+        "Inventory must initialize reconciliation state before this command can run.",
+    },
+  });
+
+  const missingStateRead = harness.send(
+    harness.createMessage({
+      type: harness.coordinatorModule.COMMAND_TYPES.GET_STATE,
+    }),
+  );
+
+  assert.deepEqual(await missingStateRead.response, {
+    ok: true,
+    data: { state: null, result: null },
+  });
+
+  const inventory =
+    harness.preparedReconciliationState.inventoryBaselines[0].inventory;
+  const initialize = harness.send(
+    harness.createMessage({
+      type: harness.coordinatorModule.COMMAND_TYPES.INITIALIZE_STATE,
+      inventory,
+    }),
+  );
+  const initializedResponse = await initialize.response;
+
+  assert.equal(initializedResponse.ok, true);
+  assert.deepEqual(initializedResponse.data.result, {
+    status: "initialized",
+  });
+  assert.deepEqual(initializedResponse.data.state.streams, [
+    {
+      streamId: legacySession.streamId,
+      inventoryBaselineId: harness.activeInventoryBaselineId,
+      variations: [],
+    },
+  ]);
+
+  const retryLoad = harness.send(
+    harness.createStreamMessage(getStreamCommand),
+  );
+  const retryResponse = await retryLoad.response;
+
+  assert.equal(retryResponse.ok, true);
+  assert.deepEqual(retryResponse.data.state.activeSession, legacySession);
+  assert.equal(
+    harness.streamDispatchCalls.some(
+      (command) =>
+        command.type ===
+        harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    harness.dispatchCalls.map((command) => command.type),
+    [
+      harness.coordinatorModule.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+      harness.coordinatorModule.COMMAND_TYPES.GET_STATE,
+      harness.coordinatorModule.COMMAND_TYPES.GET_STATE,
+      harness.coordinatorModule.COMMAND_TYPES.INITIALIZE_STATE,
+      harness.coordinatorModule.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+      harness.coordinatorModule.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+    ],
+  );
+  assert.deepEqual(
+    harness.dispatchCalls
+      .filter(
+        (command) =>
+          command.type ===
+          harness.coordinatorModule.COMMAND_TYPES
+            .PIN_STREAM_TO_INVENTORY_BASELINE,
+      )
+      .map((command) => command.streamId),
+    [legacySession.streamId, legacySession.streamId, legacySession.streamId],
+  );
+});
+
+test("does not replace non-null reconciliation state for an active stream", async () => {
+  const activeSession = {
+    streamId: "local-stream:99999999-9999-4999-8999-999999999999",
+    startedAt: "2026-08-08T19:45:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    initialReconciliationState: {
+      version: 4,
+      activeInventoryBaselineId:
+        "inventory-baseline:99999999-9999-4999-8999-999999999999",
+      inventoryBaselines: [
+        {
+          baselineId:
+            "inventory-baseline:99999999-9999-4999-8999-999999999999",
+          sourceFingerprint: null,
+          inventory: [
+            {
+              sku: "EXISTING-SKU",
+              item: "Existing item",
+              style: "",
+              size: "OS",
+              quantityOnHandAtImport: 2,
+              unitCostCents: 250,
+            },
+          ],
+        },
+      ],
+      streams: [],
+    },
+    statefulReconciliation: true,
+  });
+  const request = harness.send(
+    harness.createMessage({
+      type: harness.coordinatorModule.COMMAND_TYPES.INITIALIZE_STATE,
+      inventory:
+        harness.preparedReconciliationState.inventoryBaselines[0].inventory,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "ACTIVE_STREAM_ALREADY_EXISTS",
+      message:
+        "End the active tracker stream before preparing another inventory baseline.",
+    },
+  });
+  assert.deepEqual(
+    harness.dispatchCalls.map((command) => command.type),
+    [harness.coordinatorModule.COMMAND_TYPES.GET_STATE],
+  );
+});
+
+test("recovers a session-first Start when the first inventory pin save fails", async () => {
+  const harness = createWorkerHarness({
+    usePreparedState: true,
+    pinDispatchError: "known",
+    pinFailureCount: 1,
+  });
+  const command = {
+    type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+  };
+  const first = harness.send(harness.createStreamMessage(command));
+
+  assert.deepEqual(await first.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not pin stream inventory.",
+    },
+  });
+
+  const retry = harness.send(harness.createStreamMessage(command));
+  const retryResponse = await retry.response;
+
+  assert.equal(retryResponse.ok, true);
+  assert.equal(retryResponse.data.result.status, "already_active");
+  assert.deepEqual(
+    harness.streamDispatchCalls.map((candidate) => candidate.type),
+    [
+      "get_stream_session",
+      "start_stream",
+      "get_stream_session",
+      "start_stream",
+    ],
+  );
+  assert.equal(
+    harness.dispatchCalls.filter(
+      (candidate) =>
+        candidate.type ===
+        harness.coordinatorModule.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+    ).length,
+    2,
+  );
+});
+
+test("keeps rejected direct baseline creation behind Start in the worker FIFO", async () => {
+  const startEntered = createDeferred();
+  const releaseStart = createDeferred();
+  const harness = createWorkerHarness({
+    usePreparedState: true,
+    async beforeStreamDispatch(command) {
+      if (
+        command.type ===
+        harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM
+      ) {
+        startEntered.resolve();
+        await releaseStart.promise;
+      }
+    },
+  });
+  const start = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+  const create = harness.send(
+    harness.createMessage({
+      type:
+        harness.coordinatorModule.COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+      baselineId:
+        "inventory-baseline:44444444-4444-4444-8444-444444444444",
+      sourceFingerprint: "fnv1a64:0000000000000000",
+      inventory: [],
+    }),
+  );
+
+  await startEntered.promise;
+  assert.equal(harness.streamDispatchCalls.length, 2);
+  releaseStart.resolve();
+  assert.equal((await start.response).ok, true);
+  assert.deepEqual(await create.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Inventory baselines can be created only through a confirmed Sheet import.",
+    },
+  });
+  assert.equal(
+    harness.dispatchCalls.some(
+      (candidate) =>
+        candidate.type ===
+        harness.coordinatorModule.COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+    ),
+    false,
+  );
+});
+
+test("does not expose baseline creation directly to the side panel", async () => {
+  const harness = createWorkerHarness();
+  const command = {
+    type:
+      harness.coordinatorModule.COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+    baselineId:
+      "inventory-baseline:55555555-5555-4555-8555-555555555555",
+    sourceFingerprint: "fnv1a64:1111111111111111",
+    inventory: [
+      {
+        sku: "TEST-SKU",
+        item: "Test item",
+        style: "",
+        size: "OS",
+        quantityOnHandAtImport: 1,
+        unitCostCents: 100,
+      },
+    ],
+  };
+  const request = harness.send(harness.createMessage(command));
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Inventory baselines can be created only through a confirmed Sheet import.",
+    },
+  });
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("requires a confirmed imported baseline before a fresh Start", async () => {
+  const harness = createWorkerHarness({
+    usePreparedState: true,
+    preparedSourceFingerprint: null,
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "INVENTORY_IMPORT_REQUIRED",
+      message:
+        "Import and confirm Google Sheets inventory before starting a tracker stream.",
+    },
+  });
+  assert.deepEqual(
+    harness.streamDispatchCalls.map((command) => command.type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+  assert.equal(
+    harness.streamDispatchCalls.some(
+      (command) =>
+        command.type ===
+        harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    ),
+    false,
+  );
+  assert.deepEqual(harness.inventoryImportCalls, [
+    { type: "invalidate_previews" },
+  ]);
+});
+
+test("keeps Start idempotent for an already-active legacy stream", async () => {
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: "local-stream:77777777-7777-4777-8777-777777777777",
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+    usePreparedState: true,
+    preparedSourceFingerprint: null,
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
+    }),
+  );
+  const response = await request.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.result.status, "already_active");
+  assert.deepEqual(
+    harness.streamDispatchCalls.map((command) => command.type),
+    ["get_stream_session", "start_stream"],
+  );
+  assert.deepEqual(
+    harness.dispatchCalls.map((command) => command.type),
+    ["pin_stream_to_inventory_baseline"],
+  );
+});
+
+test("does not allow inactive mock initialization to bypass Sheet import", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createMessage({
+      type: harness.coordinatorModule.COMMAND_TYPES.INITIALIZE_STATE,
+      inventory:
+        harness.preparedReconciliationState.inventoryBaselines[0].inventory,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "INVENTORY_IMPORT_REQUIRED",
+      message:
+        "Import and confirm Google Sheets inventory before starting a tracker stream.",
+    },
+  });
+  assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("routes exact inventory-import status and preview messages", async () => {
+  const harness = createWorkerHarness({
+    importStatusResult: {
+      ready: false,
+      baselineId: null,
+      sourceFingerprint: null,
+      summary: null,
+    },
+  });
+  const status = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES.GET_IMPORT_STATUS,
+    }),
+  );
+  const preview = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES.PREVIEW_GOOGLE_SHEET,
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    }),
+  );
+
+  assert.deepEqual(await status.response, {
+    ok: true,
+    data: {
+      ready: false,
+      baselineId: null,
+      sourceFingerprint: null,
+      summary: null,
+    },
+  });
+  assert.deepEqual(await preview.response, {
+    ok: true,
+    data: { status: "invalid", issues: [] },
+  });
+  assert.deepEqual(harness.inventoryImportCalls, [
+    { type: "get_import_status" },
+    {
+      type: "preview_google_sheet",
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    },
+  ]);
+});
+
+test("confirmed import alone can dispatch internal baseline creation", async () => {
+  const createCommand = {
+    baselineId:
+      "inventory-baseline:22222222-2222-4222-8222-222222222222",
+    sourceFingerprint: "fnv1a64:1111111111111111",
+    inventory: [
+      {
+        sku: "TEST-SKU",
+        item: "Test item",
+        style: "",
+        size: "OS",
+        quantityOnHandAtImport: 1,
+        unitCostCents: 100,
+      },
+    ],
+  };
+  const harness = createWorkerHarness({ importCreateCommand: createCommand });
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES
+          .CONFIRM_GOOGLE_SHEET_IMPORT,
+      previewToken:
+        "inventory-preview:11111111-1111-4111-8111-111111111111",
+    }),
+  );
+
+  assert.equal((await request.response).ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.dispatchCalls)), [
+    {
+      type:
+        harness.coordinatorModule.COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+      ...createCommand,
+    },
+  ]);
+});
+
+test("blocks Sheet preview while a tracker stream is active", async () => {
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: "local-stream:77777777-7777-4777-8777-777777777777",
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+  });
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES.PREVIEW_GOOGLE_SHEET,
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "ACTIVE_STREAM_ALREADY_EXISTS",
+      message: "End the active tracker stream before importing inventory.",
+    },
+  });
+});
+
+test("accepts inventory-import messages only from the exact side panel", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES.GET_IMPORT_STATUS,
+    }),
+    harness.createSender({
+      url: "https://shop.tiktok.com/streamer/live/product/dashboard",
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "This extension context cannot issue inventory-import commands.",
+    },
+  });
+  assert.deepEqual(harness.inventoryImportCalls, []);
+});
+
+test("does not expose the internal stream-pin command to the side panel", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createMessage({
+      type:
+        harness.coordinatorModule.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: harness.activeStreamId,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Inventory baseline pins are owned by the extension service worker.",
+    },
+  });
+  assert.equal(harness.dispatchCalls.length, 0);
 });
 
 test("rejects stream-session commands from the dashboard content script", async () => {
@@ -516,7 +1508,10 @@ test("rejects stream-session commands from the dashboard content script", async 
 });
 
 test("serializes active-stream storage failures without exposing internals", async () => {
-  const harness = createWorkerHarness({ streamDispatchError: "known" });
+  const harness = createWorkerHarness({
+    streamDispatchError: "known",
+    usePreparedState: true,
+  });
   const request = harness.send(
     harness.createStreamMessage({
       type: harness.streamCoordinatorModule.COMMAND_TYPES.START_STREAM,
@@ -821,6 +1816,7 @@ test("orders capture and stream lifecycle messages through one worker FIFO", asy
   const startStarted = createDeferred();
   const releaseStart = createDeferred();
   const startFirstHarness = createWorkerHarness({
+    usePreparedState: true,
     async beforeStreamDispatch(command) {
       if (
         command.type ===
@@ -1026,26 +2022,157 @@ test("keeps capture-owned reconciliation commands disconnected from the side pan
   assert.equal(harness.dispatchCalls.length, 0);
 });
 
-test("forwards an employee unmap command without changing it", async () => {
+test("pins and forwards employee mutations only for the active stream", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const commandFactories = [
+    (types) => ({
+      type: types.MAP_VARIATION,
+      streamId: activeSession.streamId,
+      variationNumber: 203,
+      sku: "TEST-SKU",
+    }),
+    (types) => ({
+      type: types.UNMAP_VARIATION,
+      streamId: activeSession.streamId,
+      variationNumber: 203,
+    }),
+    (types) => ({
+      type: types.MARK_UNPAID,
+      streamId: activeSession.streamId,
+      variationNumber: 203,
+    }),
+    (types) => ({
+      type: types.UNDO_MARK_UNPAID,
+      streamId: activeSession.streamId,
+      variationNumber: 203,
+    }),
+  ];
+
+  for (const createCommand of commandFactories) {
+    const harness = createWorkerHarness({ initialActiveSession: activeSession });
+    const command = createCommand(harness.coordinatorModule.COMMAND_TYPES);
+    const request = harness.send(harness.createMessage(command));
+
+    assert.deepEqual(await request.response, {
+      ok: true,
+      data: { state: null, result: null },
+    });
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(harness.dispatchCalls)),
+      [
+        {
+          type:
+            harness.coordinatorModule.COMMAND_TYPES
+              .PIN_STREAM_TO_INVENTORY_BASELINE,
+          streamId: activeSession.streamId,
+        },
+        command,
+      ],
+    );
+  }
+});
+
+test("rejects employee mutations when no tracker stream is active", async () => {
   const harness = createWorkerHarness();
   const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.MAP_VARIATION,
+    streamId: harness.activeStreamId,
+    variationNumber: 203,
+    sku: "TEST-SKU",
+  };
+  const request = harness.send(harness.createMessage(command));
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "NO_ACTIVE_STREAM",
+      message:
+        "Start or resume a tracker stream before changing inventory mappings.",
+    },
+  });
+  assert.equal(harness.dispatchCalls.length, 0);
+});
+
+test("rejects employee mutations for a caller-selected historical stream", async () => {
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+      startedAt: "2026-08-08T22:00:00.000Z",
+      identitySource: "local_session",
+    },
+  });
+  const command = {
     type: harness.coordinatorModule.COMMAND_TYPES.UNMAP_VARIATION,
-    streamId: "stream-1",
+    streamId: "local-stream:77777777-7777-4777-8777-777777777777",
     variationNumber: 203,
   };
   const request = harness.send(harness.createMessage(command));
 
   assert.deepEqual(await request.response, {
-    ok: true,
-    data: { state: null, result: null },
+    ok: false,
+    error: {
+      code: "ACTIVE_STREAM_MISMATCH",
+      message:
+        "The requested inventory change does not belong to the active tracker stream.",
+    },
   });
-  assert.deepEqual(harness.dispatchCalls, [command]);
+  assert.equal(harness.dispatchCalls.length, 0);
+});
+
+test("does not forward an employee mutation when active-stream pinning fails", async () => {
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+    pinDispatchError: "known",
+    pinFailureCount: 1,
+  });
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.MAP_VARIATION,
+    streamId: harness.activeStreamId,
+    variationNumber: 203,
+    sku: "TEST-SKU",
+  };
+  const request = harness.send(harness.createMessage(command));
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not pin stream inventory.",
+    },
+  });
+  assert.deepEqual(
+    harness.dispatchCalls.map((candidate) => candidate.type),
+    [
+      harness.coordinatorModule.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+    ],
+  );
 });
 
 test("serializes known failures without exposing Error internals", async () => {
-  const harness = createWorkerHarness({ dispatchError: "known" });
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    initialActiveSession: {
+      streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+  });
   const request = harness.send(
-    harness.createMessage({ type: "map_variation" }),
+    harness.createMessage({
+      type: "map_variation",
+      streamId: harness.activeStreamId,
+      variationNumber: 203,
+      sku: "TEST-SKU",
+    }),
   );
   const response = await request.response;
 
@@ -1062,9 +2189,21 @@ test("serializes known failures without exposing Error internals", async () => {
 });
 
 test("hides unexpected failures and logs them only in the worker", async () => {
-  const harness = createWorkerHarness({ dispatchError: "unexpected" });
+  const harness = createWorkerHarness({
+    dispatchError: "unexpected",
+    initialActiveSession: {
+      streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+  });
   const request = harness.send(
-    harness.createMessage({ type: "map_variation" }),
+    harness.createMessage({
+      type: "map_variation",
+      streamId: harness.activeStreamId,
+      variationNumber: 203,
+      sku: "TEST-SKU",
+    }),
   );
   const response = await request.response;
 

@@ -910,6 +910,54 @@ test("forwards observation before completed payment and only once per fingerprin
   assert.equal(harness.captureMessages.length, 3);
 });
 
+test("commits variation 147 when the price is outside its narrow item-status wrapper", async () => {
+  const itemAndStatus = new FakeElement({ name: "item-and-status" }).append(
+    new FakeElement({
+      name: "item-line",
+      ownText: "ITEM SHOWN ON SCREEN/ ALL SALES FINAL... | ",
+    }).append(
+      new FakeElement({
+        name: "variation-label",
+        ownText: "Variation: #147",
+        tagName: "SPAN",
+      }),
+    ),
+    new FakeElement({ name: "payment-line" }).append(
+      new FakeElement({
+        dataTid: "m4b_tag",
+        name: "payment-tag",
+      }).append(
+        new FakeElement({ name: "tag-content", tagName: "SPAN" }).append(
+          new FakeText("Payment complete"),
+        ),
+      ),
+    ),
+  );
+  const row = new FakeElement({ name: "sold-item-row-147" }).append(
+    new FakeElement({
+      name: "buyer-line",
+      ownText: "Dobo93 has won: $11.00 · 1m ",
+    }),
+    new FakeElement({ name: "buyer-handle", ownText: "doboy9393 " }),
+    itemAndStatus,
+  );
+  const harness = createHarness({ rows: [{ row }] });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      { type: "observe_variations", variationNumbers: [147] },
+      {
+        type: "payment_complete",
+        variationNumber: 147,
+        soldPriceCents: 1100,
+      },
+    ],
+  );
+});
+
 test("captures every sanitized row status before completed payments", async () => {
   const processing = createSaleRow(
     "Buyer One has won: $7.00 Variation: #44 Awaiting payment",

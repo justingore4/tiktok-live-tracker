@@ -13,6 +13,8 @@
   const SOLD_PRICE_PATTERN =
     /\bhas\s+won\s*:\s*\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/gi;
   const PAYMENT_COMPLETE_PATTERN = /\bPayment\s+complete\b/gi;
+  const FLATTENED_COMPLETE_STATUS_PATTERN =
+    /(Variation\s*:\s*#\s*\d+)(?=Payment\s+complete\b)/gi;
 
   function normalizeWhitespace(value) {
     return String(value ?? "")
@@ -36,7 +38,14 @@
   }
 
   function parseSoldItemText(value) {
-    const text = normalizeWhitespace(value);
+    // textContent does not insert whitespace between visually separate DOM
+    // siblings. TikTok can therefore flatten the exact Variation label and
+    // green payment badge into "#147Payment complete" even though they are
+    // rendered on separate lines.
+    const text = normalizeWhitespace(value).replace(
+      FLATTENED_COMPLETE_STATUS_PATTERN,
+      "$1 ",
+    );
     const variationMatches = [...text.matchAll(VARIATION_PATTERN)];
     const priceMatches = [...text.matchAll(SOLD_PRICE_PATTERN)];
     const paymentCompleteMatches = [...text.matchAll(PAYMENT_COMPLETE_PATTERN)];

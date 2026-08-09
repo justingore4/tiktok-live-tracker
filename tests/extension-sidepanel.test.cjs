@@ -37,6 +37,8 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeStreamCoordinatorError extends Error {}
   class FakeCaptureProtocolError extends Error {}
   class FakeCaptureIntegrationError extends Error {}
+  class FakeInventoryImportProtocolError extends Error {}
+  class FakeGoogleSheetsImportError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -92,6 +94,31 @@ test("service worker opens the side panel from the toolbar action", () => {
         return { dispatch: () => Promise.resolve({ status: "accepted" }) };
       },
     },
+    TikTokLiveTrackerInventorySheetImport: {},
+    TikTokLiveTrackerInventoryImportProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.inventory-import",
+      COMMAND_TYPES: {
+        GET_IMPORT_STATUS: "get_import_status",
+        PREVIEW_GOOGLE_SHEET: "preview_google_sheet",
+        CONFIRM_GOOGLE_SHEET_IMPORT: "confirm_google_sheet_import",
+      },
+      InventoryImportProtocolError: FakeInventoryImportProtocolError,
+    },
+    TikTokLiveTrackerGoogleSheetsInventoryImport: {
+      GoogleSheetsInventoryImportError: FakeGoogleSheetsImportError,
+      createGoogleSheetsInventoryImportService() {
+        return {
+          invalidatePreviews() {},
+          getImportStatus: () => Promise.resolve({ ready: false }),
+          previewGoogleSheet: () => Promise.resolve({ status: "invalid" }),
+          confirmGoogleSheetImport: () => Promise.resolve({}),
+        };
+      },
+    },
+    AbortController,
+    clearTimeout,
+    fetch: () => Promise.reject(new Error("Network is not used in this test.")),
+    setTimeout,
     crypto: {
       randomUUID: () => "11111111-1111-4111-8111-111111111111",
     },
@@ -106,8 +133,10 @@ test("service worker opens the side panel from the toolbar action", () => {
       runtime: {
         id: "extension-id",
         getURL: (pathName) => `chrome-extension://extension-id/${pathName}`,
+        getManifest: () => ({ oauth2: { client_id: "test.apps.googleusercontent.com" } }),
         onMessage: { addListener() {} },
       },
+      identity: {},
       sidePanel: {
         setPanelBehavior(behavior) {
           requestedBehavior = behavior;
@@ -140,9 +169,12 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/reconciliation.js",
     "../shared/reconciliation-coordinator.js",
     "../shared/stream-session-coordinator.js",
+    "../shared/inventory-import-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
+    "inventory-import-client.js",
+    "inventory-import-controller.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
@@ -194,14 +226,48 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="end-stream"[\s\S]+type="button"/);
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
+  assert.match(
+    html,
+    /id="inventory-import-panel"[\s\S]+aria-busy="true"/,
+  );
+  assert.match(html, /<label[^>]+for="inventory-sheet-reference"/);
+  assert.match(
+    html,
+    /id="inventory-sheet-reference"[\s\S]+aria-describedby="inventory-sheet-help inventory-sheet-error"/,
+  );
+  assert.match(
+    html,
+    /id="inventory-import-progress"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
+  );
+  assert.match(
+    html,
+    /id="inventory-import-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
+  );
+  assert.match(html, /id="retry-inventory-import"[^>]+type="button"/);
+  assert.match(html, /id="inventory-import-issues"/);
+  assert.match(html, /id="inventory-import-preview"[^>]+hidden/);
+  assert.match(html, /id="inventory-preview-rows"/);
+  assert.match(html, /id="confirm-inventory-import"[^>]+type="button"/);
+  assert.match(
+    html,
+    /opening quantities match the physical stock[\s\S]+immutable baseline for future[\s\S]+does not change earlier streams/i,
+  );
+  assert.match(
+    html,
+    /id="inventory-import-confirmation"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
+  );
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
   assert.match(html, /Waiting for a variation to appear in Sold Items/);
   assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
   assert.match(
     html,
+    /unresolved variations do not block End/i,
+  );
+  assert.match(html, /captured (?:order )?history will remain saved/i);
+  assert.doesNotMatch(
+    html,
     /resolve every pending[\s\S]+inventory reservation[\s\S]+assign an item to every completed sale/i,
   );
-  assert.match(html, /Canceled orders do not block End\./);
   assert.match(
     html,
     /id="saved-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
@@ -229,9 +295,9 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(
     html,
-    /Remaining inventory changes only after Payment complete\.[\s\S]+Pending mappings[\s\S]+separately as reservations[\s\S]+reduce what is available[\s\S]+to tag\./,
+    /Remaining inventory changes only after Payment complete\.[\s\S]+Pending appears[\s\S]+only while TikTok shows Payment processing or Payment fixing[\s\S]+reduces what is available to tag\./,
   );
-  assert.match(html, /Click the selected card again to remove its item/);
+  assert.match(html, /Click the selected card again to remove\s+its item/);
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
@@ -283,6 +349,16 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     "utf8",
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
+  const demoSeedsSource = panelSource.match(
+    /const DEMO_VARIATION_SEEDS = Object\.freeze\(\[[\s\S]*?\]\);/,
+  )?.[0];
+
+  assert.ok(demoSeedsSource);
+  assert.doesNotMatch(demoSeedsSource, /status: "pending"/);
+  assert.match(
+    demoSeedsSource,
+    /variationNumber: 201,[\s\S]+status: "unmapped"/,
+  );
 
   assert.match(
     panelSource,
@@ -373,23 +449,21 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /streamSessionController\.subscribe\(renderStreamSnapshot\)/,
   );
+  const startHandlerSource = panelSource.match(
+    /startStreamButton\.addEventListener\("click",[\s\S]*?resumeStreamButton\.addEventListener/,
+  )?.[0];
+  assert.ok(startHandlerSource);
+  assert.match(startHandlerSource, /isInventoryReadyForStart\(\)/);
+  assert.match(startHandlerSource, /streamSessionController\.startNewStream\(\)/);
+  assert.doesNotMatch(
+    startHandlerSource,
+    /ensureInventoryInitialized|MOCK_INVENTORY/,
+  );
   assert.match(panelSource, /streamSessionController\.startNewStream\(\)/);
   assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.endActiveStream\(\)/);
   assert.match(panelSource, /streamSessionController\.retry\(\)/);
-  const endBlockingSource = panelSource.match(
-    /function getEndBlockingVariations\(\) \{[\s\S]*?\n  \}/,
-  )?.[0];
-  assert.ok(endBlockingSource);
-  assert.match(endBlockingSource, /variation\.status === "pending"/);
-  assert.match(
-    endBlockingSource,
-    /variation\.status === "unmapped_completed"/,
-  );
-  assert.doesNotMatch(endBlockingSource, /canceled/);
-  assert.match(panelSource, /getEndBlockingVariations\(\)/);
-  assert.match(panelSource, /completed sale needs an item/);
-  assert.match(panelSource, /pending reservation/);
+  assert.doesNotMatch(panelSource, /function getEndBlockingVariations\(\)/);
   assert.match(panelSource, /getRecordedVariations\(view\)/);
   assert.match(panelSource, /variation\.recorded/);
   assert.match(panelSource, /Waiting for Sold Items variations/);
@@ -413,6 +487,54 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(
     panelSource,
     /retryStreamSessionButton\.addEventListener\("click",[\s\S]+streamSessionStatus\.hidden = false;[\s\S]+streamSessionError\.hidden = true;[\s\S]+streamSessionStatus\.focus\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /const RECOVERABLE_STREAM_BASELINE_ERROR_CODES = new Set\(\[[\s\S]+"STATE_NOT_INITIALIZED"[\s\S]+"INVENTORY_BASELINE_REQUIRED"/,
+  );
+  assert.match(
+    panelSource,
+    /function shouldPrepareInventoryForStreamRetry\(snapshot\) \{[\s\S]+snapshot\?\.error\?\.scope === "load"[\s\S]+RECOVERABLE_STREAM_BASELINE_ERROR_CODES\.has\(snapshot\.error\.code\)/,
+  );
+  const streamRetrySource = panelSource.match(
+    /retryStreamSessionButton\.addEventListener\("click",[\s\S]*?retrySavedSessionButton\.addEventListener/,
+  )?.[0];
+  assert.ok(streamRetrySource);
+  assert.match(
+    streamRetrySource,
+    /shouldPrepareInventoryForStreamRetry\(streamSnapshot\)/,
+  );
+  assert.match(
+    panelSource,
+    /inventoryImportControllerModule\.createInventoryImportController/,
+  );
+  assert.match(
+    panelSource,
+    /inventoryImportController\.subscribe\(renderInventoryImportSnapshot\)/,
+  );
+  assert.match(panelSource, /inventoryImportController\.previewReference/);
+  assert.match(panelSource, /inventoryImportController\.confirmPreview/);
+  assert.match(panelSource, /inventoryImportController\.retry/);
+  assert.match(panelSource, /REPREVIEW_REQUIRED_ERROR_CODES/);
+  assert.match(
+    panelSource,
+    /inventoryImportForm\.toggleAttribute\("inert", busy\)/,
+  );
+  assert.match(
+    panelSource,
+    /inventoryImportPreview\.toggleAttribute\("inert", busy\)/,
+  );
+  assert.match(panelSource, /cell\.textContent = value/);
+  assert.doesNotMatch(panelSource, /innerHTML\s*=/);
+  assert.match(
+    streamRetrySource,
+    /if \(!prepareMissingInventory\) \{[\s\S]+return null;[\s\S]+persistentTaggerControllerModule\.ensureInventoryInitialized\(\{[\s\S]+client: persistentClient,[\s\S]+inventory: viewModel\.MOCK_INVENTORY/,
+  );
+  assert.ok(
+    streamRetrySource.indexOf(
+      "persistentTaggerControllerModule.ensureInventoryInitialized",
+    ) < streamRetrySource.indexOf("streamSessionController.retry()"),
+    "a missing baseline must initialize before retry reissues the saved stream GET",
   );
   assert.match(panelSource, /savedSessionError\.focus\(\)/);
   assert.match(panelSource, /pendingSavedAction \|\| savedSnapshot\?\.busy/);
@@ -454,8 +576,37 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     /auction\.paymentStatus === "payment_complete"/,
   );
   assert.match(workflowSource, /"Payment status unavailable"/);
+  assert.match(workflowSource, /mapped: "Item selected"/);
   assert.match(panelSource, /"Sale assigned"/);
-  assert.match(panelSource, /"Item reserved"/);
+  assert.match(panelSource, /"Item selected"/);
+  assert.match(panelSource, /\? "Pending"[\s\S]+: "Item selected"/);
+  assert.match(
+    panelSource,
+    /function isInventoryReservationPending\(auction\)[\s\S]+auction\?\.status === "pending"/,
+  );
+  assert.match(
+    panelSource,
+    /function isObservedCompletionAwaitingPrice\(auction\)/,
+  );
+  assert.match(panelSource, /"Final price syncing - item selected"/);
+  assert.doesNotMatch(panelSource, /Final price syncing - item reserved/);
+  assert.match(
+    panelSource,
+    /TikTok shows Payment complete, but the final price is still syncing\./,
+  );
+  assert.match(panelSource, /without a pending reservation/);
+  assert.match(
+    panelSource,
+    /lifecycleControls\.hidden =[\s\S]+completionAwaitingPrice \|\|/,
+  );
+  assert.match(
+    panelSource,
+    /markUnpaidButton\.hidden = completionAwaitingPrice \|\|/,
+  );
+  assert.match(
+    panelSource,
+    /markUnpaidButton\.disabled = completionAwaitingPrice/,
+  );
   assert.match(
     panelSource,
     /"Item linked · reservation released · stock unchanged"/,
@@ -492,6 +643,108 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     mappingSource,
     /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
   );
+});
+
+test("End Stream confirmation is not gated by unresolved payment or mapping states", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const endHandlerSource = panelSource.match(
+    /endStreamButton\.addEventListener\("click",[\s\S]*?cancelEndStreamButton\.addEventListener/,
+  )?.[0];
+  const confirmHandlerSource = panelSource.match(
+    /confirmEndStreamButton\.addEventListener\("click",[\s\S]*?retryStreamSessionButton\.addEventListener/,
+  )?.[0];
+
+  assert.ok(endHandlerSource);
+  assert.match(endHandlerSource, /if \(streamSnapshot\.busy\)/);
+  assert.doesNotMatch(endHandlerSource, /isSavedWorkspaceUnavailable/);
+  assert.match(endHandlerSource, /endConfirmationOpen = true/);
+  assert.match(
+    endHandlerSource,
+    /renderStreamSnapshot\(streamSessionController\.getSnapshot\(\)\)/,
+  );
+  assert.match(endHandlerSource, /cancelEndStreamButton\.focus\(\)/);
+  assert.doesNotMatch(
+    endHandlerSource,
+    /getEndBlockingVariations|unresolvedVariations|savedSnapshot\?\.view\?\.variations|variationSelector\.focus\(\)/,
+  );
+
+  const statesThatMustNeverBlockEnd = [
+    "pending",
+    "payment_processing",
+    "payment_fixing",
+    "unmapped_completed",
+    "completionAwaitingPrice",
+    "mapped",
+    "unmapped",
+  ];
+
+  statesThatMustNeverBlockEnd.forEach((status) => {
+    assert.doesNotMatch(
+      endHandlerSource,
+      new RegExp(`(?:^|[^a-z_])${status}(?:$|[^a-z_])`, "i"),
+    );
+  });
+
+  const disableExpressions = [
+    ...panelSource.matchAll(/endStreamButton\.disabled\s*=\s*([^;]+);/g),
+  ].map((match) => match[1]);
+
+  assert.ok(disableExpressions.length > 0);
+  disableExpressions.forEach((expression) => {
+    assert.doesNotMatch(
+      expression,
+      /isSavedWorkspaceUnavailable|variation|auction|payment|pending|mapped|completion/i,
+    );
+  });
+
+  assert.ok(confirmHandlerSource);
+  assert.match(confirmHandlerSource, /if \(streamSnapshot\.busy\)/);
+  assert.doesNotMatch(confirmHandlerSource, /isSavedWorkspaceUnavailable/);
+  assert.match(
+    confirmHandlerSource,
+    /streamSessionController\.endActiveStream\(\)/,
+  );
+  assert.match(confirmHandlerSource, /saved order history was kept/);
+  assert.doesNotMatch(
+    confirmHandlerSource,
+    /persistentController\.|unmapSelectedVariation|markSelectedUnpaid|chrome\.storage|\.clear\(|\.remove\(/,
+  );
+  assert.match(html, /unresolved variations do not block End/i);
+  assert.match(html, /captured (?:order )?history will remain saved/i);
+  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
+});
+
+test("an active stream can be ended before its saved workspace is resumed", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const resumeAvailableSource = panelSource.match(
+    /if \(resumeAvailable\) \{[\s\S]*?\n    \}/,
+  )?.[0];
+
+  assert.ok(resumeAvailableSource);
+  assert.match(
+    resumeAvailableSource,
+    /resumeStreamButton\.hidden = endConfirmationOpen/,
+  );
+  assert.match(
+    resumeAvailableSource,
+    /endStreamButton\.hidden = endConfirmationOpen/,
+  );
+  assert.match(
+    resumeAvailableSource,
+    /streamSessionEndConfirmation\.hidden = !endConfirmationOpen/,
+  );
+  assert.doesNotMatch(resumeAvailableSource, /isSavedWorkspaceUnavailable/);
 });
 
 test("tagger refreshes canonical Sold Items state from strict worker invalidations", () => {

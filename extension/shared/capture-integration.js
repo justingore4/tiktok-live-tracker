@@ -68,7 +68,10 @@
         reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES !==
           "observe_payment_statuses" ||
         reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE !==
-          "record_payment_complete"
+          "record_payment_complete" ||
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE !==
+          "pin_stream_to_inventory_baseline"
       ) {
         throw new TypeError("A valid reconciliation coordinator module is required.");
       }
@@ -157,6 +160,13 @@
       async function executeEvent(event) {
         const streamId = await resolveActiveStreamId();
         let command;
+
+        await stateCoordinator.dispatch({
+          type:
+            reconciliationCoordinator.COMMAND_TYPES
+              .PIN_STREAM_TO_INVENTORY_BASELINE,
+          streamId,
+        });
 
         switch (event.type) {
           case captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS:

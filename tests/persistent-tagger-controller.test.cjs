@@ -32,16 +32,18 @@ const INVENTORY = Object.freeze([
 const CANONICAL_INVENTORY = [
   {
     sku: "BLACK-TEE-L",
-    name: "Stussy tee - black",
+    item: "Stussy tee",
+    style: "black",
     size: "L",
-    quantityReceived: 5,
+    quantityOnHandAtImport: 5,
     unitCostCents: 1200,
   },
   {
     sku: "GREY-HOODIE-XL",
-    name: "Nike hoodie - grey",
+    item: "Nike hoodie",
+    style: "grey",
     size: "XL",
-    quantityReceived: 3,
+    quantityOnHandAtImport: 3,
     unitCostCents: 1400,
   },
 ];
@@ -61,8 +63,17 @@ function createDeferred() {
   return { promise, reject, resolve };
 }
 
-function createState() {
+function createUnpinnedState() {
   return reconciliation.createReconciliationState(CANONICAL_INVENTORY);
+}
+
+function createState() {
+  const state = createUnpinnedState();
+
+  reconciliation.pinStreamToInventoryBaseline(state, {
+    streamId: STREAM_ID,
+  });
+  return state;
 }
 
 function createMemoryClient(initialState = null) {
@@ -176,6 +187,128 @@ test("exports a pure saved-session controller without a payment-complete API", (
     source,
     /chrome\.|recordPaymentComplete|record_payment_complete|completePayment/,
   );
+});
+
+test("prepares the opening mock baseline before a stream can be started", async () => {
+  const memory = createMemoryClient(null);
+
+  const prepared = await controllerModule.ensureInventoryInitialized({
+    client: memory.client,
+    inventory: INVENTORY,
+  });
+
+  assert.equal(prepared.initialized, true);
+  assert.deepEqual(memory.calls, [
+    { method: "getState" },
+    { method: "initializeState", inventory: CANONICAL_INVENTORY },
+  ]);
+  assert.equal(prepared.response.state.version, reconciliation.STATE_VERSION);
+  assert.equal(prepared.response.state.inventoryBaselines.length, 1);
+  assert.deepEqual(
+    prepared.response.state.inventoryBaselines[0].inventory,
+    CANONICAL_INVENTORY,
+  );
+});
+
+test("pre-start inventory preparation preserves an existing baseline", async () => {
+  const existing = createState();
+  const memory = createMemoryClient(existing);
+
+  const prepared = await controllerModule.ensureInventoryInitialized({
+    client: memory.client,
+    inventory: INVENTORY,
+  });
+
+  assert.equal(prepared.initialized, false);
+  assert.deepEqual(memory.calls, [{ method: "getState" }]);
+  assert.deepEqual(prepared.response.state, existing);
+});
+
+test("pre-start inventory preparation never initializes after a malformed read", async () => {
+  let initializationCalls = 0;
+  const client = {
+    async getState() {
+      return { result: null };
+    },
+    async initializeState() {
+      initializationCalls += 1;
+      throw new Error("must not initialize");
+    },
+  };
+
+  await assert.rejects(
+    () => controllerModule.ensureInventoryInitialized({
+      client,
+      inventory: INVENTORY,
+    }),
+    (error) => error.code === "INVALID_CLIENT_RESPONSE",
+  );
+  assert.equal(initializationCalls, 0);
+});
+
+test("resume projects inventory from the stream's pinned canonical baseline", async () => {
+  const state = createUnpinnedState();
+  const importedInventory = [
+    {
+      sku: "CLIENT-JACKET-M",
+      item: "Client jacket",
+      style: "brown",
+      size: "M",
+      quantityOnHandAtImport: 8,
+      unitCostCents: 3100,
+    },
+  ];
+
+  reconciliation.createInventoryBaseline(state, {
+    baselineId:
+      "inventory-baseline:22222222-2222-4222-8222-222222222222",
+    sourceFingerprint: "fnv1a64:1234567890abcdef",
+    inventory: importedInventory,
+  });
+  reconciliation.pinStreamToInventoryBaseline(state, {
+    streamId: STREAM_ID,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  const resumed = await controller.start();
+
+  assert.equal(resumed.phase, "ready");
+  assert.deepEqual(
+    resumed.view.inventory.map((entry) => ({
+      sku: entry.sku,
+      item: entry.item,
+      style: entry.style,
+      size: entry.size,
+      quantityReceived: entry.quantityReceived,
+    })),
+    [
+      {
+        sku: "CLIENT-JACKET-M",
+        item: "Client jacket",
+        style: "brown",
+        size: "M",
+        quantityReceived: 8,
+      },
+    ],
+  );
+  assert.equal(
+    resumed.view.inventory.some((entry) => entry.sku === "BLACK-TEE-L"),
+    false,
+  );
+});
+
+test("resume fails closed instead of falling back to the active baseline", async () => {
+  const memory = createMemoryClient(createUnpinnedState());
+  const controller = createController(memory.client);
+
+  const failed = await controller.start();
+
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.error.scope, "load");
+  assert.equal(failed.error.code, "MISSING_STREAM_BASELINE_PIN");
+  assert.equal(failed.view, null);
+  assert.deepEqual(memory.calls, [{ method: "getState" }]);
 });
 
 test("refresh selects the newest newly captured variation for immediate tagging", async () => {
@@ -626,7 +759,7 @@ test("starts idle, publishes detached snapshots, and unsubscribes idempotently",
   assert.equal(snapshots.length, 3);
 });
 
-test("initializes prototype inventory only after an explicit null state", async () => {
+test("fails closed when mounted before inventory initialization and stream pinning", async () => {
   const memory = createMemoryClient(null);
   const controller = createController(memory.client);
   const phases = [];
@@ -637,20 +770,15 @@ test("initializes prototype inventory only after an explicit null state", async 
 
   const snapshot = await controller.start();
 
-  assert.deepEqual(memory.calls, [
-    { method: "getState" },
-    { method: "initializeState", inventory: CANONICAL_INVENTORY },
-  ]);
+  assert.deepEqual(memory.calls, [{ method: "getState" }]);
   assert.deepEqual(phases, [
     "idle:null",
     "loading:load",
-    "loading:initialize",
-    "ready:initialize",
+    "error:load",
   ]);
-  assert.equal(snapshot.phase, "ready");
-  assert.equal(snapshot.view.currentVariationNumber, CURRENT_VARIATION);
-  assert.equal(snapshot.view.selectedVariationNumber, CURRENT_VARIATION);
-  assert.equal(snapshot.view.inventory.length, INVENTORY.length);
+  assert.equal(snapshot.phase, "error");
+  assert.equal(snapshot.error.code, "MISSING_CANONICAL_STATE");
+  assert.equal(snapshot.view, null);
 });
 
 test("restores stored history without trying to initialize again", async () => {
@@ -705,12 +833,13 @@ test("never initializes after a failed or malformed read and retries from GET", 
     0,
   );
 
-  const restored = await controller.retry();
+  const retried = await controller.retry();
 
-  assert.equal(restored.phase, "ready");
+  assert.equal(retried.phase, "error");
+  assert.equal(retried.error.code, "MISSING_CANONICAL_STATE");
   assert.deepEqual(
     memory.calls.map((call) => call.method),
-    ["getState", "getState", "initializeState"],
+    ["getState", "getState"],
   );
 });
 
@@ -934,7 +1063,7 @@ test("persists mark-unpaid and undo commands for the selected variation", async 
   const restored = await controller.undoSelectedUnpaid();
 
   assert.equal(unpaid.view.auction.status, "marked_unpaid");
-  assert.equal(restored.view.auction.status, "pending");
+  assert.equal(restored.view.auction.status, "mapped");
   assert.deepEqual(memory.calls.slice(-2), [
     {
       method: "markUnpaid",
@@ -948,7 +1077,7 @@ test("persists mark-unpaid and undo commands for the selected variation", async 
 });
 
 test("a reopened controller restores the last durable mapping and unpaid state", async () => {
-  const memory = createMemoryClient(null);
+  const memory = createMemoryClient(createState());
   const firstController = createController(memory.client);
 
   await firstController.start();
@@ -965,7 +1094,7 @@ test("a reopened controller restores the last durable mapping and unpaid state",
   assert.equal(restored.view.auction.paymentStatus, "unknown");
   assert.equal(
     memory.calls.filter((call) => call.method === "initializeState").length,
-    1,
+    0,
   );
   assert.equal(
     memory.calls.filter((call) => call.method === "getState").length,
@@ -985,7 +1114,7 @@ test("requires the saved-session client to provide unmapping", () => {
 });
 
 test("a reopened controller restores a durable unmap", async () => {
-  const memory = createMemoryClient(null);
+  const memory = createMemoryClient(createState());
   const firstController = createController(memory.client);
 
   await firstController.start();
@@ -1003,7 +1132,7 @@ test("a reopened controller restores a durable unmap", async () => {
   assert.equal(restored.view.auction.paymentStatus, "unknown");
   assert.equal(
     memory.calls.filter((call) => call.method === "initializeState").length,
-    1,
+    0,
   );
   assert.equal(
     memory.calls.filter((call) => call.method === "unmapVariation").length,

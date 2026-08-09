@@ -9,6 +9,9 @@ importScripts(
   "shared/stream-session-coordinator.js",
   "shared/capture-protocol.js",
   "shared/capture-integration.js",
+  "shared/inventory-sheet-import.js",
+  "shared/inventory-import-protocol.js",
+  "shared/google-sheets-inventory-import.js",
 );
 
 const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -23,6 +26,12 @@ const streamSessionCoordinator =
   globalThis.TikTokLiveTrackerStreamSessionCoordinator;
 const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
 const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
+const inventorySheetImport =
+  globalThis.TikTokLiveTrackerInventorySheetImport;
+const inventoryImportProtocol =
+  globalThis.TikTokLiveTrackerInventoryImportProtocol;
+const googleSheetsInventoryImport =
+  globalThis.TikTokLiveTrackerGoogleSheetsInventoryImport;
 let storageAccessError = null;
 const storageAccessReady = chrome.storage.local
   .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
@@ -63,6 +72,27 @@ const captureEventIntegration =
     streamSession,
     streamSessionCoordinator,
   });
+const inventoryImportService =
+  googleSheetsInventoryImport.createGoogleSheetsInventoryImportService({
+    abortController: globalThis.AbortController,
+    assertNoActiveStream: requireNoActiveStreamForInventoryImport,
+    clearTimeoutImpl: (...args) => globalThis.clearTimeout(...args),
+    createBaseline: (command) =>
+      stateCoordinator.dispatch({
+        type:
+          reconciliationCoordinator.COMMAND_TYPES
+            .CREATE_INVENTORY_BASELINE,
+        ...command,
+      }),
+    createUuid: () => globalThis.crypto.randomUUID(),
+    fetchImpl: (...args) => globalThis.fetch(...args),
+    getActiveBaseline: getActiveInventoryBaseline,
+    identityApi: chrome.identity,
+    inventorySheetImport,
+    now: () => Date.now(),
+    oauthClientId: chrome.runtime.getManifest()?.oauth2?.client_id,
+    setTimeoutImpl: (...args) => globalThis.setTimeout(...args),
+  });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const captureDashboardUrlPattern =
   /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
@@ -90,6 +120,8 @@ function failBoundary(protocol, code, message) {
     BoundaryError = captureIntegration.CaptureIntegrationError;
   } else if (protocol === streamSessionCoordinator) {
     BoundaryError = streamSessionCoordinator.StreamSessionCoordinatorError;
+  } else if (protocol === inventoryImportProtocol) {
+    BoundaryError = inventoryImportProtocol.InventoryImportProtocolError;
   }
 
   throw new BoundaryError(code, message);
@@ -128,6 +160,14 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === inventoryImportProtocol.MESSAGE_CHANNEL) {
+    return {
+      coordinator: inventoryImportService,
+      label: "inventory-import",
+      protocol: inventoryImportProtocol,
+    };
+  }
+
   return null;
 }
 
@@ -136,6 +176,10 @@ function validateMessage(message, boundary) {
 
   if (protocol === captureProtocol) {
     return captureProtocol.validateCaptureMessage(message);
+  }
+
+  if (protocol === inventoryImportProtocol) {
+    return inventoryImportProtocol.validateInventoryImportMessage(message);
   }
 
   const expectedKeys = ["channel", "command", "version"];
@@ -218,6 +262,339 @@ function validateSender(sender, command, boundary) {
       "Captured TikTok events cannot be issued by the side panel.",
     );
   }
+
+  if (
+    boundary.protocol === reconciliationCoordinator &&
+    command.type ===
+      reconciliationCoordinator.COMMAND_TYPES.CREATE_INVENTORY_BASELINE
+  ) {
+    failBoundary(
+      boundary.protocol,
+      "UNAUTHORIZED_MESSAGE_SENDER",
+      "Inventory baselines can be created only through a confirmed Sheet import.",
+    );
+  }
+
+  if (
+    boundary.protocol === reconciliationCoordinator &&
+    command.type ===
+      reconciliationCoordinator.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE
+  ) {
+    failBoundary(
+      boundary.protocol,
+      "UNAUTHORIZED_MESSAGE_SENDER",
+      "Inventory baseline pins are owned by the extension service worker.",
+    );
+  }
+}
+
+function hydrateStreamSessionResponse(response) {
+  try {
+    return streamSession.hydrateStreamSessionState(response?.state);
+  } catch (_error) {
+    failBoundary(
+      streamSessionCoordinator,
+      "ACTIVE_STREAM_STATE_UNAVAILABLE",
+      "The active tracker stream could not be verified.",
+    );
+  }
+}
+
+function hydrateReconciliationResponse(response) {
+  if (response?.state === null) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_REQUIRED",
+      "Prepare inventory before starting a tracker stream.",
+    );
+  }
+
+  try {
+    return reconciliation.hydrateReconciliationState(response?.state);
+  } catch (_error) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_UNAVAILABLE",
+      "The prepared inventory baseline could not be verified.",
+    );
+  }
+}
+
+async function getStreamSessionResponse() {
+  const response = await activeStreamCoordinator.dispatch({
+    type:
+      streamSessionCoordinator.COMMAND_TYPES.GET_STREAM_SESSION,
+  });
+  const state = hydrateStreamSessionResponse(response);
+
+  return { response, state };
+}
+
+async function requireNoActiveStreamForInventoryImport() {
+  const { state } = await getStreamSessionResponse();
+
+  if (state.activeSession !== null) {
+    throw new googleSheetsInventoryImport.GoogleSheetsInventoryImportError(
+      "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before importing inventory.",
+    );
+  }
+}
+
+async function getActiveInventoryBaseline() {
+  const response = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+
+  if (response?.state === null) {
+    return null;
+  }
+
+  let state;
+
+  try {
+    state = reconciliation.hydrateReconciliationState(response?.state);
+  } catch (_error) {
+    throw new googleSheetsInventoryImport.GoogleSheetsInventoryImportError(
+      "INVENTORY_BASELINE_UNAVAILABLE",
+      "The prepared inventory baseline could not be verified.",
+    );
+  }
+
+  return state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === state.activeInventoryBaselineId,
+  ) ?? null;
+}
+
+async function requirePreparedInventoryBaseline(options = {}) {
+  const response = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  const state = hydrateReconciliationResponse(response);
+  const baselineId = state.activeInventoryBaselineId;
+  const baseline = Array.isArray(state.inventoryBaselines)
+    ? state.inventoryBaselines.find(
+        (candidate) => candidate.baselineId === baselineId,
+      )
+    : null;
+
+  if (
+    typeof baselineId !== "string" ||
+    baselineId.trim() === "" ||
+    !baseline ||
+    !Array.isArray(baseline.inventory) ||
+    baseline.inventory.length === 0
+  ) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_BASELINE_REQUIRED",
+      "Prepare inventory before starting a tracker stream.",
+    );
+  }
+
+  if (
+    options.requireImported === true &&
+    (
+      typeof baseline.sourceFingerprint !== "string" ||
+      baseline.sourceFingerprint.trim() === ""
+    )
+  ) {
+    failBoundary(
+      streamSessionCoordinator,
+      "INVENTORY_IMPORT_REQUIRED",
+      "Import and confirm Google Sheets inventory before starting a tracker stream.",
+    );
+  }
+
+  return baselineId;
+}
+
+async function pinStreamToPreparedInventory(streamId) {
+  return stateCoordinator.dispatch({
+    type:
+      reconciliationCoordinator.COMMAND_TYPES
+        .PIN_STREAM_TO_INVENTORY_BASELINE,
+    streamId,
+  });
+}
+
+async function dispatchStreamSessionCommand(command) {
+  if (
+    command.type ===
+    streamSessionCoordinator.COMMAND_TYPES.START_STREAM
+  ) {
+    inventoryImportService.invalidatePreviews();
+    const { state: existingState } = await getStreamSessionResponse();
+
+    if (existingState.activeSession === null) {
+      await requirePreparedInventoryBaseline({ requireImported: true });
+    }
+
+    const response = await activeStreamCoordinator.dispatch(command);
+    const state = hydrateStreamSessionResponse(response);
+
+    if (state.activeSession === null) {
+      failBoundary(
+        streamSessionCoordinator,
+        "ACTIVE_STREAM_STATE_UNAVAILABLE",
+        "The started tracker stream could not be verified.",
+      );
+    }
+
+    await pinStreamToPreparedInventory(state.activeSession.streamId);
+    return response;
+  }
+
+  if (
+    command.type ===
+    streamSessionCoordinator.COMMAND_TYPES.GET_STREAM_SESSION
+  ) {
+    const { response, state } = await getStreamSessionResponse();
+
+    if (state.activeSession !== null) {
+      await pinStreamToPreparedInventory(state.activeSession.streamId);
+    }
+
+    return response;
+  }
+
+  return activeStreamCoordinator.dispatch(command);
+}
+
+function createsInventoryBaseline(command) {
+  return (
+    command.type ===
+    reconciliationCoordinator.COMMAND_TYPES.CREATE_INVENTORY_BASELINE
+  );
+}
+
+function initializesInventoryState(command) {
+  return (
+    command.type ===
+    reconciliationCoordinator.COMMAND_TYPES.INITIALIZE_STATE
+  );
+}
+
+async function initializeInventoryState(command) {
+  const { state: streamState } = await getStreamSessionResponse();
+
+  if (streamState.activeSession === null) {
+    failBoundary(
+      reconciliationCoordinator,
+      "INVENTORY_IMPORT_REQUIRED",
+      "Import and confirm Google Sheets inventory before starting a tracker stream.",
+    );
+  }
+
+  const storedResponse = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+
+  if (storedResponse?.state !== null) {
+    failBoundary(
+      reconciliationCoordinator,
+      "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before preparing another inventory baseline.",
+    );
+  }
+
+  const initializedResponse = await stateCoordinator.dispatch(command);
+
+  hydrateReconciliationResponse(initializedResponse);
+
+  const pinnedResponse = await pinStreamToPreparedInventory(
+    streamState.activeSession.streamId,
+  );
+
+  return {
+    state: pinnedResponse.state,
+    result: initializedResponse.result,
+  };
+}
+
+function mutatesEmployeeStream(command) {
+  return [
+    reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
+    reconciliationCoordinator.COMMAND_TYPES.UNMAP_VARIATION,
+    reconciliationCoordinator.COMMAND_TYPES.MARK_UNPAID,
+    reconciliationCoordinator.COMMAND_TYPES.UNDO_MARK_UNPAID,
+  ].includes(command.type);
+}
+
+async function dispatchReconciliationCommand(command) {
+  if (initializesInventoryState(command)) {
+    return initializeInventoryState(command);
+  }
+
+  if (createsInventoryBaseline(command)) {
+    const { state } = await getStreamSessionResponse();
+
+    if (state.activeSession !== null) {
+      failBoundary(
+        reconciliationCoordinator,
+        "ACTIVE_STREAM_ALREADY_EXISTS",
+        "End the active tracker stream before preparing another inventory baseline.",
+      );
+    }
+  }
+
+  if (mutatesEmployeeStream(command)) {
+    const { state } = await getStreamSessionResponse();
+
+    if (state.activeSession === null) {
+      failBoundary(
+        reconciliationCoordinator,
+        "NO_ACTIVE_STREAM",
+        "Start or resume a tracker stream before changing inventory mappings.",
+      );
+    }
+
+    if (command.streamId !== state.activeSession.streamId) {
+      failBoundary(
+        reconciliationCoordinator,
+        "ACTIVE_STREAM_MISMATCH",
+        "The requested inventory change does not belong to the active tracker stream.",
+      );
+    }
+
+    await pinStreamToPreparedInventory(state.activeSession.streamId);
+  }
+
+  return stateCoordinator.dispatch(command);
+}
+
+function dispatchBoundaryCommand(boundary, command) {
+  if (boundary.protocol === streamSessionCoordinator) {
+    return dispatchStreamSessionCommand(command);
+  }
+
+  if (boundary.protocol === reconciliationCoordinator) {
+    return dispatchReconciliationCommand(command);
+  }
+
+  if (boundary.protocol === inventoryImportProtocol) {
+    switch (command.type) {
+      case inventoryImportProtocol.COMMAND_TYPES.GET_IMPORT_STATUS:
+        return inventoryImportService.getImportStatus();
+      case inventoryImportProtocol.COMMAND_TYPES.PREVIEW_GOOGLE_SHEET:
+        return inventoryImportService.previewGoogleSheet(
+          command.spreadsheetId,
+        );
+      case inventoryImportProtocol.COMMAND_TYPES.CONFIRM_GOOGLE_SHEET_IMPORT:
+        return inventoryImportService.confirmGoogleSheetImport(
+          command.previewToken,
+        );
+      default:
+        failBoundary(
+          inventoryImportProtocol,
+          "UNKNOWN_COMMAND",
+          "The inventory-import command is not supported.",
+        );
+    }
+  }
+
+  return boundary.coordinator.dispatch(command);
 }
 
 function serializeError(error, boundary) {
@@ -230,7 +607,10 @@ function serializeError(error, boundary) {
     error instanceof streamSessionStorage.StreamSessionStorageError ||
     error instanceof streamSessionCoordinator.StreamSessionCoordinatorError ||
     error instanceof captureProtocol.CaptureProtocolError ||
-    error instanceof captureIntegration.CaptureIntegrationError;
+    error instanceof captureIntegration.CaptureIntegrationError ||
+    error instanceof inventoryImportProtocol.InventoryImportProtocolError ||
+    error instanceof
+      googleSheetsInventoryImport.GoogleSheetsInventoryImportError;
 
   if (knownError) {
     return { code: error.code, message: error.message };
@@ -282,7 +662,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const command = validateMessage(message, boundary);
 
       validateSender(sender, command, boundary);
-      return boundary.coordinator.dispatch(command);
+      return dispatchBoundaryCommand(boundary, command);
     });
 
   messageTail = execution.catch(() => undefined);

@@ -120,6 +120,22 @@ function initializeCommand(inventory = INVENTORY) {
   };
 }
 
+function activeBaseline(state) {
+  return state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === state.activeInventoryBaselineId,
+  );
+}
+
+function legacyInventoryProjection(state) {
+  return activeBaseline(state).inventory.map((entry) => ({
+    sku: entry.sku,
+    name: entry.style ? `${entry.item} - ${entry.style}` : entry.item,
+    size: entry.size,
+    quantityReceived: entry.quantityOnHandAtImport,
+    unitCostCents: entry.unitCostCents,
+  }));
+}
+
 function getStateCommand() {
   return { type: COMMAND_TYPES.GET_STATE };
 }
@@ -201,6 +217,34 @@ test("returns an explicit uninitialized state when storage is empty", async () =
   assert.equal(memoryStore.calls.save.length, 0);
 });
 
+test("creates the first confirmed inventory baseline without seeding legacy inventory", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+  const baselineId =
+    "inventory-baseline:50000000-0000-4000-8000-000000000000";
+  const created = await coordinator.dispatch({
+    type: COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+    baselineId,
+    sourceFingerprint: "fnv1a64:5234567890abcdef",
+    inventory: [{
+      sku: "BLACK-TEE-M",
+      item: "Black Tee",
+      style: "black",
+      size: "M",
+      quantityOnHandAtImport: 4,
+      unitCostCents: 1250,
+    }],
+  });
+
+  assert.deepEqual(created.result, { status: "created", baselineId });
+  assert.equal(created.state.activeInventoryBaselineId, baselineId);
+  assert.equal(created.state.inventoryBaselines.length, 1);
+  assert.equal(created.state.inventoryBaselines[0].sourceFingerprint,
+    "fnv1a64:5234567890abcdef");
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.deepEqual(memoryStore.getPersistedState(), created.state);
+});
+
 test("initializes once, persists immediately, and treats identical retry as a no-op", async () => {
   const memoryStore = createMemoryStateStore();
   const coordinator = createCoordinator(memoryStore);
@@ -210,7 +254,7 @@ test("initializes once, persists immediately, and treats identical retry as a no
 
   assert.equal(initialized.result.status, "initialized");
   assert.equal(repeated.result.status, "already_initialized");
-  assert.deepEqual(initialized.state.inventory, INVENTORY);
+  assert.deepEqual(legacyInventoryProjection(initialized.state), INVENTORY);
   assert.equal(memoryStore.calls.load, 1);
   assert.equal(memoryStore.calls.save.length, 1);
   assert.deepEqual(memoryStore.getPersistedState(), initialized.state);
@@ -381,6 +425,73 @@ test("persists payment-status batches once and skips identical retries", async (
   assert.equal(observed.state.streams[0].variations[2].paymentStatus, "canceled");
 });
 
+test("persists live reservation transitions only for processing and fixing", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const mapped = await coordinator.dispatch(mapCommand(49));
+  const processing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 49,
+        observedPaymentStatus: "payment_processing",
+      },
+    ]),
+  );
+  const failed = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 49,
+        observedPaymentStatus: "payment_failed",
+      },
+    ]),
+  );
+  const fixing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 49,
+        observedPaymentStatus: "payment_fixing",
+      },
+    ]),
+  );
+  const key = {
+    streamId: "stream-1",
+    variationNumber: 49,
+    sku: "BLACK-TEE-M",
+  };
+
+  assert.equal(mapped.result.status, "mapped");
+  assert.equal(
+    reconciliation.getInventoryAvailability(mapped.state, key)
+      .reservedQuantity,
+    0,
+  );
+  assert.equal(
+    reconciliation.getAuction(processing.state, key).status,
+    "pending",
+  );
+  assert.equal(
+    reconciliation.getInventoryAvailability(processing.state, key)
+      .reservedQuantity,
+    1,
+  );
+  assert.equal(reconciliation.getAuction(failed.state, key).status, "mapped");
+  assert.equal(
+    reconciliation.getInventoryAvailability(failed.state, key)
+      .reservedQuantity,
+    0,
+  );
+  assert.equal(reconciliation.getAuction(fixing.state, key).status, "pending");
+  assert.equal(
+    reconciliation.getInventoryAvailability(fixing.state, key)
+      .reservedQuantity,
+    1,
+  );
+  assert.equal(memoryStore.calls.save.length, 4);
+  assert.deepEqual(memoryStore.getPersistedState(), fixing.state);
+});
+
 test("persisted cancellation releases capacity for the next variation", async () => {
   const inventory = [
     {
@@ -392,6 +503,19 @@ test("persisted cancellation releases capacity for the next variation", async ()
     },
   ];
   const storedState = reconciliation.createReconciliationState(inventory);
+  reconciliation.observePaymentStatuses(storedState, {
+    streamId: "stream-1",
+    statuses: [
+      {
+        variationNumber: 47,
+        observedPaymentStatus: "payment_processing",
+      },
+      {
+        variationNumber: 48,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  });
   reconciliation.mapVariation(storedState, {
     streamId: "stream-1",
     variationNumber: 47,
@@ -569,11 +693,11 @@ test("routes mapping, payment, unpaid, and undo commands through one state", asy
     unpaidCommand(COMMAND_TYPES.UNDO_MARK_UNPAID, 2),
   );
 
-  assert.equal(mapped.result.status, "pending");
+  assert.equal(mapped.result.status, "mapped");
   assert.equal(completed.result.status, "committed");
   assert.equal(completed.result.profitCents, 3600);
   assert.equal(unpaid.result.status, "marked_unpaid");
-  assert.equal(undone.result.status, "pending");
+  assert.equal(undone.result.status, "mapped");
   assert.equal(memoryStore.calls.save.length, 6);
   assert.deepEqual(memoryStore.getPersistedState(), undone.state);
 });
@@ -590,6 +714,41 @@ test("supports payment arriving before employee mapping", async () => {
   assert.equal(mapping.result.status, "committed");
   assert.equal(mapping.result.profitCents, 2600);
   assert.equal(memoryStore.calls.save.length, 2);
+});
+
+test("rejects marking an observed unpriced completion unpaid without writing", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 147,
+        observedPaymentStatus: "payment_complete",
+      },
+    ]),
+  );
+  await coordinator.dispatch(mapCommand(147));
+  const persistedBefore = memoryStore.getPersistedState();
+
+  await assertErrorCode(
+    () =>
+      coordinator.dispatch(
+        unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 147),
+      ),
+    "PAYMENT_ALREADY_COMPLETE",
+  );
+
+  assert.equal(memoryStore.calls.save.length, 2);
+  assert.deepEqual(memoryStore.getPersistedState(), persistedBefore);
+  assert.equal(
+    reconciliation.getAuction(persistedBefore, {
+      streamId: "stream-1",
+      variationNumber: 147,
+    }).mappingStatus,
+    "mapped",
+  );
 });
 
 test("persists an unmap command and returns the canonical unselected state", async () => {
@@ -666,6 +825,19 @@ test("serializes competing last-unit mappings and rejects the loser atomically",
   const storedState = reconciliation.createReconciliationState(
     lastUnitInventory,
   );
+  reconciliation.observePaymentStatuses(storedState, {
+    streamId: "stream-1",
+    statuses: [
+      {
+        variationNumber: 14,
+        observedPaymentStatus: "payment_processing",
+      },
+      {
+        variationNumber: 15,
+        observedPaymentStatus: "payment_fixing",
+      },
+    ],
+  });
   const memoryStore = createMemoryStateStore(storedState);
   const coordinator = createCoordinator(memoryStore);
 
@@ -682,9 +854,12 @@ test("serializes competing last-unit mappings and rejects the loser atomically",
   assert.equal(memoryStore.calls.save.length, 1);
   assert.deepEqual(
     memoryStore.getPersistedState().streams[0].variations.map(
-      (auction) => auction.variationNumber,
+      (auction) => [auction.variationNumber, auction.sku],
     ),
-    [14],
+    [
+      [14, "BLACK-TEE-M"],
+      [15, null],
+    ],
   );
 
   const repeated = await coordinator.dispatch(mapCommand(14));
@@ -842,7 +1017,7 @@ test("engine rejection creates no partial state and does not poison later comman
   assert.equal(memoryStore.calls.save.length, 0);
 
   const successful = await coordinator.dispatch(mapCommand(41));
-  assert.equal(successful.result.status, "pending");
+  assert.equal(successful.result.status, "mapped");
   assert.equal(memoryStore.calls.save.length, 1);
 });
 
@@ -874,13 +1049,13 @@ test("returned snapshots and results cannot mutate canonical state", async () =>
   const coordinator = createCoordinator(memoryStore);
   const mapped = await coordinator.dispatch(mapCommand(50));
 
-  mapped.state.inventory[0].name = "Changed by caller";
+  activeBaseline(mapped.state).inventory[0].item = "Changed by caller";
   mapped.state.streams[0].variations[0].sku = "GREY-HOODIE-L";
   mapped.result.conflicts.push({ code: "fake" });
 
   const fresh = await coordinator.dispatch(getStateCommand());
 
-  assert.equal(fresh.state.inventory[0].name, "Black Tee");
+  assert.equal(activeBaseline(fresh.state).inventory[0].item, "Black Tee");
   assert.equal(fresh.state.streams[0].variations[0].sku, "BLACK-TEE-M");
   assert.deepEqual(fresh.state.streams[0].variations[0].conflicts, []);
   assert.deepEqual(JSON.parse(JSON.stringify(fresh)), fresh);

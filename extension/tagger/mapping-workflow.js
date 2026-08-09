@@ -26,6 +26,7 @@
     const STATUS_LABELS = Object.freeze({
       canceled: "Canceled",
       committed: "Payment complete",
+      mapped: "Item selected",
       marked_unpaid: "Marked unpaid",
       pending: "Waiting for payment",
       unmapped: "Not tagged",
@@ -341,6 +342,7 @@
         const summary = reconciliation.calculateSummary(state, { streamId });
         const auction = getAuctionDisplay(summary);
         const isPending = auction?.status === "pending";
+        const isMapped = auction?.status === "mapped";
         const isMarkedUnpaid = auction?.status === "marked_unpaid";
         const paymentBufferExpired = isPaymentBufferExpired();
         const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
@@ -366,12 +368,12 @@
             canCompletePayment:
               offlineSimulationEnabled &&
               auction?.sku !== null &&
-              (isPending || isMarkedUnpaid),
+              (isMapped || isPending || isMarkedUnpaid),
             canSimulateBufferExpiry:
               offlineSimulationEnabled &&
-              isPending &&
+              (isMapped || isPending) &&
               !paymentBufferExpired,
-            canMarkUnpaid: isPending && paymentBufferExpired,
+            canMarkUnpaid: (isMapped || isPending) && paymentBufferExpired,
             canUndoSimulatedPayment:
               offlineSimulationEnabled &&
               simulatedPaymentCheckpoint !== null &&
@@ -554,6 +556,7 @@
         }
 
         const nextCheckpoint =
+          previousAuction.status === "mapped" ||
           previousAuction.status === "pending"
             ? {
                 state: cloneSerializableState(state),
@@ -653,7 +656,10 @@
 
         const auction = reconciliation.getAuction(state, auctionKey());
 
-        if (!auction?.sku || auction.status !== "pending") {
+        if (
+          !auction?.sku ||
+          (auction.status !== "mapped" && auction.status !== "pending")
+        ) {
           return createRejectedResult(
             "PAYMENT_NOT_PENDING",
             "Only a mapped auction waiting for payment can expire its buffer.",

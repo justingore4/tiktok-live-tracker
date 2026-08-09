@@ -412,7 +412,7 @@ test("fails closed when a candidate contains multiple labels or sibling tags", (
   assert.deepEqual(locatePaymentStatuses(boundary, parser), []);
 });
 
-test("uses the smallest exact association and requires matching complete-sale parsing", () => {
+test("widens an exact completed association only to its nearest unique sold price", () => {
   const outer = element({
     name: "outer-row",
     ownText: "Example Buyer has won: $48.00 ",
@@ -429,7 +429,7 @@ test("uses the smallest exact association and requires matching complete-sale pa
   assert.equal(located.row, inner);
   assert.equal(located.variationNumber, 44);
   assert.equal(located.observedPaymentStatus, "payment_complete");
-  assert.equal(located.soldPriceCents, null);
+  assert.equal(located.soldPriceCents, 4800);
 
   const mismatchedParser = {
     parseSoldItemText() {
@@ -444,6 +444,81 @@ test("uses the smallest exact association and requires matching complete-sale pa
     locatePaymentStatuses(boundary, mismatchedParser)[0].soldPriceCents,
     null,
   );
+});
+
+test("reads variation 147 price from its nearest enclosing Sold Items row", () => {
+  const buyerLine = element({
+    name: "buyer-line",
+    ownText: "Dobo93 has won: $11.00 · 1m ",
+  });
+  const buyerHandle = element({
+    name: "buyer-handle",
+    ownText: "doboy9393 ",
+  });
+  const itemAndStatus = element({ name: "item-and-status" });
+  const itemLine = element({
+    name: "item-line",
+    ownText: "ITEM SHOWN ON SCREEN/ ALL SALES FINAL... | ",
+  }).append(
+    element({
+      name: "variation-label",
+      ownText: "Variation: #147",
+      tagName: "SPAN",
+    }),
+  );
+  const paymentLine = element({ name: "payment-line" }).append(
+    element({ dataTid: "m4b_tag", name: "payment-tag" }).append(
+      element({ name: "tag-content", tagName: "SPAN" }).append(
+        element({ name: "tag-text", ownText: "Payment complete" }),
+      ),
+    ),
+  );
+
+  itemAndStatus.append(itemLine, paymentLine);
+
+  // TikTok can place the price-bearing buyer summary beside a narrower
+  // item/status wrapper. The exact Variation label and payment tag still
+  // belong to the nearest enclosing row, where the sold price is available.
+  const row147 = element({ name: "sold-item-row-147" }).append(
+    buyerLine,
+    buyerHandle,
+    itemAndStatus,
+  );
+  const boundary = element({
+    dataTid: "m4b_space",
+    name: "sold-items-root",
+  }).append(row147);
+  const [located] = locatePaymentStatuses(boundary, parser);
+
+  assert.equal(located.row, itemAndStatus);
+  assert.equal(located.variationNumber, 147);
+  assert.equal(located.observedPaymentStatus, "payment_complete");
+  assert.equal(located.soldPriceCents, 1100);
+});
+
+test("never borrows a completed price across adjacent Sold Items rows", () => {
+  const target = element({ name: "row-147-without-price" }).append(
+    element({ ownText: "Variation: #147", tagName: "SPAN" }),
+    element({ dataTid: "m4b_tag" }).append(text("Payment complete")),
+  );
+  const adjacent = createStatusRow({
+    variationNumber: 148,
+    soldPrice: "99.00",
+    badgeText: "Payment complete",
+  }).row;
+  const list = element({ name: "sold-items-list" }).append(target, adjacent);
+  const boundary = element({
+    dataTid: "m4b_space",
+    name: "sold-items-root",
+  }).append(list);
+  const located = locatePaymentStatuses(boundary, parser);
+  const targetStatus = located.find(
+    ({ variationNumber }) => variationNumber === 147,
+  );
+
+  assert.equal(targetStatus.row, target);
+  assert.equal(targetStatus.observedPaymentStatus, "payment_complete");
+  assert.equal(targetStatus.soldPriceCents, null);
 });
 
 test("ignores empty tags and rejects invalid payment-status dependencies", () => {

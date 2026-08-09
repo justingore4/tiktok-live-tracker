@@ -174,11 +174,87 @@
     function toCanonicalInventory(inventory) {
       return inventory.map((entry) => ({
         sku: entry.sku,
-        name: entry.style ? `${entry.item} - ${entry.style}` : entry.item,
+        item: entry.item,
+        style: entry.style,
         size: entry.size,
-        quantityReceived: entry.quantityReceived,
+        quantityOnHandAtImport: entry.quantityReceived,
         unitCostCents: entry.unitCostCents,
       }));
+    }
+
+    function requireInitializationOptions(options) {
+      if (!isPlainRecord(options)) {
+        throw new TypeError("Inventory initialization options are required.");
+      }
+
+      if (
+        !options.client ||
+        typeof options.client.getState !== "function" ||
+        typeof options.client.initializeState !== "function"
+      ) {
+        throw new TypeError(
+          "client must provide saved-state read and initialize methods.",
+        );
+      }
+
+      return {
+        client: options.client,
+        inventory: normalizeInventory(options.inventory),
+      };
+    }
+
+    async function ensureInventoryInitialized(options) {
+      const { client, inventory } = requireInitializationOptions(options);
+      let response = requireClientResponse(await client.getState(), true);
+      let initialized = false;
+
+      if (response.state === null) {
+        response = requireClientResponse(
+          await client.initializeState(
+            cloneSerializable(toCanonicalInventory(inventory)),
+          ),
+          false,
+        );
+        initialized = true;
+      }
+
+      return { initialized, response };
+    }
+
+    function getPinnedDisplayInventory(canonicalState, streamId) {
+      const stream = canonicalState.streams.find(
+        (candidate) => candidate.streamId === streamId,
+      );
+      const baselineId = stream?.inventoryBaselineId;
+
+      if (typeof baselineId !== "string" || baselineId === "") {
+        fail(
+          "MISSING_STREAM_BASELINE_PIN",
+          "The tracker stream is not pinned to an inventory baseline.",
+        );
+      }
+
+      const baseline = canonicalState.inventoryBaselines.find(
+        (candidate) => candidate.baselineId === baselineId,
+      );
+
+      if (!baseline) {
+        fail(
+          "MISSING_INVENTORY_BASELINE",
+          "The tracker stream does not have an available inventory baseline.",
+        );
+      }
+
+      return normalizeInventory(
+        baseline.inventory.map((entry) => ({
+          sku: entry.sku,
+          item: entry.item,
+          style: entry.style,
+          size: entry.size,
+          quantityReceived: entry.quantityOnHandAtImport,
+          unitCostCents: entry.unitCostCents,
+        })),
+      );
     }
 
     function normalizeVariationNumbers(values, currentVariationNumber) {
@@ -264,8 +340,6 @@
     function createPersistentTaggerController(options) {
       const { client, mappingWorkflow, reconciliation } =
         validateDependencies(options);
-      const inventory = normalizeInventory(options.inventory);
-      const canonicalInventory = toCanonicalInventory(inventory);
       const streamId = requireNonEmptyString(options.streamId, "streamId");
       const currentVariationNumber = requirePositiveInteger(
         options.currentVariationNumber,
@@ -319,11 +393,15 @@
       function buildProjection(candidateState, preferredVariationNumber) {
         const canonicalState =
           reconciliation.hydrateReconciliationState(candidateState);
+        const pinnedInventory = getPinnedDisplayInventory(
+          canonicalState,
+          streamId,
+        );
         const recordedVariationNumbers = canonicalState.streams
           .find((stream) => stream.streamId === streamId)
           ?.variations.map((variation) => variation.variationNumber) ?? [];
         const candidateSession = mappingWorkflow.createMappingSession({
-          inventory,
+          inventory: pinnedInventory,
           reconciliation,
           streamId,
           variationNumber: currentVariationNumber,
@@ -436,24 +514,17 @@
         transition(PHASES.LOADING, OPERATIONS.LOAD);
 
         try {
-          let response = requireClientResponse(await client.getState(), true);
-          let completedOperation = OPERATIONS.LOAD;
-
-          if (response.state === null) {
-            transition(PHASES.LOADING, OPERATIONS.INITIALIZE);
-            response = requireClientResponse(
-              await client.initializeState(cloneSerializable(canonicalInventory)),
-              false,
-            );
-            completedOperation = OPERATIONS.INITIALIZE;
-          }
+          const response = requireClientResponse(
+            await client.getState(),
+            false,
+          );
 
           selectedVariationNumber = currentVariationNumber;
           acceptCanonicalState(response.state, {
             resetFollowBaseline: true,
           });
           retryDescriptor = null;
-          transition(PHASES.READY, completedOperation);
+          transition(PHASES.READY, OPERATIONS.LOAD);
           return createSnapshot();
         } catch (failure) {
           return failOperation(
@@ -745,6 +816,7 @@
       PHASES,
       PersistentTaggerControllerError,
       createPersistentTaggerController,
+      ensureInventoryInitialized,
     };
   },
 );
