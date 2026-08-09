@@ -174,8 +174,12 @@ variation number.
       higher variation, and display its observed TikTok payment status independently of
       inventory mapping. A prioritized queue, visible capture status, verified TikTok
       stream identity, and broader live validation remain next.
-5. Create the Google Sheet template and choose the authentication approach.
-6. Import inventory from Google Sheets and export reconciled results.
+5. Connect Google Sheets inventory in three focused stages:
+   1. **Completed:** define the exact inventory contract, atomic validation boundary,
+      opening-baseline semantics, and a Google Sheets-compatible CSV template;
+   2. version inventory baselines across tracker streams; and
+   3. authorize, preview, confirm, and initialize inventory from Google Sheets.
+6. Export reconciled results to Google Sheets.
 7. Add end-of-stream reconciliation and analytics reporting.
 
 ## Project layout
@@ -187,6 +191,7 @@ variation number.
 | `extension/capture/` | Root-scoped Sold Items observation and retrying runtime client | Live capture integration implemented |
 | `extension/shared/capture-*.js` | Strict page-to-worker protocol and active-stream binding | Implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
+| `extension/shared/inventory-sheet-import.js` | Pure Google Sheets inventory validation and detached preview contract | Implemented; connection pending |
 | `extension/shared/reconciliation.js` | Inventory, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
@@ -313,8 +318,12 @@ can reverse a captured completed payment.
 
 ## Credentials and privacy
 
-No Google credentials are needed for the current offline prototype. Google Sheets
-authentication is deliberately unresolved until the Sheets stage:
+No Google credentials are needed for the current offline prototype. The
+[inventory template](docs/google-sheets-inventory-template.csv) and its
+[validation contract](docs/architecture.md#7-google-sheets-inventory-import-contract)
+can be parsed and validated locally, but there is no Google authorization, network
+request, or committed tracker-state import in this stage. Google Sheets authentication
+remains unresolved until the connection stage:
 
 - A browser-only version should use user OAuth and must not contain a service-account
   private key.
@@ -328,9 +337,18 @@ stream ID, raw badge text, buyer information, product text, or DOM content. The 
 worker binds those facts to the active local tracker stream; nothing is sent to Google
 Sheets.
 
+The inventory template contains only stable SKU, employee-facing item/style/size,
+physical quantity on hand at import, and unit cost. It intentionally excludes buyer,
+variation, payment, stream, and credential data. The quantity is a confirmed opening
+stock baseline; it is not a running value to edit after each sale. A future importer must
+validate every row and show a detached preview before one explicit confirmation commits
+the entire baseline.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — business rules, data model, and planned system
   design.
 - [Capture development notes](docs/capture-development.md) — confirmed dashboard details,
   local testing, and the next live-stream checklist.
+- [Google Sheets inventory template](docs/google-sheets-inventory-template.csv) — exact
+  six-column, CSV-compatible opening-inventory contract with dummy example rows.

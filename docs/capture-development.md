@@ -302,7 +302,10 @@ The next capture stage should validate and implement:
   recovered for an end-of-stream pass; and
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
-Google Sheets integration is a later stage and is not part of this capture work.
+The Google Sheets inventory template is now defined, but connection and import remain a
+later stage and are not part of capture work. That inventory-only contract does not
+expand capture authority: the content script still must not read Sheet data, buyer
+identity, inventory mappings, or credentials, and it must not contact Google.
 
 ## Current limitations
 

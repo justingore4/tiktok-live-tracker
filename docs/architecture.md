@@ -574,7 +574,9 @@ rather than reversing a `payment_complete` record.
 
 ### Google Sheets
 
-Google Sheets is planned as:
+The inventory-import contract and a CSV-compatible template are now defined. Google
+authorization, Sheet reading, import preview, and state initialization are not yet
+implemented. Google Sheets is planned as:
 
 - the pre-stream inventory import source; and
 - the sales, remaining-inventory, and reporting export destination.
@@ -583,24 +585,102 @@ It should not be the live transactional source of truth during a stream. The bro
 will save locally first, then batch and retry Sheet writes so a temporary connection
 problem does not interrupt tagging.
 
-## 7. Planned Sheet schema
+## 7. Google Sheets inventory import contract
 
-The exact template will be finalized after the tagger data contract is stable.
+The canonical starter file is
+[`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv). An
+employee can import that file into Google Sheets or reproduce its exact six-column
+header in an `Inventory` tab. This contract deliberately defines data and validation
+only; it grants no network access and does not mutate tracker state yet.
 
 ### `Inventory` tab
 
-| Column | Purpose |
-| --- | --- |
-| `sku` | Stable internal key for one unique inventory row; may be generated and hidden |
-| `item` | Employee-facing product name, such as `Stussy tee` |
-| `style` | Color, design, or other distinguishing style, such as `black` |
-| `size` | Size for this row |
-| `quantity_received` | Starting quantity imported before the stream |
-| `unit_cost` | Cost per unit, entered as currency |
+The first nonblank row must contain these exact, case-sensitive headers. Column order may
+vary, but missing, duplicate, or unknown headers make the whole import invalid.
 
-Remaining quantity is derived from starting quantity minus committed sales; the starting
-quantity should not be overwritten during calculation. The Sheets adapter will convert
-currency values to integer cents for the engine.
+| Column | Required value |
+| --- | --- |
+| `sku` | Stable uppercase key matching `^[A-Z0-9][A-Z0-9._-]{0,63}$`; unique in the file |
+| `item` | Nonblank employee-facing product name up to 160 characters, such as `Stussy tee` |
+| `style` | Optional color, design, or distinguishing style up to 160 characters, such as `black`; blank is valid when the item has no style variant |
+| `size` | Nonblank size label up to 80 characters for this row |
+| `quantity_on_hand_at_import` | Nonnegative safe integer representing the physical count when this baseline is confirmed |
+| `unit_cost` | Nonnegative US-dollar decimal with no symbol and at most two fractional digits, such as `12.00` |
+
+An all-blank row is ignored. In a data row, every field except `style` is required.
+Formula cells are invalid: import values are data and must never be evaluated by the
+tracker. The later Google adapter must preserve enough formula information for this
+validation instead of supplying only an evaluated result. Leading and trailing
+whitespace is trimmed from cells, and runs of whitespace
+inside employee-facing item/style/size text are collapsed. Those display fields use one
+canonical Unicode representation so visually equivalent labels cannot bypass duplicate
+detection. SKU case, characters, and punctuation are never rewritten; the trimmed value
+must already match the required syntax. `0` is valid for both quantity and unit cost.
+
+The same physical item/style/size inventory entry must keep the same `sku` across imports
+and streams. Renaming or recycling a `sku` would break historical corrections and make
+the old and new rows appear to be different stock. Duplicate SKUs are therefore invalid;
+the importer should also reject duplicate item/style/size combinations after trimming
+and case-folding employee-facing text.
+
+`quantity_on_hand_at_import` is an **opening baseline**, not a lifetime quantity received
+and not a value that the tracker writes down after each sale. It means the physical units
+counted at the instant the employee confirms an import. The pure parser retains that
+meaning as `quantityOnHandAtImport`; a later confirmed-baseline initializer will map it
+to the engine's immutable `quantityReceived` field for that baseline:
+
+```text
+remainingQuantity = quantity_on_hand_at_import - completed mapped sales under this baseline
+```
+
+Pending reservations affect `availableToTagQuantity`, not the opening baseline or
+remaining quantity. A later physical recount must create a new versioned baseline for a
+future stream; it must not overwrite the baseline pinned to an active or historical
+stream. The future import workflow must also prevent an already-counted sale from being
+subtracted again when a fresh on-hand count is imported.
+
+`unit_cost` is the per-unit cost snapshot used for basic gross-profit calculations. The
+adapter will convert it exactly to the engine's integer `unitCostCents` value (`12.00`
+becomes `1200`) and reject values that cannot be represented as nonnegative safe integer
+cents. Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are
+outside this first contract.
+
+### Atomic validation boundary
+
+The future preview/import adapter must validate the header and every nonblank row before
+creating or replacing any inventory baseline. Validation includes required fields,
+types, SKU syntax and uniqueness, duplicate item/style/size detection, and safe integer
+bounds. If any error exists, the adapter returns row-specific errors and commits nothing;
+it must never partially import valid rows from an invalid Sheet.
+
+The normalized preview is detached data. Merely opening or previewing a Sheet must not
+start a stream, replace mock inventory, alter an active reconciliation snapshot, or
+persist a partial baseline. A separate explicit employee confirmation will be required
+by the later connection stage.
+
+For a valid two-dimensional `Inventory` value array, the pure parser returns a frozen,
+detached preview with:
+
+- a version for this import contract;
+- normalized inventory rows using `sku`, `item`, `style`, `size`,
+  `quantityOnHandAtImport`, and integer `unitCostCents`;
+- a deterministic fingerprint of those normalized rows; and
+- a summary containing the row count, total opening quantity, and total opening
+  inventory cost in cents.
+
+Invalid input produces one typed import error containing ordered row- and column-specific
+issues for independently validated fields. Diagnostics that depend on an already-invalid
+value may be omitted. The parser does not return a partial inventory array. Fingerprints
+identify equivalent normalized previews; they are not credentials, authorization proofs,
+or substitutes for the future versioned-baseline identity.
+
+### Inventory-import privacy boundary
+
+The inventory contract contains no buyer identity, TikTok payment data, variation
+numbers, stream identifiers, credentials, access tokens, or DOM text. Preview and
+validation diagnostics should identify the row and field without logging full Sheet
+contents. A future browser-only connection should request the narrowest practical Google
+scope and keep access tokens out of repository files and exported diagnostics.
 
 ### `Sales` tab
 
@@ -685,5 +765,10 @@ Browser support beyond Chrome is a later decision.
       auto-follow new higher variations, and visibly update sanitized payment status.
       A prioritized work queue, visible capture state, TikTok identity, and broader live
       validation remain next.
-7. Google Sheet template, authentication, import, and export.
-8. End-of-stream reconciliation, analytics, and release hardening.
+7. Connect Google Sheets inventory in three stages:
+   1. **Completed:** exact template, pure validation, detached preview, and opening
+      baseline contract;
+   2. versioned inventory baselines pinned to tracker streams; and
+   3. authorization, Sheet reading, employee confirmation, and durable import.
+8. Export reconciled results to Google Sheets.
+9. End-of-stream reconciliation, analytics, and release hardening.
