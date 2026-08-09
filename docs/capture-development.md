@@ -35,9 +35,12 @@ right-side Chat, and analytics are not capture sources. Sold Items rows can cont
 incidental buyer names, avatars, and product text, but those values are never selected
 as fields, logged raw, transmitted, or persisted.
 
-The non-complete labels' business meaning remains unverified. They are saved and shown as
-observed TikTok UI state only; they do not automatically release inventory, mark an order
-unpaid, or start a timeout. No dashboard area outside Sold Items is a planned source.
+`Payment processing`, `Payment fixing`, `Payment failed`, and unrecognized labels remain
+nonterminal observations. They do not release inventory, mark an order unpaid, or start a
+timeout; a mapped unit stays reserved while remaining stock stays unchanged. Exact
+`Canceled` is different: it is a canonical terminal allocation result that keeps any item
+link for history, releases its reservation, and counts no sale, revenue, cost, or profit.
+No dashboard area outside Sold Items is a planned source.
 
 ## Current capture pipeline
 
@@ -84,16 +87,25 @@ the top frame of the exact product-dashboard URL. It resolves the currently acti
 `local-stream:<uuid>` itself and persists:
 
 - every observed variation as an unmapped auction;
-- the latest sanitized observed payment status for each variation; and
+- the latest sanitized observed payment status for each variation;
+- exact `Canceled` as canonical cancellation for inventory allocation; and
 - every exact green completion with a parsed price as authoritative payment truth.
 
 Observed processing, fixing, failed, or unrecognized status does not change inventory or
-profit. A completed payment contributes to completed GMV, but inventory and gross profit
-commit only after the employee maps the variation to an inventory item. A complete badge
-whose price is temporarily unavailable remains a provisional displayed observation;
-later status changes are still accepted until a priced completion is durably saved.
-Repeated observations are no-ops. A conflicting later completed price retains the first
-price and creates a reconciliation conflict.
+profit and keeps a mapped unit reserved. Exact cancellation releases the reservation but
+preserves the item link and history; it does not decrement remaining stock or contribute
+sales, revenue, cost, or profit. A completed payment contributes to completed GMV, but
+inventory and gross profit commit only after the employee maps the variation to an
+inventory item. A complete badge whose price is temporarily unavailable remains a
+provisional displayed observation; later status changes are still accepted until a priced
+completion is durably saved. A later priced completion overrides cancellation, commits a
+mapped sale, and creates a `payment_completed_after_canceled` warning that TikTok's
+completion won and inventory was counted. Repeated observations are no-ops. A conflicting
+later completed price retains the first price and creates a reconciliation conflict.
+
+These captured facts hydrate into reconciliation state version 3. Strict version-1 and
+version-2 snapshots migrate to detached version-3 state, while the outer browser-storage
+envelope remains schema version 1.
 
 The content client marks an event delivered only after the worker acknowledges it. A
 failed observation or payment is requeued with a delay that backs off from one to five
@@ -140,11 +152,23 @@ tracker stream.
    A later payment/status update to an existing row should not change the selection.
 8. Keep a variation selected while its badge changes. Confirm the visible **TikTok
    payment** value changes live among **Payment processing**, **Payment fixing**,
-   **Payment failed**, **Canceled**, and **Payment complete** without a page refresh or menu click. The
-   selector must stay on that variation for status-only changes.
+   **Payment failed**, **Canceled**, and **Payment complete** without a page refresh or menu
+   click. The selector must stay on that variation for status-only changes.
 9. For `Payment complete`, confirm its final price is visible even before an inventory
    item is selected. Reopen and Resume once to verify the same number, status, and price
-   remain durable. Item tagging and Google Sheets can be tested later.
+   remain durable.
+10. On a mapped processing, fixing, failed, or unrecognized row, confirm its card keeps the
+    full remaining quantity visible and reports the pending reservation separately. It
+    must not count a sale or reduce remaining stock.
+11. When that row becomes exact `Canceled`, confirm the item link remains visible, its
+    reservation is released, and remaining stock, sale count, revenue, cost, and profit do
+    not change. A canceled variation must not require resolution before End.
+12. If a priced `Payment complete` later replaces `Canceled`, confirm TikTok's completion
+    wins, the mapped unit moves from remaining to sold, revenue and gross profit commit,
+    and a visible warning says inventory was counted.
+13. Correct a historical completed variation to another SKU and confirm the old SKU is
+    restored, the new SKU is decremented, and cost and gross profit recalculate together.
+    Item tagging and Google Sheets can be tested more broadly later.
 
 The live refetch does not claim the newest saved variation is TikTok's current bidding
 auction. It does automatically display a newly persisted higher variation for faster
@@ -191,6 +215,8 @@ Until a later identity stage finds such an ID, follow these rules:
   queue-drained indicator yet. If a tracker delivery error appears, leave the session
   active through at least the capped retry interval and verify that the open panel
   receives the expected record before using End.
+- End is blocked while any mapped variation still has a pending reservation or any
+  completed sale still needs an item. Canonical canceled variations do not block End.
 - Ending a local tracker stream does not delete captured history and does not end TikTok
   LIVE, but ended streams cannot yet be reopened in the tagger.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
@@ -264,8 +290,9 @@ The next capture stage should validate and implement:
 - a prioritized employee work queue driven only by the now-live-refreshed, persisted Sold
   Items variations;
 - visible capture connection, retry, and queue-drained state;
-- the transition timing, color-independent meaning, and business effect of the observed
-  processing, fixing, failed, canceled, and any additional payment labels;
+- the transition timing, color-independent meaning, and any additional business effect of
+  processing, fixing, failed, unrecognized, and other additional payment labels; exact
+  `Canceled` already has canonical allocation semantics;
 - a stable TikTok-provided stream/session identifier across SPA navigation and full
   refresh that differs across two LIVE sessions;
 - automatic protection against assigning stale rendered rows to a new local stream;
@@ -281,8 +308,9 @@ Google Sheets integration is a later stage and is not part of this capture work.
 
 - Parsing assumes English dashboard text and US-dollar formatting.
 - Exact Sold Items variation labels and sanitized payment statuses are persisted. Only a
-  priced `Payment complete` is authoritative for sales, inventory, and profit;
-  `Payment failed` and `Canceled` remain observed display states rather than inventory rules.
+  priced `Payment complete` can commit a sale, inventory decrement, revenue, and profit.
+  Exact `Canceled` is authoritative only for releasing allocation without counting a
+  sale; processing, fixing, failed, and unrecognized remain nonterminal observations.
 - The `m4b_space` selector has been observed on one real stream and still needs broader
   validation.
 - The local stream ID is tracker-owned, not TikTok-verified.

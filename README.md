@@ -35,13 +35,18 @@ TikTok's payment state.
 
 The tagger also shows the latest observed Sold Items badge independently as **Payment
 processing**, **Payment fixing**, **Payment failed**, **Canceled**, **Payment complete**, or
-**Unrecognized payment status**. Those non-complete labels are display-only for now:
-they do not release stock or change profit until their exact TikTok behavior is validated.
+**Unrecognized payment status**. Processing, fixing, failed, and unrecognized remain
+nonterminal observations: a mapped unit stays reserved, while the card's remaining count
+does not decrease.
 
-If payment permanently fails after TikTok's payment buffer, the employee can mark the
-variation unpaid. Remaining inventory stays unchanged because that auction never counted
-as a sale, while its pending reservation is released so the item can be tagged again. If
-the item is auctioned again, the employee maps its new variation number.
+An exact TikTok **Canceled** badge is canonical and terminal for inventory allocation. It
+keeps the variation linked to its selected item for history, releases that reservation,
+and never counts the cancellation as a sale, revenue, or profit. If a later priced
+**Payment complete** arrives, TikTok's completion wins: the tracker commits the sale and
+shows a warning that inventory was counted. The local **Mark unpaid after buffer** control
+remains an undoable fallback for a mapped nonterminal variation when TikTok's exact
+Canceled badge was not captured. If the item is auctioned again, the employee maps its new
+variation number.
 
 ## Current implementation
 
@@ -52,7 +57,8 @@ the item is auctioned again, the employee maps its new variation number.
   dashboard path.
 - A responsive Chrome side-panel prototype with mock inventory, search, reservations,
   sold-out states, one-click item mapping and unmapping, and a current/previous
-  variation selector.
+  variation selector. Inventory cards show remaining stock separately from pending
+  reservations.
 - A **Live session** mode with explicit Start, Resume, and End controls. Its worker-made
   local stream ID survives side-panel, browser, and service-worker restarts, while End
   keeps reconciliation history and does not act on TikTok LIVE.
@@ -102,13 +108,19 @@ the item is auctioned again, the employee maps its new variation number.
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, completed GMV, and gross profit;
   - reserves pending units separately from completed sales;
+  - treats exact `Canceled` as a terminal inventory-allocation result that preserves the
+    item link, releases its reservation, and contributes no sale or money;
+  - lets a later priced completion override cancellation with a visible conflict warning;
   - supports mapping corrections, click-again unmapping, **Mark unpaid**, and undoing
     the local unpaid mark;
+  - applies completed historical corrections atomically by restoring the old SKU,
+    decrementing the new SKU, and recalculating its cost snapshot and gross profit;
   - surfaces unmapped sales, conflicting prices, and inventory shortages;
   - keeps auctions distinct by `(streamId, variationNumber)`.
 - A versioned persistence adapter that validates and saves detached reconciliation
   snapshots, reports typed storage/corruption/version errors, and never silently
-  replaces corrupt or future-version data.
+  replaces corrupt or future-version data. Reconciliation state is version 3, with strict
+  version-1 and version-2 migration; the outer storage envelope remains schema version 1.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails.
@@ -128,8 +140,9 @@ the item is auctioned again, the employee maps its new variation number.
   auto-follow behavior. A selected Sold Items row remains a recorded row, not a claim
   about the auction currently bidding.
 - Visible capture connection, retry, and queue-drained status.
-- Verified business meaning for TikTok's non-complete payment labels. The tracker displays
-  the observed label but does not infer inventory release, cancellation, or a timeout.
+- Verified transition timing and business meaning for TikTok's nonterminal **Payment
+  processing**, **Payment fixing**, **Payment failed**, and unrecognized labels. They remain
+  observed-only and do not release inventory or start a timeout.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
 - Google Sheets inventory import and results export.
@@ -233,9 +246,9 @@ prototype data. There is no silent reset.
 9. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
     different inventory card and confirm its completed-sale inventory and profit update.
 10. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Waiting for
-    payment** and `4 available · 1 pending`.
+    payment**, with `5 left` stacked above `1 pending`.
 11. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
-    `4 remaining`; then use **Undo simulated payment** and confirm the pending state
+    `4 left`; then use **Undo simulated payment** and confirm the pending state
     returns.
 12. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
     unpaid**. Switch back to **Live session** and confirm none of the demo-only payment
@@ -256,11 +269,15 @@ prototype data. There is no silent reset.
 16. Select one recorded variation, then wait for a newer Sold Items variation. Confirm
     the new number appears in the selector and becomes the displayed variation
     automatically. Under **TikTok payment**, confirm its exact observed state appears as
-    `Payment processing`, `Payment fixing`, `Payment failed`, `Canceled`, or `Payment complete` and
-    changes live without refreshing. A status-only update must keep that variation
-    selected. For `Payment complete`, also confirm the captured final price appears even
-    before an inventory item is selected. Do not use Chat, the video auction card, or
-    analytics as a comparison source.
+    `Payment processing`, `Payment fixing`, `Payment failed`, `Canceled`, or `Payment
+    complete` and changes live without refreshing. A status-only update must keep that
+    variation selected. Processing, fixing, failed, and unrecognized must retain a mapped
+    reservation without reducing remaining stock. Exact `Canceled` must keep the item
+    link, release the reservation, and leave remaining stock and money unchanged. For
+    `Payment complete`, also confirm the captured final price appears even before an
+    inventory item is selected. If a priced completion follows `Canceled`, confirm the
+    sale commits and the warning says TikTok completion won and inventory was counted. Do
+    not use Chat, the video auction card, or analytics as a comparison source.
 17. Map one captured pending variation to `Stussy tee - black, L` and wait for the save.
     Reopen and Resume once to confirm the mapping and pending reservation are durable.
     Correct it to another available card, then click that selected card again; confirm
@@ -273,10 +290,11 @@ prototype data. There is no silent reset.
     it, and confirm a later Sold Items change is still captured.
 20. Keep the same local tracker stream active until expected payment transitions
     have appeared and the capture delivery queue has had time to finish or retry. End it
-    only after that point and after resolving any inventory-reserved pending mapping.
-    Cancel End once, then confirm it; TikTok LIVE must remain unaffected. Before the next
-    TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the new stream rather
-    than showing stale rows, and only then start a new local tracker stream.
+    only after that point and after resolving every inventory-reserved pending mapping and
+    every completed sale that still needs an item. A canonical canceled variation does not
+    block End. Cancel End once, then confirm it; TikTok LIVE must remain unaffected. Before
+    the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the new
+    stream rather than showing stale rows, and only then start a new local tracker stream.
 
 The capture boundary must resolve to exactly one visible
 `[data-tid="m4b_space"]` element. If TikTok renders zero or multiple visible matches,

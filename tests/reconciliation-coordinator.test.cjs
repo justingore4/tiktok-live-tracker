@@ -378,10 +378,56 @@ test("persists payment-status batches once and skips identical retries", async (
     observed.state.streams[0].variations[2].observedPaymentStatus,
     "canceled",
   );
-  assert.equal(observed.state.streams[0].variations[2].paymentStatus, "unknown");
+  assert.equal(observed.state.streams[0].variations[2].paymentStatus, "canceled");
 });
 
-test("serializes flexible statuses while canonical completion stays sticky", async () => {
+test("persisted cancellation releases capacity for the next variation", async () => {
+  const inventory = [
+    {
+      sku: "BLACK-TEE-M",
+      name: "Black Tee",
+      size: "M",
+      quantityReceived: 1,
+      unitCostCents: 1200,
+    },
+  ];
+  const storedState = reconciliation.createReconciliationState(inventory);
+  reconciliation.mapVariation(storedState, {
+    streamId: "stream-1",
+    variationNumber: 47,
+    sku: "BLACK-TEE-M",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const canceled = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 47,
+        observedPaymentStatus: "canceled",
+      },
+    ]),
+  );
+  const replacement = await coordinator.dispatch(mapCommand(48));
+
+  assert.equal(canceled.state.streams[0].variations[0].sku, "BLACK-TEE-M");
+  assert.equal(canceled.state.streams[0].variations[0].mappingStatus, "mapped");
+  assert.equal(canceled.state.streams[0].variations[0].paymentStatus, "canceled");
+  assert.equal(canceled.state.streams[0].variations[0].soldPriceCents, null);
+  assert.equal(replacement.result.status, "pending");
+  assert.equal(memoryStore.calls.save.length, 2);
+  assert.deepEqual(
+    memoryStore.getPersistedState().streams[0].variations.map(
+      (auction) => [auction.variationNumber, auction.paymentStatus],
+    ),
+    [
+      [47, "canceled"],
+      [48, "unknown"],
+    ],
+  );
+});
+
+test("serializes statuses while cancellation and priced completion stay sticky", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);
   const coordinator = createCoordinator(memoryStore);
@@ -418,6 +464,16 @@ test("serializes flexible statuses while canonical completion stays sticky", asy
       },
     ]),
   );
+  const writesBeforeStaleStatus = memoryStore.calls.save.length;
+  const staleProcessing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 46,
+        observedPaymentStatus: "payment_processing",
+      },
+    ]),
+  );
+  const writesAfterStaleStatus = memoryStore.calls.save.length;
   const completed = await coordinator.dispatch(paymentCommand(46, 3200));
   const writesBeforeLateStatus = memoryStore.calls.save.length;
   const lateFailure = await coordinator.dispatch(
@@ -446,10 +502,28 @@ test("serializes flexible statuses while canonical completion stays sticky", asy
     "canceled",
   );
   assert.equal(
+    canceled.state.streams[0].variations[0].paymentStatus,
+    "canceled",
+  );
+  assert.deepEqual(staleProcessing.result, {
+    status: "already_observed",
+    observedCount: 1,
+    updatedCount: 0,
+    ignoredCount: 1,
+  });
+  assert.equal(writesAfterStaleStatus, writesBeforeStaleStatus);
+  assert.equal(
+    staleProcessing.state.streams[0].variations[0].paymentStatus,
+    "canceled",
+  );
+  assert.equal(
     completed.state.streams[0].variations[0].observedPaymentStatus,
     "payment_complete",
   );
   assert.equal(completed.state.streams[0].variations[0].soldPriceCents, 3200);
+  assert.deepEqual(completed.result.conflicts, [
+    { code: "payment_completed_after_canceled" },
+  ]);
   assert.deepEqual(lateFailure.result, {
     status: "already_observed",
     observedCount: 1,
@@ -577,6 +651,48 @@ test("serializes concurrent writes without losing an update", async () => {
     [10, 11],
   );
   assert.equal(memoryStore.getMaximumActiveSaves(), 1);
+});
+
+test("serializes competing last-unit mappings and rejects the loser atomically", async () => {
+  const lastUnitInventory = [
+    {
+      sku: "BLACK-TEE-M",
+      name: "Black Tee",
+      size: "M",
+      quantityReceived: 1,
+      unitCostCents: 1200,
+    },
+  ];
+  const storedState = reconciliation.createReconciliationState(
+    lastUnitInventory,
+  );
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const outcomes = await Promise.allSettled([
+    coordinator.dispatch(mapCommand(14)),
+    coordinator.dispatch(mapCommand(15)),
+  ]);
+
+  assert.equal(outcomes[0].status, "fulfilled");
+  assert.equal(outcomes[0].value.result.status, "pending");
+  assert.equal(outcomes[1].status, "rejected");
+  assert.ok(outcomes[1].reason instanceof reconciliation.ReconciliationError);
+  assert.equal(outcomes[1].reason.code, "NO_STOCK_AVAILABLE");
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.deepEqual(
+    memoryStore.getPersistedState().streams[0].variations.map(
+      (auction) => auction.variationNumber,
+    ),
+    [14],
+  );
+
+  const repeated = await coordinator.dispatch(mapCommand(14));
+  const snapshot = await coordinator.dispatch(getStateCommand());
+
+  assert.equal(repeated.result.status, "pending");
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.deepEqual(snapshot.state, memoryStore.getPersistedState());
 });
 
 test("snapshots a command before it waits in the queue", async () => {

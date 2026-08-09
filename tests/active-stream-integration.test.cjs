@@ -235,8 +235,8 @@ test("captured Sold Items observations survive worker restart under the active s
       },
       {
         observedPaymentStatus: "canceled",
-        paymentStatus: "unknown",
-        status: "unmapped",
+        paymentStatus: "canceled",
+        status: "canceled",
         variationNumber: 38,
       },
     ],

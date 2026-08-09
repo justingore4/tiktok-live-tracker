@@ -68,7 +68,7 @@ test("uses friendly labels for every observed TikTok payment status", () => {
   );
 });
 
-test("keeps failed and canceled distinct without changing pending inventory semantics", () => {
+test("keeps payment failed pending but makes canceled canonical without inventory effects", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -94,7 +94,7 @@ test("keeps failed and canceled distinct without changing pending inventory sema
     variationNumbers: [202, 201],
   });
 
-  session.selectSku("STUSSY-TEE-BLACK-L");
+  const linked = session.selectSku("STUSSY-TEE-BLACK-L");
   const view = session.getViewState();
   const canceledOption = view.variations.find(
     (variation) => variation.variationNumber === 202,
@@ -104,21 +104,158 @@ test("keeps failed and canceled distinct without changing pending inventory sema
   );
 
   assert.equal(view.selectedVariationNumber, 202);
+  assert.equal(linked.action, "canceled_order_mapped");
   assert.equal(view.auction.observedPaymentStatus, "canceled");
   assert.equal(view.auction.observedPaymentStatusLabel, "Canceled");
-  assert.equal(view.auction.paymentStatus, "unknown");
-  assert.equal(view.auction.status, "pending");
+  assert.equal(view.auction.paymentStatus, "canceled");
+  assert.equal(view.auction.status, "canceled");
+  assert.equal(view.auction.statusLabel, "Canceled");
+  assert.equal(view.auction.mappingStatus, "mapped");
+  assert.equal(view.mapping.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(canceledOption.observedPaymentStatusLabel, "Canceled");
-  assert.equal(canceledOption.status, "pending");
+  assert.equal(canceledOption.status, "canceled");
+  assert.equal(canceledOption.statusLabel, "Canceled");
   assert.equal(failedOption.observedPaymentStatusLabel, "Payment failed");
   assert.equal(failedOption.status, "unmapped");
   assert.equal(
+    reconciliation.getAuction(state, {
+      streamId: STREAM_ID,
+      variationNumber: 201,
+    }).paymentStatus,
+    "unknown",
+  );
+  assert.equal(
     inventoryEntry(view, "STUSSY-TEE-BLACK-L").reservedQuantity,
-    1,
+    0,
+  );
+  assert.equal(
+    inventoryEntry(view, "STUSSY-TEE-BLACK-L").remainingQuantity,
+    5,
+  );
+  assert.equal(
+    inventoryEntry(view, "STUSSY-TEE-BLACK-L").availableToTagQuantity,
+    5,
   );
   assert.equal(view.totals.completedPaymentCount, 0);
   assert.equal(view.totals.committedSalesCount, 0);
   assert.equal(view.totals.profitCents, 0);
+  assert.deepEqual(view.controls, {
+    canCompletePayment: false,
+    canSimulateBufferExpiry: false,
+    canMarkUnpaid: false,
+    canUndoSimulatedPayment: false,
+    canUndoUnpaid: false,
+  });
+});
+
+test("relinks and unlinks a canceled order to sold-out history without changing stock", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: VARIATION_NUMBER,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  const session = createSession({ state });
+  const linked = session.selectSku("STUSSY-TEE-BLACK-L");
+  const relinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const soldOutEntry = inventoryEntry(
+    relinked.view,
+    "DENIM-SHORTS-WASHED-BLUE-32",
+  );
+
+  assert.equal(linked.ok, true);
+  assert.equal(linked.action, "canceled_order_mapped");
+  assert.equal(relinked.ok, true);
+  assert.equal(relinked.action, "canceled_mapping_corrected");
+  assert.equal(relinked.mapping.status, "canceled");
+  assert.equal(relinked.mapping.sku, "DENIM-SHORTS-WASHED-BLUE-32");
+  assert.equal(relinked.mapping.committed, false);
+  assert.equal(relinked.mapping.soldPriceCents, null);
+  assert.equal(relinked.mapping.committedUnitCostCents, null);
+  assert.equal(relinked.mapping.profitCents, null);
+  assert.equal(soldOutEntry.selected, true);
+  assert.equal(soldOutEntry.selectionAllowed, true);
+  assert.equal(soldOutEntry.selectionReason, "selected");
+  assert.equal(soldOutEntry.remainingQuantity, 0);
+  assert.equal(soldOutEntry.reservedQuantity, 0);
+  assert.equal(relinked.view.totals.committedSalesCount, 0);
+  assert.equal(relinked.view.totals.profitCents, 0);
+
+  const unlinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+
+  assert.equal(unlinked.ok, true);
+  assert.equal(unlinked.action, "unmapped");
+  assert.equal(unlinked.previousStatus, "canceled");
+  assert.equal(unlinked.mapping, null);
+  assert.equal(unlinked.view.auction.status, "canceled");
+  assert.equal(unlinked.view.auction.paymentStatus, "canceled");
+  assert.equal(unlinked.view.auction.sku, null);
+  assert.equal(
+    inventoryEntry(unlinked.view, "DENIM-SHORTS-WASHED-BLUE-32")
+      .selectionAllowed,
+    true,
+  );
+  assert.equal(unlinked.view.totals.committedSalesCount, 0);
+  assert.equal(unlinked.view.totals.profitCents, 0);
+});
+
+test("shows when a later TikTok completion overrides cancellation and counts inventory", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: VARIATION_NUMBER,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  const session = createSession({ state });
+  session.selectSku("STUSSY-TEE-BLACK-L");
+
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 4800,
+  });
+  const view = session.getViewState();
+  const selectedInventory = inventoryEntry(view, "STUSSY-TEE-BLACK-L");
+
+  assert.equal(view.auction.status, "committed");
+  assert.equal(view.auction.statusLabel, "Payment complete");
+  assert.equal(view.auction.paymentStatus, "payment_complete");
+  assert.equal(view.auction.observedPaymentStatus, "payment_complete");
+  assert.equal(view.auction.soldPriceCents, 4800);
+  assert.equal(view.auction.committedUnitCostCents, 1200);
+  assert.equal(view.auction.profitCents, 3600);
+  assert.deepEqual(view.auction.conflicts, [
+    { code: "payment_completed_after_canceled" },
+  ]);
+  assert.ok(
+    view.warnings.some(
+      (warning) =>
+        warning.code === "payment_completed_after_canceled" &&
+        warning.eventKey === `${STREAM_ID}:${VARIATION_NUMBER}`,
+    ),
+  );
+  assert.equal(selectedInventory.reservedQuantity, 0);
+  assert.equal(selectedInventory.soldQuantity, 1);
+  assert.equal(selectedInventory.remainingQuantity, 4);
+  assert.equal(view.totals.completedPaymentCount, 1);
+  assert.equal(view.totals.committedSalesCount, 1);
+  assert.equal(view.totals.profitCents, 3600);
 });
 
 test("projects observed payment labels and captured prices without an inventory mapping", () => {
@@ -1286,6 +1423,7 @@ test("committed correction moves stock and recalculates profit even when stock i
     -1,
   );
   assert.equal(view.warnings[0].code, "negative_inventory");
+  assert.equal(view.controls.canUndoSimulatedPayment, false);
 });
 
 test("canonical state quantities override stale display quantities", () => {
