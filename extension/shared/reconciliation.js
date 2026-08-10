@@ -2160,6 +2160,8 @@
       const totals = {
         auctionCount: auctions.length,
         completedPaymentCount: 0,
+        canceledOrderCount: 0,
+        paymentFixingCount: 0,
         totalSalesCount: 0,
         committedSalesCount: 0,
         unmappedCompletedCount: 0,
@@ -2187,6 +2189,22 @@
         if (auction.paymentStatus === "payment_complete") {
           totals.completedPaymentCount += 1;
           totals.completedGmvCents += auction.soldPriceCents;
+        }
+
+        if (auction.paymentStatus === "canceled") {
+          totals.canceledOrderCount += 1;
+        }
+
+        if (
+          auction.paymentStatus === "unknown" &&
+          (
+            auction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED ||
+            auction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING
+          )
+        ) {
+          totals.paymentFixingCount += 1;
         }
 
         if (auction.status === "unmapped_completed") {

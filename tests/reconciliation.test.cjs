@@ -333,6 +333,176 @@ test("totalSalesCount includes only unique terminal Sold Items statuses in the s
   assert.equal(otherSummary.totals.completedPaymentCount, 1);
 });
 
+test("canceledOrderCount includes only unique canonical cancellations in the selected stream", () => {
+  const state = createState();
+
+  observeBiddingVariation(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 801,
+  });
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 802,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+      {
+        variationNumber: 803,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+      {
+        variationNumber: 804,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+      {
+        variationNumber: 806,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 807,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+      },
+    ],
+  });
+  recordPaymentComplete(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 805,
+    soldPriceCents: 2500,
+  });
+
+  const beforeRetry = calculateSummary(state, { streamId: STREAM_ONE });
+
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 804,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 806,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  observePaymentStatuses(state, {
+    streamId: "another-stream",
+    statuses: [
+      {
+        variationNumber: 806,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+
+  const selectedSummary = calculateSummary(state, { streamId: STREAM_ONE });
+  const otherSummary = calculateSummary(state, {
+    streamId: "another-stream",
+  });
+
+  assert.equal(beforeRetry.totals.canceledOrderCount, 1);
+  assert.equal(selectedSummary.totals.auctionCount, 7);
+  assert.equal(selectedSummary.totals.canceledOrderCount, 2);
+  assert.equal(selectedSummary.totals.completedPaymentCount, 1);
+  assert.equal(otherSummary.totals.canceledOrderCount, 1);
+  assert.equal(otherSummary.totals.auctionCount, 1);
+});
+
+test("paymentFixingCount includes only unresolved failed-payment buffer orders in the selected stream", () => {
+  const state = createState();
+
+  observeBiddingVariation(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 901,
+  });
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 902,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+      {
+        variationNumber: 903,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+      {
+        variationNumber: 904,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+      {
+        variationNumber: 905,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+      },
+      {
+        variationNumber: 906,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  recordPaymentComplete(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 907,
+    soldPriceCents: 2500,
+  });
+  observePaymentStatuses(state, {
+    streamId: "another-stream",
+    statuses: [
+      {
+        variationNumber: 903,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+  });
+
+  const initialSummary = calculateSummary(state, { streamId: STREAM_ONE });
+  const otherSummary = calculateSummary(state, {
+    streamId: "another-stream",
+  });
+
+  assert.equal(initialSummary.totals.paymentFixingCount, 2);
+  assert.equal(otherSummary.totals.paymentFixingCount, 1);
+
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 903,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+  });
+  assert.equal(
+    calculateSummary(state, { streamId: STREAM_ONE }).totals
+      .paymentFixingCount,
+    2,
+  );
+
+  recordPaymentComplete(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 903,
+    soldPriceCents: 1800,
+  });
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 904,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+
+  const resolvedSummary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(resolvedSummary.totals.paymentFixingCount, 0);
+  assert.equal(resolvedSummary.totals.completedPaymentCount, 2);
+  assert.equal(resolvedSummary.totals.canceledOrderCount, 2);
+});
+
 test("nonterminal payment states are flexible until cancellation becomes sticky", () => {
   const state = createState();
   const observation = (observedPaymentStatus) =>

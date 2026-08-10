@@ -698,6 +698,14 @@ button {
   line-height: 1.45;
 }
 
+.stream-session-end-confirmation .end-report-readiness {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid rgb(255 143 152 / 20%);
+  color: #ffd6a1;
+  font-weight: 680;
+}
+
 .stream-session-confirm-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -738,6 +746,150 @@ button {
 .stream-session-error .secondary-action {
   width: auto;
   min-width: 72px;
+  flex: none;
+}
+
+.stream-session-error-actions {
+  display: grid;
+  min-width: 92px;
+  flex: none;
+  gap: 7px;
+}
+
+.stream-session-error-actions .secondary-action,
+.stream-session-error-actions .danger-action {
+  width: 100%;
+}
+
+.stream-reports-panel {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background: rgb(18 23 32 / 92%);
+}
+
+.stream-reports-panel[aria-busy="true"] {
+  cursor: progress;
+}
+
+.stream-reports-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stream-reports-heading h2,
+.stream-reports-description,
+.stream-reports-error p {
+  margin: 0;
+}
+
+.stream-reports-heading h2 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.stream-reports-count {
+  padding: 4px 8px;
+  border: 1px solid rgb(39 211 180 / 30%);
+  border-radius: 999px;
+  color: #adf4e7;
+  background: rgb(39 211 180 / 8%);
+  font-size: 9px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.stream-reports-description {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.stream-reports-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.stream-report-link {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--background);
+  text-align: left;
+  cursor: pointer;
+}
+
+.stream-report-link:hover {
+  border-color: rgb(72 165 255 / 45%);
+  background: rgb(72 165 255 / 6%);
+}
+
+.stream-report-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.stream-report-link-title {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 740;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-report-link-meta {
+  grid-column: 1;
+  color: var(--text-subtle);
+  font-size: 9px;
+}
+
+.stream-report-link-state {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #adf4e7;
+  background: rgb(39 211 180 / 10%);
+  font-size: 8px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.stream-report-link-state[data-completeness="provisional"] {
+  color: #ffd58a;
+  background: rgb(244 189 80 / 11%);
+}
+
+.stream-reports-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+  padding: 10px;
+  border: 1px solid rgb(255 143 152 / 35%);
+  border-radius: 9px;
+  color: #ffd0d4;
+  background: rgb(255 143 152 / 8%);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.stream-reports-error .secondary-action {
+  width: auto;
+  min-width: 88px;
   flex: none;
 }
 
@@ -1349,6 +1501,24 @@ button {
   font-weight: 760;
   line-height: 1.2;
   overflow-wrap: anywhere;
+}
+
+.metric-card-order-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 12px;
+}
+
+.metric-card-order-status dt::after {
+  content: none;
+}
+
+.metric-card-order-status dd {
+  margin: 0;
+  text-align: right;
 }
 
 .metric-profit-content {

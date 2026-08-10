@@ -237,6 +237,17 @@ Inventory accounting follows the selected stream's pinned baseline:
   observations do not enter this metric's terminal outcome set.
 - `completedPaymentCount` counts every uniquely priced canonical payment-complete auction
   in the requested stream, whether mapped or unmapped.
+- `canceledOrderCount` counts each unique requested-stream variation only when its latest
+  canonical outcome is exact terminal `canceled`. Active bidding and `not_observed`,
+  `payment_processing`, `payment_fixing`, temporary `payment_failed`,
+  `payment_complete`, and `unrecognized` observations are excluded. Inventory mapping
+  does not affect this count.
+- `paymentFixingCount` counts each unique requested-stream variation whose canonical
+  payment status is still `unknown` and whose latest observed status is either
+  `payment_fixing` or temporary `payment_failed` during TikTok's correction buffer.
+  `payment_processing`, active bidding/`not_observed`, `unrecognized`, completed, and
+  canceled variations are excluded. A priced completion or exact cancellation removes
+  the variation from this count automatically. Inventory mapping does not affect it.
 - `committedRevenueCents` and gross profit include only mapped, payment-complete sales.
 - `profitCents = committedRevenueCents - costOfGoodsCents`; each committed cost is the
   unit-cost snapshot from the Google Sheets baseline pinned to that sale's stream.
@@ -422,27 +433,89 @@ and automatic page-to-session association remain later identity work.
 | Any payment observation follows canonical `Canceled` | Ignore the stale contradiction | Implemented; cancellation is terminal |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
 
-### Planned end-of-stream reconciliation
+### End-of-stream report snapshot — implemented
 
-The seller reports that completed rows remain scrollable during a stream. A live test
-must determine whether the entire list remains available after the stream, whether it is
-virtualized, and whether a structured data source is accessible.
+The current report does not perform a new privileged TikTok scrape at End. It freezes a
+strict, immutable projection of the already durable reconciliation state after all
+worker commands ordered ahead of End have completed. The snapshot receives a
+deterministic `stream-report:<uuid>` identity derived from its exact
+`local-stream:<uuid>`, UTC start/end/generated timestamps, the pinned baseline ID, and
+the last active-bidding marker. No buyer, Sheet ID, sharing link, token, or raw DOM text
+enters the report.
 
-The future end-of-stream pass should re-ingest every accessible completed sale and
-retain these deliberately different measures:
+Normal **End and create report** is one serialized lifecycle operation:
 
-- the engine's exact `completedGmvCents`, displayed as **GMV/No shipping**;
-- TikTok's latest exact or rounded **Attributed GMV** display, shown as **Total GMV**; and
-- the engine's completed-payment count with TikTok's attributed items sold.
+1. verify that the expected local stream is still active;
+2. hydrate canonical reconciliation state and prepare the strict report;
+3. durably save a `pending_end` report record before clearing the active-session pointer;
+4. end that exact local stream; and
+5. mark the same report record `finalized`.
 
-Per the product requirement, TikTok's Attributed GMV includes buyer-paid shipping while
-the row-price sum does not. It is therefore a separately captured aggregate and a
-reconciliation aid, not an equality check or the inventory source of truth. The tracker
-mirrors compact text such as `$4.64K` without pretending it is an exact cent amount.
+If preparation or persistence fails, normal report-aware End fails closed and leaves the
+stream active. The UI then exposes **End without report** so a local-storage problem can
+never trap the employee in an active tracker session. A worker restart repairs a
+`pending_end` record: it finalizes it when the matching stream is no longer active and
+keeps it pending when the stream still exists. One stream has at most one report.
 
-No underlying TikTok API or network payload has been selected. The current probe can
-only scan rendered DOM. Network or official API integration remains an optional fallback
-if DOM capture proves incomplete.
+Business exceptions never block report creation. A report is `final` only when the
+snapshot has no active bidding marker, unresolved order, pending inventory reservation,
+payment-fixing order, unmapped completed sale, reconciliation conflict, or oversold SKU
+requiring recount. Otherwise it is `provisional`, with stable reason codes and visible
+notices. Lifecycle `pending_end` also renders provisionally until recovery finalizes it.
+The classification describes captured data completeness; it does not claim that TikTok
+rendered every historical Sold Items row.
+
+The report retains these deliberately different measures:
+
+- `completedGmvCents`: exact captured prices for all uniquely priced completed orders,
+  mapped or unmapped, labeled **GMV / No shipping**;
+- `attributedGmvDisplay`: TikTok's last exact or compact display, labeled **TikTok
+  Attributed GMV**, retained as text because it may be rounded and include buyer-paid
+  shipping;
+- `completedPaymentCount/totalSalesCount`: completed orders over terminal-outcome sales,
+  excluding the active bidding marker and nonterminal processing/fixing states;
+- terminal canceled and still-fixing counts;
+- `costOfGoodsCents` and `grossProfitCents` only for mapped completed sales, where gross
+  profit is mapped revenue minus the pinned unit-cost snapshots; and
+- completed-sale detail rows that retain unmapped completions with unavailable item/cost
+  fields instead of hiding them.
+
+Exact-SKU performance groups mapped completions by SKU. Combined product performance
+groups those same SKU totals by exact employee-facing `item + style` across sizes. Both
+retain sold quantity, revenue, COGS, and gross profit; top-sold and top-profitable results
+retain every tie. The report page derives SKU gross margin as gross profit divided by
+mapped revenue and sell-through as current-stream mapped completed units divided by that
+SKU's opening quantity.
+
+The baseline-wide inventory handoff contains every pinned-baseline SKU with opening
+quantity, current-stream sold quantity, all completed sales under the shared baseline,
+pending reservations, signed calculated remaining quantity, available-after-reservation
+quantity, oversold amount, and recount flag. The Sheet replacement value is:
+
+```text
+calculatedRemainingQuantity = openingQuantity - baselineSoldQuantity
+replacementQuantity = max(0, calculatedRemainingQuantity)
+```
+
+Pending is intentionally separate and does not permanently reduce the replacement
+value. When calculated inventory is negative, the report preserves that raw value and
+oversold/recount warning while exporting zero. It supplies the exact simple line
+`SKU: <sku> Updated count: <replacementQuantity>` and a complete six-column table with
+the original `sku,item,style,size,unit_cost` plus the replacement count under
+`quantity_on_hand_at_import`. CSV and tab-separated clipboard serializers neutralize
+spreadsheet-formula prefixes while preserving valid Sheet values.
+
+The extension-owned report page loads only the local immutable record. It supports native
+Chrome Print / Save as PDF, a Google Sheets-ready CSV download, a full-table clipboard
+copy for pasting at A1, and a separate simple SKU list. The completed-orders disclosure
+starts collapsed on screen but print styling always includes its entire table with
+repeated column headers. These are employee-initiated local outputs, not Google API
+writes.
+
+The seller reports that completed rows remain scrollable during a stream, but broader
+live testing must still determine whether the entire list is always rendered or
+virtualized. No underlying TikTok API or network payload has been selected. The current
+capture can only report facts that reached durable reconciliation state before End.
 
 ## 5. Employee tagger — live session and offline demo implemented
 
@@ -468,6 +541,11 @@ the **Active** pill into the row, hides the redundant heading and safety note, a
 the **End Stream Tracking** action. Setup, resume, loading, and error states retain the
 full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
 error alerts remain available near the top so failures are not hidden by that layout.
+After End, the inactive side panel shows **Stream reports** only when at least one local
+record exists or report-list loading failed. Each button identifies Final/Provisional
+state plus completed/total sales and exact completed-price GMV, and opens the extension's
+report page in a new tab. Report-list Retry refetches the canonical archive; the panel
+does not read `chrome.storage` directly.
 
 Shared tagger behavior includes:
 
@@ -509,7 +587,16 @@ Shared tagger behavior includes:
   priced canonical completion whether mapped or unmapped. The denominator counts unique
   current-stream variations whose latest observed outcome is `payment_complete`,
   `payment_failed`, or `canceled`; active bidding and `not_observed`, processing, fixing,
-  or unrecognized observations are excluded. A **Gross Profits** card
+  or unrecognized observations are excluded. One compact order-status card renders
+  `totals.canceledOrderCount` beside **Canceled Orders:** and
+  `totals.paymentFixingCount` beside **Payment Fixing:**. The canceled count includes a
+  unique current-stream variation only after exact terminal `Canceled`; active bidding,
+  `not_observed`, processing, fixing, temporary failed, completed, and unrecognized
+  variations are excluded. The fixing count includes canonical-unresolved variations
+  whose latest observation is `payment_fixing` or temporary `payment_failed`; processing,
+  bidding/`not_observed`, unrecognized, completed, and canceled variations are excluded.
+  Completion or cancellation clears the fixing count automatically, and neither value
+  depends on inventory mapping. A **Gross Profits** card
   renders `totals.profitCents`: mapped, completed sold-price revenue
   minus the committed Google Sheets unit-cost snapshots. Completed-but-unmapped sales are
   excluded and trigger a visible incomplete-count warning until inventory items are
@@ -548,16 +635,21 @@ old mock baseline is used only to repair a previously active legacy session whos
 reconciliation record is truly absent. That recovery path cannot seed a new stream or
 replace non-null canonical state.
 
-End clears only the active-session pointer after confirmation. It does not delete the
+End first freezes and durably archives the report described above, then clears only the
+active-session pointer and finalizes the same report record. It does not delete the
 stream, its pin, baselines, or reconciliation history, and it does not start or end
 TikTok LIVE. Creating or activating another baseline is blocked while any local tracker
-stream is active, so a session cannot cross a recount boundary. End is always available
-for a known active local stream, including before the inventory workspace is resumed and
-while pending reservations or completed sales without items remain unresolved.
-Reconciliation history and its current inventory effects remain saved. Ended streams
-cannot yet be reopened in the tagger, so
-employees should finish any corrections they still need and wait for expected capture
-retries when practical, but neither condition is enforced as an End blocker.
+stream is active, so a session cannot cross a recount boundary. End is available for a
+known active local stream, including before the inventory workspace is resumed and while
+pending reservations or completed sales without items remain unresolved; those states
+produce a provisional report rather than a blocker. If report persistence itself fails,
+the normal action preserves the active stream and offers an explicit **End without
+report** fallback.
+
+Ended streams cannot yet be reopened in the tagger, so the archived report is a frozen
+record rather than a post-End editing workspace. Employees should finish corrections and
+wait for expected capture retries when practical. Report links appear after End and open
+the local printable page; no automatic Google Sheet write occurs.
 
 The live selector lists only persisted variations for the active local stream and keeps
 mapping unavailable until at least one such record exists. If the controller still holds
@@ -697,6 +789,30 @@ Keeping this pointer outside reconciliation state avoids coupling stream lifecyc
 auction-state migrations. Missing active-session storage means no tracker stream is
 active; malformed or future data fails closed and is never replaced automatically.
 
+End-of-stream reports use a third strict local envelope beneath
+`tiktokLiveTracker.streamReports`:
+
+```text
+{
+  schemaVersion: 1,
+  reports: [{
+    reportId: "stream-report:<uuid>",
+    streamId: "local-stream:<same uuid>",
+    lifecycleStatus: "pending_end" | "finalized",
+    report: { version: 1, ...strict frozen projection }
+  }]
+}
+```
+
+The store hydrates and validates the complete nested report, verifies that wrapper and
+report identities agree, detaches every read/write, and never replaces malformed or
+future data. It retains at most five reports within a 4 MiB archive cap, ordered newest
+first. Pruning removes the
+oldest finalized records while preserving an in-flight `pending_end` record for recovery.
+This is a convenience archive, not indefinite retention: clearing extension storage or
+uninstalling the extension deletes it, and older finalized reports age out as new ones
+arrive. A PDF or CSV explicitly saved outside the extension is not part of that archive.
+
 The extension service worker now creates the adapter with `chrome.storage.local` and is
 the sole canonical-state command owner. Its reconciliation coordinator:
 
@@ -719,11 +835,14 @@ This ordering prevents simultaneous commands from overwriting one another and pr
 memory from getting ahead of disk. When an MV3 worker is suspended and later restarted,
 the next command reloads the last durable snapshot.
 
-A second FIFO coordinator owns `get_stream_session`, `start_stream`, and `end_stream`.
-Only the worker can generate the stream UUID and timestamp. Start is idempotent when a
-session already exists, and End includes the expected active ID so a stale panel cannot
-close a newer session. It saves before publishing exactly like the reconciliation
-coordinator.
+A second FIFO coordinator owns `get_stream_session`, `start_stream`, `end_stream`, and
+the explicit `end_stream_without_report` recovery command. Only the worker can generate
+the stream UUID and timestamp. Start is idempotent when a session already exists, and End
+includes the expected active ID so a stale panel cannot close a newer session. A strict
+report coordinator owns prepare/finalize/recovery plus authorized list/get reads. The
+worker's shared outer FIFO composes report preparation, stream End, and report
+finalization so concurrent capture, imports, or stale panels cannot interleave across the
+snapshot boundary.
 
 The service worker owns baseline pinning; the side panel cannot issue the pin command.
 Start first verifies a nonempty imported active baseline, persists the session, and then
@@ -744,7 +863,9 @@ or direct baseline creation.
 The separate capture envelope is accepted only from the extension content script in the
 top frame of the exact TikTok product-dashboard URL. The worker, not the page, supplies
 the active local stream ID. A shared outer FIFO orders stream lifecycle, capture, and
-tagger messages before their dedicated coordinators run.
+tagger messages before their dedicated coordinators run. The report list/get envelope is
+accepted only from the side panel or extension-owned report page; the dashboard content
+script cannot enumerate or open local reports.
 
 After an accepted capture command has completed its persistence boundary, the worker
 sends a best-effort, data-free `capture_state_changed` invalidation. It contains no
@@ -791,7 +912,8 @@ only Sold Items variation numbers, one current bidding variation number, sanitiz
 payment-status codes, completed variation/price facts, and the sanitized Attributed GMV
 display, never mappings, stream
 lifecycle commands, raw badge or analytics text, or arbitrary state. The pre-stream
-Sheets reader is a separate worker-owned boundary; outbound Google Sheets sync belongs
+Sheets reader is a separate worker-owned boundary. The local report may serialize a
+six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
 to a later stage.
 
 Offline simulation checkpoints and resets must never overwrite captured or persisted
@@ -810,9 +932,18 @@ panel receives an access token.
 
 Google Sheets is not the live transactional source of truth. Once confirmed, the local
 baseline and stream pin drive tagging, inventory, and basic profit without another Google
-request. Sales, remaining-inventory, and reporting export are not implemented. A later
-export stage must save locally first, then batch and retry writes so a temporary
-connection problem cannot interrupt tagging.
+request. At End, the tracker saves its report locally first and can copy or download a
+Google Sheets-ready six-column replacement table. It does not call the Sheets write API.
+A future automatic-sync stage must keep the local report as its durable source, then
+batch and retry writes so a temporary connection problem cannot interrupt tagging or
+erase the report.
+
+The novice handoff is position-based, not a SKU lookup or merge: duplicate the current
+`Inventory` tab as a backup, use **Copy Updated Inventory**, click the original tab's A1
+cell, and paste the full six-column rectangle. The CSV alternative is imported with
+**Replace current sheet** only after that backup. The human-readable
+`SKU: <sku> Updated count: <quantity>` lines are for checking or manual edits and must
+not be pasted into A1 in place of the six-column table.
 
 ## 7. Google Sheets inventory import contract
 
@@ -967,7 +1098,15 @@ The Google access token is received and used only inside the worker request path
 never sent through runtime messages, rendered, persisted by the application, or placed in
 repository files. The selected normalized inventory baseline and its non-secret
 fingerprint are stored locally. No variation, buyer, payment, sale, stream, or report data
-is sent to Google, because outbound export is not implemented.
+is sent to Google. The end report's clipboard and CSV serializers run locally and only
+after an employee action; they are not outbound Sheets API export.
+
+The local report archive does contain business-sensitive inventory names/SKUs, unit
+costs, counts, captured sale prices, aggregate payment counts, calculated profit, and
+local stream timestamps. It deliberately excludes buyer identity, Sheet ID/link, OAuth
+tokens, and raw DOM text. Native Print / Save as PDF and CSV download create files on the
+employee's computer. Removing the extension or clearing its storage deletes the bounded
+in-extension archive, so required reports must be saved externally before either action.
 
 ### `Sales` tab
 
@@ -1046,7 +1185,8 @@ answer these questions; offline fixtures alone cannot complete the validation:
 - Can a verified TikTok ID safely automate the local-session boundary across a full
   refresh and a second stream?
 - Do auctions with no bids appear in any trackable list?
-- Can every completed sale be recovered for an end-of-stream sweep?
+- Does rendered-history backfill capture every completed sale before the local End
+  snapshot, especially when Sold Items is virtualized?
 
 Browser support beyond Chrome is a later decision.
 
@@ -1079,6 +1219,8 @@ Browser support beyond Chrome is a later decision.
       pins, baseline-scoped inventory/cost accounting, and strict legacy migration; and
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
-8. Export reconciled results to Google Sheets.
-9. End-of-stream reconciliation, broader analytics/reporting beyond the live Metrics
-   cards, and release hardening.
+8. **Completed:** immutable end-of-stream projection, report-aware End/recovery,
+   bounded local archive, printable/Save-as-PDF business page, exact SKU and combined
+   product analytics, and six-column clipboard/CSV inventory handoff.
+9. Optional automatic Google Sheets writes, broader real-stream report validation, and
+   release hardening.

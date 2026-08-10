@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>TikTok LIVE Stream Report</title>
+    <link rel="stylesheet" href="report.css">
+  </head>
+  <body>
+    <a class="skip-link screen-only" href="#report-content">Skip to report</a>
+
+    <main class="report-shell">
+      <header class="app-header">
+        <div class="brand-mark" aria-hidden="true">T</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Seller tool</p>
+          <p class="product-name">TikTok Live Tracker</p>
+        </div>
+        <div class="header-actions screen-only">
+          <button id="print-report" class="primary-action" type="button" disabled>
+            Print / Save as PDF
+          </button>
+        </div>
+      </header>
+
+      <section
+        id="report-loading"
+        class="report-message"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <span class="status-spinner" aria-hidden="true"></span>
+        <div>
+          <h1>Preparing the stream report</h1>
+          <p>Loading the locally saved stream and inventory totals.</p>
+        </div>
+      </section>
+
+      <section id="report-error" class="report-message report-error" role="alert" hidden>
+        <div>
+          <h1>Report unavailable</h1>
+          <p id="report-error-message">
+            The locally saved report could not be loaded. Nothing was changed.
+          </p>
+        </div>
+        <button id="retry-report" class="secondary-action screen-only" type="button">
+          Retry
+        </button>
+      </section>
+
+      <article id="report-content" class="report-content" tabindex="-1" hidden>
+        <header class="report-cover report-block">
+          <div>
+            <p class="eyebrow">End-of-stream business summary</p>
+            <h1 id="report-title">TikTok LIVE Stream Report</h1>
+            <p id="report-subtitle" class="report-subtitle">
+              Locally prepared from captured sales and confirmed inventory mappings.
+            </p>
+          </div>
+          <div class="report-state">
+            <span id="report-state-badge" class="state-badge" data-state="provisional">
+              Provisional
+            </span>
+            <p id="report-state-description">
+              Some orders still need attention before every total is final.
+            </p>
+          </div>
+        </header>
+
+        <dl class="report-meta report-block" aria-label="Stream report details">
+          <div>
+            <dt>Stream started</dt>
+            <dd id="stream-started">Not recorded</dd>
+          </div>
+          <div>
+            <dt>Tracking ended</dt>
+            <dd id="stream-ended">Not recorded</dd>
+          </div>
+          <div>
+            <dt>Stream reference</dt>
+            <dd id="stream-reference">Unavailable</dd>
+          </div>
+        </dl>
+
+        <section class="report-section" aria-labelledby="summary-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Performance</p>
+              <h2 id="summary-title">Stream summary</h2>
+            </div>
+          </div>
+          <dl id="summary-grid" class="summary-grid"></dl>
+        </section>
+
+        <section id="warnings-section" class="report-section warning-section" aria-labelledby="warnings-title" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Review before updating inventory</p>
+              <h2 id="warnings-title">Report notices</h2>
+            </div>
+          </div>
+          <ul id="report-warnings" class="warning-list"></ul>
+        </section>
+
+        <section class="report-section" aria-labelledby="performers-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Product insights</p>
+              <h2 id="performers-title">Top performers</h2>
+            </div>
+          </div>
+          <div class="performer-grid">
+            <section class="performer-card" aria-labelledby="most-sold-title">
+              <p class="performer-kicker">By completed units</p>
+              <h3 id="most-sold-title">Most sold SKU</h3>
+              <ul id="most-sold-items" class="performer-list"></ul>
+            </section>
+            <section class="performer-card" aria-labelledby="most-profitable-title">
+              <p class="performer-kicker">By mapped gross profit</p>
+              <h3 id="most-profitable-title">Most profitable SKU</h3>
+              <ul id="most-profitable-items" class="performer-list"></ul>
+            </section>
+            <section id="most-sold-products-card" class="performer-card" aria-labelledby="most-sold-products-title" hidden>
+              <p class="performer-kicker">Combined across sizes</p>
+              <h3 id="most-sold-products-title">Most sold product</h3>
+              <ul id="most-sold-products" class="performer-list"></ul>
+            </section>
+            <section id="most-profitable-products-card" class="performer-card" aria-labelledby="most-profitable-products-title" hidden>
+              <p class="performer-kicker">Combined across sizes</p>
+              <h3 id="most-profitable-products-title">Most profitable product</h3>
+              <ul id="most-profitable-products" class="performer-list"></ul>
+            </section>
+          </div>
+        </section>
+
+        <section class="report-section" aria-labelledby="sales-title">
+          <details id="completed-sales-disclosure">
+            <summary
+              id="completed-sales-toggle"
+              class="completed-sales-toggle"
+              aria-controls="completed-sales-content"
+            >
+              <h2 id="sales-title" class="completed-sales-summary-heading">
+                <span class="completed-sales-title-copy">
+                  <span class="eyebrow">Completed orders</span>
+                  <span class="completed-sales-title">Items sold this stream</span>
+                </span>
+                <span id="sales-count" class="section-count">0 completed sales</span>
+              </h2>
+            </summary>
+            <div id="completed-sales-content" class="completed-sales-content">
+              <div
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="sales-title"
+              >
+                <table class="data-table sales-table">
+                  <caption>
+                    Completed TikTok orders captured during this tracker stream. Unmapped sales remain visible with inventory details marked unavailable.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Variation</th>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Item</th>
+                      <th scope="col">Style</th>
+                      <th scope="col">Size</th>
+                      <th scope="col" class="number-cell">Sold price</th>
+                      <th scope="col" class="number-cell">Unit cost</th>
+                      <th scope="col" class="number-cell">Gross profit</th>
+                    </tr>
+                  </thead>
+                  <tbody id="completed-sales-rows"></tbody>
+                </table>
+              </div>
+              <p id="sales-empty" class="empty-copy" hidden>No completed sales were captured for this stream.</p>
+            </div>
+          </details>
+        </section>
+
+        <section class="report-section" aria-labelledby="performance-table-title">
+          <div class="section-heading table-heading">
+            <div>
+              <p class="eyebrow">Inventory-connected analytics</p>
+              <h2 id="performance-table-title">SKU performance</h2>
+            </div>
+            <p id="performance-row-count" class="section-count">0 selling SKUs</p>
+          </div>
+          <div class="table-scroll screen-scroll" tabindex="0">
+            <table class="data-table performance-table">
+              <caption>
+                Exact SKU performance for SKUs with at least one mapped completed sale during this stream.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">SKU</th>
+                  <th scope="col">Product</th>
+                  <th scope="col">Size</th>
+                  <th scope="col" class="number-cell">Units sold</th>
+                  <th scope="col" class="number-cell">Revenue</th>
+                  <th scope="col" class="number-cell">COGS</th>
+                  <th scope="col" class="number-cell">Gross profit</th>
+                  <th scope="col" class="number-cell">Gross margin</th>
+                  <th scope="col" class="number-cell">Sell-through</th>
+                </tr>
+              </thead>
+              <tbody id="performance-rows"></tbody>
+            </table>
+          </div>
+          <p id="performance-empty" class="empty-copy" hidden>
+            No mapped completed sales are available for SKU performance.
+          </p>
+        </section>
+
+        <section class="report-section inventory-update-section" aria-labelledby="inventory-title">
+          <div class="section-heading table-heading">
+            <div>
+              <p class="eyebrow">Google Sheets handoff</p>
+              <h2 id="inventory-title">Updated inventory</h2>
+            </div>
+            <div class="section-actions screen-only">
+              <button id="copy-inventory" class="secondary-action" type="button">
+                Copy Updated Inventory
+              </button>
+              <button id="download-inventory" class="secondary-action" type="button">
+                Download Updated Inventory CSV
+              </button>
+            </div>
+          </div>
+          <ol class="inventory-workflow">
+            <li>At the bottom of Google Sheets, duplicate the <strong>Inventory</strong> tab as a backup.</li>
+            <li>On this report, click <strong>Copy Updated Inventory</strong>.</li>
+            <li>Return to the original <strong>Inventory</strong> tab and click cell <strong>A1</strong>.</li>
+            <li>Press <strong>Cmd+V</strong> on macOS or <strong>Ctrl+V</strong> on Windows.</li>
+          </ol>
+          <p class="section-intro">
+            The pasted six-column rectangle replaces cells by position; it does not look up or merge rows by SKU. Keep the rows in this exported order. Download Updated Inventory CSV is available as an alternative.
+          </p>
+          <div class="table-scroll screen-scroll" tabindex="0">
+            <table class="data-table inventory-table">
+              <caption>
+                Opening inventory, completed mapped sales, pending reservations, and the updated quantity_on_hand_at_import for every SKU.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">SKU</th>
+                  <th scope="col">Item</th>
+                  <th scope="col">Style</th>
+                  <th scope="col">Size</th>
+                  <th scope="col" class="number-cell">Opening</th>
+                  <th scope="col" class="number-cell">Sold since baseline</th>
+                  <th scope="col" class="number-cell">Pending</th>
+                  <th scope="col" class="number-cell">Updated count</th>
+                  <th scope="col" class="number-cell">Oversold</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report-section sku-count-section" aria-labelledby="sku-count-title">
+          <div class="section-heading table-heading">
+            <div>
+              <p class="eyebrow">Simple replacement list</p>
+              <h2 id="sku-count-title">SKU updated counts</h2>
+            </div>
+            <button id="copy-sku-counts" class="secondary-action screen-only" type="button">
+              Copy SKU Counts
+            </button>
+          </div>
+          <pre id="sku-count-list" class="sku-count-list" tabindex="0"></pre>
+        </section>
+
+        <section class="report-section definitions-section" aria-labelledby="definitions-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">How totals are calculated</p>
+              <h2 id="definitions-title">Definitions and limitations</h2>
+            </div>
+          </div>
+          <dl id="report-definitions" class="definition-list"></dl>
+        </section>
+
+        <footer class="report-footer">
+          <p>This report was generated locally by TikTok Live Tracker. No report data was uploaded.</p>
+          <p id="report-generated-at"></p>
+        </footer>
+      </article>
+
+      <p
+        id="action-feedback"
+        class="action-feedback screen-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      ></p>
+    </main>
+
+    <script src="../shared/stream-report-protocol.js"></script>
+    <script src="../shared/stream-report.js"></script>
+    <script src="stream-report-client.js"></script>
+    <script src="report-page.js"></script>
+  </body>
+</html>

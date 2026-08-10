@@ -58,13 +58,18 @@
       const { client } = options;
       const validClient =
         client &&
-        ["endStream", "getSession", "startStream"].every(
+        [
+          "endStream",
+          "endStreamWithoutReport",
+          "getSession",
+          "startStream",
+        ].every(
           (methodName) => typeof client[methodName] === "function",
         );
 
       if (!validClient) {
         throw new TypeError(
-          "client must provide getSession, startStream, and endStream methods.",
+          "client must provide getSession, startStream, endStream, and endStreamWithoutReport methods.",
         );
       }
 
@@ -306,6 +311,38 @@
         );
       }
 
+      function endActiveStreamWithoutReport() {
+        const recoveringFailedEnd =
+          activePromise === null &&
+          phase === PHASES.ERROR &&
+          operation === OPERATIONS.END &&
+          activeSession !== null;
+
+        if (
+          activePromise ||
+          (phase !== PHASES.READY && !recoveringFailedEnd)
+        ) {
+          fail(
+            "CONTROLLER_BUSY",
+            "Wait for the current stream-session operation to finish.",
+          );
+        }
+
+        if (activeSession === null) {
+          fail("NO_ACTIVE_STREAM", "There is no tracker stream to end.");
+        }
+
+        const streamId = activeSession.streamId;
+
+        return begin(
+          Object.freeze({
+            operation: OPERATIONS.END,
+            nextResumed: false,
+            execute: () => client.endStreamWithoutReport({ streamId }),
+          }),
+        );
+      }
+
       function retry() {
         if (activePromise || retryDescriptor === null) {
           return activePromise ?? Promise.resolve(createSnapshot());
@@ -339,6 +376,7 @@
 
       return Object.freeze({
         endActiveStream,
+        endActiveStreamWithoutReport,
         getSnapshot: createSnapshot,
         resumeActiveStream,
         retry,

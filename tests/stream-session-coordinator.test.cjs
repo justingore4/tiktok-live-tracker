@@ -152,6 +152,7 @@ test("exports a separate strict protocol", () => {
     GET_STREAM_SESSION: "get_stream_session",
     START_STREAM: "start_stream",
     END_STREAM: "end_stream",
+    END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
   });
 });
 
@@ -399,6 +400,8 @@ test("rejects malformed commands before storage access", async () => {
     { type: COMMAND_TYPES.START_STREAM, streamId: FIRST_ID },
     { type: COMMAND_TYPES.END_STREAM },
     { type: COMMAND_TYPES.END_STREAM, streamId: "" },
+    { type: COMMAND_TYPES.END_STREAM_WITHOUT_REPORT },
+    { type: COMMAND_TYPES.END_STREAM_WITHOUT_REPORT, streamId: "" },
   ];
 
   for (const command of invalidCommands) {

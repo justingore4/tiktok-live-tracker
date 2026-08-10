@@ -8,6 +8,9 @@ const captureProtocol = require("../extension/shared/capture-protocol.js");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
+const streamReportProtocol = require(
+  "../extension/shared/stream-report-protocol.js"
+);
 
 const workerSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "service-worker.js"),
@@ -31,6 +34,7 @@ function createWorkerHarness(options = {}) {
   const captureDispatchCalls = [];
   const runtimeSendMessages = [];
   const inventoryImportCalls = [];
+  const reportCalls = [];
   const consoleErrors = [];
   const timerCalls = [];
   const timerReceiverMarker = {};
@@ -48,6 +52,7 @@ function createWorkerHarness(options = {}) {
   };
   const stateStore = {};
   const streamStateStore = {};
+  const reportStore = {};
   const extensionId = "test-extension-id";
   const activeStreamId =
     "local-stream:11111111-1111-4111-8111-111111111111";
@@ -79,6 +84,8 @@ function createWorkerHarness(options = {}) {
   };
   const sidePanelUrl =
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
+  const reportPageUrl =
+    `chrome-extension://${extensionId}/report/report.html`;
   let requestedPanelBehavior = null;
   let storeOptions = null;
   let coordinatorOptions = null;
@@ -87,6 +94,7 @@ function createWorkerHarness(options = {}) {
   let captureIntegrationOptions = null;
   let inventoryImportOptions = null;
   let remainingPinFailures = options.pinFailureCount ?? 0;
+  let remainingEndFailures = options.endStreamFailureCount ?? 0;
   let persistedActiveSession = options.initialActiveSession
     ? JSON.parse(JSON.stringify(options.initialActiveSession))
     : null;
@@ -133,6 +141,20 @@ function createWorkerHarness(options = {}) {
   }
 
   class FakeStreamCoordinatorError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamReportStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamReportCoordinatorError extends Error {
     constructor(code, message) {
       super(message);
       this.code = code;
@@ -344,6 +366,23 @@ function createWorkerHarness(options = {}) {
         await options.beforeStreamDispatch(command);
       }
 
+      if (
+        options.endStreamDispatchError &&
+        remainingEndFailures > 0 &&
+        [
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+        ].includes(command.type)
+      ) {
+        remainingEndFailures -= 1;
+        throw options.endStreamDispatchError === "known"
+          ? new FakeStreamStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save stream.",
+            )
+          : options.endStreamDispatchError;
+      }
+
       if (options.streamDispatchError === "known") {
         throw new FakeStreamStorageError(
           "STORAGE_WRITE_FAILED",
@@ -382,7 +421,10 @@ function createWorkerHarness(options = {}) {
       }
 
       if (
-        command.type === streamCoordinatorModule.COMMAND_TYPES.END_STREAM
+        [
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+        ].includes(command.type)
       ) {
         persistedActiveSession = null;
 
@@ -410,11 +452,136 @@ function createWorkerHarness(options = {}) {
       GET_STREAM_SESSION: "get_stream_session",
       START_STREAM: "start_stream",
       END_STREAM: "end_stream",
+      END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
     },
     StreamSessionCoordinatorError: FakeStreamCoordinatorError,
     createStreamSessionCoordinator(receivedOptions) {
       streamCoordinatorOptions = receivedOptions;
       return streamCoordinator;
+    },
+  };
+  const streamReport = {
+    hydrateStreamReport(candidate) {
+      return JSON.parse(JSON.stringify(candidate));
+    },
+  };
+  const reportStorageModule = {
+    LIFECYCLE_STATUSES: {
+      FINALIZED: "finalized",
+      PENDING_END: "pending_end",
+    },
+    MAX_REPORTS: 5,
+    StreamReportStorageError: FakeStreamReportStorageError,
+    createStreamReportStore(receivedOptions) {
+      reportCalls.push({ type: "create_store", options: receivedOptions });
+      return reportStore;
+    },
+  };
+  let lastPreparedReport = null;
+  const reportCoordinator = {
+    async prepareReport(input) {
+      reportCalls.push({
+        type: "prepare",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+
+      if (options.beforeReportPrepare) {
+        await options.beforeReportPrepare(input);
+      }
+
+      if (options.reportPrepareError) {
+        throw options.reportPrepareError === "known"
+          ? new FakeStreamReportStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save the stream report.",
+            )
+          : options.reportPrepareError;
+      }
+
+      const uuid = input.streamId.slice("local-stream:".length);
+      lastPreparedReport = {
+        reportId: `stream-report:${uuid}`,
+        lifecycleStatus: "pending_end",
+        report: {
+          reportId: `stream-report:${uuid}`,
+          metadata: {
+            streamId: input.streamId,
+            startedAt: input.startedAt,
+            endedAt: "2026-08-10T12:00:00.000Z",
+          },
+        },
+      };
+      return JSON.parse(JSON.stringify(lastPreparedReport));
+    },
+    async finalizeReport(reportId) {
+      reportCalls.push({ type: "finalize", reportId });
+
+      if (options.reportFinalizeError) {
+        throw new FakeStreamReportStorageError(
+          "STORAGE_WRITE_FAILED",
+          "Could not finalize the stream report.",
+        );
+      }
+
+      return {
+        ...(lastPreparedReport ?? { reportId, report: null }),
+        reportId,
+        lifecycleStatus: "finalized",
+      };
+    },
+    async repairPendingReports(activeStreamId) {
+      reportCalls.push({ type: "repair", activeStreamId });
+
+      if (options.reportRepairError) {
+        throw new FakeStreamReportStorageError(
+          "STORAGE_WRITE_FAILED",
+          "Could not repair stream reports.",
+        );
+      }
+
+      return { repairedCount: 0 };
+    },
+    async getReportForStream(streamId) {
+      reportCalls.push({ type: "get_for_stream", streamId });
+      return options.existingReport ?? {
+        reportId: null,
+        lifecycleStatus: null,
+        report: null,
+      };
+    },
+    async discardPendingReportForStream(streamId) {
+      reportCalls.push({ type: "discard", streamId });
+      const discarded =
+        lastPreparedReport?.report.metadata.streamId === streamId &&
+        lastPreparedReport.lifecycleStatus === "pending_end";
+      const reportId = discarded ? lastPreparedReport.reportId : null;
+
+      if (discarded) {
+        lastPreparedReport = null;
+      }
+
+      return { discarded, reportId };
+    },
+    async dispatch(command) {
+      reportCalls.push({
+        type: "dispatch",
+        command: JSON.parse(JSON.stringify(command)),
+      });
+      return options.reportDispatchResult ?? (
+        command.type === streamReportProtocol.COMMAND_TYPES.LIST_REPORTS
+          ? { reports: [] }
+          : { reportId: null, lifecycleStatus: null, report: null }
+      );
+    },
+  };
+  const reportCoordinatorModule = {
+    StreamReportCoordinatorError: FakeStreamReportCoordinatorError,
+    createStreamReportCoordinator(receivedOptions) {
+      reportCalls.push({
+        type: "create_coordinator",
+        options: receivedOptions,
+      });
+      return reportCoordinator;
     },
   };
   const captureEventIntegration = {
@@ -528,6 +695,10 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerReconciliation: reconciliation,
     TikTokLiveTrackerReconciliationStorage: storageModule,
     TikTokLiveTrackerReconciliationCoordinator: coordinatorModule,
+    TikTokLiveTrackerStreamReport: streamReport,
+    TikTokLiveTrackerStreamReportProtocol: streamReportProtocol,
+    TikTokLiveTrackerStreamReportStorage: reportStorageModule,
+    TikTokLiveTrackerStreamReportCoordinator: reportCoordinatorModule,
     TikTokLiveTrackerStreamSession: streamSession,
     TikTokLiveTrackerStreamSessionStorage: streamStorageModule,
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
@@ -647,6 +818,13 @@ function createWorkerHarness(options = {}) {
     };
   }
 
+  function createReportMessage(command, overrides = {}) {
+    return {
+      ...streamReportProtocol.createStreamReportMessage(command),
+      ...overrides,
+    };
+  }
+
   function createCaptureSender(overrides = {}) {
     return createSender({
       url:
@@ -687,6 +865,7 @@ function createWorkerHarness(options = {}) {
     createCaptureMessage,
     createCaptureSender,
     createImportMessage,
+    createReportMessage,
     createMessage,
     createSender,
     dispatchCalls,
@@ -706,11 +885,15 @@ function createWorkerHarness(options = {}) {
     imports,
     inventoryImportCalls,
     inventoryImportProtocol,
+    reportCalls,
+    reportCoordinator,
+    reportPageUrl,
     listeners,
     reconciliation,
     runtimeSendMessages,
     send,
     sidePanelUrl,
+    streamReportProtocol,
     stateStore,
     streamCoordinator,
     streamCoordinatorModule,
@@ -728,6 +911,10 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/reconciliation.js",
     "shared/reconciliation-storage.js",
     "shared/reconciliation-coordinator.js",
+    "shared/stream-report.js",
+    "shared/stream-report-protocol.js",
+    "shared/stream-report-storage.js",
+    "shared/stream-report-coordinator.js",
     "shared/stream-session.js",
     "shared/stream-session-storage.js",
     "shared/stream-session-coordinator.js",
@@ -1920,7 +2107,14 @@ test("orders capture and stream lifecycle messages through one worker FIFO", asy
   assert.equal(captureFirstHarness.streamDispatchCalls.length, 0);
   releaseCapture.resolve();
   await Promise.all([captureRequest.response, endRequest.response]);
-  assert.equal(captureFirstHarness.streamDispatchCalls.length, 1);
+  assert.deepEqual(
+    captureFirstHarness.streamDispatchCalls.map(({ type }) => type),
+    [
+      captureFirstHarness.streamCoordinatorModule.COMMAND_TYPES
+        .GET_STREAM_SESSION,
+      captureFirstHarness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+    ],
+  );
 
   const endStarted = createDeferred();
   const releaseEnd = createDeferred();
@@ -1949,6 +2143,216 @@ test("orders capture and stream lifecycle messages through one worker FIFO", asy
   releaseEnd.resolve();
   await Promise.all([firstEndRequest.response, laterCaptureRequest.response]);
   assert.equal(endFirstHarness.captureDispatchCalls.length, 1);
+});
+
+test("normal End saves and finalizes a report before clearing the active session", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const reportSaveStarted = createDeferred();
+  const releaseReportSave = createDeferred();
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    async beforeReportPrepare() {
+      reportSaveStarted.resolve();
+      await releaseReportSave.promise;
+    },
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  await reportSaveStarted.promise;
+  assert.deepEqual(
+    harness.streamDispatchCalls.map(({ type }) => type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+  releaseReportSave.resolve();
+  const response = await request.response;
+
+  assert.deepEqual(response, {
+    ok: true,
+    data: {
+      state: { version: 1, activeSession: null },
+      result: {
+        status: "ended",
+        reportId:
+          "stream-report:11111111-1111-4111-8111-111111111111",
+        reportLifecycleStatus: "finalized",
+      },
+    },
+  });
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "finalize"].includes(type))
+      .map(({ type }) => type),
+    ["prepare", "finalize"],
+  );
+  assert.equal(
+    harness.reportCalls.find(({ type }) => type === "prepare").input.startedAt,
+    activeSession.startedAt,
+  );
+});
+
+test("a report save failure leaves the stream active and exposes End without report", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    reportPrepareError: "known",
+  });
+  const failed = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.deepEqual(await failed.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not save the stream report.",
+    },
+  });
+  assert.deepEqual(
+    harness.streamDispatchCalls.map(({ type }) => type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+
+  const fallback = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES
+          .END_STREAM_WITHOUT_REPORT,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.deepEqual(await fallback.response, {
+    ok: true,
+    data: {
+      state: { version: 1, activeSession: null },
+      result: {
+        status: "ended_without_report",
+        reportId: null,
+        reportLifecycleStatus: null,
+      },
+    },
+  });
+});
+
+test("End without report removes a pending draft left by a failed session End", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    endStreamDispatchError: "known",
+    endStreamFailureCount: 1,
+  });
+  const normalEnd = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.equal((await normalEnd.response).ok, false);
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .map(({ type }) => type),
+    ["prepare"],
+  );
+
+  const fallback = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES
+          .END_STREAM_WITHOUT_REPORT,
+      streamId: activeSession.streamId,
+    }),
+  );
+  const response = await fallback.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.result.status, "ended_without_report");
+  assert.equal(response.data.result.reportId, null);
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .map(({ type }) => type),
+    ["prepare", "discard"],
+  );
+});
+
+test("a post-End finalization failure returns the saved pending report for restart repair", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    reportFinalizeError: true,
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+  const response = await request.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.state.activeSession, null);
+  assert.equal(response.data.result.reportLifecycleStatus, "pending_end");
+  assert.equal(harness.consoleErrors.length, 1);
+});
+
+test("report reads are restricted to the exact side panel and packaged report page", async () => {
+  const harness = createWorkerHarness();
+  const message = harness.createReportMessage({ type: "list_reports" });
+  const sidePanelRead = harness.send(message);
+  const reportPageRead = harness.send(
+    message,
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=test`,
+    }),
+  );
+  const dashboardRead = harness.send(message, harness.createCaptureSender());
+
+  assert.deepEqual(await sidePanelRead.response, {
+    ok: true,
+    data: { reports: [] },
+  });
+  assert.deepEqual(await reportPageRead.response, {
+    ok: true,
+    data: { reports: [] },
+  });
+  assert.deepEqual(await dashboardRead.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
 });
 
 test("ignores unrelated runtime messages", async () => {

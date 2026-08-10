@@ -70,6 +70,10 @@
     globalThis.TikTokLiveTrackerInventoryImportClient;
   const inventoryImportControllerModule =
     globalThis.TikTokLiveTrackerInventoryImportController;
+  const streamReportProtocol =
+    globalThis.TikTokLiveTrackerStreamReportProtocol;
+  const streamReportClientModule =
+    globalThis.TikTokLiveTrackerStreamReportClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
@@ -196,6 +200,30 @@
   const retryStreamSessionButton = document.querySelector(
     "#retry-stream-session",
   );
+  const endStreamWithoutReportButton = document.querySelector(
+    "#end-stream-without-report",
+  );
+  const endReportReadiness = document.querySelector(
+    "#end-report-readiness",
+  );
+  const streamReportsPanel = document.querySelector(
+    "#stream-reports-panel",
+  );
+  const streamReportsCount = document.querySelector(
+    "#stream-reports-count",
+  );
+  const streamReportsList = document.querySelector(
+    "#stream-reports-list",
+  );
+  const streamReportsError = document.querySelector(
+    "#stream-reports-error",
+  );
+  const streamReportsErrorMessage = document.querySelector(
+    "#stream-reports-error-message",
+  );
+  const retryStreamReportsButton = document.querySelector(
+    "#retry-stream-reports",
+  );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const dataModeBadge = document.querySelector("#data-mode-badge");
   const variationContext = document.querySelector("#variation-context");
@@ -216,6 +244,12 @@
   const totalGmvValue = document.querySelector("#total-gmv-value");
   const completedSalesValue = document.querySelector(
     "#completed-sales-value",
+  );
+  const canceledOrdersValue = document.querySelector(
+    "#canceled-orders-value",
+  );
+  const paymentFixingValue = document.querySelector(
+    "#payment-fixing-value",
   );
   const grossProfitValue = document.querySelector("#gross-profit-value");
   const grossProfitWarning = document.querySelector(
@@ -284,6 +318,8 @@
     !inventoryImportProtocol ||
     !inventoryImportClientModule ||
     !inventoryImportControllerModule ||
+    !streamReportProtocol ||
+    !streamReportClientModule ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule ||
     typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
@@ -321,6 +357,11 @@
     inventoryImportControllerModule.createInventoryImportController({
       client: inventoryImportClient,
     });
+  const streamReportClient =
+    streamReportClientModule.createStreamReportClient({
+      runtime: chrome.runtime,
+      protocol: streamReportProtocol,
+    });
   let activeMode = "saved_session";
   let demoSession = null;
   let persistentController = null;
@@ -348,6 +389,9 @@
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
+  let streamReportSummaries = [];
+  let streamReportsLoading = false;
+  let streamReportsLoadError = null;
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -646,9 +690,13 @@
 
   function setTrackerWorkspaceVisible(visible) {
     trackerWorkspace.hidden = !visible;
+    updateFooterVisibility();
+  }
 
+  function updateFooterVisibility() {
     if (appFooter) {
-      appFooter.hidden = !visible;
+      appFooter.hidden =
+        trackerWorkspace.hidden && streamReportsPanel.hidden;
     }
   }
 
@@ -689,6 +737,7 @@
               savedSessionError,
               streamSessionPanel,
               trackerWorkspace,
+              streamReportsPanel,
               appFooter,
             ]
           : [
@@ -696,6 +745,7 @@
               savedSessionError,
               trackerWorkspace,
               streamSessionPanel,
+              streamReportsPanel,
               appFooter,
             ],
       );
@@ -707,6 +757,7 @@
       streamSessionPanel,
       savedSessionError,
       trackerWorkspace,
+      streamReportsPanel,
       appFooter,
     ]);
   }
@@ -822,6 +873,7 @@
           : savedSnapshot?.phase ?? "idle";
 
     setFooterStatus(footerText, footerPhase);
+    renderStreamReportsPanel();
   }
 
   function setFooterStatus(text, phase) {
@@ -830,6 +882,181 @@
     }
 
     appFooter.dataset.phase = phase;
+  }
+
+  function formatReportTimestamp(value) {
+    const parsed = typeof value === "string" ? new Date(value) : null;
+
+    if (!parsed || Number.isNaN(parsed.getTime())) {
+      return "Saved stream";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(parsed);
+  }
+
+  function describeReportReadiness(view = savedSnapshot?.view) {
+    const totals = view?.totals;
+
+    if (!totals) {
+      return "The saved stream will be checked when the report is created.";
+    }
+
+    const variations = Array.isArray(view?.variations)
+      ? view.variations
+      : [];
+    const unresolvedOrderCount = variations.filter(
+      (variation) =>
+        variation.recorded === true &&
+        !["committed", "unmapped_completed", "canceled"].includes(
+          variation.status,
+        ),
+    ).length;
+    const recountSkuCount = (Array.isArray(view?.inventory)
+      ? view.inventory
+      : []
+    ).filter(
+      (entry) =>
+        Number.isSafeInteger(entry.oversoldQuantity) &&
+        entry.oversoldQuantity > 0,
+    ).length;
+    const issues = [
+      [
+        Number.isSafeInteger(view?.activeBiddingVariationNumber) ? 1 : 0,
+        "active bidding variation",
+        "active bidding variations",
+      ],
+      [unresolvedOrderCount, "unresolved order", "unresolved orders"],
+      [totals.pendingMappedCount, "pending mapped order", "pending mapped orders"],
+      [totals.paymentFixingCount, "payment-fixing order", "payment-fixing orders"],
+      [totals.unmappedCompletedCount, "completed sale without inventory", "completed sales without inventory"],
+      [totals.conflictCount, "data conflict", "data conflicts"],
+      [recountSkuCount, "SKU requiring a recount", "SKUs requiring a recount"],
+    ]
+      .filter(([count]) => Number.isSafeInteger(count) && count > 0)
+      .map(([count, singular, plural]) =>
+        `${count} ${count === 1 ? singular : plural}`,
+      );
+
+    return issues.length === 0
+      ? "The report currently qualifies as final based on captured data."
+      : `The report will be provisional: ${issues.join(", ")}.`;
+  }
+
+  function openStreamReport(reportId) {
+    const reportUrl = chrome.runtime.getURL(
+      `report/report.html?reportId=${encodeURIComponent(reportId)}`,
+    );
+
+    if (chrome.tabs && typeof chrome.tabs.create === "function") {
+      return chrome.tabs.create({ url: reportUrl });
+    }
+
+    const opened = globalThis.open(reportUrl, "_blank", "noopener");
+
+    if (!opened) {
+      throw new Error("Chrome blocked the stream report tab.");
+    }
+
+    return Promise.resolve(opened);
+  }
+
+  function createStreamReportLink(summary) {
+    const wrapper = document.createElement("div");
+    const button = document.createElement("button");
+    const title = document.createElement("span");
+    const meta = document.createElement("span");
+    const state = document.createElement("span");
+    const completedCount = Number.isSafeInteger(summary.completedPaymentCount)
+      ? summary.completedPaymentCount
+      : 0;
+    const totalCount = Number.isSafeInteger(summary.totalSalesCount)
+      ? summary.totalSalesCount
+      : 0;
+
+    wrapper.setAttribute("role", "listitem");
+    button.type = "button";
+    button.className = "stream-report-link";
+    button.dataset.reportId = summary.reportId;
+    button.setAttribute(
+      "aria-label",
+      `Open ${summary.completeness} stream report from ${formatReportTimestamp(summary.endedAt)}`,
+    );
+
+    title.className = "stream-report-link-title";
+    title.textContent = formatReportTimestamp(summary.endedAt);
+    meta.className = "stream-report-link-meta";
+    meta.textContent =
+      `${completedCount}/${totalCount} completed - ` +
+      viewModel.formatUsdCents(summary.completedGmvCents ?? 0);
+    state.className = "stream-report-link-state";
+    state.dataset.completeness = summary.completeness;
+    state.textContent = summary.completeness;
+
+    button.append(title, meta, state);
+    button.addEventListener("click", () => {
+      Promise.resolve(openStreamReport(summary.reportId)).catch((error) => {
+        streamReportsLoadError =
+          error?.message ?? "The saved report could not be opened.";
+        renderStreamReportsPanel();
+        streamReportsError.focus();
+      });
+    });
+
+    wrapper.append(button);
+    return wrapper;
+  }
+
+  function renderStreamReportsPanel() {
+    const savedMode = activeMode === "saved_session";
+    const inactive = streamSnapshot.activeSession === null;
+    const hasReports = streamReportSummaries.length > 0;
+    const hasError = typeof streamReportsLoadError === "string";
+
+    streamReportsPanel.hidden =
+      !savedMode || !inactive || (!hasReports && !hasError);
+    streamReportsPanel.setAttribute(
+      "aria-busy",
+      String(streamReportsLoading),
+    );
+    streamReportsCount.textContent =
+      `${streamReportSummaries.length} saved`;
+    streamReportsList.replaceChildren(
+      ...streamReportSummaries.map(createStreamReportLink),
+    );
+    streamReportsError.hidden = !hasError;
+    streamReportsErrorMessage.textContent = hasError
+      ? streamReportsLoadError
+      : "Saved reports could not be loaded. Nothing was changed.";
+    updateFooterVisibility();
+  }
+
+  async function refreshStreamReports(options = {}) {
+    streamReportsLoading = true;
+    streamReportsLoadError = null;
+    renderStreamReportsPanel();
+
+    try {
+      const response = await streamReportClient.listReports();
+      streamReportSummaries = response.reports;
+      streamReportsLoading = false;
+      renderStreamReportsPanel();
+
+      const latest = streamReportSummaries[0] ?? null;
+      if (options.openLatest === true && latest) {
+        await openStreamReport(latest.reportId);
+      }
+
+      return latest;
+    } catch (error) {
+      streamReportsLoading = false;
+      streamReportsLoadError =
+        error?.message ?? "Saved reports could not be loaded. Nothing was changed.";
+      renderStreamReportsPanel();
+      return null;
+    }
   }
 
   function requireDemoSeedResult(result, action) {
@@ -1104,6 +1331,16 @@
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
     const completedPaymentCount = view.totals.completedPaymentCount;
     const totalSalesCount = view.totals.totalSalesCount;
+    const canceledOrderCount = Number.isSafeInteger(
+      view.totals.canceledOrderCount,
+    ) && view.totals.canceledOrderCount >= 0
+      ? view.totals.canceledOrderCount
+      : 0;
+    const paymentFixingCount = Number.isSafeInteger(
+      view.totals.paymentFixingCount,
+    ) && view.totals.paymentFixingCount >= 0
+      ? view.totals.paymentFixingCount
+      : 0;
     const completedSalesRatio = `${completedPaymentCount}/${totalSalesCount}`;
     const formattedTotalGmv =
       typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
@@ -1120,6 +1357,18 @@
 
     if (completedSalesValue.textContent !== completedSalesRatio) {
       completedSalesValue.textContent = completedSalesRatio;
+    }
+
+    const canceledOrdersDisplay = String(canceledOrderCount);
+
+    if (canceledOrdersValue.textContent !== canceledOrdersDisplay) {
+      canceledOrdersValue.textContent = canceledOrdersDisplay;
+    }
+
+    const paymentFixingDisplay = String(paymentFixingCount);
+
+    if (paymentFixingValue.textContent !== paymentFixingDisplay) {
+      paymentFixingValue.textContent = paymentFixingDisplay;
     }
 
     if (grossProfitValue.textContent !== formattedGrossProfit) {
@@ -1779,6 +2028,8 @@
             ? "resume"
             : "inactive";
 
+    endReportReadiness.textContent = describeReportReadiness();
+
     streamSessionPanel.dataset.state = dataState;
     streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
     streamSessionBadge.dataset.state = dataState;
@@ -1800,6 +2051,8 @@
     endStreamButton.disabled = busy;
     confirmEndStreamButton.disabled = busy;
     cancelEndStreamButton.disabled = busy;
+    endStreamWithoutReportButton.hidden = true;
+    endStreamWithoutReportButton.disabled = busy;
 
     if (failed) {
       endConfirmationOpen = false;
@@ -1814,6 +2067,10 @@
         : "The tracker stream could not be updated. Nothing was changed.";
       retryStreamSessionButton.textContent =
         snapshot.error?.scope === "load" ? "Retry loading" : "Retry change";
+      endStreamWithoutReportButton.hidden = !(
+        snapshot.error?.scope === "end" &&
+        snapshot.activeSession !== null
+      );
 
       if (!hasFocusedStreamError) {
         streamSessionError.focus();
@@ -2051,6 +2308,10 @@
       if (captureRefreshDirty) {
         armCaptureRefresh();
       }
+    }
+
+    if (endConfirmationOpen) {
+      endReportReadiness.textContent = describeReportReadiness(snapshot.view);
     }
 
     previousSavedPhase = snapshot.phase;
@@ -2576,6 +2837,7 @@
     }
 
     endConfirmationOpen = true;
+    endReportReadiness.textContent = describeReportReadiness();
     renderStreamSnapshot(streamSessionController.getSnapshot());
     cancelEndStreamButton.focus();
   });
@@ -2598,11 +2860,12 @@
     streamSessionStatus.focus();
     Promise.resolve()
       .then(() => streamSessionController.endActiveStream())
-      .then((snapshot) => {
+      .then(async (snapshot) => {
         if (snapshot.phase === "ready" && snapshot.activeSession === null) {
           startStreamButton.focus();
           mappingAnnouncement.textContent =
-            "Tracker stream ended locally. TikTok LIVE was not changed, and saved order history was kept.";
+            "Tracker stream ended and its local business report was saved. TikTok LIVE was not changed.";
+          await refreshStreamReports({ openLatest: true });
         }
       })
       .catch((error) => {
@@ -2661,6 +2924,43 @@
       });
   });
 
+  endStreamWithoutReportButton.addEventListener("click", () => {
+    streamSessionError.hidden = true;
+    streamSessionStatus.hidden = false;
+    streamSessionStatusTitle.textContent = "Ending without a report...";
+    streamSessionStatusMessage.textContent =
+      "The tracker will stop locally without creating a new business report.";
+    streamSessionStatus.focus();
+
+    Promise.resolve()
+      .then(() => streamSessionController.endActiveStreamWithoutReport())
+      .then((snapshot) => {
+        if (snapshot.phase === "ready" && snapshot.activeSession === null) {
+          startStreamButton.focus();
+          mappingAnnouncement.textContent =
+            "Tracker stream ended without a new report. TikTok LIVE was not changed.";
+        }
+      })
+      .catch((error) => {
+        renderStreamSnapshot(streamSessionController.getSnapshot());
+        mappingAnnouncement.textContent =
+          error?.message ?? "The tracker stream could not be ended.";
+        console.error(
+          "[TikTok Live Tracker] Unexpected end-without-report failure.",
+          error,
+        );
+      });
+  });
+
+  retryStreamReportsButton.addEventListener("click", () => {
+    Promise.resolve(refreshStreamReports()).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected stream-report retry failure.",
+        error,
+      );
+    });
+  });
+
   retrySavedSessionButton.addEventListener("click", () => {
     if (!persistentController) {
       return;
@@ -2698,6 +2998,12 @@
   Promise.resolve().then(() => streamSessionController.start()).catch((error) => {
     console.error(
       "[TikTok Live Tracker] Unexpected stream-session startup failure.",
+      error,
+    );
+  });
+  Promise.resolve().then(() => refreshStreamReports()).catch((error) => {
+    console.error(
+      "[TikTok Live Tracker] Unexpected stream-report startup failure.",
       error,
     );
   });

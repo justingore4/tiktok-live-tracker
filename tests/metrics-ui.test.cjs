@@ -94,10 +94,14 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(metricsSection, />\s*GMV\/No shipping\s*</);
   assert.match(metricsSection, />\s*Total GMV\s*</);
   assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
+  assert.match(metricsSection, />\s*Canceled Orders:\s*</);
+  assert.match(metricsSection, />\s*Payment Fixing:\s*</);
   assert.match(metricsSection, />\s*Gross Profits\s*</);
   assert.match(metricsSection, /id="revenue-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="total-gmv-value"[^>]*>&mdash;</);
   assert.match(metricsSection, /id="completed-sales-value"[^>]*>0\/0</);
+  assert.match(metricsSection, /id="canceled-orders-value"[^>]*>0</);
+  assert.match(metricsSection, /id="payment-fixing-value"[^>]*>0</);
   assert.match(
     metricsSection,
     /id="gross-profit-value"[\s\S]*?aria-describedby="gross-profit-warning"[\s\S]*?>\$0\.00</,
@@ -107,9 +111,13 @@ test("side panel exposes bottom performance metrics and renders their values", (
     /id="gross-profit-warning"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?aria-atomic="true"[\s\S]*?hidden/,
   );
   assert.equal(
-    [...metricsSection.matchAll(/class="metric-card(?:\s+metric-card-profit)?"/g)].length,
-    4,
-    "the Metrics section must preserve the existing cards and add the completed/total variation metric",
+    [
+      ...metricsSection.matchAll(
+        /class="metric-card(?:\s+metric-card-(?:order-status|profit))?"/g,
+      ),
+    ].length,
+    5,
+    "the Metrics section must preserve the existing cards and add one combined order-status metric",
   );
 
   assert.match(
@@ -126,6 +134,14 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
+    /const canceledOrdersValue = document\.querySelector\([\s\S]*?"#canceled-orders-value"/,
+  );
+  assert.match(
+    source,
+    /const paymentFixingValue = document\.querySelector\([\s\S]*?"#payment-fixing-value"/,
+  );
+  assert.match(
+    source,
     /const grossProfitValue = document\.querySelector\("#gross-profit-value"\)/,
   );
   assert.match(
@@ -139,6 +155,26 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(
     source,
     /function renderMetrics\(view\)\s*{[\s\S]*?completedPaymentCount\s*=\s*view\.totals\.completedPaymentCount[\s\S]*?totalSalesCount\s*=\s*view\.totals\.totalSalesCount[\s\S]*?completedSalesRatio\s*=\s*`\$\{completedPaymentCount\}\/\$\{totalSalesCount\}`[\s\S]*?completedSalesValue\.textContent\s*=\s*completedSalesRatio/,
+  );
+  assert.match(
+    source,
+    /function renderMetrics\(view\)\s*{[\s\S]*?canceledOrderCount\s*=\s*Number\.isSafeInteger\([\s\S]*?view\.totals\.canceledOrderCount[\s\S]*?canceledOrdersDisplay\s*=\s*String\(canceledOrderCount\)[\s\S]*?canceledOrdersValue\.textContent\s*=\s*canceledOrdersDisplay/,
+    "the card must render the canonical canceled-order total as a whole number",
+  );
+  assert.match(
+    source,
+    /function renderMetrics\(view\)\s*{[\s\S]*?paymentFixingCount\s*=\s*Number\.isSafeInteger\([\s\S]*?view\.totals\.paymentFixingCount[\s\S]*?paymentFixingDisplay\s*=\s*String\(paymentFixingCount\)[\s\S]*?paymentFixingValue\.textContent\s*=\s*paymentFixingDisplay/,
+    "the card must render the canonical payment-fixing total as a whole number",
+  );
+  assert.match(
+    metricsSection,
+    /class="metric-card metric-card-order-status"[\s\S]*?<dt id="canceled-orders-label">Canceled Orders:<\/dt>[\s\S]*?id="canceled-orders-value"[\s\S]*?aria-labelledby="canceled-orders-label"[\s\S]*?<dt id="payment-fixing-label">Payment Fixing:<\/dt>[\s\S]*?id="payment-fixing-value"[\s\S]*?aria-labelledby="payment-fixing-label"/,
+    "the order-status card must keep both inline counts semantically labeled",
+  );
+  assert.match(
+    css,
+    /\.metric-card-order-status\s*{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;[\s\S]*?row-gap:\s*12px;/,
+    "the two order-status values must remain compact, inline, and responsive",
   );
   assert.match(
     source,

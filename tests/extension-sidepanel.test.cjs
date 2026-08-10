@@ -53,6 +53,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeCaptureIntegrationError extends Error {}
   class FakeInventoryImportProtocolError extends Error {}
   class FakeGoogleSheetsImportError extends Error {}
+  class FakeStreamReportProtocolError extends Error {}
+  class FakeStreamReportStorageError extends Error {}
+  class FakeStreamReportCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -129,6 +132,33 @@ test("service worker opens the side panel from the toolbar action", () => {
         };
       },
     },
+    TikTokLiveTrackerStreamReport: {},
+    TikTokLiveTrackerStreamReportProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.stream-report",
+      COMMAND_TYPES: {
+        GET_REPORT: "get_report",
+        LIST_REPORTS: "list_reports",
+      },
+      StreamReportProtocolError: FakeStreamReportProtocolError,
+    },
+    TikTokLiveTrackerStreamReportStorage: {
+      StreamReportStorageError: FakeStreamReportStorageError,
+      createStreamReportStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerStreamReportCoordinator: {
+      StreamReportCoordinatorError: FakeStreamReportCoordinatorError,
+      createStreamReportCoordinator() {
+        return {
+          dispatch: () => Promise.resolve({}),
+          finalizeReport: () => Promise.resolve({}),
+          getReportForStream: () => Promise.resolve(null),
+          prepareReport: () => Promise.resolve({}),
+          repairPendingReports: () => Promise.resolve(),
+        };
+      },
+    },
     AbortController,
     clearTimeout,
     fetch: () => Promise.reject(new Error("Network is not used in this test.")),
@@ -184,6 +214,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/reconciliation-coordinator.js",
     "../shared/stream-session-coordinator.js",
     "../shared/inventory-import-protocol.js",
+    "../shared/stream-report-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
@@ -192,6 +223,8 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
+    "../shared/stream-report.js",
+    "../report/stream-report-client.js",
     "sidepanel.js",
   ]);
   assert.ok(
@@ -248,6 +281,17 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="resume-stream"[\s\S]+type="button"/);
   assert.match(html, /id="end-stream"[\s\S]+type="button"/);
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
+  assert.match(
+    html,
+    /id="stream-session-end-confirmation"[\s\S]+aria-labelledby="stream-session-end-title"[\s\S]+End and create the stream report\?/,
+  );
+  assert.match(
+    html,
+    /id="end-report-readiness"[\s\S]+role="status"[\s\S]+aria-live="polite"/,
+  );
+  assert.match(html, />\s*Keep stream active\s*</);
+  assert.match(html, />\s*End and create report\s*</);
+  assert.match(html, /id="end-stream-without-report"[\s\S]+End without report/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
   assert.match(
     html,
@@ -281,12 +325,25 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
   assert.match(html, /Waiting for a live auction variation/);
-  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
   assert.match(
     html,
-    /unresolved variations do not block End/i,
+    /Unresolved\s+variations never block End/i,
   );
-  assert.match(html, /captured (?:order )?history will remain saved/i);
+  assert.match(html, /freeze a local business report before ending/i);
+  assert.match(html, /make the report provisional/i);
+  assert.match(
+    html,
+    /id="stream-reports-panel"[\s\S]+aria-labelledby="stream-reports-title"[\s\S]+aria-busy="true"[\s\S]+hidden/,
+  );
+  assert.match(html, /id="stream-reports-title">Stream reports</);
+  assert.match(html, /id="stream-reports-count"[\s\S]+0 saved/);
+  assert.match(html, /print or save it as a PDF[\s\S]+updated Inventory table[\s\S]+Google Sheets-ready CSV/i);
+  assert.match(html, /id="stream-reports-list"[\s\S]+role="list"/);
+  assert.match(
+    html,
+    /id="stream-reports-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
+  );
+  assert.match(html, /id="retry-stream-reports"[^>]+type="button"/);
   assert.doesNotMatch(
     html,
     /resolve every pending[\s\S]+inventory reservation[\s\S]+assign an item to every completed sale/i,
@@ -395,12 +452,14 @@ test("side panel keeps setup and active-stream controls in their intended order"
     "savedSessionError",
     "streamSessionPanel",
     "trackerWorkspace",
+    "streamReportsPanel",
     "appFooter",
   ]);
   assertTextOrder(activeBranches[2], [
     "savedSessionError",
     "trackerWorkspace",
     "streamSessionPanel",
+    "streamReportsPanel",
     "appFooter",
   ]);
   assert.equal(activeBranches[1].trim().endsWith("appFooter,"), true);
@@ -419,7 +478,7 @@ test("side panel keeps setup and active-stream controls in their intended order"
   );
   assert.match(
     html,
-    /<\/section>\s*<\/div>\s*<footer class="app-footer"[^>]*>/,
+    /<\/div>\s*<section[\s\S]+id="stream-reports-panel"[\s\S]*?<\/section>\s*<footer class="app-footer"[^>]*>/,
   );
   assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
 });
@@ -901,14 +960,59 @@ test("End Stream confirmation is not gated by unresolved payment or mapping stat
     confirmHandlerSource,
     /streamSessionController\.endActiveStream\(\)/,
   );
-  assert.match(confirmHandlerSource, /saved order history was kept/);
+  assert.match(confirmHandlerSource, /local business report was saved/);
+  assert.match(
+    confirmHandlerSource,
+    /refreshStreamReports\(\{ openLatest: true \}\)/,
+  );
   assert.doesNotMatch(
     confirmHandlerSource,
     /persistentController\.|unmapSelectedVariation|markSelectedUnpaid|chrome\.storage|\.clear\(|\.remove\(/,
   );
-  assert.match(html, /unresolved variations do not block End/i);
-  assert.match(html, /captured (?:order )?history will remain saved/i);
-  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
+  assert.match(html, /Unresolved\s+variations never block End/i);
+  assert.match(html, /make the report provisional/i);
+});
+
+test("tagger lists, opens, refreshes, and safely bypasses local stream reports", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+
+  assert.match(
+    panelSource,
+    /globalThis\.TikTokLiveTrackerStreamReportProtocol/,
+  );
+  assert.match(
+    panelSource,
+    /globalThis\.TikTokLiveTrackerStreamReportClient/,
+  );
+  assert.match(panelSource, /createStreamReportClient\(\{\s*runtime: chrome\.runtime/);
+  assert.match(
+    panelSource,
+    /function openStreamReport\(reportId\)[\s\S]+chrome\.runtime\.getURL\([\s\S]+report\/report\.html\?reportId=/,
+  );
+  assert.match(panelSource, /chrome\.tabs\.create\(\{ url: reportUrl \}\)/);
+  assert.match(
+    panelSource,
+    /function createStreamReportLink\(summary\)[\s\S]+summary\.completedPaymentCount[\s\S]+summary\.totalSalesCount[\s\S]+summary\.completeness[\s\S]+summary\.completedGmvCents/,
+  );
+  assert.match(
+    panelSource,
+    /async function refreshStreamReports\(options = \{\}\)[\s\S]+streamReportClient\.listReports\(\)[\s\S]+response\.reports[\s\S]+options\.openLatest === true[\s\S]+openStreamReport\(latest\.reportId\)/,
+  );
+  assert.match(
+    panelSource,
+    /retryStreamReportsButton\.addEventListener\("click",[\s\S]+refreshStreamReports\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /Promise\.resolve\(\)\.then\(\(\) => refreshStreamReports\(\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /endStreamWithoutReportButton\.addEventListener\("click",[\s\S]+streamSessionController\.endActiveStreamWithoutReport\(\)[\s\S]+ended without a new report/,
+  );
 });
 
 test("an active stream can be ended before its saved workspace is resumed", () => {

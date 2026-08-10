@@ -152,7 +152,7 @@ and priced completion are terminal mutually exclusive results, so later contradi
 observations are ignored. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
 
-The Metrics section keeps four different current-stream values. **GMV/No shipping** is
+The Metrics section keeps six different current-stream values. **GMV/No shipping** is
 the exact integer-cent sum of every priced `Payment complete` order, including completed
 orders that are still unmapped. **Total GMV** mirrors TikTok's latest Attributed GMV text
 without expanding a rounded value such as `$4.64K` into invented cents. Per the product
@@ -163,12 +163,50 @@ expected to match and their difference is not used to alter inventory or a sale.
 outcome is `payment_complete`, `payment_failed`, or `canceled`. The numerator includes
 completed orders that are still unmapped. The denominator excludes the active bidding
 variation and `not_observed`, `payment_processing`, `payment_fixing`, and `unrecognized`
-observations. **Gross Profits** is mapped
+observations. One compact order-status card displays **Canceled Orders:** and
+**Payment Fixing:**. Canceled Orders counts each unique current-stream variation only
+after TikTok reports the exact terminal `Canceled` badge. Active bidding and
+`not_observed`, processing, fixing, temporary `Payment failed`, completed, and
+unrecognized variations are excluded. Payment Fixing counts each unique canonical-
+unresolved variation whose latest observation is `Payment fixing` or temporary
+`Payment failed` during the correction buffer. Processing, active bidding/`not_observed`,
+unrecognized, completed, and canceled variations are excluded. Completion or exact
+cancellation clears the variation from Payment Fixing automatically; neither status
+count depends on inventory mapping.
+**Gross Profits** is mapped
 completed sold-price revenue minus the committed unit-cost snapshots
 from the Google Sheets baseline pinned to those sales. Completed-but-unmapped sales are
 excluded from this subtotal and trigger a count-based incomplete warning until mapped;
 mapping corrections and remaps recalculate both. This basic figure excludes shipping,
 platform fees, taxes, discounts, refunds, and other expenses.
+
+At **End and create report**, the worker snapshots these durable stream totals together
+with every completed-sale row and every inventory row in the pinned baseline. It does not
+perform a last unbounded DOM scan; capture deliveries already ordered ahead of End are
+included, while anything TikTok did not render or the extension did not durably receive
+cannot be reconstructed by the report.
+
+The report keeps mapped and unmapped completions in its sale detail. Exact-SKU analytics
+sum mapped completed units, revenue, pinned cost, and gross profit by SKU. Combined
+product analytics sum those same values by exact `item + style` across sizes. Top sold is
+ranked by units and top profitable by gross profit, with all ties preserved. SKU gross
+margin is gross profit divided by mapped revenue; sell-through is that stream's mapped
+completed units divided by the baseline opening quantity.
+
+The inventory export is baseline-wide. For every SKU it keeps opening quantity,
+current-stream completed allocations, completed allocations across all streams sharing
+the baseline, pending reservations, signed calculated remaining, nonnegative
+available-after-reservations, oversold amount, and a recount flag. The Google Sheets
+replacement count is `max(0, opening - all baseline completed sales)`. Pending remains a
+separate warning and does not permanently reduce that replacement count. A negative raw
+result is retained as an oversold/recount notice while the copy/CSV value is clamped to
+zero.
+
+The report is **Final** only when captured state has no active bidding variation,
+unresolved order, pending reservation, payment-fixing order, unmapped completed sale,
+conflict, or oversold/recount condition. Any such condition makes it **Provisional** and
+adds a notice, but never blocks End. The report is frozen after End; ended streams cannot
+be reopened for later corrections in the tagger.
 
 These captured facts hydrate into reconciliation state version 7. Each stream record has
 an immutable inventory-baseline pin plus nullable `attributedGmvDisplay` and
@@ -271,9 +309,11 @@ Run these fail-closed checks before relying on the importer:
   confirmed inventory and its non-secret fingerprint are persisted locally.
 
 After Start, inventory, reservations, payment reconciliation, and basic profit use the
-local pinned baseline. The extension makes no live Google request and implements no
-Google Sheets result export. A new physical recount is another pre-stream import after
-End; it cannot alter the baseline pinned to an active or historical stream.
+local pinned baseline. The extension makes no live Google request and has no Sheets write
+scope. After End, its local report can copy or download an exact six-column replacement
+table for an employee to paste/import manually. A new physical recount is another
+pre-stream import after End; it cannot alter the baseline pinned to an active or
+historical stream.
 
 For distribution, the OAuth client must use the final Chrome Web Store item ID rather
 than a temporary unpacked ID. The Store listing also needs accurate privacy disclosures
@@ -332,7 +372,16 @@ screen test-user run does not complete those release reviews.
    current-stream variations whose latest observed outcome is `payment_complete`,
    `payment_failed`, or `canceled`. Confirm the active bidding variation plus
    `not_observed`, processing, fixing, and unrecognized observations remain excluded, and
-   mapping corrections do not change either count. Confirm **Gross Profits** equals
+   mapping corrections do not change either count. In the combined order-status card,
+   confirm **Canceled Orders:** increases once for each unique current-stream variation
+   only when its row reaches exact terminal `Canceled`. Verify bidding, `not_observed`,
+   processing, fixing, temporary failed, completed, and unrecognized variations remain
+   excluded. Confirm **Payment Fixing:** includes unique canonical-unresolved variations
+   while their latest observation is fixing or temporary failed, but excludes processing,
+   bidding/`not_observed`, unrecognized, completed, and canceled variations. Verify a
+   priced completion or exact cancellation removes the order from Payment Fixing, and
+   only cancellation adds it to Canceled Orders. Inventory mapping must not change either
+   status count. Confirm **Gross Profits** equals
    mapped completed sold-price revenue minus the pinned Google Sheets unit costs. Leave a
    completed order unmapped and confirm it is excluded while the warning shows one
    incomplete sale; map or remap it and confirm the subtotal and warning recalculate
@@ -353,6 +402,37 @@ screen test-user run does not complete those release reviews.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
     Repeat these checks across later tracker streams and imported baselines.
+14. Select **End Stream Tracking**. Confirm the dialog says **End and create the stream
+    report?**, reports whether the captured snapshot currently qualifies as Final or will
+    be Provisional, and does not block for a pending, fixing, unmapped, conflicting, or
+    oversold condition. Select **Keep stream active** once, then reopen and select **End
+    and create report**. The local stream must end only after its report is saved; TikTok
+    LIVE must not change. If report persistence is deliberately failed, normal End must
+    retain the active stream and expose **End without report** as the explicit fallback.
+15. Confirm the report opens in a new extension tab. Verify its start/end timestamps,
+    Final/Provisional notices, captured performance totals, mapped and unmapped completed
+    rows, exact-SKU table, combined item-and-style top performers across sizes, and ties.
+    Confirm **Items sold this stream** starts collapsed, expands on activation, and keeps
+    the completed-sales count visible in both states.
+    Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
+    PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
+    extension. Verify the PDF includes every completed-order row even when that section
+    was collapsed on screen.
+16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
+    backup. In the report select **Copy Updated Inventory**, return to the original
+    `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
+    macOS. Verify the exact six headers and all rows. The simple lines have the exact form
+    `SKU: <sku> Updated count: <quantity>` and are not the A1 paste table. Alternatively,
+    download the CSV and use **File -> Import -> Upload -> Replace current sheet** only
+    after making the backup. If a row is oversold, the exported count is zero but its raw
+    shortage/recount warning remains; physically recount it. Review every notice before
+    using a Provisional report's counts.
+17. Reopen the side panel and confirm **Stream reports** lists the new report with its
+    completeness badge and completed/total count. Open it, retry a simulated list failure,
+    and restart Chrome/the worker to verify local recovery. The archive retains at most
+    five reports within a 4 MiB archive cap; save required PDF/CSV files before older
+    finalized reports age out, extension
+    storage is cleared, or the extension is removed.
 
 Only the persisted `activeBiddingVariationNumber` from the strict on-video card is called
 the current bidding auction. A changed marker is selected automatically only while the
@@ -410,13 +490,14 @@ Until a later identity stage finds such an ID, follow these rules:
   time to finish or retry. If a tracker delivery error appears, leaving the session active
   through at least the capped retry interval helps preserve the late record, but this is
   operational guidance rather than an End prerequisite.
-- End is always available for a known active local stream. Processing/fixing reservations,
-  completed sales without items, and every other reconciliation state remain visible but
-  do not block the confirmation. The employee can also End without first resuming the
-  inventory workspace.
-- Ending a local tracker stream does not delete captured history and does not end TikTok
-  LIVE. It stops new capture for that local stream. Ended streams cannot yet be reopened
-  in the tagger, so employees should make any corrections they still need before End when
+- Report-aware End is available for a known active local stream. Processing/fixing
+  reservations, completed sales without items, and every other reconciliation exception
+  do not block the confirmation; they make the saved report Provisional. The employee
+  can End without first resuming the inventory workspace.
+- Normal End freezes and saves the local report before it clears the active stream. A
+  report/storage failure leaves the stream active and exposes **End without report** as a
+  deliberate recovery choice. Neither action ends TikTok LIVE. Ended streams cannot yet
+  be reopened in the tagger, so employees should make corrections before End when
   practical even though the UI does not enforce that workflow.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
   new stream rather than displaying stale prior rows, and only then Start a new local
@@ -519,16 +600,17 @@ The next capture stage should validate and implement:
   releases;
 - whether the exact visible `auction-pin-card` token and direct-own-text `#N` relationship
   remain unique and stable across accounts, modes, streams, and TikTok releases;
-- whether Sold Items is virtualized or replaced as it grows and whether every row can be
-  recovered for an end-of-stream pass; and
+- whether Sold Items is virtualized or replaced as it grows and whether every row reaches
+  durable state before the report snapshot; and
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
 Google Sheets OAuth, fixed-range reading, detached preview, explicit confirmation,
 immutable baseline creation, and stream pinning are now implemented before Start. This
 inventory-only boundary does not expand capture authority: the content script still must
 not read Sheet data, buyer identity, inventory mappings, or credentials, and it cannot
-contact Google. Only the worker performs the selected pre-stream read. Outbound Sheets
-export and any live Google dependency remain intentionally absent.
+contact Google. Only the worker performs the selected pre-stream read. The report's local
+clipboard/CSV handoff performs no Google request; automatic outbound Sheets writes and
+any live Google dependency remain intentionally absent.
 
 ## Current limitations
 
@@ -551,6 +633,13 @@ export and any live Google dependency remain intentionally absent.
   The same mapping remains attached when Sold Items payment truth arrives.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
+- A report is limited to facts durably captured before End. It cannot recover a Sold
+  Items row TikTok did not render, and its Final label describes internal captured-state
+  completeness rather than independently verifying TikTok's full stream totals.
+- Reports are stored locally in a five-record archive. Clearing extension storage or
+  uninstalling removes them; save required PDF/CSV copies first. Reports contain local
+  stream timestamps, inventory/SKU/cost/count data, captured sale prices and status
+  aggregates, and profit, but no buyer, Sheet ID/link, token, or raw DOM text.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.
   Its only analytics-derived value is the sanitized Attributed GMV display.
   The separate worker-owned importer contacts the Sheets API only before a stream is
