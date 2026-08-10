@@ -1437,7 +1437,7 @@ test("round-trips a migrated legacy baseline whose historical size is blank", ()
   );
 });
 
-test("strictly migrates detached legacy v1 auctions into canonical v4", () => {
+test("strictly migrates detached legacy v1 auctions into canonical v6", () => {
   const state = createState();
 
   observeVariations(state, {
@@ -1529,7 +1529,7 @@ test("migrates v2 canceled observations while retaining payment failures as unkn
   assert.equal(v2State.streams[0].variations[1].paymentStatus, "unknown");
 });
 
-test("keeps legacy v1, observed v2, canonical v3, and v4 shapes strict", () => {
+test("keeps legacy payment-era and canonical v6 auction shapes strict", () => {
   const state = createState();
 
   observeVariations(state, {

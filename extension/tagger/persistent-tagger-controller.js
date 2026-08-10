@@ -357,6 +357,7 @@
       let projectionSession = null;
       let selectedVariationNumber = currentVariationNumber;
       let followedVariationHighWaterMark = null;
+      let followedBiddingVariationNumber = null;
       let started = false;
       let activePromise = null;
       let queuedRefresh = null;
@@ -397,9 +398,15 @@
           canonicalState,
           streamId,
         );
-        const recordedVariationNumbers = canonicalState.streams
-          .find((stream) => stream.streamId === streamId)
-          ?.variations.map((variation) => variation.variationNumber) ?? [];
+        const canonicalStream = canonicalState.streams.find(
+          (stream) => stream.streamId === streamId,
+        );
+        const recordedVariationNumbers =
+          canonicalStream?.variations.map(
+            (variation) => variation.variationNumber,
+          ) ?? [];
+        const activeBiddingVariationNumber =
+          canonicalStream?.activeBiddingVariationNumber ?? null;
         const candidateSession = mappingWorkflow.createMappingSession({
           inventory: pinnedInventory,
           reconciliation,
@@ -422,7 +429,8 @@
 
         if (
           selectionTarget &&
-          selectionTarget.variationNumber !== currentVariationNumber
+          selectionTarget.variationNumber !==
+            candidateView.selectedVariationNumber
         ) {
           const selection = candidateSession.selectVariation(
             selectionTarget.variationNumber,
@@ -433,7 +441,13 @@
           }
         }
 
+        candidateView = {
+          ...candidateView,
+          activeBiddingVariationNumber,
+        };
+
         return {
+          activeBiddingVariationNumber,
           newestRecordedVariationNumber:
             recordedVariationNumbers.length === 0
               ? null
@@ -451,7 +465,16 @@
         );
         const newestRecordedVariationNumber =
           projection.newestRecordedVariationNumber;
+        const activeBiddingVariationNumber =
+          projection.activeBiddingVariationNumber;
+        const shouldFollowBiddingVariation =
+          activeBiddingVariationNumber !== null &&
+          (
+            options.resetFollowBaseline === true ||
+            activeBiddingVariationNumber !== followedBiddingVariationNumber
+          );
         const shouldFollowNewVariation =
+          activeBiddingVariationNumber === null &&
           (
             options.resetFollowBaseline === true ||
             options.followNewVariation === true
@@ -463,12 +486,18 @@
             newestRecordedVariationNumber > followedVariationHighWaterMark
           );
 
+        const variationToFollow = shouldFollowBiddingVariation
+          ? activeBiddingVariationNumber
+          : shouldFollowNewVariation
+            ? newestRecordedVariationNumber
+            : null;
+
         if (
-          shouldFollowNewVariation &&
-          projection.selectedVariationNumber !== newestRecordedVariationNumber
+          variationToFollow !== null &&
+          projection.selectedVariationNumber !== variationToFollow
         ) {
           const selection = projection.session.selectVariation(
-            newestRecordedVariationNumber,
+            variationToFollow,
           );
 
           if (!selection.ok) {
@@ -480,7 +509,10 @@
 
           projection.selectedVariationNumber =
             selection.view.selectedVariationNumber;
-          projection.view = selection.view;
+          projection.view = {
+            ...selection.view,
+            activeBiddingVariationNumber,
+          };
         }
 
         projectionSession = projection.session;
@@ -497,6 +529,10 @@
                   followedVariationHighWaterMark ?? 0,
                   newestRecordedVariationNumber,
                 );
+        }
+
+        if (shouldFollowBiddingVariation) {
+          followedBiddingVariationNumber = activeBiddingVariationNumber;
         }
       }
 
@@ -693,7 +729,11 @@
         }
 
         selectedVariationNumber = result.view.selectedVariationNumber;
-        view = result.view;
+        view = {
+          ...result.view,
+          activeBiddingVariationNumber:
+            view?.activeBiddingVariationNumber ?? null,
+        };
         publish();
         return createSnapshot();
       }

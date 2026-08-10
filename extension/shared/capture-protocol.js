@@ -15,6 +15,9 @@
     const MESSAGE_VERSION = 1;
     const MAX_OBSERVED_VARIATIONS = 1000;
     const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
+    const MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH = 24;
+    const ATTRIBUTED_GMV_DISPLAY_PATTERN =
+      /^(?:\$(?:0|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}|\$(?:0|[1-9]\d*)(?:\.\d{1,2})?[KMB])$/;
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
       NOT_OBSERVED: "not_observed",
       PAYMENT_PROCESSING: "payment_processing",
@@ -33,11 +36,18 @@
       OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
     ]);
     const EVENT_TYPES = Object.freeze({
+      OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
+      OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
       OBSERVE_VARIATIONS: "observe_variations",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       PAYMENT_COMPLETE: "payment_complete",
     });
     const EVENT_KEYS = Object.freeze({
+      [EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV]: [
+        "attributedGmvDisplay",
+        "type",
+      ],
+      [EVENT_TYPES.OBSERVE_BIDDING_VARIATION]: ["type", "variationNumber"],
       [EVENT_TYPES.OBSERVE_VARIATIONS]: ["type", "variationNumbers"],
       [EVENT_TYPES.OBSERVE_PAYMENT_STATUSES]: ["statuses", "type"],
       [EVENT_TYPES.PAYMENT_COMPLETE]: [
@@ -111,7 +121,22 @@
 
       requireExactKeys(event, expectedKeys, `Capture event ${event.type}`);
 
-      if (event.type === EVENT_TYPES.OBSERVE_VARIATIONS) {
+      if (event.type === EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV) {
+        if (
+          typeof event.attributedGmvDisplay !== "string" ||
+          event.attributedGmvDisplay.length === 0 ||
+          event.attributedGmvDisplay.length >
+            MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH ||
+          !ATTRIBUTED_GMV_DISPLAY_PATTERN.test(event.attributedGmvDisplay)
+        ) {
+          fail(
+            "INVALID_CAPTURE_MESSAGE",
+            "attributedGmvDisplay must be a sanitized exact or compact USD display.",
+          );
+        }
+      } else if (event.type === EVENT_TYPES.OBSERVE_BIDDING_VARIATION) {
+        requireVariationNumber(event.variationNumber, "variationNumber");
+      } else if (event.type === EVENT_TYPES.OBSERVE_VARIATIONS) {
         if (
           !Array.isArray(event.variationNumbers) ||
           event.variationNumbers.length === 0 ||
@@ -265,7 +290,9 @@
 
     return Object.freeze({
       CaptureProtocolError,
+      ATTRIBUTED_GMV_DISPLAY_PATTERN,
       EVENT_TYPES,
+      MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH,
       MAX_OBSERVED_PAYMENT_STATUSES,
       MAX_OBSERVED_VARIATIONS,
       MESSAGE_CHANNEL,

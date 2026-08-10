@@ -8,6 +8,12 @@ const parser = require("../extension/shared/sale-parser.js");
 const candidateLocator = require(
   "../extension/capture/sale-candidate-locator.js",
 );
+const attributedGmvLocator = require(
+  "../extension/capture/attributed-gmv-locator.js",
+);
+const biddingVariationLocator = require(
+  "../extension/capture/bidding-variation-locator.js",
+);
 const captureEventRegistry = require(
   "../extension/capture/capture-event-registry.js",
 );
@@ -40,16 +46,20 @@ class FakeText {
 
 class FakeElement {
   constructor({
+    className = "",
     dataTid = null,
     height = 20,
+    id = null,
     name = "element",
     ownText = "",
     tagName = "DIV",
     width = 100,
   } = {}) {
     this.nodeType = 1;
+    this.className = className;
     this.dataTid = dataTid;
     this.height = height;
+    this.id = id;
     this.name = name;
     this.ownText = ownText;
     this.tagName = tagName;
@@ -58,6 +68,33 @@ class FakeElement {
     this.parentElement = null;
     this.parentNode = null;
     this.onQuery = null;
+  }
+
+  get childNodes() {
+    return this.children;
+  }
+
+  get nextElementSibling() {
+    const siblings = this.parentElement?.children ?? [];
+    const index = siblings.indexOf(this);
+
+    return index >= 0 ? siblings[index + 1] ?? null : null;
+  }
+
+  getAttribute(name) {
+    if (name === "class") {
+      return this.className;
+    }
+
+    if (name === "id") {
+      return this.id;
+    }
+
+    if (name === "aria-hidden") {
+      return null;
+    }
+
+    return null;
   }
 
   append(...nodes) {
@@ -77,6 +114,22 @@ class FakeElement {
   }
 
   matches(selector) {
+    if (selector === biddingVariationLocator.AUCTION_CARD_SELECTOR) {
+      return this.className.split(/\s+/).includes("auction-pin-card");
+    }
+
+    if (selector === biddingVariationLocator.OWN_TEXT_ELEMENT_SELECTOR) {
+      return true;
+    }
+
+    if (selector === attributedGmvLocator.ATTRIBUTED_GMV_ROOT_SELECTOR) {
+      return this.id === "guide-Step-2" || this.id === "guide-step-2";
+    }
+
+    if (selector === attributedGmvLocator.METRIC_ELEMENT_SELECTOR) {
+      return this.tagName === "DIV" || this.tagName === "SPAN";
+    }
+
     if (selector === candidateLocator.PAYMENT_TAG_SELECTOR) {
       return this.dataTid === "m4b_tag";
     }
@@ -186,6 +239,47 @@ function createSaleRow(text) {
     summaryText,
     variationLabel,
   };
+}
+
+function createAttributedGmvMetric(display = "$4.64K", id = "guide-Step-2") {
+  const root = new FakeElement({ id, name: "attributed-gmv-root" });
+  const card = new FakeElement({ name: "attributed-gmv-card" });
+  const label = new FakeElement({ name: "attributed-gmv-label" });
+  const valueRegion = new FakeElement({ name: "attributed-gmv-value-region" });
+  const value = new FakeElement({ name: "attributed-gmv-value" });
+  const detail = new FakeElement({ name: "attributed-gmv-detail" });
+
+  label.append(new FakeText("Attributed GMV"));
+  value.append(new FakeText(display));
+  valueRegion.append(value);
+  detail.append(
+    new FakeElement({ name: "auction-label", ownText: "Auction" }),
+    new FakeElement({ name: "auction-value", ownText: display }),
+  );
+  card.append(label, valueRegion, detail);
+  root.append(card);
+
+  return { card, detail, label, root, value, valueRegion };
+}
+
+function createBiddingAuctionCard(variationNumber = 237) {
+  const root = new FakeElement({
+    className: "auction-pin-card flex rounded-8",
+    name: "bidding-auction-card",
+  });
+  const details = new FakeElement({ name: "bidding-details" });
+  const title = new FakeElement({ name: "bidding-title" });
+  const titleText = new FakeText(
+    `#${variationNumber} ITEMS SHOWN ON SCREEN/ ALL SALES FINAL`,
+  );
+  const bids = new FakeElement({ name: "bidding-count" });
+
+  title.append(titleText);
+  bids.append(new FakeText("6 bids"));
+  details.append(title, bids);
+  root.append(new FakeElement({ name: "auction-image" }), details);
+
+  return { bids, root, title, titleText };
 }
 
 function setSaleSummary(sale, text) {
@@ -461,6 +555,8 @@ function createHarness({
 
   const context = {
     TikTokLiveTrackerSaleParser: parser,
+    TikTokLiveTrackerAttributedGmvLocator: attributedGmvLocator,
+    TikTokLiveTrackerBiddingVariationLocator: biddingVariationLocator,
     TikTokLiveTrackerSaleCandidateLocator: locatorAvailable
       ? candidateLocator
       : undefined,
@@ -1787,6 +1883,438 @@ test("replaces the Sold Items root, rescans it, and ignores stale callbacks", as
   ]);
   await flushAsync();
   assert.equal(harness.captureMessages.length, 2);
+});
+
+test("captures sanitized Attributed GMV independently when Sold Items is unavailable", async () => {
+  const body = createBody("analytics-only-body");
+  const metric = createAttributedGmvMetric("$4.64K");
+  body.append(metric.root);
+  const harness = createHarness({ body, rootCount: 0 });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      {
+        type: "observe_attributed_gmv",
+        attributedGmvDisplay: "$4.64K",
+      },
+    ],
+  );
+  const analyticsObserver = harness.observerInstances.find(
+    (observer) => observer.target === metric.root,
+  );
+
+  assert.ok(analyticsObserver);
+  assert.deepEqual({ ...analyticsObserver.observeCalls[0].options }, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages[0].event),
+    /buyer|title|element|selector|observedAt|streamId/i,
+  );
+});
+
+test("deduplicates Attributed GMV and streams live semantic-value changes", async () => {
+  const body = createBody("analytics-update-body");
+  const metric = createAttributedGmvMetric("$4.64K");
+  body.append(metric.root);
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+  });
+
+  await flushAsync();
+  const analyticsObserver = harness.observerInstances.find(
+    (observer) => observer.target === metric.root,
+  );
+  const valueText = metric.value.children[0];
+
+  analyticsObserver.trigger([
+    { type: "characterData", target: valueText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
+
+  valueText.textContent = "$4.65K";
+  analyticsObserver.trigger([
+    { type: "characterData", target: valueText },
+  ]);
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.attributedGmvDisplay),
+    ["$4.64K", "$4.65K"],
+  );
+});
+
+test("preserves latest Attributed GMV across root replacement and ignores stale callbacks", async () => {
+  const body = createBody("analytics-replacement-body");
+  const firstMetric = createAttributedGmvMetric("$4.64K");
+  body.append(firstMetric.root);
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+  });
+
+  await flushAsync();
+  const firstObserver = harness.observerInstances.find(
+    (observer) => observer.target === firstMetric.root,
+  );
+  const replacementMetric = createAttributedGmvMetric("$4.65K");
+
+  body.children = body.children.filter((child) => child !== firstMetric.root);
+  firstMetric.root.parentElement = null;
+  firstMetric.root.parentNode = null;
+  body.append(replacementMetric.root);
+  harness.tickIntervals();
+  await flushAsync();
+
+  assert.equal(firstObserver.disconnectCount, 1);
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.attributedGmvDisplay),
+    ["$4.64K", "$4.65K"],
+  );
+
+  firstObserver.trigger([
+    { type: "characterData", target: firstMetric.value.children[0] },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+});
+
+test("Attributed GMV retry keeps only the newest observation and tears down off-route", async () => {
+  const body = createBody("analytics-retry-body");
+  const metric = createAttributedGmvMetric("$4.64K");
+  body.append(metric.root);
+  let rejected = false;
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_attributed_gmv" &&
+        !rejected
+      ) {
+        rejected = true;
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "Start a tracker stream.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  const analyticsObserver = harness.observerInstances.find(
+    (observer) => observer.target === metric.root,
+  );
+  const valueText = metric.value.children[0];
+
+  valueText.textContent = "$4.65K";
+  analyticsObserver.trigger([
+    { type: "characterData", target: valueText },
+  ]);
+  valueText.textContent = "$4.66K";
+  analyticsObserver.trigger([
+    { type: "characterData", target: valueText },
+  ]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.attributedGmvDisplay),
+    ["$4.64K", "$4.66K"],
+  );
+
+  harness.setPathname("/another-route");
+  harness.tickIntervals();
+  assert.equal(analyticsObserver.disconnectCount, 1);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("captures the current bidding variation independently of Sold Items", async () => {
+  const body = createBody("bidding-only-body");
+  const auction = createBiddingAuctionCard(252);
+  body.append(auction.root);
+  const harness = createHarness({ body, rootCount: 0 });
+
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [{ type: "observe_bidding_variation", variationNumber: 252 }],
+  );
+  const auctionObserver = harness.observerInstances.find(
+    (observer) => observer.target === auction.root,
+  );
+
+  assert.ok(auctionObserver);
+  assert.deepEqual({ ...auctionObserver.observeCalls[0].options }, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages[0].event),
+    /title|product|buyer|bidAmount|bidCount|element|selector|streamId|observedAt/i,
+  );
+});
+
+test("deduplicates bidding observations and updates as the visible card changes", async () => {
+  const body = createBody("bidding-update-body");
+  const auction = createBiddingAuctionCard(251);
+  body.append(auction.root);
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+  });
+
+  await flushAsync();
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 1);
+
+  auction.titleText.textContent =
+    "#252 ITEMS SHOWN ON SCREEN/ ALL SALES FINAL";
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumber),
+    [251, 252],
+  );
+});
+
+test("rebinds bidding capture across card and body replacement and ignores stale callbacks", async () => {
+  const firstBody = createBody("first-bidding-body");
+  const firstAuction = createBiddingAuctionCard(250);
+  firstBody.append(firstAuction.root);
+  const harness = createHarness({
+    body: firstBody,
+    rootCount: 0,
+    scanOnRequest: true,
+  });
+
+  await flushAsync();
+  const firstObserver = harness.observerInstances.find(
+    (candidate) => candidate.target === firstAuction.root,
+  );
+  const secondAuction = createBiddingAuctionCard(251);
+
+  firstBody.children = firstBody.children.filter(
+    (child) => child !== firstAuction.root,
+  );
+  firstAuction.root.parentElement = null;
+  firstAuction.root.parentNode = null;
+  firstBody.append(secondAuction.root);
+  harness.tickIntervals();
+  await flushAsync();
+
+  assert.equal(firstObserver.disconnectCount, 1);
+  firstObserver.trigger([
+    { type: "characterData", target: firstAuction.titleText },
+  ]);
+  await flushAsync();
+
+  const secondBody = createBody("second-bidding-body");
+  const thirdAuction = createBiddingAuctionCard(252);
+  secondBody.append(thirdAuction.root);
+  harness.setBody(secondBody);
+  harness.tickIntervals();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumber),
+    [250, 251, 252],
+  );
+
+  harness.setPathname("/another-route");
+  harness.tickIntervals();
+  const latestObserver = harness.observerInstances.find(
+    (candidate) => candidate.target === thirdAuction.root,
+  );
+  assert.equal(latestObserver.disconnectCount, 1);
+});
+
+test("bidding delivery retries only the newest observed variation", async () => {
+  const body = createBody("bidding-retry-body");
+  const auction = createBiddingAuctionCard(251);
+  body.append(auction.root);
+  let rejected = false;
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_bidding_variation" &&
+        !rejected
+      ) {
+        rejected = true;
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "Start a tracker stream.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  auction.titleText.textContent = "#252 next auction";
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  auction.titleText.textContent = "#253 newest auction";
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync();
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumber),
+    [251, 253],
+  );
+});
+
+test("bidding delivery preserves the latest card when it returns to a previously delivered variation", async () => {
+  const body = createBody("bidding-reversion-body");
+  const auction = createBiddingAuctionCard(251);
+  body.append(auction.root);
+  let releaseIntermediate;
+  const intermediateGate = new Promise((resolve) => {
+    releaseIntermediate = resolve;
+  });
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_bidding_variation" &&
+        message.event.variationNumber === 252
+      ) {
+        await intermediateGate;
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  auction.titleText.textContent = "#252 intermediate auction";
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  await flushAsync();
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumber),
+    [251, 252],
+  );
+
+  auction.titleText.textContent = "#251 restored auction";
+  observer.trigger([{ type: "characterData", target: auction.titleText }]);
+  releaseIntermediate();
+  await flushAsync(12);
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.variationNumber),
+    [251, 252, 251],
+  );
+});
+
+test("preserves parsed historical completions when the Sold Items root changes during delivery", async () => {
+  const historicalSales = Array.from({ length: 40 }, (_, index) =>
+    createSaleRow(
+      `Historical Buyer has won: $${index + 1}.00 Variation: #${index + 1} Payment complete`,
+    ),
+  );
+  let releaseFirstPayment;
+  const firstPaymentGate = new Promise((resolve) => {
+    releaseFirstPayment = resolve;
+  });
+  let firstPaymentIsBlocked = true;
+  const harness = createHarness({
+    rows: historicalSales,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "payment_complete" &&
+        firstPaymentIsBlocked
+      ) {
+        firstPaymentIsBlocked = false;
+        await firstPaymentGate;
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+
+  assert.deepEqual(harness.captureMessages[0].event, {
+    type: "observe_variations",
+    variationNumbers: Array.from({ length: 40 }, (_, index) => index + 1),
+  });
+  assert.deepEqual(harness.captureMessages[1].event, {
+    type: "payment_complete",
+    variationNumber: 1,
+    soldPriceCents: 100,
+  });
+
+  const firstRoot = harness.currentRoot();
+  const replacementRoot = new FakeElement({
+    dataTid: "m4b_space",
+    name: "replacement-sold-items-without-history",
+  });
+  harness.currentBody().children = harness.currentBody().children.filter(
+    (child) => child !== firstRoot,
+  );
+  firstRoot.parentElement = null;
+  firstRoot.parentNode = null;
+  harness.currentBody().append(replacementRoot);
+
+  harness.tickIntervals();
+  releaseFirstPayment();
+  await flushAsync(12);
+
+  assert.deepEqual(
+    harness.captureMessages
+      .filter(({ event }) => event.type === "payment_complete")
+      .map(({ event }) => ({
+        variationNumber: event.variationNumber,
+        soldPriceCents: event.soldPriceCents,
+      })),
+    Array.from({ length: 40 }, (_, index) => ({
+      variationNumber: index + 1,
+      soldPriceCents: (index + 1) * 100,
+    })),
+  );
 });
 
 test("keeps completed-sale deduplication for the lifetime of the SPA document", () => {

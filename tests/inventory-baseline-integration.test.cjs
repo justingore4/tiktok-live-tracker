@@ -202,8 +202,8 @@ test("creates one immutable opening baseline for a fresh state", () => {
   const source = clone(LEGACY_OPENING_INVENTORY);
   const state = reconciliation.createReconciliationState(source);
 
-  assert.equal(reconciliation.STATE_VERSION, 4);
-  assert.equal(state.version, 4);
+  assert.equal(reconciliation.STATE_VERSION, 6);
+  assert.equal(state.version, 6);
   assert.equal(state.inventoryBaselines.length, 1);
   assert.equal(typeof state.activeInventoryBaselineId, "string");
   assert.notEqual(state.activeInventoryBaselineId, "");
@@ -548,7 +548,7 @@ test("strictly migrates a version-3 snapshot into one pinned baseline", () => {
   const migrated = reconciliation.hydrateReconciliationState(legacy);
   const baseline = getActiveBaseline(migrated);
 
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 6);
   assert.equal(migrated.inventoryBaselines.length, 1);
   assert.deepEqual(baseline.inventory, NORMALIZED_OPENING_INVENTORY);
   assert.equal(baseline.sourceFingerprint, null);

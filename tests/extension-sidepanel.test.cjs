@@ -257,7 +257,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     /id="inventory-import-confirmation"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
   );
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
-  assert.match(html, /Waiting for a variation to appear in Sold Items/);
+  assert.match(html, /Waiting for a live auction variation/);
   assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
   assert.match(
     html,
@@ -466,8 +466,17 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.doesNotMatch(panelSource, /function getEndBlockingVariations\(\)/);
   assert.match(panelSource, /getRecordedVariations\(view\)/);
   assert.match(panelSource, /variation\.recorded/);
-  assert.match(panelSource, /Waiting for Sold Items variations/);
-  assert.match(panelSource, /Wait for a Sold Items variation before tagging/);
+  assert.match(panelSource, /Waiting for live auction variations/);
+  assert.match(panelSource, /variationContext\.textContent = "Live auction variations"/);
+  assert.match(
+    panelSource,
+    /const status = option\.bidding[\s\S]+\? "bidding"[\s\S]+return `#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}`/,
+  );
+  assert.match(
+    panelSource,
+    /Variation #\$\{activeBiddingVariation\.variationNumber\} is now bidding\. It is selected and ready to tag\./,
+  );
+  assert.match(panelSource, /Wait for a live auction variation before tagging/);
   assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
   assert.match(
     panelSource,
@@ -785,8 +794,8 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   );
   assert.match(panelSource, /getFocusedInventorySku\(\)/);
   assert.match(panelSource, /captureRefreshFocusSku[\s\S]+focusOptions\.focusSku/);
-  assert.match(panelSource, /Checking live Sold Items/);
-  assert.match(panelSource, /Live Sold Items updated/);
+  assert.match(panelSource, /Checking live auction data/);
+  assert.match(panelSource, /Live auction data updated/);
   assert.match(panelSource, /Retry live update/);
   assert.match(panelSource, /Captured variation #/);
   assert.match(
@@ -801,7 +810,7 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /payment_completed_after_marked_unpaid/);
   assert.match(
     panelSource,
-    /#\$\{option\.variationNumber\} - \$\{option\.observedPaymentStatusLabel\} - \$\{item\}/,
+    /#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}/,
   );
   assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
@@ -834,6 +843,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
     "shared/sale-parser.js",
     "shared/capture-protocol.js",
     "capture/capture-client.js",
+    "capture/attributed-gmv-locator.js",
+    "capture/bidding-variation-locator.js",
     "capture/sale-candidate-locator.js",
     "capture/capture-event-registry.js",
     "capture/capture-scheduler.js",

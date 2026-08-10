@@ -210,6 +210,12 @@
   const emptyState = document.querySelector("#empty-state");
   const emptyQuery = document.querySelector("#empty-query");
   const cardTemplate = document.querySelector("#inventory-card-template");
+  const gmvNoShippingValue = document.querySelector("#revenue-value");
+  const totalGmvValue = document.querySelector("#total-gmv-value");
+  const grossProfitValue = document.querySelector("#gross-profit-value");
+  const grossProfitWarning = document.querySelector(
+    "#gross-profit-warning",
+  );
   const pendingMapping = document.querySelector("#pending-mapping");
   const mappedVariation = document.querySelector(
     '[data-field="mapped-variation"]',
@@ -383,6 +389,7 @@
       getRecordedVariations(view).map((variation) => [
         variation.variationNumber,
         JSON.stringify([
+          variation.bidding === true,
           variation.status,
           variation.observedPaymentStatus,
           variation.soldPriceCents,
@@ -462,6 +469,29 @@
           )
           .map(([number]) => number)
       : [];
+    const activeBiddingVariation = findVariationOption(
+      view,
+      view.activeBiddingVariationNumber,
+    );
+    const previousActiveSignature = activeBiddingVariation
+      ? previous.get(activeBiddingVariation.variationNumber)
+      : null;
+    let wasPreviouslyBidding = false;
+
+    if (typeof previousActiveSignature === "string") {
+      try {
+        wasPreviouslyBidding =
+          JSON.parse(previousActiveSignature)?.[0] === true;
+      } catch (_error) {
+        // A stale UI-only signature must not interrupt live capture updates.
+      }
+    }
+
+    if (activeBiddingVariation && !wasPreviouslyBidding) {
+      return activeBiddingVariation.selected
+        ? `Variation #${activeBiddingVariation.variationNumber} is now bidding. It is selected and ready to tag.`
+        : `Variation #${activeBiddingVariation.variationNumber} is now bidding. Variation #${view.selectedVariationNumber} remains selected.`;
+    }
 
     if (added.length === 1 && updated.length === 0) {
       const addedVariation = findVariationOption(view, added[0]);
@@ -486,7 +516,7 @@
     }
 
     if (added.length > 0 || updated.length > 0) {
-      return `Live Sold Items updated ${added.length + updated.length} variations.`;
+      return `Live auction data updated ${added.length + updated.length} variations.`;
     }
 
     return "";
@@ -556,7 +586,7 @@
         })
         .catch((error) => {
           console.error(
-            "[TikTok Live Tracker] Unexpected live Sold Items refresh failure.",
+            "[TikTok Live Tracker] Unexpected live auction refresh failure.",
             error,
           );
         });
@@ -789,7 +819,7 @@
     if (!canTagSelectedVariation) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a Sold Items variation before tagging.`,
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
       );
     } else if (selected && auction?.status === "canceled") {
       button.setAttribute(
@@ -878,8 +908,11 @@
     const item = option.item
       ? `${formatItemName(option)}, size ${option.size}`
       : "No item selected";
+    const status = option.bidding
+      ? "bidding"
+      : option.observedPaymentStatusLabel;
 
-    return `#${option.variationNumber} - ${option.observedPaymentStatusLabel} - ${item}`;
+    return `#${option.variationNumber} - ${status} - ${item}`;
   }
 
   function renderVariationNavigation(view) {
@@ -892,7 +925,7 @@
       const option = document.createElement("option");
 
       option.value = "";
-      option.textContent = "Waiting for Sold Items variations";
+      option.textContent = "Waiting for live auction variations";
       option.disabled = true;
       option.selected = true;
       fragment.append(option);
@@ -913,13 +946,13 @@
     if (activeMode === "saved_session") {
       if (variations.length > 0) {
         variationSelector.value = String(view.selectedVariationNumber);
-        variationContext.textContent = "Live Sold Items variations";
+        variationContext.textContent = "Live auction variations";
         inventoryTitle.textContent =
           `Review or tag variation #${view.selectedVariationNumber}`;
       } else {
         variationContext.textContent =
-          "Waiting for a variation to appear in Sold Items";
-        inventoryTitle.textContent = "Waiting for a Sold Items variation";
+          "Waiting for a live auction variation";
+        inventoryTitle.textContent = "Waiting for a live auction variation";
       }
 
       returnToCurrentButton.hidden = true;
@@ -968,6 +1001,47 @@
 
     if (focusSku) {
       restoreCardFocus(focusSku);
+    }
+  }
+
+  function renderMetrics(view) {
+    const formattedGmvNoShipping = viewModel.formatUsdCents(
+      view.totals.completedGmvCents,
+    );
+    const formattedGrossProfit = viewModel.formatUsdCents(
+      view.totals.profitCents,
+    );
+    const attributedGmvDisplay = view.totals.attributedGmvDisplay;
+    const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
+    const formattedTotalGmv =
+      typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
+        ? attributedGmvDisplay.trim()
+        : "—";
+
+    if (gmvNoShippingValue.textContent !== formattedGmvNoShipping) {
+      gmvNoShippingValue.textContent = formattedGmvNoShipping;
+    }
+
+    if (totalGmvValue.textContent !== formattedTotalGmv) {
+      totalGmvValue.textContent = formattedTotalGmv;
+    }
+
+    if (grossProfitValue.textContent !== formattedGrossProfit) {
+      grossProfitValue.textContent = formattedGrossProfit;
+    }
+
+    if (unmatchedCompletedCount > 0) {
+      const warning = unmatchedCompletedCount === 1
+        ? "Incomplete — 1 completed sale still needs an inventory item."
+        : `Incomplete — ${unmatchedCompletedCount} completed sales still need inventory items.`;
+
+      if (grossProfitWarning.textContent !== warning) {
+        grossProfitWarning.textContent = warning;
+      }
+      grossProfitWarning.hidden = false;
+    } else {
+      grossProfitWarning.hidden = true;
+      grossProfitWarning.textContent = "";
     }
   }
 
@@ -1226,6 +1300,7 @@
     renderVariationNavigation(view);
     renderAuction(view);
     renderInventory(view, options.focusSku ?? null);
+    renderMetrics(view);
 
     if (options.focusStatus && !pendingMapping.hidden) {
       auctionStatus.focus();
@@ -1318,7 +1393,7 @@
       }
 
       return snapshot.operation === "refresh"
-        ? "Checking live Sold Items..."
+        ? "Checking live auction data..."
         : "Restoring live session data...";
     }
 
@@ -1327,7 +1402,7 @@
     }
 
     if (snapshot.operation === "refresh") {
-      return "Live Sold Items updated";
+      return "Live auction data updated";
     }
 
     return snapshot.operation === "load" || snapshot.operation === "initialize"
@@ -1798,7 +1873,7 @@
       setWorkspaceBusy(false);
       trackerWorkspace.toggleAttribute("inert", true);
       savedSessionErrorTitle.textContent = refreshFailure
-        ? "Live Sold Items refresh failed"
+        ? "Live auction refresh failed"
         : loadFailure
           ? "Live session data unavailable"
           : "Change was not saved";
@@ -1807,7 +1882,7 @@
           ? `${snapshot.error.message} The last saved view is still shown; retry before making more changes.`
           : `${snapshot.error.message} Your last saved data was not changed.`
         : refreshFailure
-          ? "The newest Sold Items data could not be loaded. Retry before making more changes."
+          ? "The newest live auction data could not be loaded. Retry before making more changes."
           : "Your last saved data was not changed. Try again.";
       retrySavedSessionButton.textContent = refreshFailure
         ? "Retry live update"
@@ -1884,12 +1959,12 @@
         if (hasSelectedRecordedVariation(view)) {
           variationSelector.focus();
           mappingAnnouncement.textContent = refreshCompleted
-            ? liveRefreshAnnouncement || "Live Sold Items are up to date."
-            : "Live session data restored. You can continue with the selected Sold Items variation.";
+            ? liveRefreshAnnouncement || "Live auction data is up to date."
+            : "Live session data restored. You can continue with the selected auction variation.";
         } else {
           streamSessionStatus.focus();
           mappingAnnouncement.textContent =
-            "Live tracking is ready. Waiting for a variation to appear in Sold Items.";
+            "Live tracking is ready. Waiting for a live auction variation.";
         }
       } else if (liveRefreshAnnouncement) {
         mappingAnnouncement.textContent = liveRefreshAnnouncement;
@@ -1987,11 +2062,11 @@
       if (hasSelectedRecordedVariation(savedSnapshot.view)) {
         variationSelector.focus();
         mappingAnnouncement.textContent =
-          `Returned to live Sold Items tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
+          `Returned to live auction tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
       } else {
         streamSessionStatus.focus();
         mappingAnnouncement.textContent =
-          "Returned to live Sold Items tracking. Waiting for a captured variation.";
+          "Returned to live auction tracking. Waiting for a captured variation.";
       }
     } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
       resumeStreamButton.focus();
@@ -2004,7 +2079,7 @@
     if (activeMode === "saved_session") {
       if (!persistentController || variationSelector.value === "") {
         mappingAnnouncement.textContent =
-          "Waiting for a variation to appear in Sold Items.";
+          "Waiting for a live auction variation.";
         return;
       }
 
@@ -2018,7 +2093,7 @@
         const view = snapshot.view;
 
         mappingAnnouncement.textContent =
-          `Reviewing Sold Items ${describeSelectedVariation(view)}. A newly captured variation will open automatically.`;
+          `Reviewing auction ${describeSelectedVariation(view)}. A newly captured variation will open automatically.`;
       } catch (error) {
         mappingAnnouncement.textContent =
           error?.message ?? "That variation could not be selected.";
@@ -2082,7 +2157,7 @@
 
       if (!hasSelectedRecordedVariation(view)) {
         mappingAnnouncement.textContent =
-          "Wait for a captured Sold Items variation before selecting inventory.";
+          "Wait for a captured live auction variation before selecting inventory.";
         return;
       }
 

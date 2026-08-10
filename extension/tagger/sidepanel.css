@@ -1323,8 +1323,77 @@ button {
   outline-offset: 2px;
 }
 
-.inventory-section {
+.inventory-section,
+.metrics-section {
   padding-top: 25px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.metric-card {
+  display: flex;
+  min-width: 0;
+  min-height: 120px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 2.5%), transparent 58%),
+    var(--surface-raised);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 13%);
+}
+
+.metric-card dt {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 690;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.metric-card dt::after {
+  content: ":";
+}
+
+.metric-card dd {
+  min-width: 0;
+  margin: 20px 0 0;
+  color: #9df0df;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.metric-profit-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-warning {
+  min-width: 0;
+  margin: 10px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid rgb(255 203 92 / 22%);
+  color: #f0c96d;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.metric-warning[hidden] {
+  display: none;
 }
 
 .section-heading {

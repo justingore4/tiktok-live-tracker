@@ -44,6 +44,8 @@
         !protocol ||
         typeof protocol !== "object" ||
         typeof protocol.createCaptureMessage !== "function" ||
+        typeof protocol.EVENT_TYPES?.OBSERVE_ATTRIBUTED_GMV !== "string" ||
+        typeof protocol.EVENT_TYPES?.OBSERVE_BIDDING_VARIATION !== "string" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_VARIATIONS !== "string" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_PAYMENT_STATUSES !== "string" ||
         typeof protocol.EVENT_TYPES?.PAYMENT_COMPLETE !== "string"
@@ -132,6 +134,20 @@
         });
       }
 
+      function observeAttributedGmv(attributedGmvDisplay) {
+        return enqueue({
+          type: trustedProtocol.EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+          attributedGmvDisplay,
+        });
+      }
+
+      function observeBiddingVariation(variationNumber) {
+        return enqueue({
+          type: trustedProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+          variationNumber,
+        });
+      }
+
       function observePaymentStatuses(statuses) {
         return enqueue({
           type: trustedProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
@@ -150,6 +166,8 @@
       }
 
       return Object.freeze({
+        observeAttributedGmv,
+        observeBiddingVariation,
         observePaymentStatuses,
         observeVariations,
         recordPaymentComplete,

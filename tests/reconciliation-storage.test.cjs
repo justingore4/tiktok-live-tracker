@@ -330,7 +330,7 @@ test("lazily migrates strict legacy v1 state inside the v1 storage envelope", as
   );
 });
 
-test("lazily migrates v2 observed cancellation to canonical v4", async () => {
+test("lazily migrates v2 observed cancellation to the current state", async () => {
   const v2State = createV2State();
   const memoryStorage = createMemoryStorage({
     [STORAGE_KEY]: createEnvelope(v2State),
@@ -359,6 +359,39 @@ test("lazily migrates v2 observed cancellation to canonical v4", async () => {
     memoryStorage.getValues()[STORAGE_KEY].reconciliationState.streams[0]
       .variations[0].paymentStatus,
     "unknown",
+  );
+});
+
+test("lazily migrates a v4 baseline stream with no Attributed GMV", async () => {
+  const v4State = clone(createState());
+
+  v4State.version = 4;
+  v4State.streams.forEach((stream) => {
+    delete stream.activeBiddingVariationNumber;
+    delete stream.attributedGmvDisplay;
+  });
+  const memoryStorage = createMemoryStorage({
+    [STORAGE_KEY]: createEnvelope(v4State),
+  });
+  const store = createStore(memoryStorage);
+
+  const migrated = await store.loadState();
+
+  assert.equal(migrated.version, reconciliation.STATE_VERSION);
+  assert.equal(migrated.streams[0].attributedGmvDisplay, null);
+  assert.equal(memoryStorage.calls.set.length, 0);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.version,
+    4,
+  );
+
+  await store.saveState(migrated);
+
+  assert.equal(memoryStorage.calls.set.length, 1);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.streams[0]
+      .attributedGmvDisplay,
+    null,
   );
 });
 

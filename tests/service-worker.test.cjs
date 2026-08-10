@@ -296,6 +296,8 @@ function createWorkerHarness(options = {}) {
       CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
       PIN_STREAM_TO_INVENTORY_BASELINE:
         "pin_stream_to_inventory_baseline",
+      OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
+      OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
       MAP_VARIATION: "map_variation",
@@ -1617,6 +1619,49 @@ test("accepts sanitized payment-status changes through the capture boundary", as
   ]);
 });
 
+test("accepts sanitized Attributed GMV through the capture boundary", async () => {
+  const harness = createWorkerHarness();
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+    attributedGmvDisplay: "$4.64K",
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+});
+
+test("accepts a sanitized bidding variation through the capture boundary", async () => {
+  const harness = createWorkerHarness();
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+});
+
 test("keeps accepted capture responses independent of notification delivery", async () => {
   for (const options of [
     { runtimeSendMessageError: new Error("no receiver") },
@@ -2006,6 +2051,23 @@ test("keeps capture-owned reconciliation commands disconnected from the side pan
             observedPaymentStatus: "payment_processing",
           },
         ],
+      }),
+    ),
+    harness.send(
+      harness.createMessage({
+        type:
+          harness.coordinatorModule.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV,
+        streamId: "stream-1",
+        attributedGmvDisplay: "$4.64K",
+      }),
+    ),
+    harness.send(
+      harness.createMessage({
+        type:
+          harness.coordinatorModule.COMMAND_TYPES
+            .OBSERVE_BIDDING_VARIATION,
+        streamId: "stream-1",
+        variationNumber: 2,
       }),
     ),
   ];

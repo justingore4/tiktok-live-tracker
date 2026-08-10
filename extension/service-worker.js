@@ -253,6 +253,8 @@ function validateSender(sender, command, boundary) {
     [
       reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
       reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV,
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_BIDDING_VARIATION,
       reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
     ].includes(command.type)
   ) {

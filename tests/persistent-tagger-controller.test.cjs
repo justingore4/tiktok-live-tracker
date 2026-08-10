@@ -1144,6 +1144,92 @@ test("a reopened controller restores a durable unmap", async () => {
   );
 });
 
+test("initial load prefers the active bidding variation over Sold Items history", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const loaded = await controller.start();
+
+  assert.equal(loaded.view.activeBiddingVariationNumber, 252);
+  assert.equal(loaded.view.selectedVariationNumber, 252);
+  assert.equal(loaded.view.auction.variationNumber, 252);
+});
+
+test("a changed bidding marker takes focus even while the employee reviews history", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  await controller.start();
+  assert.equal(controller.selectVariation(201).view.selectedVariationNumber, 201);
+
+  const nextState = memory.getState();
+  reconciliation.observeBiddingVariation(nextState, {
+    streamId: STREAM_ID,
+    variationNumber: 253,
+  });
+  memory.setState(nextState);
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.view.activeBiddingVariationNumber, 253);
+  assert.equal(refreshed.view.selectedVariationNumber, 253);
+  assert.equal(refreshed.view.auction.variationNumber, 253);
+});
+
+test("same bidding marker refreshes retain an employee's historical selection", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(203);
+
+  const updatedState = memory.getState();
+  reconciliation.mapVariation(updatedState, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+  });
+  memory.setState(updatedState);
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.view.activeBiddingVariationNumber, 252);
+  assert.equal(refreshed.view.selectedVariationNumber, 203);
+  assert.equal(
+    refreshed.view.variations.find(
+      (variation) => variation.variationNumber === 252,
+    ).item,
+    "Stussy tee",
+  );
+});
+
 test("coalesces duplicate starts and rejects mutations while busy", async () => {
   const memory = createMemoryClient(createState());
   const deferred = createDeferred();

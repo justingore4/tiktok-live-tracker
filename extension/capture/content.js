@@ -25,6 +25,10 @@
   }
 
   const parser = globalThis.TikTokLiveTrackerSaleParser;
+  const attributedGmvLocator =
+    globalThis.TikTokLiveTrackerAttributedGmvLocator;
+  const biddingVariationLocator =
+    globalThis.TikTokLiveTrackerBiddingVariationLocator;
   const candidateLocator = globalThis.TikTokLiveTrackerSaleCandidateLocator;
   const eventRegistryModule =
     globalThis.TikTokLiveTrackerCaptureEventRegistry;
@@ -34,6 +38,16 @@
 
   if (!parser) {
     console.error(`${LOG_PREFIX} Sale parser failed to load.`);
+    return;
+  }
+
+  if (!attributedGmvLocator?.locateUniqueVisibleAttributedGmv) {
+    console.error(`${LOG_PREFIX} Attributed GMV locator failed to load.`);
+    return;
+  }
+
+  if (!biddingVariationLocator?.locateUniqueVisibleBiddingVariation) {
+    console.error(`${LOG_PREFIX} Bidding variation locator failed to load.`);
     return;
   }
 
@@ -88,6 +102,11 @@
   const singletonToken = Object.freeze({});
 
   let captureSession = null;
+  let captureDelivery = null;
+  let attributedGmvSession = null;
+  let attributedGmvDelivery = null;
+  let biddingVariationSession = null;
+  let biddingVariationDelivery = null;
   let lifecycleObserver = null;
   let observedDocumentElement = null;
   let lastRootDiscoveryStatus = null;
@@ -150,6 +169,116 @@
     }
   }
 
+  function isCurrentDelivery(delivery) {
+    try {
+      return (
+        Boolean(delivery) &&
+        captureDelivery === delivery &&
+        isCaptureRoute() &&
+        document.body === delivery.body
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function createDeliveryState(body) {
+    return {
+      body,
+      deliveredPayments: new Set(),
+      deliveredPaymentStatuses: new Map(),
+      deliveredVariations: new Set(),
+      deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
+      deliveryRetryTimerId: null,
+      deliveryRunning: false,
+      latestObservedPaymentStatuses: new Map(),
+      queuedPayments: new Map(),
+      queuedPaymentStatuses: new Map(),
+      queuedVariations: new Set(),
+      reportedDeliveryErrorCodes: new Set(),
+      stickyCompletedVariations: new Set(),
+    };
+  }
+
+  function isCurrentAttributedGmvSession(session) {
+    try {
+      return (
+        Boolean(session) &&
+        attributedGmvSession === session &&
+        isCaptureRoute() &&
+        document.body === session.body &&
+        session.body.contains(session.root)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isCurrentAttributedGmvDelivery(delivery) {
+    try {
+      return (
+        Boolean(delivery) &&
+        attributedGmvDelivery === delivery &&
+        isCaptureRoute() &&
+        document.body === delivery.body
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function createAttributedGmvDeliveryState(body) {
+    return {
+      body,
+      deliveredDisplay: null,
+      deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
+      deliveryRetryTimerId: null,
+      deliveryRunning: false,
+      queuedDisplay: null,
+      reportedDeliveryErrorCodes: new Set(),
+    };
+  }
+
+  function isCurrentBiddingVariationSession(session) {
+    try {
+      return (
+        Boolean(session) &&
+        biddingVariationSession === session &&
+        isCaptureRoute() &&
+        document.body === session.body &&
+        session.body.contains(session.root)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isCurrentBiddingVariationDelivery(delivery) {
+    try {
+      return (
+        Boolean(delivery) &&
+        biddingVariationDelivery === delivery &&
+        isCaptureRoute() &&
+        document.body === delivery.body
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function createBiddingVariationDeliveryState(body) {
+    return {
+      body,
+      deliveredVariationNumber: null,
+      deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
+      deliveryRetryTimerId: null,
+      deliveryRunning: false,
+      latestObservedVariationNumber: null,
+      queuedVariationNumber: null,
+      reportedDeliveryErrorCodes: new Set(),
+    };
+  }
+
   function paymentFingerprint(sale) {
     return `${sale.variationNumber}:${sale.soldPriceCents}`;
   }
@@ -158,74 +287,74 @@
     return status.observedPaymentStatus === "payment_complete";
   }
 
-  function queueLatestPaymentStatus(session, status) {
+  function queueLatestPaymentStatus(delivery, status) {
     const variationNumber = status.variationNumber;
 
     if (
       !isCompletedStatus(status) &&
-      session.stickyCompletedVariations.has(variationNumber)
+      delivery.stickyCompletedVariations.has(variationNumber)
     ) {
       return false;
     }
 
-    session.latestObservedPaymentStatuses.set(
+    delivery.latestObservedPaymentStatuses.set(
       variationNumber,
       status.observedPaymentStatus,
     );
 
-    const queued = session.queuedPaymentStatuses.get(variationNumber);
+    const queued = delivery.queuedPaymentStatuses.get(variationNumber);
 
     if (queued?.observedPaymentStatus === status.observedPaymentStatus) {
       return false;
     }
 
     if (
-      session.deliveredPaymentStatuses.get(variationNumber) ===
+      delivery.deliveredPaymentStatuses.get(variationNumber) ===
       status.observedPaymentStatus
     ) {
-      session.queuedPaymentStatuses.delete(variationNumber);
+      delivery.queuedPaymentStatuses.delete(variationNumber);
       return false;
     }
 
-    session.queuedPaymentStatuses.set(variationNumber, status);
+    delivery.queuedPaymentStatuses.set(variationNumber, status);
     return true;
   }
 
-  function requeuePaymentStatusUnlessNewer(session, status) {
+  function requeuePaymentStatusUnlessNewer(delivery, status) {
     if (
       !isCompletedStatus(status) &&
-      session.stickyCompletedVariations.has(status.variationNumber)
+      delivery.stickyCompletedVariations.has(status.variationNumber)
     ) {
       return;
     }
 
     if (
-      session.latestObservedPaymentStatuses.get(status.variationNumber) !==
+      delivery.latestObservedPaymentStatuses.get(status.variationNumber) !==
       status.observedPaymentStatus
     ) {
       return;
     }
 
     if (
-      !session.queuedPaymentStatuses.has(status.variationNumber) &&
-      session.deliveredPaymentStatuses.get(status.variationNumber) !==
+      !delivery.queuedPaymentStatuses.has(status.variationNumber) &&
+      delivery.deliveredPaymentStatuses.get(status.variationNumber) !==
         status.observedPaymentStatus
     ) {
-      session.queuedPaymentStatuses.set(status.variationNumber, status);
+      delivery.queuedPaymentStatuses.set(status.variationNumber, status);
     }
   }
 
-  function reportDeliveryError(session, message, error) {
+  function reportDeliveryError(delivery, message, error) {
     const code =
       typeof error?.code === "string"
         ? error.code
         : "CAPTURE_DELIVERY_FAILED";
 
-    if (session?.reportedDeliveryErrorCodes?.has(code)) {
+    if (delivery?.reportedDeliveryErrorCodes?.has(code)) {
       return;
     }
 
-    session?.reportedDeliveryErrorCodes?.add(code);
+    delivery?.reportedDeliveryErrorCodes?.add(code);
     const detail = `${message} Retrying automatically (${code}).`;
 
     try {
@@ -239,13 +368,13 @@
     }
   }
 
-  function cancelDeliveryRetry(session) {
-    if (!session || session.deliveryRetryTimerId === null) {
+  function cancelDeliveryRetry(delivery) {
+    if (!delivery || delivery.deliveryRetryTimerId === null) {
       return false;
     }
 
-    const timerId = session.deliveryRetryTimerId;
-    session.deliveryRetryTimerId = null;
+    const timerId = delivery.deliveryRetryTimerId;
+    delivery.deliveryRetryTimerId = null;
 
     try {
       window.clearTimeout(timerId);
@@ -284,54 +413,54 @@
     }
   }
 
-  function scheduleDeliveryRetry(session) {
+  function scheduleDeliveryRetry(delivery) {
     if (
-      !isCurrentSession(session) ||
-      session.deliveryRetryTimerId !== null
+      !isCurrentDelivery(delivery) ||
+      delivery.deliveryRetryTimerId !== null
     ) {
       return false;
     }
 
-    const delayMs = session.deliveryRetryDelayMs;
+    const delayMs = delivery.deliveryRetryDelayMs;
 
     try {
-      session.deliveryRetryTimerId = window.setTimeout(() => {
-        session.deliveryRetryTimerId = null;
+      delivery.deliveryRetryTimerId = window.setTimeout(() => {
+        delivery.deliveryRetryTimerId = null;
 
-        if (!isCurrentSession(session)) {
+        if (!isCurrentDelivery(delivery)) {
           return;
         }
 
-        if (session.deliveryRunning) {
-          scheduleDeliveryRetry(session);
+        if (delivery.deliveryRunning) {
+          scheduleDeliveryRetry(delivery);
           return;
         }
 
         if (
-          session.queuedVariations.size === 0 &&
-          session.queuedPaymentStatuses.size === 0 &&
-          session.queuedPayments.size === 0
+          delivery.queuedVariations.size === 0 &&
+          delivery.queuedPaymentStatuses.size === 0 &&
+          delivery.queuedPayments.size === 0
         ) {
           return;
         }
 
-        session.deliveryRunning = true;
-        void drainCaptureQueue(session).catch((error) => {
+        delivery.deliveryRunning = true;
+        void drainCaptureQueue(delivery).catch((error) => {
           reportDeliveryError(
-            session,
+            delivery,
             "Capture delivery queue failed.",
             error,
           );
         });
       }, delayMs);
-      session.deliveryRetryDelayMs = Math.min(
+      delivery.deliveryRetryDelayMs = Math.min(
         delayMs * 2,
         MAX_DELIVERY_RETRY_DELAY_MS,
       );
       return true;
     } catch (error) {
       reportDeliveryError(
-        session,
+        delivery,
         "Capture delivery retry failed.",
         error,
       );
@@ -339,33 +468,33 @@
     }
   }
 
-  async function drainCaptureQueue(session) {
+  async function drainCaptureQueue(delivery) {
     try {
       while (
-        isCurrentSession(session) &&
-        (session.queuedVariations.size > 0 ||
-          session.queuedPaymentStatuses.size > 0 ||
-          session.queuedPayments.size > 0)
+        isCurrentDelivery(delivery) &&
+        (delivery.queuedVariations.size > 0 ||
+          delivery.queuedPaymentStatuses.size > 0 ||
+          delivery.queuedPayments.size > 0)
       ) {
-        const variationNumbers = [...session.queuedVariations].filter(
+        const variationNumbers = [...delivery.queuedVariations].filter(
           (variationNumber) =>
-            !session.deliveredVariations.has(variationNumber),
+            !delivery.deliveredVariations.has(variationNumber),
         );
-        const completedSales = [...session.queuedPayments.values()].filter(
+        const completedSales = [...delivery.queuedPayments.values()].filter(
           (sale) =>
-            !session.deliveredPayments.has(paymentFingerprint(sale)),
+            !delivery.deliveredPayments.has(paymentFingerprint(sale)),
         );
         const paymentStatuses = [
-          ...session.queuedPaymentStatuses.values(),
+          ...delivery.queuedPaymentStatuses.values(),
         ].filter(
           (status) =>
-            session.deliveredPaymentStatuses.get(status.variationNumber) !==
+            delivery.deliveredPaymentStatuses.get(status.variationNumber) !==
             status.observedPaymentStatus,
         );
 
-        session.queuedVariations.clear();
-        session.queuedPaymentStatuses.clear();
-        session.queuedPayments.clear();
+        delivery.queuedVariations.clear();
+        delivery.queuedPaymentStatuses.clear();
+        delivery.queuedPayments.clear();
 
         let observationsDelivered = true;
 
@@ -373,36 +502,36 @@
           try {
             await captureClient.observeVariations(variationNumbers);
 
-            if (!isCurrentSession(session)) {
+            if (!isCurrentDelivery(delivery)) {
               return;
             }
 
             variationNumbers.forEach((variationNumber) => {
-              session.deliveredVariations.add(variationNumber);
+              delivery.deliveredVariations.add(variationNumber);
             });
-            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
             reportVariationSync(variationNumbers);
           } catch (error) {
             observationsDelivered = false;
             variationNumbers.forEach((variationNumber) => {
-              session.queuedVariations.add(variationNumber);
+              delivery.queuedVariations.add(variationNumber);
             });
             completedSales.forEach((sale) => {
-              session.queuedPayments.set(paymentFingerprint(sale), sale);
+              delivery.queuedPayments.set(paymentFingerprint(sale), sale);
             });
             paymentStatuses.forEach((status) => {
-              requeuePaymentStatusUnlessNewer(session, status);
+              requeuePaymentStatusUnlessNewer(delivery, status);
             });
             reportDeliveryError(
-              session,
+              delivery,
               "Variation observation delivery failed.",
               error,
             );
-            scheduleDeliveryRetry(session);
+            scheduleDeliveryRetry(delivery);
           }
         }
 
-        if (!observationsDelivered || !isCurrentSession(session)) {
+        if (!observationsDelivered || !isCurrentDelivery(delivery)) {
           return;
         }
 
@@ -417,40 +546,40 @@
               })),
             );
 
-            if (!isCurrentSession(session)) {
+            if (!isCurrentDelivery(delivery)) {
               return;
             }
 
             paymentStatuses.forEach((status) => {
-              session.deliveredPaymentStatuses.set(
+              delivery.deliveredPaymentStatuses.set(
                 status.variationNumber,
                 status.observedPaymentStatus,
               );
             });
-            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
           } catch (error) {
             statusesDelivered = false;
             paymentStatuses.forEach((status) => {
-              requeuePaymentStatusUnlessNewer(session, status);
+              requeuePaymentStatusUnlessNewer(delivery, status);
             });
             completedSales.forEach((sale) => {
-              session.queuedPayments.set(paymentFingerprint(sale), sale);
+              delivery.queuedPayments.set(paymentFingerprint(sale), sale);
             });
             reportDeliveryError(
-              session,
+              delivery,
               "Payment status delivery failed.",
               error,
             );
-            scheduleDeliveryRetry(session);
+            scheduleDeliveryRetry(delivery);
           }
         }
 
-        if (!statusesDelivered || !isCurrentSession(session)) {
+        if (!statusesDelivered || !isCurrentDelivery(delivery)) {
           return;
         }
 
         for (const sale of completedSales) {
-          if (!isCurrentSession(session)) {
+          if (!isCurrentDelivery(delivery)) {
             return;
           }
 
@@ -462,36 +591,358 @@
               soldPriceCents: sale.soldPriceCents,
             });
 
-            if (!isCurrentSession(session)) {
+            if (!isCurrentDelivery(delivery)) {
               return;
             }
 
-            session.deliveredPayments.add(fingerprint);
-            session.deliveredPaymentStatuses.set(
+            delivery.deliveredPayments.add(fingerprint);
+            delivery.deliveredPaymentStatuses.set(
               sale.variationNumber,
               "payment_complete",
             );
-            session.stickyCompletedVariations.add(sale.variationNumber);
-            session.latestObservedPaymentStatuses.set(
+            delivery.stickyCompletedVariations.add(sale.variationNumber);
+            delivery.latestObservedPaymentStatuses.set(
               sale.variationNumber,
               "payment_complete",
             );
-            session.queuedPaymentStatuses.delete(sale.variationNumber);
-            session.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            delivery.queuedPaymentStatuses.delete(sale.variationNumber);
+            delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
           } catch (error) {
-            session.queuedPayments.set(fingerprint, sale);
-            reportDeliveryError(session, "Payment delivery failed.", error);
-            scheduleDeliveryRetry(session);
+            delivery.queuedPayments.set(fingerprint, sale);
+            reportDeliveryError(delivery, "Payment delivery failed.", error);
+            scheduleDeliveryRetry(delivery);
           }
         }
 
-        if (session.deliveryRetryTimerId !== null) {
+        if (delivery.deliveryRetryTimerId !== null) {
           return;
         }
       }
     } finally {
-      session.deliveryRunning = false;
+      delivery.deliveryRunning = false;
     }
+  }
+
+  function cancelAttributedGmvDeliveryRetry(delivery) {
+    if (!delivery || delivery.deliveryRetryTimerId === null) {
+      return false;
+    }
+
+    const timerId = delivery.deliveryRetryTimerId;
+    delivery.deliveryRetryTimerId = null;
+
+    try {
+      window.clearTimeout(timerId);
+    } catch (error) {
+      reportError("Attributed GMV delivery retry cleanup failed.", error);
+    }
+
+    return true;
+  }
+
+  function scheduleAttributedGmvDeliveryRetry(delivery) {
+    if (
+      !isCurrentAttributedGmvDelivery(delivery) ||
+      delivery.deliveryRetryTimerId !== null
+    ) {
+      return false;
+    }
+
+    const delayMs = delivery.deliveryRetryDelayMs;
+
+    try {
+      delivery.deliveryRetryTimerId = window.setTimeout(() => {
+        delivery.deliveryRetryTimerId = null;
+
+        if (!isCurrentAttributedGmvDelivery(delivery)) {
+          return;
+        }
+
+        if (delivery.deliveryRunning) {
+          scheduleAttributedGmvDeliveryRetry(delivery);
+          return;
+        }
+
+        if (
+          delivery.queuedDisplay === null ||
+          delivery.queuedDisplay === delivery.deliveredDisplay
+        ) {
+          return;
+        }
+
+        delivery.deliveryRunning = true;
+        void drainAttributedGmvQueue(delivery).catch((error) => {
+          reportDeliveryError(
+            delivery,
+            "Attributed GMV delivery queue failed.",
+            error,
+          );
+        });
+      }, delayMs);
+      delivery.deliveryRetryDelayMs = Math.min(
+        delayMs * 2,
+        MAX_DELIVERY_RETRY_DELAY_MS,
+      );
+      return true;
+    } catch (error) {
+      reportDeliveryError(
+        delivery,
+        "Attributed GMV delivery retry failed.",
+        error,
+      );
+      return false;
+    }
+  }
+
+  async function drainAttributedGmvQueue(delivery) {
+    try {
+      while (
+        isCurrentAttributedGmvDelivery(delivery) &&
+        delivery.queuedDisplay !== null &&
+        delivery.queuedDisplay !== delivery.deliveredDisplay
+      ) {
+        const attributedGmvDisplay = delivery.queuedDisplay;
+        delivery.queuedDisplay = null;
+
+        try {
+          await captureClient.observeAttributedGmv(attributedGmvDisplay);
+
+          if (!isCurrentAttributedGmvDelivery(delivery)) {
+            return;
+          }
+
+          delivery.deliveredDisplay = attributedGmvDisplay;
+          delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+        } catch (error) {
+          // A newer observation wins over the failed stale value.
+          if (delivery.queuedDisplay === null) {
+            delivery.queuedDisplay = attributedGmvDisplay;
+          }
+
+          reportDeliveryError(
+            delivery,
+            "Attributed GMV delivery failed.",
+            error,
+          );
+          scheduleAttributedGmvDeliveryRetry(delivery);
+          return;
+        }
+
+        if (delivery.deliveryRetryTimerId !== null) {
+          return;
+        }
+      }
+    } finally {
+      delivery.deliveryRunning = false;
+    }
+  }
+
+  function queueAttributedGmv(session, attributedGmvDisplay) {
+    if (!isCurrentAttributedGmvSession(session)) {
+      return false;
+    }
+
+    const delivery = session.delivery;
+
+    if (attributedGmvDisplay === delivery.deliveredDisplay) {
+      delivery.queuedDisplay = null;
+      return false;
+    }
+
+    if (attributedGmvDisplay === delivery.queuedDisplay) {
+      return false;
+    }
+
+    delivery.queuedDisplay = attributedGmvDisplay;
+
+    if (
+      delivery.deliveryRunning ||
+      delivery.deliveryRetryTimerId !== null
+    ) {
+      return true;
+    }
+
+    delivery.deliveryRunning = true;
+    void drainAttributedGmvQueue(delivery).catch((error) => {
+      reportDeliveryError(
+        delivery,
+        "Attributed GMV delivery queue failed.",
+        error,
+      );
+    });
+    return true;
+  }
+
+  function cancelBiddingVariationDeliveryRetry(delivery) {
+    if (!delivery || delivery.deliveryRetryTimerId === null) {
+      return false;
+    }
+
+    const timerId = delivery.deliveryRetryTimerId;
+    delivery.deliveryRetryTimerId = null;
+
+    try {
+      window.clearTimeout(timerId);
+    } catch (error) {
+      reportError("Bidding variation delivery retry cleanup failed.", error);
+    }
+
+    return true;
+  }
+
+  function scheduleBiddingVariationDeliveryRetry(delivery) {
+    if (
+      !isCurrentBiddingVariationDelivery(delivery) ||
+      delivery.deliveryRetryTimerId !== null
+    ) {
+      return false;
+    }
+
+    const delayMs = delivery.deliveryRetryDelayMs;
+
+    try {
+      delivery.deliveryRetryTimerId = window.setTimeout(() => {
+        delivery.deliveryRetryTimerId = null;
+
+        if (!isCurrentBiddingVariationDelivery(delivery)) {
+          return;
+        }
+
+        if (delivery.deliveryRunning) {
+          scheduleBiddingVariationDeliveryRetry(delivery);
+          return;
+        }
+
+        if (
+          delivery.queuedVariationNumber === null ||
+          delivery.queuedVariationNumber ===
+            delivery.deliveredVariationNumber
+        ) {
+          return;
+        }
+
+        delivery.deliveryRunning = true;
+        void drainBiddingVariationQueue(delivery).catch((error) => {
+          reportDeliveryError(
+            delivery,
+            "Bidding variation delivery queue failed.",
+            error,
+          );
+        });
+      }, delayMs);
+      delivery.deliveryRetryDelayMs = Math.min(
+        delayMs * 2,
+        MAX_DELIVERY_RETRY_DELAY_MS,
+      );
+      return true;
+    } catch (error) {
+      reportDeliveryError(
+        delivery,
+        "Bidding variation delivery retry failed.",
+        error,
+      );
+      return false;
+    }
+  }
+
+  async function drainBiddingVariationQueue(delivery) {
+    try {
+      while (
+        isCurrentBiddingVariationDelivery(delivery) &&
+        delivery.queuedVariationNumber !== null &&
+        delivery.queuedVariationNumber !== delivery.deliveredVariationNumber
+      ) {
+        const variationNumber = delivery.queuedVariationNumber;
+        delivery.queuedVariationNumber = null;
+
+        try {
+          await captureClient.observeBiddingVariation(variationNumber);
+
+          if (!isCurrentBiddingVariationDelivery(delivery)) {
+            return;
+          }
+
+          delivery.deliveredVariationNumber = variationNumber;
+          delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+
+          if (
+            delivery.queuedVariationNumber === null &&
+            delivery.latestObservedVariationNumber !== null &&
+            delivery.latestObservedVariationNumber !==
+              delivery.deliveredVariationNumber
+          ) {
+            delivery.queuedVariationNumber =
+              delivery.latestObservedVariationNumber;
+          }
+        } catch (error) {
+          // A newer auction-card observation wins over the failed stale one.
+          if (
+            delivery.queuedVariationNumber === null &&
+            delivery.latestObservedVariationNumber !==
+              delivery.deliveredVariationNumber
+          ) {
+            delivery.queuedVariationNumber =
+              delivery.latestObservedVariationNumber;
+          }
+
+          reportDeliveryError(
+            delivery,
+            "Bidding variation delivery failed.",
+            error,
+          );
+          scheduleBiddingVariationDeliveryRetry(delivery);
+          return;
+        }
+
+        if (delivery.deliveryRetryTimerId !== null) {
+          return;
+        }
+      }
+    } finally {
+      delivery.deliveryRunning = false;
+    }
+  }
+
+  function queueBiddingVariation(session, variationNumber) {
+    if (!isCurrentBiddingVariationSession(session)) {
+      return false;
+    }
+
+    const delivery = session.delivery;
+
+    delivery.latestObservedVariationNumber = variationNumber;
+
+    if (
+      !delivery.deliveryRunning &&
+      variationNumber === delivery.deliveredVariationNumber
+    ) {
+      delivery.queuedVariationNumber = null;
+      cancelBiddingVariationDeliveryRetry(delivery);
+      return false;
+    }
+
+    if (variationNumber === delivery.queuedVariationNumber) {
+      return false;
+    }
+
+    delivery.queuedVariationNumber = variationNumber;
+
+    if (
+      delivery.deliveryRunning ||
+      delivery.deliveryRetryTimerId !== null
+    ) {
+      return true;
+    }
+
+    delivery.deliveryRunning = true;
+    void drainBiddingVariationQueue(delivery).catch((error) => {
+      reportDeliveryError(
+        delivery,
+        "Bidding variation delivery queue failed.",
+        error,
+      );
+    });
+    return true;
   }
 
   function queueCaptureBatch(
@@ -504,41 +955,43 @@
       return false;
     }
 
+    const delivery = session.delivery;
+
     variationNumbers.forEach((variationNumber) => {
-      if (!session.deliveredVariations.has(variationNumber)) {
-        session.queuedVariations.add(variationNumber);
+      if (!delivery.deliveredVariations.has(variationNumber)) {
+        delivery.queuedVariations.add(variationNumber);
       }
     });
 
     completedSales.forEach((sale) => {
       const fingerprint = paymentFingerprint(sale);
 
-      session.latestObservedPaymentStatuses.set(
+      delivery.latestObservedPaymentStatuses.set(
         sale.variationNumber,
         "payment_complete",
       );
 
-      if (!session.deliveredPayments.has(fingerprint)) {
-        session.queuedPayments.set(fingerprint, sale);
+      if (!delivery.deliveredPayments.has(fingerprint)) {
+        delivery.queuedPayments.set(fingerprint, sale);
       }
     });
 
     paymentStatuses.forEach((status) => {
-      queueLatestPaymentStatus(session, status);
+      queueLatestPaymentStatus(delivery, status);
     });
 
-    if (session.deliveryRunning) {
+    if (delivery.deliveryRunning) {
       return true;
     }
 
-    if (session.deliveryRetryTimerId !== null) {
+    if (delivery.deliveryRetryTimerId !== null) {
       return true;
     }
 
-    session.deliveryRunning = true;
-    void drainCaptureQueue(session).catch((error) => {
+    delivery.deliveryRunning = true;
+    void drainCaptureQueue(delivery).catch((error) => {
       reportDeliveryError(
-        session,
+        delivery,
         "Capture delivery queue failed.",
         error,
       );
@@ -546,16 +999,22 @@
     return true;
   }
 
-  function stopCapture() {
+  function stopCapture({ preserveDelivery = false } = {}) {
     const session = captureSession;
+    let changed = false;
+
+    if (!preserveDelivery && captureDelivery) {
+      cancelDeliveryRetry(captureDelivery);
+      captureDelivery = null;
+      changed = true;
+    }
 
     if (!session) {
-      return false;
+      return changed;
     }
 
     captureSession = null;
-
-    cancelDeliveryRetry(session);
+    changed = true;
 
     try {
       session.observer.disconnect();
@@ -569,7 +1028,175 @@
       reportError("Capture scheduler cleanup failed.", error);
     }
 
-    return true;
+    return changed;
+  }
+
+  function stopAttributedGmvCapture({ preserveDelivery = false } = {}) {
+    const session = attributedGmvSession;
+    let changed = false;
+
+    if (!preserveDelivery && attributedGmvDelivery) {
+      cancelAttributedGmvDeliveryRetry(attributedGmvDelivery);
+      attributedGmvDelivery = null;
+      changed = true;
+    }
+
+    if (!session) {
+      return changed;
+    }
+
+    attributedGmvSession = null;
+    changed = true;
+
+    try {
+      session.observer.disconnect();
+    } catch (error) {
+      reportError("Attributed GMV observer cleanup failed.", error);
+    }
+
+    try {
+      session.scheduler.dispose();
+    } catch (error) {
+      reportError("Attributed GMV scheduler cleanup failed.", error);
+    }
+
+    return changed;
+  }
+
+  function stopBiddingVariationCapture({ preserveDelivery = false } = {}) {
+    const session = biddingVariationSession;
+    let changed = false;
+
+    if (!preserveDelivery && biddingVariationDelivery) {
+      cancelBiddingVariationDeliveryRetry(biddingVariationDelivery);
+      biddingVariationDelivery = null;
+      changed = true;
+    }
+
+    if (!session) {
+      return changed;
+    }
+
+    biddingVariationSession = null;
+    changed = true;
+
+    try {
+      session.observer.disconnect();
+    } catch (error) {
+      reportError("Bidding variation observer cleanup failed.", error);
+    }
+
+    try {
+      session.scheduler.dispose();
+    } catch (error) {
+      reportError("Bidding variation scheduler cleanup failed.", error);
+    }
+
+    return changed;
+  }
+
+  function reconcileAttributedGmvCapture() {
+    const targetBody = isCaptureRoute() ? document.body : null;
+
+    if (!targetBody) {
+      return stopAttributedGmvCapture();
+    }
+
+    const located =
+      attributedGmvLocator.locateUniqueVisibleAttributedGmv(targetBody);
+
+    if (located.status !== "found") {
+      return stopAttributedGmvCapture({
+        preserveDelivery: attributedGmvDelivery?.body === targetBody,
+      });
+    }
+
+    if (
+      attributedGmvSession?.body === targetBody &&
+      attributedGmvSession?.root === located.root
+    ) {
+      return false;
+    }
+
+    stopAttributedGmvCapture({
+      preserveDelivery: attributedGmvDelivery?.body === targetBody,
+    });
+    return startAttributedGmvCapture(targetBody, located.root);
+  }
+
+  function scanAttributedGmv(session) {
+    if (
+      !session ||
+      attributedGmvSession !== session ||
+      !isCaptureRoute() ||
+      document.body !== session.body ||
+      !isCurrentAttributedGmvSession(session)
+    ) {
+      reconcileAttributedGmvCapture();
+      return;
+    }
+
+    const located =
+      attributedGmvLocator.locateUniqueVisibleAttributedGmv(session.body);
+
+    if (located.status !== "found" || located.root !== session.root) {
+      reconcileAttributedGmvCapture();
+      return;
+    }
+
+    queueAttributedGmv(session, located.attributedGmvDisplay);
+  }
+
+  function reconcileBiddingVariationCapture() {
+    const targetBody = isCaptureRoute() ? document.body : null;
+
+    if (!targetBody) {
+      return stopBiddingVariationCapture();
+    }
+
+    const located =
+      biddingVariationLocator.locateUniqueVisibleBiddingVariation(targetBody);
+
+    if (located.status !== "found") {
+      return stopBiddingVariationCapture({
+        preserveDelivery: biddingVariationDelivery?.body === targetBody,
+      });
+    }
+
+    if (
+      biddingVariationSession?.body === targetBody &&
+      biddingVariationSession?.root === located.root
+    ) {
+      return false;
+    }
+
+    stopBiddingVariationCapture({
+      preserveDelivery: biddingVariationDelivery?.body === targetBody,
+    });
+    return startBiddingVariationCapture(targetBody, located.root);
+  }
+
+  function scanBiddingVariation(session) {
+    if (
+      !session ||
+      biddingVariationSession !== session ||
+      !isCaptureRoute() ||
+      document.body !== session.body ||
+      !isCurrentBiddingVariationSession(session)
+    ) {
+      reconcileBiddingVariationCapture();
+      return;
+    }
+
+    const located =
+      biddingVariationLocator.locateUniqueVisibleBiddingVariation(session.body);
+
+    if (located.status !== "found" || located.root !== session.root) {
+      reconcileBiddingVariationCapture();
+      return;
+    }
+
+    queueBiddingVariation(session, located.variationNumber);
   }
 
   function reconcileCapture() {
@@ -590,7 +1217,9 @@
         reportRootDiscoveryStatus(locatedRoot.status);
       }
 
-      return stopCapture();
+      return stopCapture({
+        preserveDelivery: captureDelivery?.body === targetBody,
+      });
     }
 
     lastRootDiscoveryStatus = "found";
@@ -602,7 +1231,9 @@
       return false;
     }
 
-    stopCapture();
+    stopCapture({
+      preserveDelivery: captureDelivery?.body === targetBody,
+    });
     return startCapture(targetBody, locatedRoot.root);
   }
 
@@ -729,6 +1360,10 @@
     let scheduler;
     let observer;
     let session;
+    const delivery =
+      captureDelivery?.body === body
+        ? captureDelivery
+        : createDeliveryState(body);
 
     try {
       scheduler = schedulerModule.createCaptureScheduler({
@@ -768,22 +1403,12 @@
 
       session = {
         body,
-        deliveredPayments: new Set(),
-        deliveredPaymentStatuses: new Map(),
-        deliveredVariations: new Set(),
-        deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
-        deliveryRetryTimerId: null,
-        deliveryRunning: false,
-        latestObservedPaymentStatuses: new Map(),
+        delivery,
         observer,
-        queuedPayments: new Map(),
-        queuedPaymentStatuses: new Map(),
-        queuedVariations: new Set(),
-        reportedDeliveryErrorCodes: new Set(),
         root,
         scheduler,
-        stickyCompletedVariations: new Set(),
       };
+      captureDelivery = delivery;
       captureSession = session;
 
       observer.observe(root, {
@@ -798,7 +1423,12 @@
       return true;
     } catch (error) {
       if (session && captureSession === session) {
-        stopCapture();
+        stopCapture({
+          preserveDelivery:
+            captureDelivery === delivery &&
+            isCaptureRoute() &&
+            document.body === body,
+        });
       } else {
         if (observer) {
           try {
@@ -818,6 +1448,244 @@
       }
 
       reportError("Capture startup failed.", error);
+      return false;
+    }
+  }
+
+  function startAttributedGmvCapture(body, root) {
+    if (
+      !body ||
+      !root ||
+      !isCaptureRoute() ||
+      document.body !== body ||
+      !body.contains(root)
+    ) {
+      return false;
+    }
+
+    if (
+      attributedGmvSession?.body === body &&
+      attributedGmvSession?.root === root
+    ) {
+      return false;
+    }
+
+    let scheduler;
+    let observer;
+    let session;
+    const delivery =
+      attributedGmvDelivery?.body === body
+        ? attributedGmvDelivery
+        : createAttributedGmvDeliveryState(body);
+
+    try {
+      scheduler = schedulerModule.createCaptureScheduler({
+        scan() {
+          scanAttributedGmv(session);
+        },
+        setTimeoutFn: window.setTimeout.bind(window),
+        clearTimeoutFn: window.clearTimeout.bind(window),
+        onError(error) {
+          reportError("Attributed GMV scan failed.", error);
+        },
+        quietDelayMs: QUIET_SCAN_DELAY_MS,
+        maxWaitMs: MAX_SCAN_WAIT_MS,
+      });
+
+      observer = new MutationObserver((records) => {
+        if (
+          attributedGmvSession !== session ||
+          !isCaptureRoute() ||
+          document.body !== body ||
+          !isCurrentAttributedGmvSession(session)
+        ) {
+          reconcileAttributedGmvCapture();
+          return;
+        }
+
+        if (!hasScopedCaptureMutation(records, root)) {
+          return;
+        }
+
+        try {
+          scheduler.request();
+        } catch (error) {
+          reportError("Attributed GMV scheduling failed.", error);
+        }
+      });
+
+      session = {
+        body,
+        delivery,
+        observer,
+        root,
+        scheduler,
+      };
+      attributedGmvDelivery = delivery;
+      attributedGmvSession = session;
+
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+
+      scheduler.runNow();
+
+      console.info(`${LOG_PREFIX} Attributed GMV probe active.`);
+      return true;
+    } catch (error) {
+      if (session && attributedGmvSession === session) {
+        stopAttributedGmvCapture({
+          preserveDelivery:
+            attributedGmvDelivery === delivery &&
+            isCaptureRoute() &&
+            document.body === body,
+        });
+      } else {
+        if (observer) {
+          try {
+            observer.disconnect();
+          } catch (cleanupError) {
+            reportError(
+              "Attributed GMV observer cleanup failed.",
+              cleanupError,
+            );
+          }
+        }
+
+        if (scheduler) {
+          try {
+            scheduler.dispose();
+          } catch (cleanupError) {
+            reportError(
+              "Attributed GMV scheduler cleanup failed.",
+              cleanupError,
+            );
+          }
+        }
+      }
+
+      reportError("Attributed GMV startup failed.", error);
+      return false;
+    }
+  }
+
+  function startBiddingVariationCapture(body, root) {
+    if (
+      !body ||
+      !root ||
+      !isCaptureRoute() ||
+      document.body !== body ||
+      !body.contains(root)
+    ) {
+      return false;
+    }
+
+    if (
+      biddingVariationSession?.body === body &&
+      biddingVariationSession?.root === root
+    ) {
+      return false;
+    }
+
+    let scheduler;
+    let observer;
+    let session;
+    const delivery =
+      biddingVariationDelivery?.body === body
+        ? biddingVariationDelivery
+        : createBiddingVariationDeliveryState(body);
+
+    try {
+      scheduler = schedulerModule.createCaptureScheduler({
+        scan() {
+          scanBiddingVariation(session);
+        },
+        setTimeoutFn: window.setTimeout.bind(window),
+        clearTimeoutFn: window.clearTimeout.bind(window),
+        onError(error) {
+          reportError("Bidding variation scan failed.", error);
+        },
+        quietDelayMs: QUIET_SCAN_DELAY_MS,
+        maxWaitMs: MAX_SCAN_WAIT_MS,
+      });
+
+      observer = new MutationObserver((records) => {
+        if (
+          biddingVariationSession !== session ||
+          !isCaptureRoute() ||
+          document.body !== body ||
+          !isCurrentBiddingVariationSession(session)
+        ) {
+          reconcileBiddingVariationCapture();
+          return;
+        }
+
+        if (!hasScopedCaptureMutation(records, root)) {
+          return;
+        }
+
+        try {
+          scheduler.request();
+        } catch (error) {
+          reportError("Bidding variation scheduling failed.", error);
+        }
+      });
+
+      session = {
+        body,
+        delivery,
+        observer,
+        root,
+        scheduler,
+      };
+      biddingVariationDelivery = delivery;
+      biddingVariationSession = session;
+
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+
+      scheduler.runNow();
+
+      console.info(`${LOG_PREFIX} Bidding variation probe active.`);
+      return true;
+    } catch (error) {
+      if (session && biddingVariationSession === session) {
+        stopBiddingVariationCapture({
+          preserveDelivery:
+            biddingVariationDelivery === delivery &&
+            isCaptureRoute() &&
+            document.body === body,
+        });
+      } else {
+        if (observer) {
+          try {
+            observer.disconnect();
+          } catch (cleanupError) {
+            reportError(
+              "Bidding variation observer cleanup failed.",
+              cleanupError,
+            );
+          }
+        }
+
+        if (scheduler) {
+          try {
+            scheduler.dispose();
+          } catch (cleanupError) {
+            reportError(
+              "Bidding variation scheduler cleanup failed.",
+              cleanupError,
+            );
+          }
+        }
+      }
+
+      reportError("Bidding variation startup failed.", error);
       return false;
     }
   }
@@ -874,6 +1742,8 @@
   function handleLifecycleSignal() {
     ensureLifecycleObserver();
     reconcileCapture();
+    reconcileAttributedGmvCapture();
+    reconcileBiddingVariationCapture();
   }
 
   function addLifecycleListener(target, eventName) {

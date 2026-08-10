@@ -385,7 +385,7 @@
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="current-auction-label">
-            Waiting for a variation to appear in Sold Items
+            Waiting for a live auction variation
           </p>
           <div class="variation-picker">
             <h2 id="current-auction-title">Variation</h2>
@@ -536,7 +536,7 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">Inventory</p>
-            <h2 id="inventory-title">Waiting for a Sold Items variation</h2>
+            <h2 id="inventory-title">Waiting for a live auction variation</h2>
           </div>
           <p id="result-count" class="result-count" aria-live="polite"></p>
         </div>
@@ -572,6 +572,47 @@
           <h3>No inventory matches <strong id="empty-query"></strong></h3>
           <p>Try a different item, style, or size.</p>
         </div>
+      </section>
+
+      <section
+        id="metrics-section"
+        class="metrics-section"
+        aria-labelledby="metrics-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Performance</p>
+            <h2 id="metrics-title">Metrics</h2>
+          </div>
+        </div>
+
+        <dl class="metrics-grid">
+          <div class="metric-card">
+            <dt>GMV/No shipping</dt>
+            <dd id="revenue-value">$0.00</dd>
+          </div>
+          <div class="metric-card">
+            <dt>Total GMV</dt>
+            <dd id="total-gmv-value">&mdash;</dd>
+          </div>
+          <div class="metric-card metric-card-profit">
+            <dt>Gross Profits</dt>
+            <dd class="metric-profit-content">
+              <span
+                id="gross-profit-value"
+                aria-describedby="gross-profit-warning"
+              >$0.00</span>
+              <small
+                id="gross-profit-warning"
+                class="metric-warning"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                hidden
+              ></small>
+            </dd>
+          </div>
+        </dl>
       </section>
 
       <footer class="app-footer">

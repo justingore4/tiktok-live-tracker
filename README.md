@@ -4,16 +4,18 @@ A browser-based tool for tracking TikTok LIVE auction sales. TikTok supplies the
 completed sale and final price, an employee identifies the physical item, and the
 tracker combines those facts to calculate inventory and gross profit.
 
-> **Project status:** early browser prototype. The tracker now observes the live
-> **Sold items** panel, records its variation numbers under the active local tracker
-> stream, and persists sanitized payment-status changes plus exact green
+> **Project status:** early browser prototype. The tracker now reads the current
+> bidding variation number from the on-video auction card and observes the live
+> **Sold items** panel for sale and payment truth under the active local tracker
+> stream. It persists sanitized payment-status changes plus exact green
 > `Payment complete` prices through the service worker.
 > An open Live session side panel refetches saved state as those records change, without
 > requiring a TikTok-page refresh or panel reopen. Before Start, an employee can now
 > authorize read-only Google Sheets access, preview and confirm the exact `Inventory`
-> tab, and save it as a new immutable local baseline. A dedicated employee work queue,
-> verified TikTok stream identity, outbound Sheets export, and end-of-stream reporting
-> are not implemented yet.
+> tab, and save it as a new immutable local baseline. The tracker also mirrors TikTok's
+> isolated **Attributed GMV** display under the active stream. A dedicated employee work
+> queue, verified TikTok stream identity, outbound Sheets export, and end-of-stream
+> reporting are not implemented yet.
 
 ## How it works
 
@@ -61,8 +63,16 @@ variation number.
   dashboard path.
 - A responsive Chrome side-panel prototype with mock inventory, search, processing/fixing reservations,
   sold-out states, one-click item mapping and unmapping, and a current/previous
-  variation selector. Inventory cards show remaining stock separately from pending
-  reservations.
+  variation selector. The active on-video auction is labeled `bidding`, selected
+  automatically, and can be mapped before the sale reaches Sold Items. Inventory cards
+  show remaining stock separately from pending reservations.
+- A bottom **Metrics** section showing **GMV/No shipping** as the current-stream sum of
+  sold prices from every priced `Payment complete` order, including completed orders
+  that still need an item. A separate **Total GMV** card mirrors TikTok's captured
+  Attributed GMV display, which includes buyer-paid shipping. **Gross Profits** is the
+  sold-price revenue from mapped, completed orders minus their pinned Google Sheets unit
+  costs. Completed orders without an inventory match are excluded from that subtotal and
+  produce an incomplete-count warning until they are mapped.
 - A **Live session** mode with explicit Start, Resume, and End controls. Its worker-made
   local stream ID survives side-panel, browser, and service-worker restarts, while End
   keeps reconciliation history and does not act on TikTok LIVE.
@@ -81,20 +91,32 @@ variation number.
   dashboard updates cannot indefinitely postpone scans while the page is executing.
 - SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
   fallback check, and cleans up or restarts the observer and scheduler when the route or
-  Sold Items root changes.
+  any scoped root changes. Sanitized, same-body delivery outboxes keep already parsed
+  Sold Items facts, the newest bidding variation, and the newest Attributed GMV display
+  draining across root replacement; leaving the route or replacing the body discards
+  those page-scoped queues.
 - A live-validated Sold Items boundary that requires exactly one visible
   `[data-tid="m4b_space"]` root. Capture stops and retries when that selector is missing
-  or ambiguous, and sale parsing never scans the video, Chat, analytics, or the rest of
-  the dashboard.
+  or ambiguous, and individual-sale parsing never scans the video, Chat, analytics, or
+  the rest of the dashboard. A separate analytics-metric locator is restricted to the
+  exact visible `#guide-Step-2` boundary (with an explicitly allowlisted lowercase ID
+  fallback), one exact `Attributed GMV` label, and that label's primary value region.
+- A separate fail-closed current-auction locator that requires exactly one visible
+  `auction-pin-card` class-token boundary and one visible direct-own-text value beginning
+  with `#N`. It releases only the positive variation number; it does not treat the video
+  card's item title, bid amount, bidder, or other text as sale or payment truth.
 - Strict row-local matching for exact `Variation: #N` labels and exact
   `[data-tid="m4b_tag"]` badges. The allowlist recognizes `Payment processing`,
   `Payment fixing`, `Payment failed`, `Canceled`, and `Payment complete`; any other nonempty badge is
   stored only as `unrecognized`, never as raw page text. Generic tag counts and generated
   CSS classes are not capture inputs. Incidental buyer and product text in the same row
   is never selected as a field, logged raw, transmitted, or saved.
-- A strict capture protocol and runtime client that send only observed variation numbers
-  and sanitized payment-status codes, plus a completed variation's integer-cent price.
-  The page sends no stream ID, buyer data, raw badge text, or DOM content.
+- A strict five-event capture protocol and runtime client that send only observed
+  Sold Items variation numbers, the current bidding variation number, sanitized
+  payment-status codes, a completed variation's integer-cent price, or one canonical
+  exact/compact USD Attributed GMV display. The page sends no
+  stream ID, buyer data, raw badge, auction-card, or analytics text, source HTML, or other
+  DOM content.
 - A worker-owned capture integration that authorizes only the top-level product
   dashboard, resolves the active local stream itself, and persists observations and
   payment changes through the serialized reconciliation coordinator.
@@ -126,9 +148,10 @@ variation number.
   - keeps auctions distinct by `(streamId, variationNumber)`.
 - A versioned persistence adapter that validates and saves detached reconciliation
   snapshots, reports typed storage/corruption/version errors, and never silently
-  replaces corrupt or future-version data. Reconciliation state is version 4, with strict
-  version-1 through version-3 migration into one deterministic legacy baseline; the outer
-  storage envelope remains schema version 1.
+  replaces corrupt or future-version data. Reconciliation state is version 6 and stores
+  the sanitized Attributed GMV display plus the nullable active bidding variation per
+  stream, with strict version-1 through version-5 migration; the outer storage envelope
+  remains schema version 1.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails. Baseline creation is blocked while a local tracker
@@ -156,9 +179,8 @@ variation number.
 
 ### Not implemented yet
 
-- A richer prioritized employee work queue beyond the current newest-captured-variation
-  auto-follow behavior. A selected Sold Items row remains a recorded row, not a claim
-  about the auction currently bidding.
+- A richer prioritized employee work queue beyond the current bidding-variation
+  auto-follow behavior.
 - Visible capture connection, retry, and queue-drained status.
 - Verified transition timing for TikTok's nonterminal **Payment processing**, **Payment
   fixing**, **Payment failed**, and unrecognized labels. Processing/fixing reserve a mapped
@@ -167,7 +189,8 @@ variation number.
   stream with the correct real TikTok LIVE.
 - Google Sheets results export. The implemented Google connection is pre-stream,
   read-only inventory import only.
-- End-of-stream analytics and live-stream validation.
+- Broader end-of-stream reconciliation/reporting beyond the live Metrics cards, plus
+  live-stream validation.
 
 ## Development roadmap
 
@@ -189,12 +212,14 @@ variation number.
    focused stages:
    1. **Completed:** create persistent local active-stream sessions with Start, Resume,
       and End controls;
-   2. **Completed:** attach read-only Sold Items observations to the active local stream
-      and persist variation numbers and payment changes through the worker;
+   2. **Completed:** attach read-only on-video bidding and Sold Items observations to the
+      active local stream and persist current variation, payment, and sale changes through
+      the worker;
    3. **Completed:** refetch persisted capture changes in real time, auto-follow each new
-      higher variation, and display its observed TikTok payment status independently of
-      inventory mapping. A prioritized queue, visible capture status, verified TikTok
-      stream identity, and broader live validation remain next.
+      active bidding variation before it sells, and display its later observed TikTok
+      payment status independently of inventory mapping. A prioritized queue, visible
+      capture status, verified TikTok stream identity, and broader live validation remain
+      next.
 5. Connect Google Sheets inventory in three focused stages:
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
       opening-baseline semantics, and a Google Sheets-compatible CSV template;
@@ -204,7 +229,8 @@ variation number.
    3. **Completed:** authorize read-only access, preview and confirm the selected Sheet,
       and initialize a new immutable inventory baseline.
 6. Export reconciled results to Google Sheets.
-7. Add end-of-stream reconciliation and analytics reporting.
+7. Add end-of-stream reconciliation and broader analytics reporting beyond the live
+   Metrics cards.
 
 ## Project layout
 
@@ -212,7 +238,7 @@ variation number.
 | --- | --- | --- |
 | `extension/manifest.json` | Extension configuration and dashboard entry point | Implemented |
 | `extension/service-worker.js` | Side-panel setup and canonical-state message boundary | Tagger, session, capture, and Sheets import coordination implemented |
-| `extension/capture/` | Root-scoped Sold Items observation and retrying runtime client | Live capture integration implemented |
+| `extension/capture/` | Scoped on-video bidding, Sold Items, and Attributed GMV observation plus retrying runtime delivery | Live capture integration implemented |
 | `extension/shared/capture-*.js` | Strict page-to-worker protocol and active-stream binding | Implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/inventory-sheet-import.js` | Pure Google Sheets inventory validation and detached preview contract | Implemented |
@@ -300,8 +326,9 @@ prototype data. There is no silent reset.
 10. Select **Start stream**. A new live tracker stream now requires a confirmed imported
     baseline; offline demo inventory cannot satisfy Start. The worker starts the local
     stream and permanently pins it to that baseline. This does not start TikTok LIVE.
-    Until capture records a Sold Items row, confirm the variation selector waits for one
-    and inventory mapping is unavailable.
+    Until capture records an on-video bidding variation or a Sold Items row, confirm the
+    variation selector waits for a live auction variation and inventory mapping is
+    unavailable.
 11. Close and reopen the side panel. Select **Resume active stream** and confirm the same
     local stream is restored without creating a fake live variation.
 12. Switch to **Offline demo**. Open the variation dropdown and confirm it lists current
@@ -325,13 +352,17 @@ prototype data. There is no silent reset.
    [TikTok Live Tracker] Capture probe active on /streamer/live/product/dashboard.
    ```
 
-19. Keep the active Live session side panel open. In **LIVE auctions → Sold items**,
-    note two or more visible variation numbers and confirm those exact numbers appear
-    in the variation selector after the capture scan settles. Do not refresh TikTok,
-    close the panel, or choose Resume again.
-20. Select one recorded variation, then wait for a newer Sold Items variation. Confirm
-    the new number appears in the selector and becomes the displayed variation
-    automatically. Under **TikTok payment**, confirm its exact observed state appears as
+19. Keep the active Live session side panel open while an auction is running. Confirm the
+    variation shown in the card at the bottom of the video appears automatically as
+    `#N - bidding - No item selected`. Select its inventory item before bidding ends and
+    confirm the same option keeps `bidding` but replaces `No item selected` with the item,
+    style, and size. The selector eyebrow should read **Live auction variations**. When
+    TikTok starts the next auction, its number must become current without opening the
+    menu. Do not refresh TikTok, close the panel, or choose Resume again.
+20. In **LIVE auctions → Sold items**, confirm completed and payment-state variations
+    remain in the same selector. When the active bidding variation reaches Sold Items,
+    its existing mapping must remain attached while the `bidding` marker clears and its
+    payment wording takes over. Under **TikTok payment**, confirm its exact observed state appears as
     `Payment processing`, `Payment fixing`, `Payment failed`, `Canceled`, or `Payment
     complete` and changes live without refreshing. A status-only update must keep that
     variation selected. Processing and fixing must reserve a mapped unit and show it as
@@ -340,8 +371,17 @@ prototype data. There is no silent reset.
     Exact `Canceled` must keep the item link, release any reservation, and leave remaining
     stock and money unchanged. For priced `Payment complete`, also confirm the captured
     final price appears even before an inventory item is selected. If a priced completion follows `Canceled`, confirm the
-    sale commits and the warning says TikTok completion won and inventory was counted. Do
-    not use Chat, the video auction card, or analytics as a comparison source.
+    sale commits and the warning says TikTok completion won and inventory was counted.
+    Use the video auction card only to validate the current variation number; do not use
+    it, Chat, or analytics to validate payment status, final price, or an individual sale.
+    Separately, confirm **GMV/No shipping** equals the exact sum of all priced completed
+    orders and **Total GMV** mirrors TikTok's **Attributed GMV** text, including compact
+    text such as `$4.64K`. Per the product requirement, Total GMV includes buyer-paid
+    shipping, so the two GMV cards are not expected to match. Confirm **Gross Profits**
+    equals mapped completed sold-price revenue minus the pinned Google Sheets unit costs.
+    If a completed order has no inventory item, confirm it is excluded from that subtotal
+    and the card reports how many completed sales still need items. Map or remap one and
+    confirm the subtotal and warning recalculate immediately.
 21. Map one captured **Payment processing** or **Payment fixing** variation to `Stussy tee - black, L` and wait for the save.
     Reopen and Resume once to confirm the mapping and pending reservation are durable.
     Correct it to another available card, then click that selected card again; confirm
@@ -392,10 +432,12 @@ storage, repository files, or application logs. `config/.env.example` is not rea
 extension, and no service-account private key belongs in a browser bundle.
 
 Never commit `.env` files, access tokens, private keys, or client inventory. Capture
-runtime messages contain only variation numbers, allowlisted payment-status codes, and,
-for completed payments, the final price in integer cents. They contain no page-supplied
-stream ID, raw badge text, buyer information, product text, or DOM content. The trusted
-worker binds those facts to the active local tracker stream. TikTok sale data is not sent
+runtime messages contain only variation numbers (including the one currently bidding),
+allowlisted payment-status codes, the sanitized Attributed GMV display, and, for
+completed payments, the final price in integer cents. They contain no page-supplied
+stream ID, raw badge or auction-card text, buyer information, product text, bid amount,
+or DOM content. The trusted worker binds those facts to the active local tracker stream.
+TikTok sale data is not sent
 to Google Sheets, and the live tracker does not depend on Google after the baseline is
 confirmed locally. Results export is not implemented.
 

@@ -111,6 +111,13 @@
       return JSON.parse(JSON.stringify(value));
     }
 
+    function getActiveBiddingVariationNumber(summary) {
+      return Number.isSafeInteger(summary?.activeBiddingVariationNumber) &&
+        summary.activeBiddingVariationNumber > 0
+        ? summary.activeBiddingVariationNumber
+        : null;
+    }
+
     function createMappingSession(options) {
       if (!options || typeof options !== "object" || Array.isArray(options)) {
         throw new TypeError("Mapping session options are required.");
@@ -175,6 +182,11 @@
         reconciliation.createReconciliationState(
           inventory.map(toReconciliationInventory),
         );
+      const initialSummary = reconciliation.calculateSummary(state, {
+        streamId,
+      });
+      const initialActiveBiddingVariationNumber =
+        getActiveBiddingVariationNumber(initialSummary);
       const persistedVariationNumbers = state.streams
         ?.find((stream) => stream.streamId === streamId)
         ?.variations.map((auction) => auction.variationNumber) ?? [];
@@ -182,10 +194,13 @@
         [...new Set([
           ...normalizedVariationNumbers,
           ...persistedVariationNumbers,
+          ...(initialActiveBiddingVariationNumber === null
+            ? []
+            : [initialActiveBiddingVariationNumber]),
         ])].sort((left, right) => right - left),
       );
-      let selectedVariationNumber = currentVariationNumber;
-      const initialSummary = reconciliation.calculateSummary(state);
+      let selectedVariationNumber =
+        initialActiveBiddingVariationNumber ?? currentVariationNumber;
       const canonicalSkus = new Set(
         initialSummary.inventory.map((entry) => entry.sku),
       );
@@ -273,13 +288,19 @@
       }
 
       function getVariationOptions(summary) {
+        const activeBiddingVariationNumber =
+          getActiveBiddingVariationNumber(summary);
+        const effectiveCurrentVariationNumber =
+          activeBiddingVariationNumber ?? currentVariationNumber;
+
         return knownVariationNumbers.map((variationNumber) => {
           const auction = getAuctionDisplay(summary, variationNumber);
 
           return {
             variationNumber,
             recorded: auction !== null,
-            current: variationNumber === currentVariationNumber,
+            bidding: variationNumber === activeBiddingVariationNumber,
+            current: variationNumber === effectiveCurrentVariationNumber,
             selected: variationNumber === selectedVariationNumber,
             status: auction?.status ?? "unmapped",
             statusLabel: auction?.statusLabel ?? STATUS_LABELS.unmapped,
@@ -340,6 +361,10 @@
 
       function getViewState() {
         const summary = reconciliation.calculateSummary(state, { streamId });
+        const activeBiddingVariationNumber =
+          getActiveBiddingVariationNumber(summary);
+        const effectiveCurrentVariationNumber =
+          activeBiddingVariationNumber ?? currentVariationNumber;
         const auction = getAuctionDisplay(summary);
         const isPending = auction?.status === "pending";
         const isMapped = auction?.status === "mapped";
@@ -350,10 +375,11 @@
         return {
           streamId,
           variationNumber: selectedVariationNumber,
-          currentVariationNumber,
+          activeBiddingVariationNumber,
+          currentVariationNumber: effectiveCurrentVariationNumber,
           selectedVariationNumber,
           isReviewingHistory:
-            selectedVariationNumber !== currentVariationNumber,
+            selectedVariationNumber !== effectiveCurrentVariationNumber,
           variations: getVariationOptions(summary),
           auction,
           mapping: auction?.sku ? auction : null,
@@ -385,7 +411,12 @@
 
       function getCurrentMapping() {
         const summary = reconciliation.calculateSummary(state, { streamId });
-        const auction = getAuctionDisplay(summary, currentVariationNumber);
+        const effectiveCurrentVariationNumber =
+          getActiveBiddingVariationNumber(summary) ?? currentVariationNumber;
+        const auction = getAuctionDisplay(
+          summary,
+          effectiveCurrentVariationNumber,
+        );
 
         return auction?.sku ? auction : null;
       }

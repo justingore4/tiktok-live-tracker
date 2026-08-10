@@ -459,6 +459,62 @@ test("navigates explicit variation history without changing reconciliation state
   assert.deepEqual(session.getStateSnapshot(), stateBefore);
 });
 
+test("projects the active bidding variation as current and keeps it mappable", () => {
+  const biddingVariationNumber = 252;
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: biddingVariationNumber,
+  });
+  const session = createSession({
+    state,
+    variationNumbers: [VARIATION_NUMBER],
+  });
+  let view = session.getViewState();
+  let biddingOption = view.variations.find(
+    ({ variationNumber }) => variationNumber === biddingVariationNumber,
+  );
+
+  assert.equal(view.activeBiddingVariationNumber, biddingVariationNumber);
+  assert.equal(view.currentVariationNumber, biddingVariationNumber);
+  assert.equal(view.selectedVariationNumber, biddingVariationNumber);
+  assert.equal(view.isReviewingHistory, false);
+  assert.equal(biddingOption.recorded, true);
+  assert.equal(biddingOption.bidding, true);
+  assert.equal(biddingOption.current, true);
+  assert.equal(biddingOption.selected, true);
+
+  const mapped = session.selectSku("STUSSY-TEE-BLACK-L");
+
+  assert.equal(mapped.ok, true);
+  assert.equal(mapped.mapping.variationNumber, biddingVariationNumber);
+  assert.equal(mapped.mapping.observedPaymentStatus, "not_observed");
+  view = session.getViewState();
+  assert.equal(
+    inventoryEntry(view, "STUSSY-TEE-BLACK-L").remainingQuantity,
+    5,
+  );
+  assert.equal(
+    inventoryEntry(view, "STUSSY-TEE-BLACK-L").reservedQuantity,
+    0,
+  );
+  biddingOption = view.variations.find(
+    ({ variationNumber }) => variationNumber === biddingVariationNumber,
+  );
+  assert.equal(biddingOption.item, "Stussy tee");
+  assert.equal(biddingOption.style, "black");
+  assert.equal(biddingOption.size, "L");
+
+  const historical = session.selectVariation(VARIATION_NUMBER);
+
+  assert.equal(historical.ok, true);
+  assert.equal(historical.view.currentVariationNumber, biddingVariationNumber);
+  assert.equal(historical.view.isReviewingHistory, true);
+});
+
 test("marks only canonical variation records as recorded", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
