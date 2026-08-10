@@ -68,9 +68,10 @@ canonical sale truth:
 
 Canonical `paymentStatus` is `unknown`, `canceled`, or `payment_complete`. Processing,
 fixing, failed, and unrecognized remain nonterminal observations under canonical
-`unknown`. Only a mapped processing or fixing record reserves one unit. A mapped
-not-yet-observed, failed, unrecognized, or unpriced-complete record stays linked but
-unreserved.
+`unknown`. Every mapped canonical-unknown record reserves one unit immediately, including
+the bidding/not-yet-observed state, processing, fixing, temporary failure, an
+unrecognized badge, and a price-less completion observation. The reservation resolves
+only at canonical priced completion or exact cancellation.
 Exact `Canceled` promotes the record to canonical `canceled`, preserves its item link for
 history, and releases its reservation without counting a sale, revenue, cost, or profit.
 Only a `Payment complete` badge with a parsed final price promotes the record to canonical
@@ -82,15 +83,15 @@ Only a `Payment complete` badge with a parsed final price promotes the record to
 | --- | --- |
 | `unmapped` | No inventory entry has been selected |
 | `mapped` | The variation is linked to a valid inventory `sku` |
-| `marked_unpaid` | The employee says the payment buffer expired without success |
+| `marked_unpaid` | Legacy/offline-demo simulation only; Live mode does not create it |
 
 The engine derives a user-facing auction status from both axes:
 
 | Derived status | Meaning |
 | --- | --- |
 | `unmapped` | No completed payment and no inventory mapping |
-| `mapped` | Inventory is selected, but the observation does not create a reservation |
-| `pending` | Inventory is mapped and TikTok shows `Payment processing` or `Payment fixing` |
+| `mapped` | Inventory is selected in an isolated demo state that does not reserve stock |
+| `pending` | Inventory is mapped and canonical payment truth is still unresolved |
 | `marked_unpaid` | Locally closed as unpaid; remaining stock is unchanged and its reservation is released |
 | `canceled` | TikTok canonically canceled the auction; its item link is retained, its reservation is released, and no sale is counted |
 | `unmapped_completed` | TikTok shows payment complete, but the inventory item is unknown |
@@ -103,27 +104,25 @@ The engine derives a user-facing auction status from both axes:
 
 Consequences:
 
-1. Processing and fixing observations never decrement remaining stock; a mapped record
-   reserves one unit until the status changes. Failed, not-yet-observed, unrecognized,
-   and unpriced-complete mappings stay linked without a reservation.
+1. Mapping during bidding immediately reserves one unit. The reservation survives
+   processing, fixing, temporary failure, unrecognized, not-yet-observed, and
+   unpriced-complete observations until canonical payment truth resolves.
 2. Exact `Canceled` releases that reservation automatically while retaining the SKU as
    historical attribution. The cancellation itself never contributes a sale or money.
 3. A green-but-unmapped auction still contributes to completed GMV and must be shown as
    an exception until an employee maps it.
 4. Reprocessing the same completed event must update the same auction record rather
    than count a second sale.
-5. Employee mappings and unpaid decisions pass through the service worker and are saved
-   before the tagger displays them as successful. They are restored after the panel or
-   service worker restarts.
-6. Canonical TikTok payment state moves from `unknown` to `canceled` or
-   `payment_complete`. A later priced completion may override `canceled`; TikTok's
-   completion wins, the sale commits, and the engine records a
-   `payment_completed_after_canceled` conflict. Once complete, later non-complete
-   observations cannot reverse it.
+5. Employee mappings pass through the service worker and are saved before the tagger
+   displays them as successful. They are restored after the panel or service worker
+   restarts. Live mode exposes no manual unpaid decision.
+6. Canonical TikTok payment state moves from `unknown` to one terminal result:
+   `canceled` or `payment_complete`. Once either result is stored, later contradictory
+   payment observations cannot reverse it.
 7. Clicking an already-selected inventory item removes only the mapping. Any pending
    reservation is released; a completed auction keeps its final price and completed GMV
-   but becomes `unmapped_completed` until it is tagged again. An existing unpaid decision
-   is preserved and can still be undone.
+   but becomes `unmapped_completed` until it is tagged again. A canceled variation cannot
+   be mapped, unmapped, or remapped.
 
 ### Permanent payment failure and re-auction
 
@@ -137,18 +136,17 @@ buffer expires:
 3. If the same physical item is auctioned again, TikTok assigns a new variation number.
 4. The employee maps that new variation as a separate auction.
 
-**Mark unpaid must be undoable.** It remains a local fallback after the buffer for a
-nonterminal record when exact `Canceled` was not captured; the action is unavailable for
-canonical canceled or completed records. If a variation turns green after being marked
-unpaid or canceled, TikTok wins: the engine commits the sale and surfaces the appropriate
-conflict for review.
+Live mode does not infer cancellation with a timer and exposes no **Mark unpaid** or
+**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge. Manual unpaid
+simulation remains confined to Offline demo and cannot mutate canonical live state.
 
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
 rules module. The saved tagger uses its read model while the service-worker coordinator
-owns persistent mapping, mark-unpaid, undo-unpaid, capture-observation, and captured
-current-bidding, payment-status, payment-complete, and Attributed-GMV operations. The
+owns persistent mapping, rejects legacy manual-unpaid commands, and owns captured
+variation, current-bidding, payment-status, payment-complete, and Attributed-GMV
+operations. The
 separate offline demo also uses its payment-complete operation. Simulated-payment undo is
 a private demo-session checkpoint, not a reconciliation-engine operation.
 
@@ -168,11 +166,12 @@ Implemented behavior includes:
   is a conflict.
 - Accepting employee mapping and completed-payment events in either order.
 - Persisting processing, fixing, failed, and unrecognized as nonterminal observed statuses
-  without changing remaining inventory or money; only processing/fixing reserve availability.
+  without changing money; a mapped canonical-unknown auction stays reserved regardless
+  of which of those observations is latest.
 - Promoting exact `Canceled` to a canonical terminal allocation result that preserves the
   mapping, releases its reservation, and contributes no sale or money.
-- Letting a later priced completion override cancellation while warning that TikTok's
-  completion won and inventory was counted.
+- Treating exact cancellation and priced completion as mutually exclusive terminal
+  results; stale contradictory observations are ignored.
 - Using `(streamId, variationNumber)` to keep auctions distinct.
 - Ignoring an identical repeated payment event.
 - Retaining the first completed price and warning about a later conflicting price.
@@ -184,11 +183,12 @@ Implemented behavior includes:
   profit.
 - Leaving remaining inventory and profit unchanged for pending, canceled, and
   marked-unpaid records.
-- Tracking mapped processing/fixing units as pending reservations; the tagger uses the
-  derived availability to stop another pending auction from claiming the same last unit.
+- Tracking every mapped canonical-unknown auction as a pending reservation from bidding
+  until completion or cancellation.
 - Recording a real completed sale even if inventory becomes negative, while surfacing an
   oversold warning.
-- Rejecting a new or pending mapping to an exhausted SKU without changing state.
+- Allowing non-canceled auctions to select an exhausted SKU and reporting the shortage as
+  `Oversold by N` instead of disabling or rejecting the mapping.
 - Separating completed GMV from mapped revenue and gross profit.
 - Storing the latest sanitized TikTok Attributed GMV display on its stream without
   converting a rounded compact value into invented exact cents.
@@ -203,16 +203,18 @@ Inventory exposes two deliberately different quantities:
 ```text
 remainingQuantity = quantityOnHandAtImport - completed sales under the pinned baseline
 availableToTagQuantity = remainingQuantity - pending reservations
+displayedAvailableQuantity = max(0, availableToTagQuantity)
+oversoldQuantity = max(0, -availableToTagQuantity)
 ```
 
-Only mapped processing/fixing records reduce what the employee can tag next, but they do
-not count as sold or reduce reported remaining inventory. Cards expose these values separately,
-for example `5 left` stacked above `1 pending`, rather than presenting availability as
-remaining stock. Failed, not-yet-observed, unrecognized, and unpriced-complete selections
-show no pending count. Exact cancellation releases any reservation while retaining the
-item link; marking an auction unpaid also releases one if present, undo derives it again
-from the observed status, and priced payment completion converts a reservation into a
-completed sale.
+Every mapped canonical-unknown record contributes one pending reservation but does not
+count as sold. Cards present the nonnegative available count after reservations, for
+example `4 left` stacked above `1 pending` from an opening quantity of five. Exact
+cancellation releases the reservation while retaining the item link as read-only
+history; priced completion converts the reservation into a completed sale without
+double-counting it. A zero-stock card remains selectable for every non-canceled order,
+never says **Sold out**, and reports `Oversold by N` for allocations beyond the imported
+quantity.
 
 ### Baseline and summary scope
 
@@ -408,16 +410,16 @@ and automatic page-to-session association remain later identity work.
 
 | Dashboard fact | Current action | Status |
 | --- | --- | --- |
-| One `#N` value appears in the unique visible on-video `auction-pin-card` | Create/activate that bidding variation under the worker-resolved stream and select it in the open tagger | Implemented; sends only the number and does not affect payment or inventory |
+| One `#N` value appears in the unique visible on-video `auction-pin-card` | Create/activate that bidding variation under the worker-resolved stream and select it in the open tagger | Implemented; sends only the number; selecting inventory for it immediately creates a reservation |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
-| Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit is pending while remaining is unchanged |
-| Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; an item selection stays linked but unreserved |
+| Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
+| Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
 | Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | Exact `Attributed GMV` metric appears under the unique analytics boundary | Persist only its sanitized exact/compact USD display under the worker-resolved active stream | Implemented; independent of Sold Items and no aggregate-to-cents conversion |
 | A bidding, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding supplies identity only, not sale truth |
 | Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
-| Priced `Payment complete` follows `Canceled` | Let completion win, commit the mapped sale, and show a conflict warning | Implemented |
+| Any payment observation follows canonical `Canceled` | Ignore the stale contradiction | Implemented; cancellation is terminal |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
 
 ### Planned end-of-stream reconciliation
@@ -452,8 +454,8 @@ opens in Live session mode. A compact **Demo** button beside the Prototype badge
 accessible pressed-state toggle between the modes:
 
 - **Live session** is the default employee workspace. It requires a persistent local
-  active stream, restores the last durable reconciliation state, persists mapping and
-  unpaid corrections, and displays loading, saving, success, and retryable error states.
+  active stream, restores the last durable reconciliation state, persists mapping
+  corrections, and displays loading, saving, success, and retryable error states.
 - **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
   isolated state, sends no persistent commands, and resets when recreated or reloaded.
 
@@ -478,16 +480,18 @@ Shared tagger behavior includes:
   variation stays selected while newer markers and status changes update the dropdown.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
-- Engine-derived remaining, processing/fixing reservation, available-to-tag, and sold-out
-  states; cards show pending only for processing/fixing reservations.
+- Engine-derived remaining, pending, available, and oversold states. Cards show a pending
+  reservation from mapping during bidding until completion or cancellation. Zero-stock
+  cards remain enabled and show `Oversold by N` when over-allocated.
 - One-click mapping and correction of the selected current or previous variation;
   clicking the selected inventory card again removes that mapping.
 - A separate visible **TikTok payment** row for processing, fixing, failed, canceled,
   complete, unrecognized, or not-yet-observed state, independent of the **Inventory tag**
   row.
 - A canceled result that keeps the historical item link visible, reports that its
-  reservation was released and stock stayed unchanged, and hides payment-lifecycle
-  actions that no longer apply.
+  reservation was released and stock stayed unchanged, greys out every inventory card,
+  rejects map/unmap/remap commands, and hides payment-lifecycle actions that no longer
+  apply.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
 - Clearly labeled offline-demo controls that simulate a completed payment and expired
@@ -515,18 +519,18 @@ Shared tagger behavior includes:
 - **Undo simulated payment**, which restores only the selected variation's isolated demo
   payment state while preserving later mapping corrections and edits to other variations,
   removes that simulated revenue/profit deduction, and returns focus to item selection.
-- **Mark unpaid after buffer** and **Undo unpaid** behavior that leaves remaining inventory
-  and profit unchanged; marking unpaid releases any reservation and undo derives the
-  reservation again only when the observed status is processing/fixing.
+- Demo-only **Mark unpaid after buffer** and **Undo unpaid** simulations. Live mode omits
+  both controls and relies solely on captured TikTok completion or cancellation.
 - Unmapping that releases pending reservations, preserves an unpaid decision, and returns
   a completed sale to the item-needed exception without changing its payment or GMV.
 - Mapping correction after completion, applied atomically by restoring the old SKU,
   decrementing the new SKU, and recalculating committed cost and profit.
 - An inventory warning when a truthful historical correction produces negative stock.
-- Unavailable, unselected entries disabled for new or pending mappings. The selected entry
-  stays usable, while historical completed or canceled attribution can still be safely
-  remapped or removed even when a destination is sold out. A completed correction warns
-  when it truthfully produces a shortage.
+- Every inventory entry remains selectable for bidding, pending, and completed
+  non-canceled orders, including at zero availability. A correction or new reservation
+  that exceeds stock produces an `Oversold by N` warning. Only selecting a canonically
+  canceled variation disables the inventory grid; its historical attribution is
+  read-only.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
 Live-session mode requires a persistent local tracker stream and an imported inventory
@@ -549,7 +553,7 @@ stream, its pin, baselines, or reconciliation history, and it does not start or 
 TikTok LIVE. Creating or activating another baseline is blocked while any local tracker
 stream is active, so a session cannot cross a recount boundary. End is always available
 for a known active local stream, including before the inventory workspace is resumed and
-while processing/fixing reservations or completed sales without items remain unresolved.
+while pending reservations or completed sales without items remain unresolved.
 Reconciliation history and its current inventory effects remain saved. Ended streams
 cannot yet be reopened in the tagger, so
 employees should finish any corrections they still need and wait for expected capture
@@ -612,7 +616,7 @@ stores one reconciliation snapshot beneath the stable key
 {
   schemaVersion: 1,
   reconciliationState: {
-    version: 6,
+  version: 7,
     activeInventoryBaselineId: "inventory-baseline:<uuid>",
     inventoryBaselines: [{
       baselineId: "inventory-baseline:<uuid>",
@@ -643,26 +647,34 @@ hydrates and validates every read, returns `null` only when the key is truly abs
 reports malformed, unsupported, or failed reads and writes as typed errors. It never
 silently clears or replaces corrupt or future-version data.
 
-Reconciliation state is version 6. The outer storage envelope deliberately remains
+Reconciliation state is version 7. The outer storage envelope deliberately remains
 schema version 1. Version 4 replaced the mutable top-level inventory array with an
 append-only `inventoryBaselines` collection, an active-baseline pointer for future
 streams, and an immutable `inventoryBaselineId` pin on every stream. Version 5 adds the
 nullable, sanitized `attributedGmvDisplay` field to each stream. Version 6 adds the
 nullable `activeBiddingVariationNumber`, which must reference a variation in the same
-stream.
+stream. Version 7 removes persisted manual unpaid decisions from the Live lifecycle.
 
-Strict version-1 through version-5 snapshots are migrated in memory to detached
-version-6 state. Version-1 through version-3 legacy `inventory` becomes one
+Strict version-1 through version-6 snapshots are migrated in memory to detached
+version-7 state. Version-1 through version-3 legacy `inventory` becomes one
 deterministic baseline with `sourceFingerprint: null`; `name` becomes `item`, `style` is
 blank, and `quantityReceived` becomes `quantityOnHandAtImport`. Every legacy stream is pinned to
 that baseline. Payment migrations still infer version-1 observed status and promote an
 exact version-2 observed `canceled` value to canonical cancellation. A valid version-4
 baseline snapshot keeps its existing baseline pins and receives
 `attributedGmvDisplay: null` on every stream. A valid version-5 snapshot retains its GMV
-display and receives `activeBiddingVariationNumber: null`. Dangling bidding markers,
+display and receives `activeBiddingVariationNumber: null`. During every version-1 through
+version-6 migration, `mappingStatus: "marked_unpaid"` becomes `mapped` when the order has
+a SKU or `unmapped` otherwise. Its canonical payment remains unresolved, so automatic
+TikTok tracking and any mapped reservation resume without the removed manual Undo action.
+Versions 3 through 6 could also contain the former
+`payment_completed_after_canceled` conflict. Migration repairs that contradiction to
+canonical terminal cancellation, clears its stale completed price and cost allocation,
+and retains any SKU only as canceled read-only history. Canonical version 7 rejects that
+legacy conflict. Dangling bidding markers,
 baseline, SKU, and committed-cost
 relationships, malformed legacy data, and future versions all fail closed. The next real
-mutation persists version 6 without changing the envelope.
+mutation persists version 7 without changing the envelope.
 
 Active-stream lifecycle is deliberately stored separately beneath
 `tiktokLiveTracker.streamSession`:
@@ -756,8 +768,8 @@ session-before-inventory startup sequence. Only a successfully started or resume
 pinned session mounts the persistent tagger controller, which renders inventory from the
 stream's pinned baseline rather than a mutable global inventory array.
 
-Mapping, unmapping, **Mark unpaid**, and **Undo unpaid** are sent to the worker with the
-selected `(streamId, variationNumber)`. The UI keeps its last good view while a command
+Live mapping and unmapping are sent to the worker with the selected
+`(streamId, variationNumber)`. The UI keeps its last good view while a command
 is saving, publishes only the worker's successfully persisted response, and offers retry
 after safe errors. Capture invalidations use the same GET boundary, are serialized with
 employee changes, and retain the last good view on refresh failure. Repeated notices are
@@ -843,7 +855,7 @@ and case-folding employee-facing text.
 
 `quantity_on_hand_at_import` is an **opening baseline**, not a lifetime quantity received
 and not a value that the tracker writes down after each sale. It means the physical units
-counted at the instant the employee confirms an import. The pure parser and version-6
+counted at the instant the employee confirms an import. The pure parser and version-7
 engine both retain that meaning as the immutable `quantityOnHandAtImport` field:
 
 ```text
@@ -966,7 +978,7 @@ is sent to Google, because outbound export is not implemented.
 | `sold_price` | Final price from a payment-complete row |
 | `payment_status` | Canonical `unknown`, `canceled`, or `payment_complete` sale truth |
 | `observed_payment_status` | Latest sanitized Sold Items status: not observed, processing, fixing, failed, canceled, complete, or unrecognized |
-| `mapping_status` | `unmapped`, `mapped`, or `marked_unpaid` |
+| `mapping_status` | Current saved state uses `unmapped` or `mapped`; legacy v1-v6 `marked_unpaid` is normalized during migration |
 | `status` | Derived engine status such as `mapped`, `pending`, `canceled`, `unmapped_completed`, or `committed` |
 | `sku` | Employee-selected inventory key; blank while unmapped |
 | `unit_cost` | Cost snapshot used for the current mapping |
@@ -1018,10 +1030,10 @@ answer these questions; offline fixtures alone cannot complete the validation:
 
 - Do `Payment processing` and `Payment fixing`
   exactly match production text across accounts/locales, and what transitions are valid?
-- Do production transitions confirm the current allocation rule: processing/fixing are
-  pending reservations, while failed, not-yet-observed, unrecognized, and unpriced-complete
-  selections remain linked but unreserved? Exact `Canceled` already has canonical
-  inventory-allocation semantics.
+- Do production transitions preserve the confirmed allocation rule across accounts: a
+  mapped bidding item stays pending through processing, fixing, temporary failed,
+  unrecognized, and price-less completion observations until exact `Canceled` or priced
+  `Payment complete` resolves it?
 - Does the observed `m4b_space` Sold Items identity remain unique across different
   accounts, streams, modes, scrolling states, and TikTok deployments?
 - Is the Sold Items list virtualized or replaced as it grows, and can every earlier row

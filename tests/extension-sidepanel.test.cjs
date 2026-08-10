@@ -318,9 +318,8 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(
     html,
-    /Remaining inventory changes only after Payment complete\.[\s\S]+Pending appears[\s\S]+only while TikTok shows Payment processing or Payment fixing[\s\S]+reduces what is available to tag\./,
+    /Selecting an item reserves one unit until TikTok reports Payment[\s\S]+complete or Canceled\.[\s\S]+Temporary Payment failed remains pending\.[\s\S]+Zero-stock items remain selectable[\s\S]+oversold\./,
   );
-  assert.match(html, /Click the selected card again to remove\s+its item/);
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
@@ -338,7 +337,10 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /<label[^>]+for="sold-price"/);
   assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
   assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
-  assert.match(html, />Saved order controls</);
+  assert.match(
+    html,
+    /id="lifecycle-controls"[^>]+hidden[\s\S]+>\s*Offline test controls\s*</,
+  );
   assert.match(html, />\s*Simulate payment complete\s*</);
   assert.match(html, />\s*Simulate payment buffer expired\s*</);
   assert.match(html, />\s*Mark unpaid after buffer\s*</);
@@ -595,8 +597,8 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     workflowSource,
     /reconciliation\.unmapVariation\([\s\S]+simulatedPaymentCheckpoint\.state/,
   );
-  assert.match(panelSource, /persistentController\.markSelectedUnpaid/);
-  assert.match(panelSource, /persistentController\.undoSelectedUnpaid/);
+  assert.doesNotMatch(panelSource, /persistentController\.markSelectedUnpaid/);
+  assert.doesNotMatch(panelSource, /persistentController\.undoSelectedUnpaid/);
   assert.match(panelSource, /const mountedController = persistentController/);
   assert.match(panelSource, /mountedController\.start\(\)/);
   assert.match(panelSource, /persistentController\.retry\(\)/);
@@ -742,18 +744,14 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(workflowSource, /canceled: "Canceled"/);
   assert.match(
     workflowSource,
-    /auction\?\.paymentStatus === "canceled" \|\|[\s\S]+auction\?\.paymentStatus === "payment_complete"/,
+    /const canceled = auction\?\.paymentStatus === "canceled"[\s\S]+const selectionAllowed = !canceled/,
   );
   assert.match(
     workflowSource,
-    /previousAuction\?\.paymentStatus === "canceled" \|\|[\s\S]+previousAuction\?\.paymentStatus === "payment_complete"/,
+    /if \(previousAuction\?\.paymentStatus === "canceled"\)[\s\S]+"CANCELED_VARIATION_IMMUTABLE"/,
   );
-  assert.match(workflowSource, /"canceled_order_mapped"/);
-  assert.match(workflowSource, /"canceled_mapping_corrected"/);
-  assert.match(
-    workflowSource,
-    /error\?\.code !== "NO_STOCK_AVAILABLE"[\s\S]+simulatedPaymentCheckpoints\.delete\(selectedEventKey\(\)\)/,
-  );
+  assert.doesNotMatch(workflowSource, /"SOLD_OUT"|"NO_STOCK_AVAILABLE"/);
+  assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
   assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
   assert.doesNotMatch(
     panelSource,
@@ -792,35 +790,28 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /TikTok shows Payment complete, but the final price is still syncing\./,
   );
-  assert.match(panelSource, /without a pending reservation/);
+  assert.match(panelSource, /remains reserved and pending/);
   assert.match(
     panelSource,
-    /lifecycleControls\.hidden =[\s\S]+completionAwaitingPrice \|\|/,
+    /lifecycleControls\.hidden =[\s\S]+!offlineDemo \|\|[\s\S]+completionAwaitingPrice \|\|/,
   );
   assert.match(
     panelSource,
-    /markUnpaidButton\.hidden = completionAwaitingPrice \|\|/,
+    /markUnpaidButton\.hidden =[\s\S]+!offlineDemo \|\| completionAwaitingPrice/,
   );
   assert.match(
     panelSource,
     /markUnpaidButton\.disabled = completionAwaitingPrice/,
   );
-  assert.match(
-    panelSource,
-    /"Item linked · reservation released · stock unchanged"/,
-  );
-  assert.match(panelSource, /selectedLabel\.textContent = "Linked"/);
-  assert.match(panelSource, /is linked to canceled variation/);
-  assert.match(panelSource, /Stock counts will not change/);
+  assert.match(panelSource, /"Canceled item · reservation released · stock restored"/);
+  assert.match(panelSource, /selectedLabel\.textContent = "Canceled item"/);
+  assert.match(panelSource, /this history is read-only/);
+  assert.match(panelSource, /button\.dataset\.lockedReason = canceled \? "canceled" : ""/);
+  assert.match(styleSource, /data-locked-reason="canceled"/);
   assert.match(panelSource, /const canceled = view\.auction\?\.status === "canceled"/);
   assert.match(panelSource, /lifecycleControls\.hidden =[\s\S]+canceled \|\|/);
-  assert.match(panelSource, /payment_completed_after_canceled/);
-  assert.match(
-    panelSource,
-    /TikTok completion won, inventory was counted, and the order was flagged for review/,
-  );
-  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link saved locally/);
-  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link removed/);
+  assert.doesNotMatch(panelSource, /payment_completed_after_canceled/);
+  assert.match(panelSource, /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/);
   assert.match(
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,

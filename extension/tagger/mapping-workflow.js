@@ -15,8 +15,6 @@
       "calculateSummary",
       "createReconciliationState",
       "getAuction",
-      "getInventoryAvailability",
-      "hydrateReconciliationState",
       "mapVariation",
       "markUnpaid",
       "recordPaymentComplete",
@@ -326,28 +324,17 @@
           summary.inventory.map((entry) => [entry.sku, entry]),
         );
         const auction = reconciliation.getAuction(state, auctionKey());
-        const allowsHistoricalCorrection =
-          auction?.paymentStatus === "canceled" ||
-          auction?.paymentStatus === "payment_complete" ||
-          auction?.mappingStatus === "marked_unpaid";
+        const canceled = auction?.paymentStatus === "canceled";
 
         return inventory.map((displayEntry) => {
           const canonicalEntry = summaryBySku.get(displayEntry.sku);
           const selected = auction?.sku === displayEntry.sku;
-          const hasCapacity = canonicalEntry.availableToTagQuantity > 0;
-          const selectionAllowed =
-            selected || allowsHistoricalCorrection || hasCapacity;
-          let selectionReason = "available";
-
-          if (selected) {
-            selectionReason = "selected";
-          } else if (allowsHistoricalCorrection && !hasCapacity) {
-            selectionReason = "correction_allowed";
-          } else if (!hasCapacity) {
-            selectionReason = canonicalEntry.remainingQuantity <= 0
-              ? "sold_out"
-              : "fully_reserved";
-          }
+          const selectionAllowed = !canceled;
+          const selectionReason = canceled
+            ? "canceled"
+            : selected
+              ? "selected"
+              : "available";
 
           return {
             ...displayEntry,
@@ -399,12 +386,15 @@
               offlineSimulationEnabled &&
               (isMapped || isPending) &&
               !paymentBufferExpired,
-            canMarkUnpaid: (isMapped || isPending) && paymentBufferExpired,
+            canMarkUnpaid:
+              offlineSimulationEnabled &&
+              (isMapped || isPending) &&
+              paymentBufferExpired,
             canUndoSimulatedPayment:
               offlineSimulationEnabled &&
               simulatedPaymentCheckpoint !== null &&
               auction?.paymentStatus === "payment_complete",
-            canUndoUnpaid: isMarkedUnpaid,
+            canUndoUnpaid: offlineSimulationEnabled && isMarkedUnpaid,
           },
         };
       }
@@ -477,6 +467,13 @@
         const sameSku = previousAuction?.sku === sku;
         const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
 
+        if (previousAuction?.paymentStatus === "canceled") {
+          return createRejectedResult(
+            "CANCELED_VARIATION_IMMUTABLE",
+            "Canceled variations keep their previous item as read-only history and cannot change inventory.",
+          );
+        }
+
         if (sameSku) {
           reconciliation.unmapVariation(state, auctionKey());
 
@@ -493,49 +490,13 @@
           });
         }
 
-        const historicalCorrection =
-          previousAuction?.paymentStatus === "canceled" ||
-          previousAuction?.paymentStatus === "payment_complete" ||
-          previousAuction?.mappingStatus === "marked_unpaid";
-        const availability = reconciliation.getInventoryAvailability(
-          state,
-          auctionKey({ sku }),
-        );
-
-        if (
-          !sameSku &&
-          !historicalCorrection &&
-          availability.availableToTagQuantity <= 0
-        ) {
-          const soldOut = availability.remainingQuantity <= 0;
-
-          return createRejectedResult(
-            soldOut ? "SOLD_OUT" : "NO_STOCK_AVAILABLE",
-            soldOut
-              ? `${entry.item}${entry.style ? ` - ${entry.style}` : ""} is sold out.`
-              : `${entry.item}${entry.style ? ` - ${entry.style}` : ""} is already reserved for pending auctions.`,
-          );
-        }
-
         reconciliation.mapVariation(state, auctionKey({ sku }));
 
         if (simulatedPaymentCheckpoint) {
-          try {
-            reconciliation.mapVariation(
-              simulatedPaymentCheckpoint.state,
-              auctionKey({ sku }),
-            );
-          } catch (error) {
-            if (error?.code !== "NO_STOCK_AVAILABLE") {
-              throw error;
-            }
-
-            // A completed demo sale may be corrected to a sold-out SKU for
-            // historical accuracy, but its pre-completion checkpoint is still
-            // pending and cannot safely reserve that SKU. Keep the correction
-            // and retire only the now-invalid local undo checkpoint.
-            simulatedPaymentCheckpoints.delete(selectedEventKey());
-          }
+          reconciliation.mapVariation(
+            simulatedPaymentCheckpoint.state,
+            auctionKey({ sku }),
+          );
         }
 
         let action = "mapped";
@@ -545,10 +506,6 @@
           !previousAuction.sku
         ) {
           action = "completed_sale_mapped";
-        } else if (previousAuction?.paymentStatus === "canceled") {
-          action = previousAuction.sku
-            ? "canceled_mapping_corrected"
-            : "canceled_order_mapped";
         } else if (previousAuction?.mappingStatus === "marked_unpaid") {
           action = "unpaid_mapping_corrected";
         } else if (previousAuction?.sku) {
@@ -667,7 +624,12 @@
         nextStream.variations[nextAuctionIndex] = cloneSerializableState(
           checkpointAuction,
         );
-        state = reconciliation.hydrateReconciliationState(nextState);
+        // Offline Demo may intentionally contain temporary marked_unpaid
+        // auctions, which are forbidden at the persisted Live-state boundary.
+        // Both inputs were created and mutated solely by this isolated session,
+        // so restore the detached in-memory clone without invoking persistence
+        // hydration. Live sessions can never enter this branch.
+        state = nextState;
         paymentBufferExpiredByEvent.set(
           selectedEventKey(),
           simulatedPaymentCheckpoint.paymentBufferExpired,
@@ -706,6 +668,13 @@
       }
 
       function markCurrentUnpaid() {
+        if (!offlineSimulationEnabled) {
+          return createRejectedResult(
+            "UNPAID_SIMULATION_DISABLED",
+            "Unpaid-order simulation is available only in the isolated offline demo.",
+          );
+        }
+
         const auction = reconciliation.getAuction(state, auctionKey());
 
         if (!auction?.sku) {
@@ -746,6 +715,13 @@
       }
 
       function undoCurrentUnpaid() {
+        if (!offlineSimulationEnabled) {
+          return createRejectedResult(
+            "UNPAID_SIMULATION_DISABLED",
+            "Unpaid-order simulation is available only in the isolated offline demo.",
+          );
+        }
+
         const auction = reconciliation.getAuction(state, auctionKey());
 
         if (auction?.mappingStatus !== "marked_unpaid") {

@@ -288,8 +288,8 @@ test("current state strictly migrates a detached v4 stream with no Attributed GM
 
   const migrated = reconciliation.hydrateReconciliationState(v4);
 
-  assert.equal(reconciliation.STATE_VERSION, 6);
-  assert.equal(migrated.version, 6);
+  assert.equal(reconciliation.STATE_VERSION, 7);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.streams[0].attributedGmvDisplay, null);
   assert.notEqual(migrated, v4);
   assert.notEqual(migrated.streams, v4.streams);

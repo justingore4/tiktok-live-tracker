@@ -425,7 +425,7 @@ test("persists payment-status batches once and skips identical retries", async (
   assert.equal(observed.state.streams[0].variations[2].paymentStatus, "canceled");
 });
 
-test("persists live reservation transitions only for processing and fixing", async () => {
+test("persists mapped reservations through every nonterminal payment status", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);
   const coordinator = createCoordinator(memoryStore);
@@ -461,11 +461,11 @@ test("persists live reservation transitions only for processing and fixing", asy
     sku: "BLACK-TEE-M",
   };
 
-  assert.equal(mapped.result.status, "mapped");
+  assert.equal(mapped.result.status, "pending");
   assert.equal(
     reconciliation.getInventoryAvailability(mapped.state, key)
       .reservedQuantity,
-    0,
+    1,
   );
   assert.equal(
     reconciliation.getAuction(processing.state, key).status,
@@ -476,11 +476,11 @@ test("persists live reservation transitions only for processing and fixing", asy
       .reservedQuantity,
     1,
   );
-  assert.equal(reconciliation.getAuction(failed.state, key).status, "mapped");
+  assert.equal(reconciliation.getAuction(failed.state, key).status, "pending");
   assert.equal(
     reconciliation.getInventoryAvailability(failed.state, key)
       .reservedQuantity,
-    0,
+    1,
   );
   assert.equal(reconciliation.getAuction(fixing.state, key).status, "pending");
   assert.equal(
@@ -642,12 +642,11 @@ test("serializes statuses while cancellation and priced completion stay sticky",
   );
   assert.equal(
     completed.state.streams[0].variations[0].observedPaymentStatus,
-    "payment_complete",
+    "canceled",
   );
-  assert.equal(completed.state.streams[0].variations[0].soldPriceCents, 3200);
-  assert.deepEqual(completed.result.conflicts, [
-    { code: "payment_completed_after_canceled" },
-  ]);
+  assert.equal(completed.state.streams[0].variations[0].soldPriceCents, null);
+  assert.equal(completed.result.status, "canceled");
+  assert.deepEqual(completed.result.conflicts, []);
   assert.deepEqual(lateFailure.result, {
     status: "already_observed",
     observedCount: 1,
@@ -657,7 +656,7 @@ test("serializes statuses while cancellation and priced completion stay sticky",
   assert.equal(memoryStore.calls.save.length, writesBeforeLateStatus);
   assert.equal(
     lateFailure.state.streams[0].variations[0].observedPaymentStatus,
-    "payment_complete",
+    "canceled",
   );
 });
 
@@ -678,7 +677,7 @@ test("identical completed-payment retries do not write again", async () => {
   assert.deepEqual(memoryStore.getPersistedState(), storedState);
 });
 
-test("routes mapping, payment, unpaid, and undo commands through one state", async () => {
+test("routes mapping and payment while rejecting retired manual-unpaid commands", async () => {
   const memoryStore = createMemoryStateStore();
   const coordinator = createCoordinator(memoryStore);
 
@@ -686,20 +685,28 @@ test("routes mapping, payment, unpaid, and undo commands through one state", asy
   const mapped = await coordinator.dispatch(mapCommand(1));
   const completed = await coordinator.dispatch(paymentCommand(1));
   await coordinator.dispatch(mapCommand(2, "GREY-HOODIE-L"));
-  const unpaid = await coordinator.dispatch(
-    unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 2),
+  const persistedBeforeRejections = memoryStore.getPersistedState();
+
+  await assertErrorCode(
+    () => coordinator.dispatch(
+      unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 2),
+    ),
+    "MANUAL_UNPAID_DISABLED",
+    ReconciliationCoordinatorError,
   );
-  const undone = await coordinator.dispatch(
-    unpaidCommand(COMMAND_TYPES.UNDO_MARK_UNPAID, 2),
+  await assertErrorCode(
+    () => coordinator.dispatch(
+      unpaidCommand(COMMAND_TYPES.UNDO_MARK_UNPAID, 2),
+    ),
+    "MANUAL_UNPAID_DISABLED",
+    ReconciliationCoordinatorError,
   );
 
-  assert.equal(mapped.result.status, "mapped");
+  assert.equal(mapped.result.status, "pending");
   assert.equal(completed.result.status, "committed");
   assert.equal(completed.result.profitCents, 3600);
-  assert.equal(unpaid.result.status, "marked_unpaid");
-  assert.equal(undone.result.status, "mapped");
-  assert.equal(memoryStore.calls.save.length, 6);
-  assert.deepEqual(memoryStore.getPersistedState(), undone.state);
+  assert.equal(memoryStore.calls.save.length, 4);
+  assert.deepEqual(memoryStore.getPersistedState(), persistedBeforeRejections);
 });
 
 test("supports payment arriving before employee mapping", async () => {
@@ -716,7 +723,7 @@ test("supports payment arriving before employee mapping", async () => {
   assert.equal(memoryStore.calls.save.length, 2);
 });
 
-test("rejects marking an observed unpriced completion unpaid without writing", async () => {
+test("rejects retired manual-unpaid commands without writing", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);
   const coordinator = createCoordinator(memoryStore);
@@ -737,7 +744,8 @@ test("rejects marking an observed unpriced completion unpaid without writing", a
       coordinator.dispatch(
         unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 147),
       ),
-    "PAYMENT_ALREADY_COMPLETE",
+    "MANUAL_UNPAID_DISABLED",
+    ReconciliationCoordinatorError,
   );
 
   assert.equal(memoryStore.calls.save.length, 2);
@@ -812,7 +820,7 @@ test("serializes concurrent writes without losing an update", async () => {
   assert.equal(memoryStore.getMaximumActiveSaves(), 1);
 });
 
-test("serializes competing last-unit mappings and rejects the loser atomically", async () => {
+test("serializes competing last-unit mappings and records visible over-allocation", async () => {
   const lastUnitInventory = [
     {
       sku: "BLACK-TEE-M",
@@ -848,25 +856,31 @@ test("serializes competing last-unit mappings and rejects the loser atomically",
 
   assert.equal(outcomes[0].status, "fulfilled");
   assert.equal(outcomes[0].value.result.status, "pending");
-  assert.equal(outcomes[1].status, "rejected");
-  assert.ok(outcomes[1].reason instanceof reconciliation.ReconciliationError);
-  assert.equal(outcomes[1].reason.code, "NO_STOCK_AVAILABLE");
-  assert.equal(memoryStore.calls.save.length, 1);
+  assert.equal(outcomes[1].status, "fulfilled");
+  assert.equal(outcomes[1].value.result.status, "pending");
+  assert.equal(memoryStore.calls.save.length, 2);
   assert.deepEqual(
     memoryStore.getPersistedState().streams[0].variations.map(
       (auction) => [auction.variationNumber, auction.sku],
     ),
     [
       [14, "BLACK-TEE-M"],
-      [15, null],
+      [15, "BLACK-TEE-M"],
     ],
   );
+  const availability = reconciliation.getInventoryAvailability(
+    memoryStore.getPersistedState(),
+    { sku: "BLACK-TEE-M" },
+  );
+
+  assert.equal(availability.reservedQuantity, 2);
+  assert.equal(availability.oversoldQuantity, 1);
 
   const repeated = await coordinator.dispatch(mapCommand(14));
   const snapshot = await coordinator.dispatch(getStateCommand());
 
   assert.equal(repeated.result.status, "pending");
-  assert.equal(memoryStore.calls.save.length, 1);
+  assert.equal(memoryStore.calls.save.length, 2);
   assert.deepEqual(snapshot.state, memoryStore.getPersistedState());
 });
 
@@ -1017,7 +1031,7 @@ test("engine rejection creates no partial state and does not poison later comman
   assert.equal(memoryStore.calls.save.length, 0);
 
   const successful = await coordinator.dispatch(mapCommand(41));
-  assert.equal(successful.result.status, "mapped");
+  assert.equal(successful.result.status, "pending");
   assert.equal(memoryStore.calls.save.length, 1);
 });
 

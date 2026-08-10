@@ -437,11 +437,11 @@
 
         <p id="state-warning" class="state-warning" role="status" hidden></p>
 
-        <fieldset id="lifecycle-controls" class="lifecycle-controls">
-          <legend id="lifecycle-controls-legend">Saved order controls</legend>
+        <fieldset id="lifecycle-controls" class="lifecycle-controls" hidden>
+          <legend id="lifecycle-controls-legend">Offline test controls</legend>
           <p id="lifecycle-controls-note" class="demo-controls-note">
-            Mark unpaid only after TikTok's payment buffer has expired. These
-            employee changes are saved locally.
+            These controls simulate TikTok events in temporary memory and do
+            not act on TikTok.
           </p>
 
           <form id="complete-payment-form" novalidate>
@@ -525,11 +525,10 @@
           </button>
         </div>
 
-        <p class="selection-note">
-          Remaining inventory changes only after Payment complete. Pending appears
-          only while TikTok shows Payment processing or Payment fixing, and temporarily
-          reduces what is available to tag. Click the selected card again to remove
-          its item.
+        <p id="inventory-selection-note" class="selection-note">
+          Selecting an item reserves one unit until TikTok reports Payment
+          complete or Canceled. Temporary Payment failed remains pending.
+          Zero-stock items remain selectable and show how far they are oversold.
         </p>
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>

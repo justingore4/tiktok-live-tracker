@@ -435,7 +435,7 @@ test("live capture and persistent tagging reconcile six inventory entries withou
   );
 });
 
-test("a live canceled payment releases its reservation and a late priced completion wins once", async () => {
+test("a live failed payment stays reserved until terminal cancellation restores and locks inventory", async () => {
   const storageArea = createStorageArea();
   const stateCoordinator = createStateCoordinator(storageArea);
   const activeStreamCoordinator = createActiveStreamCoordinator(storageArea);
@@ -475,22 +475,12 @@ test("a live canceled payment releases its reservation and a late priced complet
     snapshot = await controller.refresh();
 
     assert.equal(snapshot.view.auction.observedPaymentStatus, status);
-    assert.deepEqual(
-      inventoryQuantities(snapshot, STUSSY_L_SKU),
-      status === captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING
-        ? {
-            availableToTagQuantity: 4,
-            remainingQuantity: 5,
-            reservedQuantity: 1,
-            soldQuantity: 0,
-          }
-        : {
-            availableToTagQuantity: 5,
-            remainingQuantity: 5,
-            reservedQuantity: 0,
-            soldQuantity: 0,
-          },
-    );
+    assert.deepEqual(inventoryQuantities(snapshot, STUSSY_L_SKU), {
+      availableToTagQuantity: 4,
+      remainingQuantity: 5,
+      reservedQuantity: 1,
+      soldQuantity: 0,
+    });
   }
 
   await capturePaymentStatus(
@@ -545,6 +535,10 @@ test("a live canceled payment releases its reservation and a late priced complet
   assert.equal(snapshot.view.auction.paymentStatus, "canceled");
   assert.equal(snapshot.view.auction.observedPaymentStatus, "canceled");
 
+  const beforeIgnoredCompletion = (
+    await stateCoordinator.dispatch({ type: "get_state" })
+  ).state;
+
   await capture.dispatch({
     type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
     variationNumber: COMPLETED_VARIATION,
@@ -552,43 +546,55 @@ test("a live canceled payment releases its reservation and a late priced complet
   });
   snapshot = await controller.refresh();
 
-  assert.equal(snapshot.view.auction.status, "committed");
-  assert.equal(snapshot.view.auction.paymentStatus, "payment_complete");
-  assert.equal(snapshot.view.auction.observedPaymentStatus, "payment_complete");
-  assert.deepEqual(snapshot.view.auction.conflicts, [
-    { code: "payment_completed_after_canceled" },
-  ]);
+  assert.equal(snapshot.view.auction.status, "canceled");
+  assert.equal(snapshot.view.auction.paymentStatus, "canceled");
+  assert.equal(snapshot.view.auction.observedPaymentStatus, "canceled");
+  assert.deepEqual(snapshot.view.auction.conflicts, []);
   assert.deepEqual(inventoryQuantities(snapshot, STUSSY_L_SKU), {
-    availableToTagQuantity: 4,
-    remainingQuantity: 4,
+    availableToTagQuantity: 5,
+    remainingQuantity: 5,
     reservedQuantity: 0,
-    soldQuantity: 1,
+    soldQuantity: 0,
   });
-  assert.equal(snapshot.view.totals.completedPaymentCount, 1);
-  assert.equal(snapshot.view.totals.committedSalesCount, 1);
-  assert.equal(snapshot.view.totals.conflictCount, 1);
-  assert.equal(snapshot.view.totals.completedGmvCents, SOLD_PRICE_CENTS);
-  assert.equal(snapshot.view.totals.committedRevenueCents, SOLD_PRICE_CENTS);
-  assert.equal(snapshot.view.totals.costOfGoodsCents, 1200);
-  assert.equal(snapshot.view.totals.profitCents, 1300);
+  assert.equal(snapshot.view.totals.completedPaymentCount, 0);
+  assert.equal(snapshot.view.totals.committedSalesCount, 0);
+  assert.equal(snapshot.view.totals.conflictCount, 0);
+  assert.equal(snapshot.view.totals.completedGmvCents, 0);
+  assert.equal(snapshot.view.totals.committedRevenueCents, 0);
+  assert.equal(snapshot.view.totals.costOfGoodsCents, 0);
+  assert.equal(snapshot.view.totals.profitCents, 0);
 
-  const afterLateCompletion = (
+  const afterIgnoredCompletion = (
     await stateCoordinator.dispatch({ type: "get_state" })
   ).state;
 
-  await capture.dispatch({
-    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
-    variationNumber: COMPLETED_VARIATION,
-    soldPriceCents: SOLD_PRICE_CENTS,
-  });
-  const afterDuplicateCompletion = (
+  assert.deepEqual(afterIgnoredCompletion, beforeIgnoredCompletion);
+  await assert.rejects(
+    stateCoordinator.dispatch({
+      type: reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
+      streamId: STREAM_ID,
+      variationNumber: COMPLETED_VARIATION,
+      sku: NIKE_XL_SKU,
+    }),
+    (error) => error?.code === "CANCELED_VARIATION_IMMUTABLE",
+  );
+  await assert.rejects(
+    stateCoordinator.dispatch({
+      type: reconciliationCoordinator.COMMAND_TYPES.UNMAP_VARIATION,
+      streamId: STREAM_ID,
+      variationNumber: COMPLETED_VARIATION,
+    }),
+    (error) => error?.code === "CANCELED_VARIATION_IMMUTABLE",
+  );
+
+  const afterRejectedCorrections = (
     await stateCoordinator.dispatch({ type: "get_state" })
   ).state;
 
-  assert.deepEqual(afterDuplicateCompletion, afterLateCompletion);
+  assert.deepEqual(afterRejectedCorrections, beforeIgnoredCompletion);
 });
 
-test("two persistent taggers racing for the Nike hoodie last unit commit one reservation", async () => {
+test("two persistent taggers may oversell the Nike hoodie last unit with visible shortage state", async () => {
   const storageArea = createStorageArea();
   const stateCoordinator = createStateCoordinator(storageArea);
   const activeStreamCoordinator = createActiveStreamCoordinator(storageArea);
@@ -647,17 +653,10 @@ test("two persistent taggers racing for the Nike hoodie last unit commit one res
     firstController.mapSelectedSku(NIKE_L_SKU),
     secondController.mapSelectedSku(NIKE_L_SKU),
   ]);
-  const successfulOutcomes = outcomes.filter(
-    (outcome) => outcome.phase === "ready",
+  assert.equal(
+    outcomes.filter((outcome) => outcome.phase === "ready").length,
+    2,
   );
-  const failedOutcomes = outcomes.filter(
-    (outcome) => outcome.phase === "error",
-  );
-
-  assert.equal(successfulOutcomes.length, 1);
-  assert.equal(failedOutcomes.length, 1);
-  assert.equal(failedOutcomes[0].error.scope, "save");
-  assert.equal(failedOutcomes[0].error.code, "NO_STOCK_AVAILABLE");
 
   const canonical = await stateCoordinator.dispatch({ type: "get_state" });
   const summary = reconciliation.calculateSummary(canonical.state, {
@@ -670,11 +669,14 @@ test("two persistent taggers racing for the Nike hoodie last unit commit one res
     (entry) => entry.sku === NIKE_L_SKU,
   );
 
-  assert.equal(mappedAuctions.length, 1);
-  assert.equal(mappedAuctions[0].status, "pending");
+  assert.equal(mappedAuctions.length, 2);
+  assert.equal(
+    mappedAuctions.every((auction) => auction.status === "pending"),
+    true,
+  );
   assert.equal(
     summary.auctions.filter((auction) => auction.sku === null).length,
-    1,
+    0,
   );
   assert.deepEqual(
     {
@@ -684,18 +686,72 @@ test("two persistent taggers racing for the Nike hoodie last unit commit one res
       soldQuantity: nikeLastUnit.soldQuantity,
     },
     {
+      availableToTagQuantity: -1,
+      remainingQuantity: 1,
+      reservedQuantity: 2,
+      soldQuantity: 0,
+    },
+  );
+  assert.equal(nikeLastUnit.oversoldQuantity, 1);
+  assert.equal(summary.totals.pendingMappedCount, 2);
+
+  await capturePaymentStatus(
+    capture,
+    firstVariationNumber,
+    captureProtocol.OBSERVED_PAYMENT_STATUSES.CANCELED,
+  );
+  const afterCancellation = await stateCoordinator.dispatch({
+    type: "get_state",
+  });
+  const afterCancellationSummary = reconciliation.calculateSummary(
+    afterCancellation.state,
+    { streamId: STREAM_ID },
+  );
+  const restoredLastUnit = afterCancellationSummary.inventory.find(
+    (entry) => entry.sku === NIKE_L_SKU,
+  );
+
+  assert.deepEqual(
+    afterCancellationSummary.auctions.map((auction) => ({
+      sku: auction.sku,
+      status: auction.status,
+      variationNumber: auction.variationNumber,
+    })),
+    [
+      {
+        sku: NIKE_L_SKU,
+        status: "canceled",
+        variationNumber: firstVariationNumber,
+      },
+      {
+        sku: NIKE_L_SKU,
+        status: "pending",
+        variationNumber: secondVariationNumber,
+      },
+    ],
+  );
+  assert.deepEqual(
+    {
+      availableToTagQuantity: restoredLastUnit.availableToTagQuantity,
+      oversoldQuantity: restoredLastUnit.oversoldQuantity,
+      remainingQuantity: restoredLastUnit.remainingQuantity,
+      reservedQuantity: restoredLastUnit.reservedQuantity,
+      soldQuantity: restoredLastUnit.soldQuantity,
+    },
+    {
       availableToTagQuantity: 0,
+      oversoldQuantity: 0,
       remainingQuantity: 1,
       reservedQuantity: 1,
       soldQuantity: 0,
     },
   );
-  assert.equal(summary.totals.pendingMappedCount, 1);
+  assert.equal(afterCancellationSummary.totals.pendingMappedCount, 1);
 
   const restartedCoordinator = createStateCoordinator(storageArea);
   const restored = await restartedCoordinator.dispatch({ type: "get_state" });
 
-  assert.deepEqual(restored.state, canonical.state);
+  assert.deepEqual(restored.state, afterCancellation.state);
   assert.doesNotThrow(() =>
     reconciliation.hydrateReconciliationState(restored.state),
   );

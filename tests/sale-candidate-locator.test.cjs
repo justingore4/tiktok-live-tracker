@@ -361,7 +361,7 @@ test("classifies exact row-local payment tags without exposing their text", () =
   );
 });
 
-test("associates each status with exactly one Variation row and ignores extra tags", () => {
+test("classifies a screenshot-shaped Canceled m4b tag despite its Payment failed detail", () => {
   const row44 = createStatusRow({
     variationNumber: 44,
     badgeText: "Payment processing",

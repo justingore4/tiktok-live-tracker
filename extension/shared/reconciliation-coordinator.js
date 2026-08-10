@@ -97,7 +97,6 @@
       "createInventoryBaseline",
       "hydrateReconciliationState",
       "mapVariation",
-      "markUnpaid",
       "observePaymentStatuses",
       "observeBiddingVariation",
       "observeAttributedGmv",
@@ -105,7 +104,6 @@
       "recordPaymentComplete",
       "pinStreamToInventoryBaseline",
       "unmapVariation",
-      "undoMarkUnpaid",
     ];
     const OBSERVABLE_PAYMENT_STATUSES = new Set([
       "payment_processing",
@@ -533,18 +531,10 @@
               }),
             );
           case COMMAND_TYPES.MARK_UNPAID:
-            return mutateState((state) =>
-              reconciliation.markUnpaid(state, {
-                streamId: command.streamId,
-                variationNumber: command.variationNumber,
-              }),
-            );
           case COMMAND_TYPES.UNDO_MARK_UNPAID:
-            return mutateState((state) =>
-              reconciliation.undoMarkUnpaid(state, {
-                streamId: command.streamId,
-                variationNumber: command.variationNumber,
-              }),
+            fail(
+              "MANUAL_UNPAID_DISABLED",
+              "Manual unpaid controls are disabled; TikTok cancellation status is authoritative.",
             );
           default:
             fail("UNKNOWN_COMMAND", `State command ${commandType} is not supported.`);

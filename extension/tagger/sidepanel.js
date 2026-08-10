@@ -205,6 +205,9 @@
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
+  const inventorySelectionNote = document.querySelector(
+    "#inventory-selection-note",
+  );
   const resultCount = document.querySelector("#result-count");
   const emptyState = document.querySelector("#empty-state");
   const emptyQuery = document.querySelector("#empty-query");
@@ -435,24 +438,19 @@
     const completedAfterUnpaid = variation?.conflicts?.some(
       (candidate) => candidate.code === "payment_completed_after_marked_unpaid",
     );
-    const completedAfterCanceled = variation?.conflicts?.some(
-      (candidate) => candidate.code === "payment_completed_after_canceled",
-    );
 
     if (priceConflict) {
       return `Payment price conflict for variation #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
     }
 
     if (variation?.status === "canceled") {
-      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and stock remains unchanged.`;
+      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and the unit returned to available inventory.`;
     }
 
     if (variation?.observedPaymentStatus === "payment_complete") {
-      const reviewDetail = completedAfterCanceled
-        ? " TikTok completion overrode its earlier cancellation; inventory was counted. Review the warning."
-        : completedAfterUnpaid
-          ? " It was previously marked unpaid; review the warning."
-          : "";
+      const reviewDetail = completedAfterUnpaid
+        ? " It was previously marked unpaid; review the warning."
+        : "";
 
       return `Payment complete captured for variation #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
     }
@@ -885,6 +883,7 @@
 
   function createInventoryCard(entry, view) {
     const auction = view.auction;
+    const canceled = auction?.paymentStatus === "canceled";
     const variationNumber = view.variationNumber;
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const button = wrapper.querySelector(".inventory-card");
@@ -900,6 +899,7 @@
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
     button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
+    button.dataset.lockedReason = canceled ? "canceled" : "";
     button.setAttribute("aria-pressed", String(selected));
 
     if (!canTagSelectedVariation) {
@@ -907,15 +907,20 @@
         "aria-label",
         `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
       );
-    } else if (selected && auction?.status === "canceled") {
+    } else if (selected && canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, is linked to canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation is released and stock is unchanged. Click to unlink this item.`,
+        `${itemName}, size ${entry.size}, was selected for canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation was released and this history is read-only.`,
       );
     } else if (selected) {
       button.setAttribute(
         "aria-label",
         `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
+      );
+    } else if (canceled) {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Canceled variation ${variationNumber} is read-only.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -923,13 +928,6 @@
       button.setAttribute(
         "aria-label",
         `${itemName}, size ${entry.size}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
-      );
-    } else if (auction?.status === "canceled") {
-      const action = auction.sku ? "Relink" : "Link";
-
-      button.setAttribute(
-        "aria-label",
-        `${action} canceled variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}. Stock counts will not change.`,
       );
     } else if (auction?.sku) {
       button.setAttribute(
@@ -959,8 +957,8 @@
 
     if (auction?.status === "committed" && selected) {
       selectedLabel.textContent = "Sold";
-    } else if (auction?.status === "canceled" && selected) {
-      selectedLabel.textContent = "Linked";
+    } else if (canceled && selected) {
+      selectedLabel.textContent = "Canceled item";
     } else if (auction?.status === "marked_unpaid" && selected) {
       selectedLabel.textContent = "Unpaid";
     } else {
@@ -1058,6 +1056,7 @@
   }
 
   function renderInventory(view, focusSku = null) {
+    const canceled = view.auction?.paymentStatus === "canceled";
     const query = searchInput.value;
     const normalizedQuery = viewModel.normalizeSearchText(query);
     const filteredInventory = viewModel.filterInventoryEntries(
@@ -1071,6 +1070,10 @@
     });
 
     inventoryGrid.replaceChildren(fragment);
+    inventoryGrid.dataset.orderState = canceled ? "canceled" : "editable";
+    inventorySelectionNote.textContent = canceled
+      ? "This order was canceled. Its previous item is shown as read-only history, its reservation was released, and inventory cannot be changed."
+      : "Selecting an item reserves one unit until TikTok reports Payment complete or Canceled. Temporary Payment failed remains pending. Zero-stock items remain selectable and show how far they are oversold.";
     inventoryGrid.hidden = filteredInventory.length === 0;
     emptyState.hidden = filteredInventory.length !== 0;
     emptyQuery.textContent = `"${query.trim()}"`;
@@ -1149,17 +1152,13 @@
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
     }
 
-    if (conflict?.code === "payment_completed_after_canceled") {
-      return "TikTok completed this payment after it was canceled. TikTok completion won, inventory was counted, and the order was flagged for review.";
-    }
-
     if (view.auction?.status === "unmapped_completed") {
       return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
     if (isObservedCompletionAwaitingPrice(view.auction)) {
       return view.auction.sku
-        ? "TikTok shows Payment complete, but the final price is still syncing. The item stays selected without a pending reservation; inventory will update automatically when the completed sale finishes syncing."
+        ? "TikTok shows Payment complete, but the final price is still syncing. The item remains reserved and pending until the completed sale finishes syncing."
         : "TikTok shows Payment complete, but the final price is still syncing. Select the matching item; inventory will update automatically when the completed sale finishes syncing.";
     }
 
@@ -1175,7 +1174,7 @@
         ? `${formatItemName(entry)}, size ${entry.size}`
         : "this inventory entry";
 
-      return `Inventory warning: ${itemLabel} is short by ${negativeInventory.oversoldQuantity}. The sale remains recorded for review.`;
+      return `Inventory warning: ${itemLabel} is oversold by ${negativeInventory.oversoldQuantity}. The sale remains recorded for review.`;
     }
 
     const unavailable = view.warnings.find(
@@ -1260,8 +1259,8 @@
 
     if (auction.paymentStatus === "canceled") {
       return auction.sku
-        ? "Item linked · reservation released · stock unchanged"
-        : "No item linked · stock unchanged";
+        ? "Canceled item · reservation released · stock restored"
+        : "Canceled · no inventory item assigned";
     }
 
     if (auction.mappingStatus === "marked_unpaid") {
@@ -1318,19 +1317,17 @@
     const offlineDemo = activeMode === "offline_demo";
     const canUndoSimulatedPayment =
       offlineDemo && view.controls.canUndoSimulatedPayment;
-    const canUndoUnpaid = view.controls.canUndoUnpaid;
+    const canUndoUnpaid = offlineDemo && view.controls.canUndoUnpaid;
 
-    lifecycleControlsLegend.textContent = offlineDemo
-      ? "Offline test controls"
-      : "Saved order controls";
-    lifecycleControlsNote.textContent = offlineDemo
-      ? "These controls simulate TikTok events in temporary memory and do not act on TikTok."
-      : "Mark unpaid only after TikTok's payment buffer has expired. These employee changes are saved locally.";
+    lifecycleControlsLegend.textContent = "Offline test controls";
+    lifecycleControlsNote.textContent =
+      "These controls simulate TikTok events in temporary memory and do not act on TikTok.";
     undoPaymentNote.textContent = view.mapping
       ? "Offline demo only. Remove the simulated payment, keep the item selected, and do not change TikTok."
       : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
 
     lifecycleControls.hidden =
+      !offlineDemo ||
       canceled ||
       completionAwaitingPrice ||
       (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
@@ -1346,14 +1343,11 @@
       (view.auction?.status === "mapped" ||
         view.auction?.status === "pending")
     );
-    markUnpaidButton.hidden = completionAwaitingPrice || (offlineDemo
-      ? !view.controls.canMarkUnpaid
-      : view.auction?.status !== "pending");
+    markUnpaidButton.hidden =
+      !offlineDemo || completionAwaitingPrice || !view.controls.canMarkUnpaid;
     markUnpaidButton.disabled = completionAwaitingPrice;
     unpaidNote.hidden = !markedUnpaid;
-    undoUnpaidButton.hidden = offlineDemo
-      ? !view.controls.canUndoUnpaid
-      : !markedUnpaid;
+    undoUnpaidButton.hidden = !offlineDemo || !view.controls.canUndoUnpaid;
     undoPaymentNote.hidden = !canUndoSimulatedPayment;
     undoSimulatedPaymentButton.hidden = !canUndoSimulatedPayment;
   }
@@ -1423,8 +1417,6 @@
     if (result.action === "unmapped") {
       const detail =
         {
-          canceled:
-            "The canceled order remains recorded. Its item link was removed and stock stays unchanged.",
           committed:
             "Payment remains complete, but inventory and gross profit need a replacement item.",
           marked_unpaid:
@@ -1450,10 +1442,6 @@
       mappingAnnouncement.textContent = `Payment-complete variation ${mapping.variationNumber} matched to ${itemDescription}. Sold for ${viewModel.formatUsdCents(mapping.soldPriceCents)}; ${profit.label} recorded.`;
     } else if (result.action === "committed_mapping_corrected") {
       mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} corrected to ${itemDescription}. Inventory and gross profit recalculated.`;
-    } else if (result.action === "canceled_order_mapped") {
-      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} linked to ${itemDescription}. Its reservation remains released and stock stays unchanged.`;
-    } else if (result.action === "canceled_mapping_corrected") {
-      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} relinked to ${itemDescription}. Stock stays unchanged.`;
     } else if (result.action === "unpaid_mapping_corrected") {
       mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
     } else if (result.action === "remapped") {
@@ -1914,19 +1902,11 @@
       action.variationNumber ?? view.selectedVariationNumber;
 
     if (action.type === "map_variation") {
-      mappingAnnouncement.textContent = view.auction?.status === "canceled"
-        ? `Canceled variation ${variationNumber} item link saved locally. Its reservation is released and stock remains unchanged.`
-        : `Variation ${variationNumber} mapping saved locally.`;
+      mappingAnnouncement.textContent =
+        `Variation ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
-      mappingAnnouncement.textContent = view.auction?.status === "canceled"
-        ? `Canceled variation ${variationNumber} item link removed and saved locally. Stock remains unchanged.`
-        : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
-    } else if (action.type === "mark_unpaid") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} marked unpaid and saved locally. Its item stays linked without a pending reservation.`;
-    } else if (action.type === "undo_mark_unpaid") {
-      mappingAnnouncement.textContent =
-        `Unpaid mark removed from variation ${variationNumber} and saved locally. Its TikTok payment status is unchanged.`;
+        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     }
   }
 
@@ -2256,6 +2236,12 @@
         return;
       }
 
+      if (view.auction?.paymentStatus === "canceled") {
+        mappingAnnouncement.textContent =
+          `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
+        return;
+      }
+
       const selected = button.getAttribute("aria-pressed") === "true";
 
       runSavedMutation(
@@ -2331,17 +2317,7 @@
   });
 
   markUnpaidButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
-
-      runSavedMutation(
-        () => persistentController.markSelectedUnpaid(),
-        {
-          type: "mark_unpaid",
-          variationNumber: view.selectedVariationNumber,
-          focusStatus: true,
-        },
-      );
+    if (activeMode !== "offline_demo") {
       return;
     }
 
@@ -2357,17 +2333,7 @@
   });
 
   undoUnpaidButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
-
-      runSavedMutation(
-        () => persistentController.undoSelectedUnpaid(),
-        {
-          type: "undo_mark_unpaid",
-          variationNumber: view.selectedVariationNumber,
-          focusStatus: true,
-        },
-      );
+    if (activeMode !== "offline_demo") {
       return;
     }
 

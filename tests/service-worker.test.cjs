@@ -2102,16 +2102,6 @@ test("pins and forwards employee mutations only for the active stream", async ()
       streamId: activeSession.streamId,
       variationNumber: 203,
     }),
-    (types) => ({
-      type: types.MARK_UNPAID,
-      streamId: activeSession.streamId,
-      variationNumber: 203,
-    }),
-    (types) => ({
-      type: types.UNDO_MARK_UNPAID,
-      streamId: activeSession.streamId,
-      variationNumber: 203,
-    }),
   ];
 
   for (const createCommand of commandFactories) {
@@ -2135,6 +2125,35 @@ test("pins and forwards employee mutations only for the active stream", async ()
         command,
       ],
     );
+  }
+});
+
+test("rejects manual unpaid commands because Live payment outcomes are automatic", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+
+  for (const typeName of ["MARK_UNPAID", "UNDO_MARK_UNPAID"]) {
+    const harness = createWorkerHarness({ initialActiveSession: activeSession });
+    const request = harness.send(
+      harness.createMessage({
+        type: harness.coordinatorModule.COMMAND_TYPES[typeName],
+        streamId: activeSession.streamId,
+        variationNumber: 203,
+      }),
+    );
+
+    assert.deepEqual(await request.response, {
+      ok: false,
+      error: {
+        code: "MANUAL_UNPAID_DISABLED",
+        message:
+          "Live payment failures and cancellations are tracked automatically from TikTok.",
+      },
+    });
+    assert.equal(harness.dispatchCalls.length, 0);
   }
 });
 

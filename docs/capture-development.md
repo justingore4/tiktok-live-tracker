@@ -24,7 +24,9 @@ Live inspection on August 8, 2026 confirmed:
 - During TikTok's correction buffer, the exact `m4b_tag` text is `Payment failed` and
   capture stores the sanitized `payment_failed` status. If the correction window expires,
   the exact badge changes to `Canceled` and capture stores the distinct `canceled` status.
-  A fixed payment can instead settle as `Payment complete`.
+  The final row can also retain separate `Payment failed` detail text beside that badge;
+  classification uses the exact `m4b_tag`, so the row still resolves to canonical
+  `canceled`. A fixed payment can instead settle as `Payment complete` before cancellation.
 - The capture allowlist also recognizes the requested whole-label values
   `Payment processing` and `Payment fixing`. Their exact spelling and
   transition order still need confirmation during live use.
@@ -49,11 +51,11 @@ relationship and releases only a canonical USD display; it never releases surrou
 card text or DOM.
 
 `Payment processing`, `Payment fixing`, `Payment failed`, and unrecognized labels remain
-nonterminal observations. Only exact `Payment processing` and `Payment fixing` create a
-pending inventory reservation for a mapped item. Failed, unrecognized, not-yet-observed,
-and price-less completion observations keep the item selection without showing or
-consuming a pending reservation. Exact `Canceled` is a canonical terminal allocation
-result that keeps any item link for history and counts no sale, revenue, cost, or profit.
+nonterminal observations. Mapping the bidding variation immediately creates a pending
+inventory reservation. That reservation remains through processing, fixing, temporary
+failure, an unrecognized badge, not-yet-observed state, or a price-less completion.
+Exact `Canceled` is a canonical terminal allocation result that releases the reservation,
+keeps any item link as read-only history, and counts no sale, revenue, cost, or profit.
 The implemented dashboard reads outside Sold Items are only the sanitized current
 bidding variation number and the isolated aggregate Attributed GMV display.
 
@@ -132,24 +134,22 @@ the top frame of the exact product-dashboard URL. It resolves the currently acti
 - every exact green completion with a parsed price as authoritative payment truth; and
 - the latest sanitized Attributed GMV display on the worker-resolved active stream.
 
-A bidding observation creates the canonical auction if needed but does not create a
-payment, pending reservation, sale, or inventory change. The employee can map that same
-record while bidding. The first Sold Items payment-status observation or priced
+A bidding observation creates the canonical auction if needed but does not itself create
+a payment, sale, or inventory change. Mapping that record while bidding immediately
+creates its pending reservation. The first Sold Items payment-status observation or priced
 completion for it clears the active marker without removing the mapping, so the selected
 item carries forward into reconciliation.
 
-Observed processing, fixing, failed, or unrecognized status does not decrement remaining
-inventory or change profit. Processing and fixing reserve a mapped unit; failed and
-unrecognized observations keep the item selected without a pending reservation. Exact
-cancellation preserves the item link and history without decrementing remaining stock or
-contributing sales, revenue, cost, or profit. A completed payment contributes to completed
+Observed processing, fixing, failed, or unrecognized status does not count a sale or
+change profit. Every mapped unresolved order remains pending regardless of which of those
+observations is latest. Exact cancellation preserves the item link as read-only history,
+releases its pending allocation, and contributes no sales, revenue, cost, or profit. A completed payment contributes to completed
 GMV, but inventory and gross profit commit only after the employee maps the variation to
 an inventory item. A complete badge whose price is temporarily unavailable remains a
-provisional displayed observation without a pending reservation; later status changes are
-still accepted until a priced completion is durably saved. A later priced completion
-overrides cancellation, commits a mapped sale, and creates a
-`payment_completed_after_canceled` warning that TikTok's completion won and inventory was
-counted. Repeated observations are no-ops. A conflicting later completed price retains the
+provisional displayed observation and keeps any existing reservation; later status
+changes are still accepted until a priced completion is durably saved. Exact cancellation
+and priced completion are terminal mutually exclusive results, so later contradictory
+observations are ignored. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
 
 The Metrics section keeps four different current-stream values. **GMV/No shipping** is
@@ -170,7 +170,7 @@ excluded from this subtotal and trigger a count-based incomplete warning until m
 mapping corrections and remaps recalculate both. This basic figure excludes shipping,
 platform fees, taxes, discounts, refunds, and other expenses.
 
-These captured facts hydrate into reconciliation state version 6. Each stream record has
+These captured facts hydrate into reconciliation state version 7. Each stream record has
 an immutable inventory-baseline pin plus nullable `attributedGmvDisplay` and
 `activeBiddingVariationNumber`, and capture
 verifies or repairs the active stream's pin before applying a variation, payment, or
@@ -179,8 +179,13 @@ legacy baseline and pin every legacy stream to it; a strict version-4 baseline s
 keeps its pins and receives `attributedGmvDisplay: null` for every stream. The outer
 browser-storage envelope remains schema version 1. Malformed or dangling baseline, SKU,
 cost, stream, and bidding-marker relationships fail closed. Strict version-5 snapshots
-retain their GMV display and migrate with a null bidding marker; versions 1 through 5 all
-migrate to the strict version-6 shape.
+retain their GMV display and migrate with a null bidding marker, while version-6 snapshots
+retain valid bidding markers. Across every version-1 through version-6 migration, a saved
+Live `marked_unpaid` record becomes `mapped` when it has a SKU or `unmapped` otherwise so
+its unresolved automatic TikTok lifecycle and reservation can resume. A legacy
+completion-after-cancellation conflict becomes canonical terminal cancellation, with its
+stale completed price and cost allocation cleared; canonical version 7 rejects that
+contradiction. Versions 1 through 6 all migrate to the strict version-7 shape.
 
 The content client marks an event delivered only after the worker acknowledges it. A
 failed observation, payment, bidding number, or aggregate display is requeued with a
@@ -332,16 +337,19 @@ screen test-user run does not complete those release reviews.
    completed order unmapped and confirm it is excluded while the warning shows one
    incomplete sale; map or remap it and confirm the subtotal and warning recalculate
    immediately.
-10. On a mapped processing or fixing row, confirm its card keeps the full remaining
-    quantity visible and reports the pending reservation separately. It must not count a
-    sale or reduce remaining stock. When that same row changes to failed or unrecognized,
-    confirm the item stays selected but the pending count disappears.
-11. When that row becomes exact `Canceled`, confirm the item link remains visible, its
-    reservation is released, and remaining stock, sale count, revenue, cost, and profit do
-    not change. A canceled variation must not require resolution before End.
-12. If a priced `Payment complete` later replaces `Canceled`, confirm TikTok's completion
-    wins, the mapped unit moves from remaining to sold, revenue and gross profit commit,
-    and a visible warning says inventory was counted.
+10. Map the current bidding variation and confirm its card immediately reduces the
+    displayed available count and reports one pending reservation. It must not count a
+    sale or change profit. When that row moves through processing, fixing, temporary
+    failed, unrecognized, or price-less completion, confirm the item and pending count
+    remain unchanged.
+11. When that row becomes exact `Canceled`, confirm the item link remains visible as
+    read-only history, its reservation is released, availability is restored, and sale
+    count, revenue, cost, and profit do not change. Confirm every inventory card is greyed
+    out and cannot map, unmap, or remap that canceled variation. A canceled variation must
+    not require resolution before End.
+12. On a non-canceled variation, select an entry at zero availability. Confirm the card
+    remains enabled, never says **Sold out**, and shows `Oversold by N`; assigning or
+    canceling further pending orders must update N without double-counting completion.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
     Repeat these checks across later tracker streams and imported baselines.
@@ -499,9 +507,8 @@ The next capture stage should validate and implement:
   Sold Items variations;
 - visible capture connection, retry, and queue-drained state;
 - the transition timing and color-independent meaning of processing, fixing, failed,
-  unrecognized, and other additional payment labels; the current inventory rule reserves
-  only processing/fixing, while exact `Canceled` already has canonical allocation
-  semantics;
+  unrecognized, and other additional payment labels; the product rule deliberately keeps
+  every mapped unresolved order reserved until priced completion or exact `Canceled`;
 - a stable TikTok-provided stream/session identifier across SPA navigation and full
   refresh that differs across two LIVE sessions;
 - automatic protection against assigning stale rendered rows to a new local stream;
@@ -528,9 +535,10 @@ export and any live Google dependency remain intentionally absent.
 - Parsing assumes English dashboard text and US-dollar formatting.
 - Exact Sold Items variation labels and sanitized payment statuses are persisted. Only a
   priced `Payment complete` can commit a sale, inventory decrement, revenue, and profit.
-  Exact `Canceled` is authoritative without counting a sale. Processing and fixing are
-  the only observations that create pending reservations; failed and unrecognized remain
-  mapped, nonterminal, and unreserved.
+  Exact `Canceled` is authoritative without counting a sale. A selected item is pending
+  from bidding through processing, fixing, temporary failure, unrecognized, and
+  price-less completion observations, and resolves only at cancellation or priced
+  completion.
 - The `m4b_space` selector has been observed on one real stream and still needs broader
   validation.
 - The isolated `guide-Step-2` Attributed GMV boundary also needs broader live validation.

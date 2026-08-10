@@ -161,7 +161,7 @@ test("priced completion clears bidding and a stale completed card cannot reactiv
   assert.equal(streamFrom(state).activeBiddingVariationNumber, null);
 });
 
-test("v5 streams migrate with no bidding marker and canonical v6 markers are strict", () => {
+test("v5 streams migrate with no bidding marker and canonical v7 markers are strict", () => {
   const state = createState();
 
   reconciliation.observeBiddingVariation(state, {
@@ -193,6 +193,35 @@ test("v5 streams migrate with no bidding marker and canonical v6 markers are str
     (error) =>
       error instanceof reconciliation.ReconciliationError &&
       error.code === "INVALID_STATE",
+  );
+
+  const completedMarker = clone(state);
+  completedMarker.streams[0].variations[0].paymentStatus = "payment_complete";
+  completedMarker.streams[0].variations[0].observedPaymentStatus =
+    "payment_complete";
+  completedMarker.streams[0].variations[0].soldPriceCents = 1900;
+  assert.throws(
+    () => reconciliation.hydrateReconciliationState(completedMarker),
+    (error) =>
+      error instanceof reconciliation.ReconciliationError &&
+      error.code === "INVALID_STATE",
+  );
+
+  const observedMarker = clone(state);
+  observedMarker.streams[0].variations[0].observedPaymentStatus =
+    "payment_processing";
+  assert.throws(
+    () => reconciliation.hydrateReconciliationState(observedMarker),
+    (error) =>
+      error instanceof reconciliation.ReconciliationError &&
+      error.code === "INVALID_STATE",
+  );
+
+  observedMarker.version = 6;
+  assert.equal(
+    reconciliation.hydrateReconciliationState(observedMarker)
+      .streams[0].activeBiddingVariationNumber,
+    null,
   );
 });
 

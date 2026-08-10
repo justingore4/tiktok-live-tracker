@@ -104,26 +104,10 @@ function createMemoryClient(initialState = null) {
       state = candidate;
       return { state: clone(state), result: clone(result) };
     },
-    async markUnpaid(options) {
-      calls.push({ method: "markUnpaid", options: clone(options) });
-      const candidate = reconciliation.hydrateReconciliationState(state);
-      const result = reconciliation.markUnpaid(candidate, options);
-
-      state = candidate;
-      return { state: clone(state), result: clone(result) };
-    },
     async unmapVariation(options) {
       calls.push({ method: "unmapVariation", options: clone(options) });
       const candidate = reconciliation.hydrateReconciliationState(state);
       const result = reconciliation.unmapVariation(candidate, options);
-
-      state = candidate;
-      return { state: clone(state), result: clone(result) };
-    },
-    async undoMarkUnpaid(options) {
-      calls.push({ method: "undoMarkUnpaid", options: clone(options) });
-      const candidate = reconciliation.hydrateReconciliationState(state);
-      const result = reconciliation.undoMarkUnpaid(candidate, options);
 
       state = candidate;
       return { state: clone(state), result: clone(result) };
@@ -157,7 +141,7 @@ function auctionFromSnapshot(snapshot) {
   return snapshot.view?.auction ?? null;
 }
 
-test("exports a pure saved-session controller without a payment-complete API", () => {
+test("exports a pure saved-session controller without payment or manual-unpaid APIs", () => {
   const { client } = createMemoryClient();
   const controller = createController(client);
   const source = fs.readFileSync(
@@ -174,18 +158,16 @@ test("exports a pure saved-session controller without a payment-complete API", (
   assert.deepEqual(Object.keys(controller).sort(), [
     "getSnapshot",
     "mapSelectedSku",
-    "markSelectedUnpaid",
     "refresh",
     "retry",
     "selectVariation",
     "start",
     "subscribe",
-    "undoSelectedUnpaid",
     "unmapSelectedVariation",
   ]);
   assert.doesNotMatch(
     source,
-    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment/,
+    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment|markSelectedUnpaid|undoSelectedUnpaid/,
   );
 });
 
@@ -588,7 +570,7 @@ test("queued refreshes preserve a historical selection while adding new options"
   assert.deepEqual(duplicateRefresh, refreshed);
   assert.equal(refreshed.view.selectedVariationNumber, 202);
   assert.equal(refreshed.view.auction.variationNumber, 202);
-  assert.equal(refreshed.view.auction.status, "mapped");
+  assert.equal(refreshed.view.auction.status, "pending");
   assert.equal(refreshed.view.auction.sku, "BLACK-TEE-L");
   assert.ok(
     refreshed.view.variations.some(
@@ -819,7 +801,7 @@ test("fails closed when mounted before inventory initialization and stream pinni
   assert.equal(snapshot.view, null);
 });
 
-test("restores stored history without trying to initialize again", async () => {
+test("restores stored pending history without trying to initialize again", async () => {
   const state = createState();
 
   reconciliation.mapVariation(state, {
@@ -827,11 +809,6 @@ test("restores stored history without trying to initialize again", async () => {
     variationNumber: 202,
     sku: "GREY-HOODIE-XL",
   });
-  reconciliation.markUnpaid(state, {
-    streamId: STREAM_ID,
-    variationNumber: 202,
-  });
-
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
   const snapshot = await controller.start();
@@ -842,7 +819,7 @@ test("restores stored history without trying to initialize again", async () => {
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
   assert.equal(snapshot.phase, "ready");
   assert.equal(snapshot.view.selectedVariationNumber, 202);
-  assert.equal(restoredVariation.status, "marked_unpaid");
+  assert.equal(restoredVariation.status, "pending");
   assert.equal(restoredVariation.item, "Nike hoodie");
 });
 
@@ -1083,44 +1060,12 @@ test("retains a mapped historical view after unmap failure and retries the froze
   assert.deepEqual(unmapCalls[0].options, unmapCalls[1].options);
 });
 
-test("persists mark-unpaid and undo commands for the selected variation", async () => {
-  const state = createState();
-
-  reconciliation.mapVariation(state, {
-    streamId: STREAM_ID,
-    variationNumber: 200,
-    sku: "BLACK-TEE-L",
-  });
-  const memory = createMemoryClient(state);
-  const controller = createController(memory.client);
-
-  await controller.start();
-  controller.selectVariation(200);
-
-  const unpaid = await controller.markSelectedUnpaid();
-  const restored = await controller.undoSelectedUnpaid();
-
-  assert.equal(unpaid.view.auction.status, "marked_unpaid");
-  assert.equal(restored.view.auction.status, "mapped");
-  assert.deepEqual(memory.calls.slice(-2), [
-    {
-      method: "markUnpaid",
-      options: { streamId: STREAM_ID, variationNumber: 200 },
-    },
-    {
-      method: "undoMarkUnpaid",
-      options: { streamId: STREAM_ID, variationNumber: 200 },
-    },
-  ]);
-});
-
-test("a reopened controller restores the last durable mapping and unpaid state", async () => {
+test("a reopened controller restores the last durable pending mapping", async () => {
   const memory = createMemoryClient(createState());
   const firstController = createController(memory.client);
 
   await firstController.start();
   await firstController.mapSelectedSku("BLACK-TEE-L");
-  await firstController.markSelectedUnpaid();
 
   const reopenedController = createController(memory.client);
   const restored = await reopenedController.start();
@@ -1128,7 +1073,7 @@ test("a reopened controller restores the last durable mapping and unpaid state",
   assert.equal(restored.phase, "ready");
   assert.equal(restored.view.selectedVariationNumber, CURRENT_VARIATION);
   assert.equal(restored.view.auction.sku, "BLACK-TEE-L");
-  assert.equal(restored.view.auction.status, "marked_unpaid");
+  assert.equal(restored.view.auction.status, "pending");
   assert.equal(restored.view.auction.paymentStatus, "unknown");
   assert.equal(
     memory.calls.filter((call) => call.method === "initializeState").length,
@@ -1147,7 +1092,7 @@ test("requires the saved-session client to provide unmapping", () => {
 
   assert.throws(
     () => createController(client),
-    /mapping, unmapping, and unpaid methods/,
+    /mapping, and unmapping methods/,
   );
 });
 

@@ -11,12 +11,13 @@
   function createReconciliationModule() {
     "use strict";
 
-    const STATE_VERSION = 6;
     const LEGACY_STATE_VERSION = 1;
     const OBSERVED_PAYMENT_STATE_VERSION = 2;
     const CANCELED_PAYMENT_STATE_VERSION = 3;
     const INVENTORY_BASELINE_STATE_VERSION = 4;
     const ATTRIBUTED_GMV_STATE_VERSION = 5;
+    const BIDDING_VARIATION_STATE_VERSION = 6;
+    const STATE_VERSION = 7;
     const LEGACY_INVENTORY_BASELINE_ID =
       "inventory-baseline:00000000-0000-4000-8000-000000000000";
     const INVENTORY_BASELINE_ID_PATTERN =
@@ -47,10 +48,6 @@
     const OBSERVED_PAYMENT_STATUS_VALUES = new Set(
       Object.values(OBSERVED_PAYMENT_STATUSES),
     );
-    const PENDING_RESERVATION_PAYMENT_STATUSES = new Set([
-      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
-      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
-    ]);
     const TOTAL_SALE_OBSERVED_PAYMENT_STATUSES = new Set([
       OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
@@ -237,6 +234,12 @@
           failInvalidState(`${path}.code is not supported by this state version.`);
         }
 
+        if (stateVersion >= STATE_VERSION) {
+          failInvalidState(
+            `${path}.code is a legacy conflict and is not supported by this state version.`,
+          );
+        }
+
         requirePersistedRecord(conflict, path, ["code"]);
 
         if (auction.paymentStatus !== "payment_complete") {
@@ -300,6 +303,15 @@
         "unmapped",
       ].includes(auction.mappingStatus)) {
         failInvalidState(`${path}.mappingStatus is not supported.`);
+      }
+
+      if (
+        stateVersion >= STATE_VERSION &&
+        auction.mappingStatus === "marked_unpaid"
+      ) {
+        failInvalidState(
+          `${path}.mappingStatus is a legacy value and is not supported by this state version.`,
+        );
       }
 
       const supportedPaymentStatuses =
@@ -459,6 +471,27 @@
         failInvalidState(
           `${path} is missing its payment-after-unpaid conflict.`,
         );
+      }
+
+      if (stateVersion < STATE_VERSION) {
+        const completedAfterCancellation = hydratedAuction.conflicts.some(
+          (conflict) => conflict.code === "payment_completed_after_canceled",
+        );
+
+        if (completedAfterCancellation) {
+          hydratedAuction.paymentStatus = "canceled";
+          hydratedAuction.observedPaymentStatus =
+            OBSERVED_PAYMENT_STATUSES.CANCELED;
+          hydratedAuction.soldPriceCents = null;
+          hydratedAuction.committedUnitCostCents = null;
+          hydratedAuction.conflicts = [];
+        }
+
+        if (hydratedAuction.mappingStatus === "marked_unpaid") {
+          hydratedAuction.mappingStatus = hydratedAuction.sku
+            ? "mapped"
+            : "unmapped";
+        }
       }
 
       return hydratedAuction;
@@ -740,6 +773,25 @@
               `${path}.activeBiddingVariationNumber does not reference an existing variation.`,
             );
           }
+
+          const activeAuction = variations.find(
+            (auction) =>
+              auction.variationNumber === activeBiddingVariationNumber,
+          );
+          const remainsEligibleForBidding =
+            activeAuction.paymentStatus === "unknown" &&
+            activeAuction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED;
+
+          if (!remainsEligibleForBidding) {
+            if (candidate.version < STATE_VERSION) {
+              activeBiddingVariationNumber = null;
+            } else {
+              failInvalidState(
+                `${path}.activeBiddingVariationNumber must reference an unobserved, nonterminal variation.`,
+              );
+            }
+          }
         }
 
         return {
@@ -768,6 +820,7 @@
           candidate.version !== CANCELED_PAYMENT_STATE_VERSION &&
           candidate.version !== INVENTORY_BASELINE_STATE_VERSION &&
           candidate.version !== ATTRIBUTED_GMV_STATE_VERSION &&
+          candidate.version !== BIDDING_VARIATION_STATE_VERSION &&
           candidate.version !== STATE_VERSION
         ) {
           fail(
@@ -1378,10 +1431,7 @@
       return Boolean(
         auction.sku &&
         auction.mappingStatus === "mapped" &&
-        auction.paymentStatus === "unknown" &&
-        PENDING_RESERVATION_PAYMENT_STATUSES.has(
-          auction.observedPaymentStatus,
-        ),
+        auction.paymentStatus === "unknown",
       );
     }
 
@@ -1504,7 +1554,11 @@
       const remainingQuantity =
         inventoryItem.quantityOnHandAtImport - soldQuantity;
       const availableToTagQuantity = remainingQuantity - reservedQuantity;
-      const oversoldQuantity = Math.max(0, -remainingQuantity);
+      const oversoldQuantity = Math.max(
+        0,
+        soldQuantity + reservedQuantity -
+          inventoryItem.quantityOnHandAtImport,
+      );
       const reservationShortfallQuantity = Math.max(
         0,
         reservedQuantity - Math.max(0, remainingQuantity),
@@ -1608,32 +1662,15 @@
 
       let auction = findAuction(state, key.streamId, key.variationNumber);
 
-      if (auction?.sku === sku) {
-        return createAuctionView(state, auction);
+      if (auction?.paymentStatus === "canceled") {
+        fail(
+          "CANCELED_VARIATION_IMMUTABLE",
+          "A canceled variation's inventory mapping cannot be changed.",
+        );
       }
 
-      const historicalCorrection = Boolean(
-        auction &&
-        (
-          auction.paymentStatus === "payment_complete" ||
-          auction.paymentStatus === "canceled" ||
-          auction.mappingStatus === "marked_unpaid"
-        ),
-      );
-
-      if (!historicalCorrection) {
-        const availability = getInventoryAvailability(state, {
-          sku,
-          streamId: key.streamId,
-          variationNumber: key.variationNumber,
-        });
-
-        if (availability.availableForCurrentAuctionQuantity <= 0) {
-          fail(
-            "NO_STOCK_AVAILABLE",
-            `Inventory does not have an available unit for SKU ${sku}.`,
-          );
-        }
+      if (auction?.sku === sku) {
+        return createAuctionView(state, auction);
       }
 
       auction ??= getOrCreateAuction(
@@ -1898,6 +1935,13 @@
         fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
       }
 
+      if (auction.paymentStatus === "canceled") {
+        fail(
+          "CANCELED_VARIATION_IMMUTABLE",
+          "A canceled variation's inventory mapping cannot be changed.",
+        );
+      }
+
       if (auction.sku === null) {
         return createAuctionView(state, auction);
       }
@@ -1927,6 +1971,10 @@
       );
       const stream = findStream(state, key.streamId);
 
+      if (auction.paymentStatus === "canceled") {
+        return createAuctionView(state, auction);
+      }
+
       if (stream?.activeBiddingVariationNumber === key.variationNumber) {
         stream.activeBiddingVariationNumber = null;
       }
@@ -1949,12 +1997,6 @@
       if (auction.mappingStatus === "marked_unpaid") {
         addConflict(auction, {
           code: "payment_completed_after_marked_unpaid",
-        });
-      }
-
-      if (auction.paymentStatus === "canceled") {
-        addConflict(auction, {
-          code: "payment_completed_after_canceled",
         });
       }
 

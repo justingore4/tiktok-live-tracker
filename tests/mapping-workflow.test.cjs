@@ -69,7 +69,7 @@ test("uses friendly labels for every observed TikTok payment status", () => {
   );
 });
 
-test("keeps payment failed unreserved but makes canceled canonical without inventory effects", () => {
+test("keeps temporary payment failed reserved and locks canonical canceled orders", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -95,7 +95,7 @@ test("keeps payment failed unreserved but makes canceled canonical without inven
     variationNumbers: [202, 201],
   });
 
-  const linked = session.selectSku("STUSSY-TEE-BLACK-L");
+  const locked = session.selectSku("STUSSY-TEE-BLACK-L");
   const view = session.getViewState();
   const canceledOption = view.variations.find(
     (variation) => variation.variationNumber === 202,
@@ -105,14 +105,19 @@ test("keeps payment failed unreserved but makes canceled canonical without inven
   );
 
   assert.equal(view.selectedVariationNumber, 202);
-  assert.equal(linked.action, "canceled_order_mapped");
+  assert.equal(locked.ok, false);
+  assert.equal(locked.code, "CANCELED_VARIATION_IMMUTABLE");
   assert.equal(view.auction.observedPaymentStatus, "canceled");
   assert.equal(view.auction.observedPaymentStatusLabel, "Canceled");
   assert.equal(view.auction.paymentStatus, "canceled");
   assert.equal(view.auction.status, "canceled");
   assert.equal(view.auction.statusLabel, "Canceled");
-  assert.equal(view.auction.mappingStatus, "mapped");
-  assert.equal(view.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(view.auction.mappingStatus, "unmapped");
+  assert.equal(view.mapping, null);
+  assert.ok(view.inventory.every((entry) => !entry.selectionAllowed));
+  assert.ok(
+    view.inventory.every((entry) => entry.selectionReason === "canceled"),
+  );
   assert.equal(canceledOption.observedPaymentStatusLabel, "Canceled");
   assert.equal(canceledOption.status, "canceled");
   assert.equal(canceledOption.statusLabel, "Canceled");
@@ -155,13 +160,13 @@ test("keeps payment failed unreserved but makes canceled canonical without inven
     "NIKE-HOODIE-GREY-XL",
   );
 
-  assert.equal(failedMapping.mapping.status, "mapped");
-  assert.equal(failedMapping.mapping.statusLabel, "Item selected");
-  assert.equal(failedInventory.reservedQuantity, 0);
-  assert.equal(failedInventory.availableToTagQuantity, 3);
+  assert.equal(failedMapping.mapping.status, "pending");
+  assert.equal(failedMapping.mapping.statusLabel, "Waiting for payment");
+  assert.equal(failedInventory.reservedQuantity, 1);
+  assert.equal(failedInventory.availableToTagQuantity, 2);
 });
 
-test("keeps not-observed and unrecognized selections out of pending inventory", () => {
+test("reserves not-observed and unrecognized selections until a terminal status", () => {
   const state = reconciliation.createReconciliationState(toEngineInventory());
 
   reconciliation.observeVariations(state, {
@@ -196,15 +201,16 @@ test("keeps not-observed and unrecognized selections out of pending inventory", 
       statusLabel,
     })),
     [
-      { variationNumber: 203, status: "mapped", statusLabel: "Item selected" },
-      { variationNumber: 202, status: "mapped", statusLabel: "Item selected" },
+      { variationNumber: 203, status: "pending", statusLabel: "Waiting for payment" },
+      { variationNumber: 202, status: "pending", statusLabel: "Waiting for payment" },
     ],
   );
-  assert.equal(inventory.reservedQuantity, 0);
-  assert.equal(inventory.availableToTagQuantity, 1);
+  assert.equal(inventory.reservedQuantity, 2);
+  assert.equal(inventory.availableToTagQuantity, -1);
+  assert.equal(inventory.oversoldQuantity, 1);
 });
 
-test("relinks and unlinks a canceled order to sold-out history without changing stock", () => {
+test("keeps a canceled order's prior SKU as immutable read-only history", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -215,71 +221,71 @@ test("relinks and unlinks a canceled order to sold-out history without changing 
       {
         variationNumber: VARIATION_NUMBER,
         observedPaymentStatus:
-          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
-      },
-    ],
-  });
-  const session = createSession({ state });
-  const linked = session.selectSku("STUSSY-TEE-BLACK-L");
-  const relinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
-  const soldOutEntry = inventoryEntry(
-    relinked.view,
-    "DENIM-SHORTS-WASHED-BLUE-32",
-  );
-
-  assert.equal(linked.ok, true);
-  assert.equal(linked.action, "canceled_order_mapped");
-  assert.equal(relinked.ok, true);
-  assert.equal(relinked.action, "canceled_mapping_corrected");
-  assert.equal(relinked.mapping.status, "canceled");
-  assert.equal(relinked.mapping.sku, "DENIM-SHORTS-WASHED-BLUE-32");
-  assert.equal(relinked.mapping.committed, false);
-  assert.equal(relinked.mapping.soldPriceCents, null);
-  assert.equal(relinked.mapping.committedUnitCostCents, null);
-  assert.equal(relinked.mapping.profitCents, null);
-  assert.equal(soldOutEntry.selected, true);
-  assert.equal(soldOutEntry.selectionAllowed, true);
-  assert.equal(soldOutEntry.selectionReason, "selected");
-  assert.equal(soldOutEntry.remainingQuantity, 0);
-  assert.equal(soldOutEntry.reservedQuantity, 0);
-  assert.equal(relinked.view.totals.committedSalesCount, 0);
-  assert.equal(relinked.view.totals.profitCents, 0);
-
-  const unlinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
-
-  assert.equal(unlinked.ok, true);
-  assert.equal(unlinked.action, "unmapped");
-  assert.equal(unlinked.previousStatus, "canceled");
-  assert.equal(unlinked.mapping, null);
-  assert.equal(unlinked.view.auction.status, "canceled");
-  assert.equal(unlinked.view.auction.paymentStatus, "canceled");
-  assert.equal(unlinked.view.auction.sku, null);
-  assert.equal(
-    inventoryEntry(unlinked.view, "DENIM-SHORTS-WASHED-BLUE-32")
-      .selectionAllowed,
-    true,
-  );
-  assert.equal(unlinked.view.totals.committedSalesCount, 0);
-  assert.equal(unlinked.view.totals.profitCents, 0);
-});
-
-test("shows when a later TikTok completion overrides cancellation and counts inventory", () => {
-  const state = reconciliation.createReconciliationState(
-    toEngineInventory(),
-  );
-
-  reconciliation.observePaymentStatuses(state, {
-    streamId: STREAM_ID,
-    statuses: [
-      {
-        variationNumber: VARIATION_NUMBER,
-        observedPaymentStatus:
-          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+          reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
       },
     ],
   });
   const session = createSession({ state });
   session.selectSku("STUSSY-TEE-BLACK-L");
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: VARIATION_NUMBER,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  const canceledView = session.getViewState();
+  const selected = inventoryEntry(canceledView, "STUSSY-TEE-BLACK-L");
+  const relinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const unlinked = session.selectSku("STUSSY-TEE-BLACK-L");
+
+  assert.equal(canceledView.auction.status, "canceled");
+  assert.equal(canceledView.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(selected.selected, true);
+  assert.equal(selected.selectionAllowed, false);
+  assert.equal(selected.selectionReason, "canceled");
+  assert.equal(selected.reservedQuantity, 0);
+  assert.equal(selected.remainingQuantity, 5);
+  assert.ok(canceledView.inventory.every((entry) => !entry.selectionAllowed));
+  assert.equal(relinked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.equal(unlinked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.equal(session.getViewState().mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(canceledView.totals.committedSalesCount, 0);
+  assert.equal(canceledView.totals.profitCents, 0);
+});
+
+test("keeps cancellation terminal when a stale completion arrives later", () => {
+  const state = reconciliation.createReconciliationState(
+    toEngineInventory(),
+  );
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: VARIATION_NUMBER,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+    ],
+  });
+  const session = createSession({ state });
+  session.selectSku("STUSSY-TEE-BLACK-L");
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: VARIATION_NUMBER,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
 
   reconciliation.recordPaymentComplete(state, {
     streamId: STREAM_ID,
@@ -289,29 +295,20 @@ test("shows when a later TikTok completion overrides cancellation and counts inv
   const view = session.getViewState();
   const selectedInventory = inventoryEntry(view, "STUSSY-TEE-BLACK-L");
 
-  assert.equal(view.auction.status, "committed");
-  assert.equal(view.auction.statusLabel, "Payment complete");
-  assert.equal(view.auction.paymentStatus, "payment_complete");
-  assert.equal(view.auction.observedPaymentStatus, "payment_complete");
-  assert.equal(view.auction.soldPriceCents, 4800);
-  assert.equal(view.auction.committedUnitCostCents, 1200);
-  assert.equal(view.auction.profitCents, 3600);
-  assert.deepEqual(view.auction.conflicts, [
-    { code: "payment_completed_after_canceled" },
-  ]);
-  assert.ok(
-    view.warnings.some(
-      (warning) =>
-        warning.code === "payment_completed_after_canceled" &&
-        warning.eventKey === `${STREAM_ID}:${VARIATION_NUMBER}`,
-    ),
-  );
+  assert.equal(view.auction.status, "canceled");
+  assert.equal(view.auction.statusLabel, "Canceled");
+  assert.equal(view.auction.paymentStatus, "canceled");
+  assert.equal(view.auction.observedPaymentStatus, "canceled");
+  assert.equal(view.auction.soldPriceCents, null);
+  assert.equal(view.auction.committedUnitCostCents, null);
+  assert.equal(view.auction.profitCents, null);
+  assert.deepEqual(view.auction.conflicts, []);
   assert.equal(selectedInventory.reservedQuantity, 0);
-  assert.equal(selectedInventory.soldQuantity, 1);
-  assert.equal(selectedInventory.remainingQuantity, 4);
-  assert.equal(view.totals.completedPaymentCount, 1);
-  assert.equal(view.totals.committedSalesCount, 1);
-  assert.equal(view.totals.profitCents, 3600);
+  assert.equal(selectedInventory.soldQuantity, 0);
+  assert.equal(selectedInventory.remainingQuantity, 5);
+  assert.equal(view.totals.completedPaymentCount, 0);
+  assert.equal(view.totals.committedSalesCount, 0);
+  assert.equal(view.totals.profitCents, 0);
 });
 
 test("projects observed payment labels and captured prices without an inventory mapping", () => {
@@ -365,7 +362,7 @@ test("projects observed payment labels and captured prices without an inventory 
   assert.equal(option.soldPriceCents, 700);
 });
 
-test("keeps an observed unpriced completion selected without showing pending", () => {
+test("keeps an observed unpriced completion reserved until its final price arrives", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -393,12 +390,12 @@ test("keeps an observed unpriced completion selected without showing pending", (
   assert.equal(view.auction.observedPaymentStatus, "payment_complete");
   assert.equal(view.auction.paymentStatus, "unknown");
   assert.equal(view.auction.soldPriceCents, null);
-  assert.equal(view.auction.status, "mapped");
-  assert.equal(view.auction.statusLabel, "Item selected");
+  assert.equal(view.auction.status, "pending");
+  assert.equal(view.auction.statusLabel, "Waiting for payment");
   assert.equal(view.controls.canMarkUnpaid, false);
   assert.equal(selectedInventory.remainingQuantity, 5);
-  assert.equal(selectedInventory.reservedQuantity, 0);
-  assert.equal(selectedInventory.availableToTagQuantity, 5);
+  assert.equal(selectedInventory.reservedQuantity, 1);
+  assert.equal(selectedInventory.availableToTagQuantity, 4);
 
   reconciliation.recordPaymentComplete(state, {
     streamId: STREAM_ID,
@@ -499,7 +496,7 @@ test("projects the active bidding variation as current and keeps it mappable", (
   );
   assert.equal(
     inventoryEntry(view, "STUSSY-TEE-BLACK-L").reservedQuantity,
-    0,
+    1,
   );
   biddingOption = view.variations.find(
     ({ variationNumber }) => variationNumber === biddingVariationNumber,
@@ -543,7 +540,7 @@ test("marks only canonical variation records as recorded", () => {
   );
 });
 
-test("multiple unobserved variations keep distinct selections without pending inventory", () => {
+test("multiple unobserved variations keep distinct pending reservations", () => {
   const session = createSession({ variationNumbers: [203, 202] });
 
   session.selectSku("STUSSY-TEE-BLACK-L");
@@ -563,11 +560,11 @@ test("multiple unobserved variations keep distinct selections without pending in
   assert.equal(stream.variations.length, 2);
   assert.equal(
     inventoryEntry(historicalView, "STUSSY-TEE-BLACK-L").reservedQuantity,
-    0,
+    1,
   );
   assert.equal(
     inventoryEntry(historicalView, "NIKE-HOODIE-GREY-XL").reservedQuantity,
-    0,
+    1,
   );
 
   session.selectVariation(203);
@@ -640,11 +637,11 @@ test("correcting an unpaid historical variation preserves current state and undo
     variationNumber: 203,
   });
 
-  assert.equal(restored.mapping.status, "mapped");
+  assert.equal(restored.mapping.status, "pending");
   assert.equal(restored.mapping.sku, "CARHARTT-JACKET-BROWN-M");
   assert.equal(
     inventoryEntry(restored.view, "CARHARTT-JACKET-BROWN-M").reservedQuantity,
-    0,
+    1,
   );
   assert.deepEqual(currentAfter, currentBefore);
 });
@@ -700,7 +697,7 @@ test("undoing one simulated payment preserves changes to other variations", () =
   });
 
   assert.equal(undone.ok, true);
-  assert.equal(undone.mapping.status, "mapped");
+  assert.equal(undone.mapping.status, "pending");
   assert.equal(undone.mapping.sku, "STUSSY-TEE-BLACK-M");
   assert.deepEqual(currentAfterUndo, currentBeforeUndo);
   assert.equal(undone.view.totals.committedSalesCount, 1);
@@ -708,6 +705,35 @@ test("undoing one simulated payment preserves changes to other variations", () =
   session.selectVariation(203);
 
   assert.equal(session.getViewState().controls.canUndoSimulatedPayment, true);
+});
+
+test("offline payment undo preserves an unrelated temporary unpaid simulation", () => {
+  const session = createSession({ variationNumbers: [203, 202] });
+
+  session.selectVariation(202);
+  session.selectSku("STUSSY-TEE-BLACK-M");
+  session.simulatePaymentBufferExpired();
+  const unpaid = session.markUnpaid();
+
+  assert.equal(unpaid.ok, true);
+  assert.equal(unpaid.mapping.status, "marked_unpaid");
+
+  session.selectVariation(203);
+  session.selectSku("NIKE-HOODIE-GREY-L");
+  session.completePayment(2500);
+  const undone = session.undoSimulatedPayment();
+
+  assert.equal(undone.ok, true);
+  assert.equal(undone.mapping.status, "pending");
+  assert.equal(undone.mapping.sku, "NIKE-HOODIE-GREY-L");
+  assert.equal(undone.view.controls.canUndoSimulatedPayment, false);
+
+  session.selectVariation(202);
+  const preservedUnpaid = session.getViewState();
+
+  assert.equal(preservedUnpaid.mapping.status, "marked_unpaid");
+  assert.equal(preservedUnpaid.mapping.sku, "STUSSY-TEE-BLACK-M");
+  assert.equal(preservedUnpaid.controls.canUndoUnpaid, true);
 });
 
 test("maps an available inventory entry to the demo variation", () => {
@@ -727,15 +753,15 @@ test("maps an available inventory entry to the demo variation", () => {
   assert.equal(result.mapping.item, "Stussy tee");
   assert.equal(result.mapping.style, "black");
   assert.equal(result.mapping.size, "L");
-  assert.equal(result.mapping.statusLabel, "Item selected");
+  assert.equal(result.mapping.statusLabel, "Waiting for payment");
   assert.equal(auction.eventKey, "demo-stream:203");
   assert.equal(auction.sku, "STUSSY-TEE-BLACK-L");
-  assert.equal(auction.status, "mapped");
+  assert.equal(auction.status, "pending");
   assert.equal(auction.mappingStatus, "mapped");
   assert.equal(auction.paymentStatus, "unknown");
-  assert.equal(selectedInventory.reservedQuantity, 0);
-  assert.equal(selectedInventory.availableToTagQuantity, 5);
-  assert.equal(getStockDisplay(selectedInventory).secondaryLabel, "");
+  assert.equal(selectedInventory.reservedQuantity, 1);
+  assert.equal(selectedInventory.availableToTagQuantity, 4);
+  assert.equal(getStockDisplay(selectedInventory).secondaryLabel, "1 pending");
 });
 
 test("uses a supplied shared state without replacing its existing auctions", () => {
@@ -801,7 +827,7 @@ test("an unmapped completed warning remains associated with its own variation", 
   });
   const currentView = session.getViewState();
 
-  assert.equal(currentView.auction.status, "mapped");
+  assert.equal(currentView.auction.status, "pending");
   assert.ok(
     currentView.warnings.some(
       (warning) =>
@@ -1025,31 +1051,44 @@ test("selecting another entry corrects the same variation mapping", () => {
   assert.equal(state.streams[0].variations[0].sku, "NIKE-HOODIE-GREY-XL");
 });
 
-test("rejects sold-out and unknown entries without changing state", () => {
+test("allows zero-stock entries while still rejecting unknown SKUs", () => {
   const session = createSession();
-  const stateBefore = session.getStateSnapshot();
-  const soldOutResult = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const zeroStockResult = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const stateAfterSelection = session.getStateSnapshot();
   const unknownResult = session.selectSku("NOT-IN-INVENTORY");
+  const zeroStockInventory = inventoryEntry(
+    zeroStockResult.view,
+    "DENIM-SHORTS-WASHED-BLUE-32",
+  );
 
-  assert.equal(soldOutResult.ok, false);
-  assert.equal(soldOutResult.code, "SOLD_OUT");
+  assert.equal(zeroStockResult.ok, true);
+  assert.equal(zeroStockResult.action, "mapped");
+  assert.equal(zeroStockResult.mapping.status, "pending");
+  assert.equal(zeroStockInventory.selectionAllowed, true);
+  assert.equal(zeroStockInventory.availableToTagQuantity, -1);
+  assert.equal(zeroStockInventory.oversoldQuantity, 1);
   assert.equal(unknownResult.ok, false);
   assert.equal(unknownResult.code, "UNKNOWN_SKU");
-  assert.deepEqual(session.getStateSnapshot(), stateBefore);
-  assert.equal(session.getCurrentMapping(), null);
+  assert.deepEqual(session.getStateSnapshot(), stateAfterSelection);
+  assert.equal(session.getCurrentMapping().sku, "DENIM-SHORTS-WASHED-BLUE-32");
 });
 
-test("a rejected correction preserves an existing valid mapping", () => {
+test("correcting to a zero-stock entry records an oversold reservation", () => {
   const session = createSession();
 
   session.selectSku("STUSSY-TEE-BLACK-L");
-  const stateBefore = session.getStateSnapshot();
   const result = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const inventory = inventoryEntry(
+    result.view,
+    "DENIM-SHORTS-WASHED-BLUE-32",
+  );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.code, "SOLD_OUT");
-  assert.equal(result.mapping.sku, "STUSSY-TEE-BLACK-L");
-  assert.deepEqual(session.getStateSnapshot(), stateBefore);
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "remapped");
+  assert.equal(result.mapping.sku, "DENIM-SHORTS-WASHED-BLUE-32");
+  assert.equal(inventory.reservedQuantity, 1);
+  assert.equal(inventory.availableToTagQuantity, -1);
+  assert.equal(inventory.oversoldQuantity, 1);
 });
 
 test("pending mapping does not create payment, profit, or inventory changes", () => {
@@ -1109,7 +1148,7 @@ test("pending mapping does not create payment, profit, or inventory changes", ()
   );
 });
 
-test("prevents two sessions from reserving the same final unit", () => {
+test("allows multiple reservations beyond stock and reports the oversold amount", () => {
   const displayInventory = [
     MOCK_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
   ];
@@ -1141,7 +1180,7 @@ test("prevents two sessions from reserving the same final unit", () => {
 
   assert.equal(firstSession.selectSku("NIKE-HOODIE-GREY-L").ok, true);
   const firstView = firstSession.getViewState();
-  const rejected = secondSession.selectSku("NIKE-HOODIE-GREY-L");
+  const second = secondSession.selectSku("NIKE-HOODIE-GREY-L");
 
   assert.equal(
     inventoryEntry(firstView, "NIKE-HOODIE-GREY-L").remainingQuantity,
@@ -1151,14 +1190,29 @@ test("prevents two sessions from reserving the same final unit", () => {
     inventoryEntry(firstView, "NIKE-HOODIE-GREY-L").availableToTagQuantity,
     0,
   );
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.code, "NO_STOCK_AVAILABLE");
+  assert.equal(second.ok, true);
+  assert.equal(second.mapping.status, "pending");
   assert.equal(
     reconciliation.getAuction(state, {
       streamId: STREAM_ID,
       variationNumber: 204,
     }).sku,
-    null,
+    "NIKE-HOODIE-GREY-L",
+  );
+  const overallocated = secondSession.getViewState();
+
+  assert.equal(
+    inventoryEntry(overallocated, "NIKE-HOODIE-GREY-L").reservedQuantity,
+    2,
+  );
+  assert.equal(
+    inventoryEntry(overallocated, "NIKE-HOODIE-GREY-L")
+      .availableToTagQuantity,
+    -1,
+  );
+  assert.equal(
+    inventoryEntry(overallocated, "NIKE-HOODIE-GREY-L").oversoldQuantity,
+    1,
   );
   const released = firstSession.selectSku("NIKE-HOODIE-GREY-L");
 
@@ -1166,9 +1220,12 @@ test("prevents two sessions from reserving the same final unit", () => {
   assert.equal(
     inventoryEntry(released.view, "NIKE-HOODIE-GREY-L")
       .availableToTagQuantity,
-    1,
+    0,
   );
-  assert.equal(secondSession.selectSku("NIKE-HOODIE-GREY-L").ok, true);
+  assert.equal(
+    inventoryEntry(released.view, "NIKE-HOODIE-GREY-L").oversoldQuantity,
+    0,
+  );
 });
 
 test("completes payment once and derives profit and inventory from the engine", () => {
@@ -1203,7 +1260,7 @@ test("completes payment once and derives profit and inventory from the engine", 
   assert.equal(conflict.mapping.conflicts[0].code, "conflicting_sold_price");
 });
 
-test("undoes a locally simulated payment and restores an unreserved selection", () => {
+test("undoes a locally simulated payment and restores its pending reservation", () => {
   const session = createSession();
 
   session.selectSku("STUSSY-TEE-BLACK-L");
@@ -1217,16 +1274,16 @@ test("undoes a locally simulated payment and restores an unreserved selection", 
 
   assert.equal(undone.ok, true);
   assert.equal(undone.action, "simulated_payment_undone");
-  assert.equal(undone.mapping.status, "mapped");
-  assert.equal(undone.mapping.statusLabel, "Item selected");
+  assert.equal(undone.mapping.status, "pending");
+  assert.equal(undone.mapping.statusLabel, "Waiting for payment");
   assert.equal(undone.mapping.paymentStatus, "unknown");
   assert.equal(undone.mapping.soldPriceCents, null);
   assert.equal(undone.mapping.committedUnitCostCents, null);
   assert.equal(undone.mapping.profitCents, null);
   assert.equal(inventory.soldQuantity, 0);
-  assert.equal(inventory.reservedQuantity, 0);
+  assert.equal(inventory.reservedQuantity, 1);
   assert.equal(inventory.remainingQuantity, 5);
-  assert.equal(inventory.availableToTagQuantity, 5);
+  assert.equal(inventory.availableToTagQuantity, 4);
   assert.equal(undone.view.totals.completedPaymentCount, 0);
   assert.equal(undone.view.totals.committedSalesCount, 0);
   assert.equal(undone.view.totals.committedRevenueCents, 0);
@@ -1266,14 +1323,14 @@ test("undoing simulated payment preserves a mapping correction", () => {
     "NIKE-HOODIE-GREY-XL",
   );
 
-  assert.equal(undone.mapping.status, "mapped");
+  assert.equal(undone.mapping.status, "pending");
   assert.equal(undone.mapping.sku, "NIKE-HOODIE-GREY-XL");
   assert.equal(originalInventory.reservedQuantity, 0);
   assert.equal(originalInventory.availableToTagQuantity, 2);
   assert.equal(correctedInventory.soldQuantity, 0);
-  assert.equal(correctedInventory.reservedQuantity, 0);
+  assert.equal(correctedInventory.reservedQuantity, 1);
   assert.equal(correctedInventory.remainingQuantity, 3);
-  assert.equal(correctedInventory.availableToTagQuantity, 3);
+  assert.equal(correctedInventory.availableToTagQuantity, 2);
   assert.equal(undone.view.totals.profitCents, 0);
 });
 
@@ -1286,7 +1343,7 @@ test("undoing simulated payment restores demo buffer eligibility", () => {
 
   const undone = session.undoSimulatedPayment();
 
-  assert.equal(undone.mapping.status, "mapped");
+  assert.equal(undone.mapping.status, "pending");
   assert.equal(undone.view.demo.paymentBufferExpired, true);
   assert.equal(undone.view.controls.canSimulateBufferExpiry, false);
   assert.equal(undone.view.controls.canMarkUnpaid, true);
@@ -1323,12 +1380,16 @@ test("requires an explicit demo flag before payment can be simulated", () => {
   const pendingState = session.getStateSnapshot();
   const completion = session.completePayment(4800);
   const buffer = session.simulatePaymentBufferExpired();
+  const unpaid = session.markUnpaid();
+  const undoUnpaid = session.undoMarkUnpaid();
   const undo = session.undoSimulatedPayment();
 
   assert.equal(completion.ok, false);
   assert.equal(completion.code, "PAYMENT_SIMULATION_DISABLED");
   assert.equal(buffer.ok, false);
   assert.equal(buffer.code, "BUFFER_SIMULATION_DISABLED");
+  assert.equal(unpaid.code, "UNPAID_SIMULATION_DISABLED");
+  assert.equal(undoUnpaid.code, "UNPAID_SIMULATION_DISABLED");
   assert.equal(undo.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
   assert.equal(undo.view.controls.canUndoSimulatedPayment, false);
   assert.deepEqual(session.getStateSnapshot(), pendingState);
@@ -1406,9 +1467,9 @@ test("requires demo buffer expiry before unpaid and supports undo", () => {
   );
 
   assert.equal(expired.action, "payment_buffer_expired");
-  assert.equal(expired.view.auction.status, "mapped");
+  assert.equal(expired.view.auction.status, "pending");
   assert.equal(expired.view.demo.paymentBufferExpired, true);
-  assert.equal(expiredInventory.reservedQuantity, 0);
+  assert.equal(expiredInventory.reservedQuantity, 1);
   assert.equal(expired.view.totals.committedSalesCount, 0);
 
   const unpaid = session.markUnpaid();
@@ -1429,9 +1490,9 @@ test("requires demo buffer expiry before unpaid and supports undo", () => {
   );
 
   assert.equal(restored.action, "unpaid_undone");
-  assert.equal(restored.mapping.status, "mapped");
-  assert.equal(restoredInventory.reservedQuantity, 0);
-  assert.equal(restoredInventory.availableToTagQuantity, 5);
+  assert.equal(restored.mapping.status, "pending");
+  assert.equal(restoredInventory.reservedQuantity, 1);
+  assert.equal(restoredInventory.availableToTagQuantity, 4);
   assert.equal(restored.view.controls.canMarkUnpaid, true);
 });
 
@@ -1505,7 +1566,7 @@ test("payment completion after an unpaid mark wins and surfaces a conflict", () 
   assert.deepEqual(session.getStateSnapshot(), stateBeforeUndo);
 });
 
-test("undoing unpaid restores the reservation even if a re-auction claimed the unit", () => {
+test("live sessions cannot manually undo unpaid state", () => {
   const displayInventory = [
     MOCK_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
   ];
@@ -1542,21 +1603,19 @@ test("undoing unpaid restores the reservation even if a re-auction claimed the u
   });
   assert.equal(reauctionSession.selectSku("NIKE-HOODIE-GREY-L").ok, true);
 
-  const restored = originalSession.undoMarkUnpaid();
-  const inventory = inventoryEntry(restored.view, "NIKE-HOODIE-GREY-L");
+  const beforeRejectedUndo = clone(state);
+  const rejected = originalSession.undoMarkUnpaid();
+  const inventory = inventoryEntry(rejected.view, "NIKE-HOODIE-GREY-L");
 
-  assert.equal(restored.ok, true);
-  assert.equal(restored.mapping.status, "pending");
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, "UNPAID_SIMULATION_DISABLED");
+  assert.deepEqual(state, beforeRejectedUndo);
+  assert.equal(rejected.mapping.status, "marked_unpaid");
   assert.equal(inventory.soldQuantity, 0);
-  assert.equal(inventory.reservedQuantity, 2);
+  assert.equal(inventory.reservedQuantity, 1);
   assert.equal(inventory.remainingQuantity, 1);
-  assert.equal(inventory.availableToTagQuantity, -1);
-  assert.equal(inventory.reservationShortfallQuantity, 1);
-  assert.ok(
-    restored.view.warnings.some(
-      (warning) => warning.code === "no_stock_available",
-    ),
-  );
+  assert.equal(inventory.availableToTagQuantity, 0);
+  assert.equal(inventory.oversoldQuantity, 0);
 });
 
 test("late payment wins after an unpaid item has already been re-auctioned", () => {
@@ -1645,7 +1704,7 @@ test("committed correction moves stock and recalculates profit even when stock i
     -1,
   );
   assert.equal(view.warnings[0].code, "negative_inventory");
-  assert.equal(view.controls.canUndoSimulatedPayment, false);
+  assert.equal(view.controls.canUndoSimulatedPayment, true);
 });
 
 test("canonical state quantities override stale display quantities", () => {
@@ -1680,8 +1739,12 @@ test("canonical state quantities override stale display quantities", () => {
 
   assert.equal(inventoryEntry(view, "STALE-SKU").quantityReceived, 0);
   assert.equal(inventoryEntry(view, "STALE-SKU").remainingQuantity, 0);
-  assert.equal(inventoryEntry(view, "STALE-SKU").selectionAllowed, false);
-  assert.equal(session.selectSku("STALE-SKU").code, "SOLD_OUT");
+  assert.equal(inventoryEntry(view, "STALE-SKU").selectionAllowed, true);
+  const selected = session.selectSku("STALE-SKU");
+
+  assert.equal(selected.ok, true);
+  assert.equal(selected.mapping.status, "pending");
+  assert.equal(inventoryEntry(selected.view, "STALE-SKU").oversoldQuantity, 1);
 });
 
 test("rejects display inventory that is missing from supplied canonical state", () => {

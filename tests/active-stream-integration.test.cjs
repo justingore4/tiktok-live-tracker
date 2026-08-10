@@ -423,6 +423,42 @@ test("a bidding variation can be mapped before its sale and completion decrement
     variationNumber: 252,
     sku: "STUSSY-TEE-BLACK-L",
   });
+
+  stored = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  summary = reconciliation.calculateSummary(stored.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(summary.auctions[0].status, "pending");
+  assert.equal(summary.inventory[0].availableToTagQuantity, 4);
+  assert.equal(summary.inventory[0].reservedQuantity, 1);
+
+  for (const observedPaymentStatus of [
+    captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+  ]) {
+    await capture.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+      statuses: [{ variationNumber: 252, observedPaymentStatus }],
+    });
+    stored = await stateCoordinator.dispatch({
+      type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+    });
+    summary = reconciliation.calculateSummary(stored.state, {
+      streamId: FIRST_ID,
+    });
+
+    assert.equal(
+      summary.auctions[0].observedPaymentStatus,
+      observedPaymentStatus,
+    );
+    assert.equal(summary.auctions[0].status, "pending");
+    assert.equal(summary.inventory[0].availableToTagQuantity, 4);
+    assert.equal(summary.inventory[0].reservedQuantity, 1);
+  }
+
   await capture.dispatch({
     type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
     variationNumber: 252,

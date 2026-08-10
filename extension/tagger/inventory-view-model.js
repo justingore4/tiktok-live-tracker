@@ -86,14 +86,18 @@
       return `${reservedQuantity} pending`;
     }
 
+    function formatOversoldQuantity(oversoldQuantity) {
+      return `Oversold by ${oversoldQuantity}`;
+    }
+
     function joinStockLabels(primaryLabel, secondaryLabel) {
       return secondaryLabel
         ? `${primaryLabel} · ${secondaryLabel}`
         : primaryLabel;
     }
 
-    function formatInventoryUnits(quantity) {
-      return `${quantity} inventory unit${quantity === 1 ? "" : "s"} left`;
+    function formatAvailableInventoryUnits(quantity) {
+      return `${quantity} inventory unit${quantity === 1 ? "" : "s"} available to tag`;
     }
 
     function formatPendingReservations(quantity) {
@@ -127,92 +131,44 @@
     function getStockDisplay(entry) {
       const remainingQuantity = getRemainingQuantity(entry);
       const availableToTagQuantity = getAvailableToTagQuantity(entry);
+      const displayedAvailableToTagQuantity = Math.max(
+        0,
+        availableToTagQuantity,
+      );
       const reservedQuantity = Number.isSafeInteger(entry?.reservedQuantity)
-        ? entry.reservedQuantity
+        ? Math.max(0, entry.reservedQuantity)
         : 0;
-      const reservationShortfallQuantity = Number.isSafeInteger(
-        entry?.reservationShortfallQuantity,
+      const reportedOversoldQuantity = Number.isSafeInteger(
+        entry?.oversoldQuantity,
       )
-        ? entry.reservationShortfallQuantity
-        : 0;
-      const primaryLabel = `${remainingQuantity} left`;
-
-      if (reservationShortfallQuantity > 0) {
-        const secondaryLabel = [
-          reservedQuantity > 0 ? formatPendingQuantity(reservedQuantity) : "",
-          `short by ${reservationShortfallQuantity}`,
-        ]
-          .filter(Boolean)
-          .join(" · ");
-
-        return {
-          state: "over_reserved",
-          label: joinStockLabels(primaryLabel, secondaryLabel),
-          ariaLabel: [
-            formatInventoryUnits(remainingQuantity),
-            reservedQuantity > 0
-              ? formatPendingReservations(reservedQuantity)
-              : "",
-            `short by ${reservationShortfallQuantity} unit${reservationShortfallQuantity === 1 ? "" : "s"}`,
-          ]
-            .filter(Boolean)
-            .join(", "),
-          primaryLabel,
-          secondaryLabel,
-          remainingQuantity,
-          availableToTagQuantity,
-          reservedQuantity,
-        };
-      }
-
-      if (remainingQuantity <= 0) {
-        const secondaryLabel = "Sold out";
-
-        return {
-          state: "sold_out",
-          label: joinStockLabels(primaryLabel, secondaryLabel),
-          ariaLabel: `${formatInventoryUnits(remainingQuantity)}, sold out`,
-          primaryLabel,
-          secondaryLabel,
-          remainingQuantity,
-          availableToTagQuantity,
-          reservedQuantity,
-        };
-      }
-
-      if (availableToTagQuantity <= 0) {
-        const secondaryLabel = reservedQuantity > 0
-          ? formatPendingQuantity(reservedQuantity)
-          : "None available to tag";
-
-        return {
-          state: "fully_reserved",
-          label: joinStockLabels(primaryLabel, secondaryLabel),
-          ariaLabel: [
-            formatInventoryUnits(remainingQuantity),
-            reservedQuantity > 0
-              ? formatPendingReservations(reservedQuantity)
-              : "none available to tag",
-          ].join(", "),
-          primaryLabel,
-          secondaryLabel,
-          remainingQuantity,
-          availableToTagQuantity,
-          reservedQuantity,
-        };
-      }
-
-      const secondaryLabel = reservedQuantity > 0
-        ? formatPendingQuantity(reservedQuantity)
-        : "";
+        ? Math.max(0, entry.oversoldQuantity)
+        : Math.max(0, -availableToTagQuantity);
+      const primaryLabel = `${displayedAvailableToTagQuantity} left`;
+      const secondaryLabel = [
+        reservedQuantity > 0 ? formatPendingQuantity(reservedQuantity) : "",
+        reportedOversoldQuantity > 0
+          ? formatOversoldQuantity(reportedOversoldQuantity)
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
 
       return {
-        state: availableToTagQuantity <= 2 ? "low_stock" : "available",
+        state: reportedOversoldQuantity > 0
+          ? "oversold"
+          : displayedAvailableToTagQuantity <= 2
+            ? "low_stock"
+            : "available",
         label: joinStockLabels(primaryLabel, secondaryLabel),
         ariaLabel: [
-          formatInventoryUnits(remainingQuantity),
+          formatAvailableInventoryUnits(displayedAvailableToTagQuantity),
           reservedQuantity > 0
             ? formatPendingReservations(reservedQuantity)
+            : "",
+          reportedOversoldQuantity > 0
+            ? formatOversoldQuantity(reportedOversoldQuantity).toLocaleLowerCase(
+                "en-US",
+              )
             : "",
         ]
           .filter(Boolean)
@@ -221,7 +177,9 @@
         secondaryLabel,
         remainingQuantity,
         availableToTagQuantity,
+        displayedAvailableToTagQuantity,
         reservedQuantity,
+        oversoldQuantity: reportedOversoldQuantity,
       };
     }
 

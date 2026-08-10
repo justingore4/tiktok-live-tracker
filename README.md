@@ -40,19 +40,19 @@ TikTok's payment state.
 
 The tagger also shows the latest observed Sold Items badge independently as **Payment
 processing**, **Payment fixing**, **Payment failed**, **Canceled**, **Payment complete**, or
-**Unrecognized payment status**. Only processing and fixing create a pending inventory
-reservation. Not-yet-observed, failed, unrecognized, and unpriced-complete records keep
-their selected item linked without showing pending or reducing available stock. None of
-these observations decrement remaining inventory.
+**Unrecognized payment status**. Selecting inventory during bidding immediately reserves
+one unit. That reservation stays pending through processing, fixing, temporary payment
+failure, an unrecognized badge, or a temporarily price-less completion. It resolves only
+when TikTok captures a priced **Payment complete** or the exact terminal **Canceled**
+badge.
 
 An exact TikTok **Canceled** badge is canonical and terminal for inventory allocation. It
 keeps the variation linked to its selected item for history, releases that reservation,
-and never counts the cancellation as a sale, revenue, or profit. If a later priced
-**Payment complete** arrives, TikTok's completion wins: the tracker commits the sale and
-shows a warning that inventory was counted. The local **Mark unpaid after buffer** control
-remains an undoable fallback for a mapped nonterminal variation when TikTok's exact
-Canceled badge was not captured. If the item is auctioned again, the employee maps its new
-variation number.
+restores the unit to availability, and never counts the cancellation as a sale, revenue,
+or profit. Canceled variations retain that item as read-only history: every inventory
+card is disabled while the employee reviews one. Live mode has no manual mark-unpaid or
+undo-unpaid control; TikTok's exact payment lifecycle is authoritative. If the item is
+auctioned again, the employee maps its new variation number.
 
 ## Current implementation
 
@@ -61,8 +61,8 @@ variation number.
 - A Manifest V3 Chrome extension whose isolated capture script is available only on the
   exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
   dashboard path.
-- A responsive Chrome side-panel prototype with mock inventory, search, processing/fixing reservations,
-  sold-out states, one-click item mapping and unmapping, and a current/previous
+- A responsive Chrome side-panel prototype with mock inventory, search, pending reservations,
+  zero-stock and oversold states, one-click item mapping and unmapping, and a current/previous
   variation selector. The active on-video auction is labeled `bidding` and can be mapped
   before the sale reaches Sold Items. While the employee is viewing the current auction,
   the next auction is selected automatically. A manually selected historical variation
@@ -86,8 +86,8 @@ variation number.
   badge opens or closes the isolated offline demo. The worker-made local stream ID
   survives side-panel, browser, and service-worker restarts, while End keeps
   reconciliation history and does not act on TikTok LIVE.
-- Restoration of mappings, unpaid decisions, reservations, and prior variation records
-  after the side panel or browser is reopened.
+- Restoration of mappings, reservations, prior variation records, and any legacy unpaid
+  state after the side panel or browser is reopened.
 - Loading, saving, retry, and fail-closed error states that keep the last successfully
   saved view visible when a command fails.
 - An in-memory lifecycle demo for variations `#200` through `#203`. It keeps on-screen
@@ -146,22 +146,29 @@ variation number.
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, completed GMV, and gross profit;
-  - reserves pending units separately from completed sales;
+  - reserves a selected unit from bidding until priced completion or cancellation,
+    separately from completed sales;
   - treats exact `Canceled` as a terminal inventory-allocation result that preserves the
     item link, releases its reservation, and contributes no sale or money;
-  - lets a later priced completion override cancellation with a visible conflict warning;
-  - supports mapping corrections, click-again unmapping, **Mark unpaid**, and undoing
-    the local unpaid mark;
+  - treats cancellation as terminal and rejects later payment or mapping mutations;
+  - supports mapping corrections and click-again unmapping for every non-canceled order;
+    Live mode relies exclusively on captured TikTok payment truth while Offline demo
+    retains isolated lifecycle simulations;
   - applies completed historical corrections atomically by restoring the old SKU,
     decrementing the new SKU, and recalculating its cost snapshot and gross profit;
+  - keeps zero-stock inventory selectable and surfaces `Oversold by N` instead of
+    disabling the card;
   - surfaces unmapped sales, conflicting prices, and inventory shortages;
   - keeps auctions distinct by `(streamId, variationNumber)`.
 - A versioned persistence adapter that validates and saves detached reconciliation
   snapshots, reports typed storage/corruption/version errors, and never silently
-  replaces corrupt or future-version data. Reconciliation state is version 6 and stores
+  replaces corrupt or future-version data. Reconciliation state is version 7 and stores
   the sanitized Attributed GMV display plus the nullable active bidding variation per
-  stream, with strict version-1 through version-5 migration; the outer storage envelope
-  remains schema version 1.
+  stream, with strict version-1 through version-6 migration. Any legacy saved Live
+  `marked_unpaid` record migrates back to a mapped or unmapped unresolved order so
+  automatic TikTok payment tracking resumes. Legacy completion-after-cancellation
+  conflicts migrate to terminal cancellation and release their stale sale allocation;
+  the outer storage envelope remains schema version 1.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
   state when a command or write fails. Baseline creation is blocked while a local tracker
@@ -180,8 +187,9 @@ variation number.
   verifies or repairs the active stream's immutable baseline pin on Start and Resume. A
   guarded Retry also repairs an older active session whose reconciliation state was
   never initialized, without replacing any existing canonical data.
-- A strict tagger runtime client and controller that send only mapping, unmapping,
-  mark-unpaid, and undo-unpaid commands through that coordinator. The tagger never
+- A strict tagger runtime client and controller that send employee mutations through
+  that coordinator. Live UI exposes mapping and unmapping only; the worker explicitly
+  rejects legacy manual-unpaid commands. The tagger never
   accesses browser storage directly and cannot create authoritative payment-complete
   events.
 - Automated capture, parser, reconciliation, persistence, service-worker, and tagger
@@ -193,8 +201,8 @@ variation number.
   auto-follow behavior, which pauses while an employee reviews history.
 - Visible capture connection, retry, and queue-drained status.
 - Verified transition timing for TikTok's nonterminal **Payment processing**, **Payment
-  fixing**, **Payment failed**, and unrecognized labels. Processing/fixing reserve a mapped
-  unit; failed and unrecognized remain mapped but unreserved.
+  fixing**, **Payment failed**, and unrecognized labels. Product behavior deliberately
+  keeps any selected unit reserved until priced completion or exact cancellation.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
 - Google Sheets results export. The implemented Google connection is pre-stream,
@@ -354,14 +362,15 @@ prototype data. There is no silent reset.
     variation `#203` plus seeded history `#202`, `#201`, and `#200`.
 13. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
     different inventory card and confirm its completed-sale inventory and profit update.
-14. Return to `#203`, map `Stussy tee - black, L`, and confirm it shows **Item selected**
-    with `5 left` and no pending count. The Offline demo starts with no pending inventory.
+14. Return to `#203`, map `Stussy tee - black, L`, and exercise the isolated Offline
+    demo lifecycle. Demo controls may expose manual buffer-expiry and unpaid simulations;
+    those controls never appear in Live mode or alter saved live data.
 15. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
     `4 left`; then use **Undo simulated payment** and confirm the item remains selected,
-    returns to `5 left`, and still has no pending count.
-16. Test **Simulate payment buffer expired**, **Mark unpaid after buffer**, and **Undo
-    unpaid**. Select **Demo** again to return to the default Live session and confirm none
-    of the demo-only payment changes altered the saved data.
+    returns to the unresolved reservation state, and shows `4 left` with `1 pending`.
+16. Test the demo-only buffer-expiry, mark-unpaid, and undo-unpaid simulations. Select
+    **Demo** again to return to the default Live session and confirm none of those
+    controls appear there and none of the demo-only changes altered saved data.
 17. Keep that local stream active, open
     `https://shop.tiktok.com/streamer/live/product/dashboard`, and refresh the dashboard
     once after loading or reloading the unpacked extension.
@@ -387,13 +396,14 @@ prototype data. There is no silent reset.
     payment wording takes over. Under **TikTok payment**, confirm its exact observed state appears as
     `Payment processing`, `Payment fixing`, `Payment failed`, `Canceled`, or `Payment
     complete` and changes live without refreshing. A status-only update must keep that
-    variation selected. Processing and fixing must reserve a mapped unit and show it as
-    pending without reducing remaining stock. Failed, unrecognized, not-yet-observed, and
-    unpriced `Payment complete` must keep any item selection without pending inventory.
-    Exact `Canceled` must keep the item link, release any reservation, and leave remaining
-    stock and money unchanged. For priced `Payment complete`, also confirm the captured
-    final price appears even before an inventory item is selected. If a priced completion follows `Canceled`, confirm the
-    sale commits and the warning says TikTok completion won and inventory was counted.
+    variation selected. Mapping during bidding must immediately show one pending unit and
+    reduce the displayed available count by one. Processing, fixing, temporary failed,
+    unrecognized, not-yet-observed, and unpriced `Payment complete` observations must keep
+    that reservation. Exact `Canceled` must keep the item link as read-only history,
+    release the reservation, restore availability, and leave money unchanged. All cards
+    must be greyed out and noninteractive while that canceled variation is selected. For
+    priced `Payment complete`, confirm the pending label disappears, the captured final
+    price appears, and the sale permanently consumes the selected unit.
     Use the video auction card only to validate the current variation number; do not use
     it, Chat, or analytics to validate payment status, final price, or an individual sale.
     Separately, confirm **GMV/No shipping** equals the exact sum of all priced completed
@@ -410,17 +420,21 @@ prototype data. There is no silent reset.
     If a completed order has no inventory item, confirm it is excluded from that subtotal
     and the card reports how many completed sales still need items. Map or remap one and
     confirm the subtotal and warning recalculate immediately.
-21. Map one captured **Payment processing** or **Payment fixing** variation to `Stussy tee - black, L` and wait for the save.
-    Reopen and Resume once to confirm the mapping and pending reservation are durable.
-    Correct it to another available card, then click that selected card again; confirm
-    both the correction and **No item selected** state survive another reopen.
-22. Use **Mark unpaid after TikTok's buffer** on a mapped, non-completed test variation,
-    reopen the panel, and confirm the unpaid state was restored. Use **Undo unpaid** and
-    confirm that change also survives reopen.
+21. Map an item during bidding, confirm `1 pending`, then let TikTok move it through
+    processing and temporary failed. Switch away and back, then reopen and Resume once;
+    the mapping and reservation must remain durable throughout. If TikTok completes it,
+    confirm pending disappears while one unit remains consumed. On a different test
+    variation, wait for exact `Canceled` and confirm its pending unit is restored
+    automatically with no employee action.
+22. On any non-canceled variation, select a SKU already showing `0 left`. Confirm the
+    card stays enabled, never says **Sold out**, and reports `Oversold by 1`. Assign that
+    SKU again and confirm the warning increments. Canceling one pending order must reduce
+    or remove its oversold amount. Only reviewing a canceled variation disables all
+    inventory cards.
 23. Use TikTok's own navigation to leave the dashboard and return without reloading the
     tab; confirm capture becomes active again. Put the tab in the background, return to
     it, and confirm a later Sold Items change is still captured.
-24. Open End while the stream still contains an inventory-reserved processing/fixing
+24. Open End while the stream still contains a pending inventory reservation
     mapping and a completed sale without an item. Confirm that both remain visible as
     unresolved records but neither blocks the End confirmation. Cancel End once, then
     confirm it; TikTok LIVE must remain unaffected and captured order history must remain
@@ -439,9 +453,9 @@ restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID
 Offline-demo changes still reset when that disposable demo is recreated or the panel is
 reloaded.
 
-**Undo simulated payment** only restores the private, in-memory offline demo. **Undo
-unpaid** only removes the employee's local unpaid mark. Neither control acts on TikTok or
-can reverse a captured completed payment.
+**Undo simulated payment** and demo unpaid controls affect only the private, in-memory
+Offline demo. Live mode has no manual unpaid controls. No demo control acts on TikTok or
+can reverse captured payment truth.
 
 ## Credentials and privacy
 
