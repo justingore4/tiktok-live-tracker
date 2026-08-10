@@ -152,13 +152,17 @@ overrides cancellation, commits a mapped sale, and creates a
 counted. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
 
-The Metrics section keeps three different current-stream values. **GMV/No shipping** is
+The Metrics section keeps four different current-stream values. **GMV/No shipping** is
 the exact integer-cent sum of every priced `Payment complete` order, including completed
 orders that are still unmapped. **Total GMV** mirrors TikTok's latest Attributed GMV text
 without expanding a rounded value such as `$4.64K` into invented cents. Per the product
 requirement, TikTok's aggregate includes buyer-paid shipping, so these values are not
-expected to match and their difference is not used to alter inventory or a sale. **Gross
-Profits** is mapped completed sold-price revenue minus the committed unit-cost snapshots
+expected to match and their difference is not used to alter inventory or a sale.
+**Completed Sales/Total Sales** shows the canonical count of uniquely priced
+`Payment complete` orders over the count of every variation tracked in the current stream.
+The numerator includes completed orders that are still unmapped. The denominator includes
+every payment state, including failed and canceled orders. **Gross Profits** is mapped
+completed sold-price revenue minus the committed unit-cost snapshots
 from the Google Sheets baseline pinned to those sales. Completed-but-unmapped sales are
 excluded from this subtotal and trigger a count-based incomplete warning until mapped;
 mapping corrections and remaps recalculate both. This basic figure excludes shipping,
@@ -307,10 +311,14 @@ screen test-user run does not complete those release reviews.
    including a compact display such as `$4.64K`. The second value includes buyer-paid
    shipping per the product requirement and therefore need not equal the first. Change
    the TikTok metric without refreshing the page and confirm Total GMV updates live and
-   survives a side-panel reopen. Confirm **Gross Profits** equals mapped completed
-   sold-price revenue minus the pinned Google Sheets unit costs. Leave a completed order
-   unmapped and confirm it is excluded while the warning shows one incomplete sale; map
-   or remap it and confirm the subtotal and warning recalculate immediately.
+   survives a side-panel reopen. Confirm **Completed Sales/Total Sales** shows the
+   number of uniquely priced completed orders, including those still unmapped, over every
+   current-stream variation. Confirm failed and canceled orders remain in the denominator,
+   and mapping corrections do not change either count. Confirm **Gross Profits** equals
+   mapped completed sold-price revenue minus the pinned Google Sheets unit costs. Leave a
+   completed order unmapped and confirm it is excluded while the warning shows one
+   incomplete sale; map or remap it and confirm the subtotal and warning recalculate
+   immediately.
 10. On a mapped processing or fixing row, confirm its card keeps the full remaining
     quantity visible and reports the pending reservation separately. It must not count a
     sale or reduce remaining stock. When that same row changes to failed or unrecognized,

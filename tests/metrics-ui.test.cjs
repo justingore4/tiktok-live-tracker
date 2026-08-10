@@ -88,9 +88,11 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(metricsSection, /id="metrics-title"[^>]*>Metrics</);
   assert.match(metricsSection, />\s*GMV\/No shipping\s*</);
   assert.match(metricsSection, />\s*Total GMV\s*</);
+  assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
   assert.match(metricsSection, />\s*Gross Profits\s*</);
   assert.match(metricsSection, /id="revenue-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="total-gmv-value"[^>]*>&mdash;</);
+  assert.match(metricsSection, /id="completed-sales-value"[^>]*>0\/0</);
   assert.match(
     metricsSection,
     /id="gross-profit-value"[\s\S]*?aria-describedby="gross-profit-warning"[\s\S]*?>\$0\.00</,
@@ -101,8 +103,8 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.equal(
     [...metricsSection.matchAll(/class="metric-card(?:\s+metric-card-profit)?"/g)].length,
-    3,
-    "the Metrics section must preserve both GMV cards and add Gross Profits",
+    4,
+    "the Metrics section must preserve the existing cards and add the completed/total variation metric",
   );
 
   assert.match(
@@ -115,6 +117,10 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
+    /const completedSalesValue = document\.querySelector\([\s\S]*?"#completed-sales-value"/,
+  );
+  assert.match(
+    source,
     /const grossProfitValue = document\.querySelector\("#gross-profit-value"\)/,
   );
   assert.match(
@@ -124,6 +130,10 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(
     source,
     /function renderMetrics\(view\)\s*{[\s\S]*?viewModel\.formatUsdCents\([\s\S]*?view\.totals\.completedGmvCents[\s\S]*?view\.totals\.profitCents[\s\S]*?view\.totals\.attributedGmvDisplay[\s\S]*?view\.totals\.unmappedCompletedCount[\s\S]*?}/,
+  );
+  assert.match(
+    source,
+    /function renderMetrics\(view\)\s*{[\s\S]*?completedPaymentCount\s*=\s*view\.totals\.completedPaymentCount[\s\S]*?auctionCount\s*=\s*view\.totals\.auctionCount[\s\S]*?completedSalesRatio\s*=\s*`\$\{completedPaymentCount\}\/\$\{auctionCount\}`[\s\S]*?completedSalesValue\.textContent\s*=\s*completedSalesRatio/,
   );
   assert.match(
     source,

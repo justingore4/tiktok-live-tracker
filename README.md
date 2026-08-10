@@ -69,10 +69,14 @@ variation number.
 - A bottom **Metrics** section showing **GMV/No shipping** as the current-stream sum of
   sold prices from every priced `Payment complete` order, including completed orders
   that still need an item. A separate **Total GMV** card mirrors TikTok's captured
-  Attributed GMV display, which includes buyer-paid shipping. **Gross Profits** is the
-  sold-price revenue from mapped, completed orders minus their pinned Google Sheets unit
-  costs. Completed orders without an inventory match are excluded from that subtotal and
-  produce an incomplete-count warning until they are mapped.
+  Attributed GMV display, which includes buyer-paid shipping.
+  **Completed Sales/Total Sales** shows the number of uniquely priced
+  `Payment complete` orders over every tracked variation in the current stream. The
+  numerator includes mapped and unmapped completions; the denominator includes every
+  payment state, including failed and canceled orders. **Gross Profits** is the sold-price
+  revenue from mapped, completed orders minus their pinned Google Sheets unit costs.
+  Completed orders without an inventory match are excluded from that subtotal and produce
+  an incomplete-count warning until they are mapped.
 - A **Live session** mode with explicit Start, Resume, and End controls. Its worker-made
   local stream ID survives side-panel, browser, and service-worker restarts, while End
   keeps reconciliation history and does not act on TikTok LIVE.
@@ -377,8 +381,12 @@ prototype data. There is no silent reset.
     Separately, confirm **GMV/No shipping** equals the exact sum of all priced completed
     orders and **Total GMV** mirrors TikTok's **Attributed GMV** text, including compact
     text such as `$4.64K`. Per the product requirement, Total GMV includes buyer-paid
-    shipping, so the two GMV cards are not expected to match. Confirm **Gross Profits**
-    equals mapped completed sold-price revenue minus the pinned Google Sheets unit costs.
+    shipping, so the two GMV cards are not expected to match. Confirm
+    **Completed Sales/Total Sales** shows the uniquely priced completed-order count
+    over every variation tracked in the current stream. Verify failed and canceled orders
+    remain in the denominator, and verify mapping, unmapping, or remapping does not change
+    either count. Confirm **Gross Profits** equals mapped completed sold-price revenue
+    minus the pinned Google Sheets unit costs.
     If a completed order has no inventory item, confirm it is excluded from that subtotal
     and the card reports how many completed sales still need items. Map or remap one and
     confirm the subtotal and warning recalculate immediately.

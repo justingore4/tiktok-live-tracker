@@ -226,6 +226,11 @@ Inventory accounting follows the selected stream's pinned baseline:
   stream filter, the summary uses the active baseline and its pinned streams.
 - `completedGmvCents` includes every payment-complete auction, even if it is still
   unmapped.
+- `auctionCount` counts every tracked variation in the requested stream regardless of its
+  payment state, including active bidding, unknown, processing, fixing, failed, canceled,
+  and completed variations.
+- `completedPaymentCount` counts every uniquely priced payment-complete auction in the
+  requested stream, whether mapped or unmapped.
 - `committedRevenueCents` and gross profit include only mapped, payment-complete sales.
 - `profitCents = committedRevenueCents - costOfGoodsCents`; each committed cost is the
   unit-cost snapshot from the Google Sheets baseline pinned to that sale's stream.
@@ -478,7 +483,11 @@ Shared tagger behavior includes:
   `totals.attributedGmvDisplay`, which includes buyer-paid shipping. The two values remain
   distinct rather than estimating shipping from their difference; compact dashboard text
   such as `$4.64K` remains compact instead of being presented as an exact cent value. A
-  **Gross Profits** card renders `totals.profitCents`: mapped, completed sold-price revenue
+  **Completed Sales/Total Sales** card renders
+  `totals.completedPaymentCount/totals.auctionCount`. The numerator counts each uniquely
+  priced completed order whether mapped or unmapped; the denominator counts every tracked
+  current-stream variation, including failed and canceled orders. A **Gross Profits** card
+  renders `totals.profitCents`: mapped, completed sold-price revenue
   minus the committed Google Sheets unit-cost snapshots. Completed-but-unmapped sales are
   excluded and trigger a visible incomplete-count warning until inventory items are
   assigned. Historical unmapping, mapping, and remapping recalculate the subtotal and
@@ -1023,7 +1032,7 @@ Browser support beyond Chrome is a later decision.
       worker-resolved active local stream;
    3. **Completed:** data-free invalidations refresh the open tagger in real time,
       auto-follow each changed bidding variation before it sells, and visibly update
-      sanitized payment status and the three Metrics cards. A prioritized work queue,
+      sanitized payment status and the four Metrics cards. A prioritized work queue,
       visible capture state, TikTok identity, and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening

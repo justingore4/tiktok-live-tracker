@@ -212,6 +212,9 @@
   const cardTemplate = document.querySelector("#inventory-card-template");
   const gmvNoShippingValue = document.querySelector("#revenue-value");
   const totalGmvValue = document.querySelector("#total-gmv-value");
+  const completedSalesValue = document.querySelector(
+    "#completed-sales-value",
+  );
   const grossProfitValue = document.querySelector("#gross-profit-value");
   const grossProfitWarning = document.querySelector(
     "#gross-profit-warning",
@@ -1013,6 +1016,9 @@
     );
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
+    const completedPaymentCount = view.totals.completedPaymentCount;
+    const auctionCount = view.totals.auctionCount;
+    const completedSalesRatio = `${completedPaymentCount}/${auctionCount}`;
     const formattedTotalGmv =
       typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
         ? attributedGmvDisplay.trim()
@@ -1024,6 +1030,10 @@
 
     if (totalGmvValue.textContent !== formattedTotalGmv) {
       totalGmvValue.textContent = formattedTotalGmv;
+    }
+
+    if (completedSalesValue.textContent !== completedSalesRatio) {
+      completedSalesValue.textContent = completedSalesRatio;
     }
 
     if (grossProfitValue.textContent !== formattedGrossProfit) {
