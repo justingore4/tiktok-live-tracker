@@ -13,6 +13,20 @@ function extensionResourceExists(relativePath) {
   return fs.existsSync(path.join(extensionDirectory, relativePath));
 }
 
+function assertTextOrder(source, expectedTokens, message) {
+  let previousIndex = -1;
+
+  expectedTokens.forEach((token) => {
+    const index = source.indexOf(token, previousIndex + 1);
+
+    assert.ok(
+      index > previousIndex,
+      message ?? `Expected ${token} to follow the preceding layout token.`,
+    );
+    previousIndex = index;
+  });
+}
+
 test("manifest configures the Chrome side-panel resources", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(Number(manifest.minimum_chrome_version) >= 114);
@@ -193,22 +207,31 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
   );
+  const headerSource = html.match(/<header class="app-header">[\s\S]*?<\/header>/)?.[0];
+  const footerSource = html.match(
+    /<footer class="app-footer"[\s\S]*?<\/footer>/,
+  )?.[0];
 
+  assert.ok(headerSource);
+  assert.ok(footerSource);
   assert.match(html, /<label[^>]+for="inventory-search"/);
   assert.match(html, /<label[^>]+for="variation-selector"/);
-  assert.match(html, /class="mode-controls"[^>]+role="group"/);
+  assert.match(headerSource, /class="header-actions"/);
   assert.match(
-    html,
-    /id="saved-session-mode"[\s\S]+aria-pressed="true"[\s\S]+aria-describedby="mode-description"/,
+    headerSource,
+    /id="offline-demo-mode"[\s\S]+type="button"[\s\S]+aria-pressed="false"[\s\S]+aria-label="Switch to offline demo mode"[\s\S]+>\s*Demo\s*</,
   );
-  assert.match(
+  assert.match(headerSource, /class="prototype-badge"[^>]*>Prototype</);
+  assert.doesNotMatch(
     html,
-    /id="offline-demo-mode"[\s\S]+aria-pressed="false"[\s\S]+aria-describedby="mode-description"/,
+    /id="saved-session-mode"|class="mode-panel"|class="mode-controls"|aria-label="Tracker mode"/,
   );
-  assert.match(
-    html,
-    /id="saved-session-status"[\s\S]+role="status"[\s\S]+aria-live="polite"/,
-  );
+  assert.doesNotMatch(html, /Choose where changes go|>\s*Workspace\s*</);
+  assert.doesNotMatch(html, /id="saved-session-status(?:-text)?"/);
+  assert.match(footerSource, /role="status"/);
+  assert.match(footerSource, /aria-live="polite"/);
+  assert.match(footerSource, /aria-atomic="true"/);
+  assert.match(footerSource, /id="session-footer-label"/);
   assert.match(
     html,
     /id="stream-session-panel"[\s\S]+aria-busy="true"/,
@@ -332,6 +355,143 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /do not change TikTok/);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("side panel keeps setup and active-stream controls in their intended order", () => {
+  const panelPath = path.join(
+    extensionDirectory,
+    manifest.side_panel.default_path,
+  );
+  const html = fs.readFileSync(panelPath, "utf8");
+  const panelSource = fs.readFileSync(
+    path.join(path.dirname(panelPath), "sidepanel.js"),
+    "utf8",
+  );
+  const reorderSource = panelSource.match(
+    /function reorderAppSections\(sections\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const layoutSource = panelSource.match(
+    /function updateLayoutOrder\(snapshot = streamSnapshot\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const activeBranches = layoutSource?.match(
+    /streamFailed\s*\?\s*\[([\s\S]*?)\]\s*:\s*\[([\s\S]*?)\]/,
+  );
+  const setupBranch = layoutSource?.match(
+    /return;\s*\}\s*reorderAppSections\(\[([\s\S]*?)\]\);/,
+  )?.[1];
+
+  assert.ok(reorderSource);
+  assert.ok(layoutSource);
+  assert.ok(activeBranches);
+  assert.ok(setupBranch);
+  assert.match(
+    layoutSource,
+    /snapshot\.activeSession !== null && snapshot\.resumed === true/,
+  );
+  assertTextOrder(setupBranch, ["inventoryImportPanel", "streamSessionPanel"]);
+  assertTextOrder(activeBranches[1], [
+    "savedSessionError",
+    "streamSessionPanel",
+    "trackerWorkspace",
+    "appFooter",
+  ]);
+  assertTextOrder(activeBranches[2], [
+    "savedSessionError",
+    "trackerWorkspace",
+    "streamSessionPanel",
+    "appFooter",
+  ]);
+  assert.equal(activeBranches[1].trim().endsWith("appFooter,"), true);
+  assert.equal(activeBranches[2].trim().endsWith("appFooter,"), true);
+  assert.match(
+    reorderSource,
+    /appShell\.insertBefore\(section, mappingAnnouncement \?\? null\)/,
+  );
+  assert.doesNotMatch(
+    reorderSource,
+    /trackerWorkspace\.(?:append|appendChild|insertBefore)/,
+  );
+  assert.match(
+    panelSource,
+    /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?streamSnapshot = snapshot;[\s\S]*?updateLayoutOrder\(snapshot\);/,
+  );
+  assert.match(
+    html,
+    /<\/section>\s*<\/div>\s*<footer class="app-footer"[^>]*>/,
+  );
+  assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
+});
+
+test("active stream compacts its session controls without changing other lifecycle states", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const sessionMarkup = html.match(
+    /<section\s+id="stream-session-panel"[\s\S]*?<\/section>/,
+  )?.[0];
+  const renderSource = panelSource.match(
+    /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?function announceSavedAction/,
+  )?.[0];
+  const activeHideRule = styleSource.match(
+    /\.stream-session-panel\[data-state="active"\] \.stream-session-heading,\s*\.stream-session-panel\[data-state="active"\] \.stream-session-safety-note\s*\{[\s\S]*?\}/,
+  )?.[0];
+
+  assert.ok(sessionMarkup);
+  assert.ok(renderSource);
+  assert.ok(activeHideRule);
+  assert.match(sessionMarkup, /class="stream-session-heading"/);
+  assert.match(sessionMarkup, /id="stream-session-safety-note"/);
+  assert.match(sessionMarkup, /id="stream-session-status-title"/);
+  assert.match(sessionMarkup, /id="stream-session-status-message"/);
+  assert.match(
+    sessionMarkup,
+    /id="end-stream"[\s\S]*?>\s*End Stream Tracking\s*<\/button>/,
+  );
+  assert.match(
+    renderSource,
+    /const active = activeSession !== null && snapshot\.resumed;/,
+  );
+  assert.match(
+    renderSource,
+    /const dataState = failed[\s\S]*?: active[\s\S]*?\? "active"[\s\S]*?: resumeAvailable[\s\S]*?\? "resume"[\s\S]*?: "inactive"/,
+  );
+  assert.match(
+    renderSource,
+    /const badgeContainer = dataState === "active"\s*\? streamSessionStatus\s*:\s*streamSessionHeading;/,
+  );
+  assert.match(
+    renderSource,
+    /if \(streamSessionBadge\.parentElement !== badgeContainer\) \{\s*badgeContainer\.append\(streamSessionBadge\);\s*\}/,
+  );
+  assert.match(renderSource, /streamSessionBadge\.textContent = "Active";/);
+  assert.match(renderSource, /streamSessionStatusTitle\.textContent = "Tracker stream active";/);
+  assert.match(
+    renderSource,
+    /streamSessionStatusMessage\.textContent =\s*`Started \$\{startedLabel\}\. This local identity will survive panel and browser restarts\.`;/,
+  );
+  assert.match(activeHideRule, /display:\s*none;/);
+  assert.match(
+    styleSource,
+    /\.stream-session-status > \.stream-session-badge\s*\{[\s\S]*?margin-left:\s*auto;/,
+  );
+  assert.match(
+    styleSource,
+    /\.stream-session-panel\[data-state="active"\] \.stream-session-status\s*\{[\s\S]*?margin-top:\s*0;/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /\.stream-session-panel\[data-state="(?:inactive|resume|error|checking)"\][^{]*(?:stream-session-heading|stream-session-safety-note)[^{]*\{[\s\S]*?display:\s*none;/,
+  );
 });
 
 test("tagger UI separates persistent commands from the offline lifecycle", () => {
@@ -478,13 +638,42 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(panelSource, /Wait for a live auction variation before tagging/);
   assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
-  assert.match(
+  assert.match(panelSource, /let activeMode = "saved_session"/);
+  assert.doesNotMatch(
     panelSource,
-    /savedModeButton\.addEventListener\("click",[\s\S]+selectMode\("saved_session"\)/,
+    /savedModeButton|#saved-session-mode|modeDescription|#mode-description/,
   );
   assert.match(
     panelSource,
-    /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\("offline_demo"\)/,
+    /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\([\s\S]+activeMode === "offline_demo"[\s\S]+\? "saved_session"[\s\S]+: "offline_demo"[\s\S]+\)/,
+  );
+  assert.match(
+    panelSource,
+    /demoModeButton\.setAttribute\("aria-pressed", String\(!savedMode\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /const demoToggleLabel = savedMode[\s\S]+\? "Switch to offline demo mode"[\s\S]+: "Return to live session"[\s\S]+demoModeButton\.setAttribute\("aria-label", demoToggleLabel\)/,
+  );
+  assert.match(
+    styleSource,
+    /\.prototype-badge,\s*\.header-demo-toggle,\s*\.demo-badge\s*\{/,
+  );
+  assert.match(
+    styleSource,
+    /\.header-actions\s*\{[\s\S]*?display: inline-flex;[\s\S]*?gap: 6px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.prototype-badge\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.header-demo-toggle\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /\.prototype-badge\s*\{\s*display:\s*none;/,
   );
   assert.match(
     panelSource,
@@ -822,9 +1011,14 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
     panelSource,
     /Now showing variation #\$\{view\.selectedVariationNumber\}\./,
   );
+  assert.match(panelSource, /view\.isReviewingHistory/);
   assert.match(
     panelSource,
-    /A newly captured variation will open automatically\./,
+    /New live auctions will keep updating in this menu without changing your selection\./,
+  );
+  assert.match(
+    panelSource,
+    /You are following the current auction, so the next live auction will open automatically\./,
   );
   assert.doesNotMatch(
     panelSource,

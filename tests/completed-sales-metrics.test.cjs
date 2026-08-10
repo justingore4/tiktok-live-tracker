@@ -49,7 +49,7 @@ function completedSales(state, streamId) {
 function completedSalesRatio(state, streamId) {
   const totals = reconciliation.calculateSummary(state, { streamId }).totals;
 
-  return `${totals.completedPaymentCount}/${totals.auctionCount}`;
+  return `${totals.completedPaymentCount}/${totals.totalSalesCount}`;
 }
 
 test("completedPaymentCount includes priced Payment complete variations whether mapped or unmatched", () => {
@@ -87,14 +87,20 @@ test("completedPaymentCount includes priced Payment complete variations whether 
   );
 });
 
-test("completedPaymentCount excludes every non-final or unpriced observed payment state", () => {
+test("Total Sales includes only terminal Sold Items and excludes the active bid and non-final states", () => {
   const state = createState();
+
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 200,
+  });
   const statuses = [
     reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
     reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
     reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
     reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
     reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+    reconciliation.OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
   ];
 
   statuses.forEach((status, index) => {
@@ -108,12 +114,24 @@ test("completedPaymentCount excludes every non-final or unpriced observed paymen
   assert.equal(summary.totals.completedPaymentCount, 0);
   assert.equal(
     summary.totals.auctionCount,
-    statuses.length,
-    "all canonical variations remain in the Total Variations denominator",
+    statuses.length + 1,
+    "all canonical variations remain available to the tracker",
   );
-  assert.equal(completedSalesRatio(state, STREAM_ONE), "0/5");
+  assert.equal(
+    summary.totals.totalSalesCount,
+    3,
+    "only Payment complete, Payment failed, and Canceled variations count as Total Sales",
+  );
+  assert.equal(completedSalesRatio(state, STREAM_ONE), "0/3");
   assert.equal(summary.totals.completedGmvCents, 0);
-  assert.equal(summary.auctions.length, statuses.length);
+  assert.equal(summary.auctions.length, statuses.length + 1);
+  assert.equal(summary.activeBiddingVariationNumber, 200);
+  assert.equal(
+    summary.auctions.find((auction) => auction.variationNumber === 200)
+      .observedPaymentStatus,
+    reconciliation.OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
+    "the active bidding variation remains visible but is excluded from Total Sales",
+  );
   assert.equal(
     summary.auctions.find((auction) => auction.variationNumber === 205)
       .observedPaymentStatus,
@@ -127,7 +145,7 @@ test("completedPaymentCount excludes every non-final or unpriced observed paymen
   );
 });
 
-test("Completed Sales/Total Sales includes failed and canceled variations in its denominator", () => {
+test("Completed Sales/Total Sales includes complete, failed, and canceled variations in its denominator", () => {
   const state = createState();
 
   reconciliation.recordPaymentComplete(state, {
@@ -148,6 +166,12 @@ test("Completed Sales/Total Sales includes failed and canceled variations in its
     reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
   );
 
+  const totals = reconciliation.calculateSummary(state, {
+    streamId: STREAM_ONE,
+  }).totals;
+
+  assert.equal(totals.completedPaymentCount, 1);
+  assert.equal(totals.totalSalesCount, 3);
   assert.equal(completedSalesRatio(state, STREAM_ONE), "1/3");
 });
 
@@ -213,10 +237,12 @@ test("Completed Sales/Total Sales is stream-scoped and counts each canonical var
   });
 
   assert.equal(streamOne.totals.completedPaymentCount, 1);
+  assert.equal(streamOne.totals.totalSalesCount, 3);
   assert.equal(streamOne.totals.auctionCount, 3);
   assert.equal(completedSalesRatio(state, STREAM_ONE), "1/3");
   assert.equal(streamOne.totals.completedGmvCents, 3000);
   assert.equal(streamTwo.totals.completedPaymentCount, 1);
+  assert.equal(streamTwo.totals.totalSalesCount, 2);
   assert.equal(streamTwo.totals.auctionCount, 2);
   assert.equal(completedSalesRatio(state, STREAM_TWO), "1/2");
   assert.equal(streamTwo.totals.completedGmvCents, 7000);

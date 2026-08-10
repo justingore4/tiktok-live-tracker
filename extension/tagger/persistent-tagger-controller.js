@@ -356,8 +356,9 @@
       let view = null;
       let projectionSession = null;
       let selectedVariationNumber = currentVariationNumber;
-      let followedVariationHighWaterMark = null;
-      let followedBiddingVariationNumber = null;
+      // This baseline advances with canonical capture even while an employee
+      // deliberately keeps a historical variation selected.
+      let latestVariationNumber = currentVariationNumber;
       let started = false;
       let activePromise = null;
       let queuedRefresh = null;
@@ -391,6 +392,25 @@
         publish();
       }
 
+      function decorateProjectionView(
+        candidateView,
+        activeBiddingVariationNumber,
+        currentVariationNumber,
+      ) {
+        return {
+          ...candidateView,
+          activeBiddingVariationNumber,
+          currentVariationNumber,
+          isReviewingHistory:
+            candidateView.selectedVariationNumber !== currentVariationNumber,
+          variations: candidateView.variations.map((variation) => ({
+            ...variation,
+            current:
+              variation.variationNumber === currentVariationNumber,
+          })),
+        };
+      }
+
       function buildProjection(candidateState, preferredVariationNumber) {
         const canonicalState =
           reconciliation.hydrateReconciliationState(candidateState);
@@ -407,6 +427,14 @@
           ) ?? [];
         const activeBiddingVariationNumber =
           canonicalStream?.activeBiddingVariationNumber ?? null;
+        const newestRecordedVariationNumber =
+          recordedVariationNumbers.length === 0
+            ? null
+            : Math.max(...recordedVariationNumbers);
+        const currentCanonicalVariationNumber =
+          activeBiddingVariationNumber ??
+          newestRecordedVariationNumber ??
+          currentVariationNumber;
         const candidateSession = mappingWorkflow.createMappingSession({
           inventory: pinnedInventory,
           reconciliation,
@@ -423,9 +451,7 @@
         const firstRecordedVariation = candidateView.variations.find(
           (variation) => variation.recorded,
         );
-        const selectionTarget = preferredVariation?.recorded
-          ? preferredVariation
-          : firstRecordedVariation ?? preferredVariation;
+        const selectionTarget = preferredVariation ?? firstRecordedVariation;
 
         if (
           selectionTarget &&
@@ -441,17 +467,15 @@
           }
         }
 
-        candidateView = {
-          ...candidateView,
+        candidateView = decorateProjectionView(
+          candidateView,
           activeBiddingVariationNumber,
-        };
+          currentCanonicalVariationNumber,
+        );
 
         return {
           activeBiddingVariationNumber,
-          newestRecordedVariationNumber:
-            recordedVariationNumbers.length === 0
-              ? null
-              : Math.max(...recordedVariationNumbers),
+          currentCanonicalVariationNumber,
           session: candidateSession,
           selectedVariationNumber: candidateView.selectedVariationNumber,
           view: candidateView,
@@ -459,38 +483,28 @@
       }
 
       function acceptCanonicalState(candidateState, options = {}) {
+        const wasFollowingLatestVariation =
+          selectedVariationNumber === latestVariationNumber;
         const projection = buildProjection(
           candidateState,
           selectedVariationNumber,
         );
-        const newestRecordedVariationNumber =
-          projection.newestRecordedVariationNumber;
         const activeBiddingVariationNumber =
           projection.activeBiddingVariationNumber;
-        const shouldFollowBiddingVariation =
-          activeBiddingVariationNumber !== null &&
+        const currentCanonicalVariationNumber =
+          projection.currentCanonicalVariationNumber;
+        const canonicalVariationChanged =
+          currentCanonicalVariationNumber !== latestVariationNumber;
+        const shouldFollowVariation =
+          options.resetFollowBaseline === true ||
           (
-            options.resetFollowBaseline === true ||
-            activeBiddingVariationNumber !== followedBiddingVariationNumber
+            options.followNewVariation === true &&
+            canonicalVariationChanged &&
+            wasFollowingLatestVariation
           );
-        const shouldFollowNewVariation =
-          activeBiddingVariationNumber === null &&
-          (
-            options.resetFollowBaseline === true ||
-            options.followNewVariation === true
-          ) &&
-          newestRecordedVariationNumber !== null &&
-          (
-            options.resetFollowBaseline === true ||
-            followedVariationHighWaterMark === null ||
-            newestRecordedVariationNumber > followedVariationHighWaterMark
-          );
-
-        const variationToFollow = shouldFollowBiddingVariation
-          ? activeBiddingVariationNumber
-          : shouldFollowNewVariation
-            ? newestRecordedVariationNumber
-            : null;
+        const variationToFollow = shouldFollowVariation
+          ? currentCanonicalVariationNumber
+          : null;
 
         if (
           variationToFollow !== null &&
@@ -509,30 +523,22 @@
 
           projection.selectedVariationNumber =
             selection.view.selectedVariationNumber;
-          projection.view = {
-            ...selection.view,
+          projection.view = decorateProjectionView(
+            selection.view,
             activeBiddingVariationNumber,
-          };
+            currentCanonicalVariationNumber,
+          );
         }
 
         projectionSession = projection.session;
         selectedVariationNumber = projection.selectedVariationNumber;
         view = projection.view;
 
-        if (options.resetFollowBaseline === true) {
-          followedVariationHighWaterMark = newestRecordedVariationNumber;
-        } else if (options.followNewVariation === true) {
-          followedVariationHighWaterMark =
-            newestRecordedVariationNumber === null
-              ? followedVariationHighWaterMark
-              : Math.max(
-                  followedVariationHighWaterMark ?? 0,
-                  newestRecordedVariationNumber,
-                );
-        }
-
-        if (shouldFollowBiddingVariation) {
-          followedBiddingVariationNumber = activeBiddingVariationNumber;
+        if (
+          options.resetFollowBaseline === true ||
+          options.followNewVariation === true
+        ) {
+          latestVariationNumber = currentCanonicalVariationNumber;
         }
       }
 
@@ -729,11 +735,11 @@
         }
 
         selectedVariationNumber = result.view.selectedVariationNumber;
-        view = {
-          ...result.view,
-          activeBiddingVariationNumber:
-            view?.activeBiddingVariationNumber ?? null,
-        };
+        view = decorateProjectionView(
+          result.view,
+          view?.activeBiddingVariationNumber ?? null,
+          latestVariationNumber,
+        );
         publish();
         return createSnapshot();
       }

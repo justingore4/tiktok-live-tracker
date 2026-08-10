@@ -229,8 +229,12 @@ Inventory accounting follows the selected stream's pinned baseline:
 - `auctionCount` counts every tracked variation in the requested stream regardless of its
   payment state, including active bidding, unknown, processing, fixing, failed, canceled,
   and completed variations.
-- `completedPaymentCount` counts every uniquely priced payment-complete auction in the
-  requested stream, whether mapped or unmapped.
+- `totalSalesCount` counts each unique requested-stream variation whose latest observed
+  outcome is `payment_complete`, `payment_failed`, or `canceled`. The active bidding
+  marker and `not_observed`, `payment_processing`, `payment_fixing`, and `unrecognized`
+  observations do not enter this metric's terminal outcome set.
+- `completedPaymentCount` counts every uniquely priced canonical payment-complete auction
+  in the requested stream, whether mapped or unmapped.
 - `committedRevenueCents` and gross profit include only mapped, payment-complete sales.
 - `profitCents = committedRevenueCents - costOfGoodsCents`; each committed cost is the
   unit-cost snapshot from the Google Sheets baseline pinned to that sale's stream.
@@ -411,7 +415,7 @@ and automatic page-to-session association remain later identity work.
 | Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | Exact `Attributed GMV` metric appears under the unique analytics boundary | Persist only its sanitized exact/compact USD display under the worker-resolved active stream | Implemented; independent of Sold Items and no aggregate-to-cents conversion |
-| A bidding, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker while retaining selection for status-only updates | Implemented; bidding supplies identity only, not sale truth |
+| A bidding, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding supplies identity only, not sale truth |
 | Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
 | Priced `Payment complete` follows `Canceled` | Let completion win, commit the mapped sale, and show a conflict warning | Implemented |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
@@ -443,7 +447,9 @@ if DOM capture proves incomplete.
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
-The Chrome side panel has two explicit modes:
+The Chrome side panel has two explicit modes without a separate Workspace chooser. It
+opens in Live session mode. A compact **Demo** button beside the Prototype badge is an
+accessible pressed-state toggle between the modes:
 
 - **Live session** is the default employee workspace. It requires a persistent local
   active stream, restores the last durable reconciliation state, persists mapping and
@@ -451,14 +457,25 @@ The Chrome side panel has two explicit modes:
 - **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
   isolated state, sends no persistent commands, and resets when recreated or reloaded.
 
+Before Start, Live session presents Google Sheets inventory import followed by the local
+Start controls. Once a stream is started or resumed, the tracker workspace and Variation
+selector move directly below the header. The Local stream session section containing End
+is the last substantive section, followed by one saved-state footer indicator. While the
+stream is actively tracking, that section compacts to its tracker-active date row, moves
+the **Active** pill into the row, hides the redundant heading and safety note, and retains
+the **End Stream Tracking** action. Setup, resume, loading, and error states retain the
+full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
+error alerts remain available near the top so failures are not hidden by that layout.
+
 Shared tagger behavior includes:
 
 - A native variation dropdown. Live-session mode shows canonical stream records from the
   current-bidding and Sold Items paths; the isolated Offline demo retains its clearly
   labeled prototype history. The active option is formatted
   `#N - bidding - <selected item or No item selected>`.
-- Stable variation identity with automatic selection of each changed active bidding
-  marker; status-only changes keep the existing selection.
+- Stable variation identity with automatic selection of the next active bidding marker
+  while the employee is following the current auction. A manually selected historical
+  variation stays selected while newer markers and status changes update the dropdown.
 - Responsive, employee-facing inventory cards using mock data.
 - Search across item, style, and size.
 - Engine-derived remaining, processing/fixing reservation, available-to-tag, and sold-out
@@ -484,9 +501,11 @@ Shared tagger behavior includes:
   distinct rather than estimating shipping from their difference; compact dashboard text
   such as `$4.64K` remains compact instead of being presented as an exact cent value. A
   **Completed Sales/Total Sales** card renders
-  `totals.completedPaymentCount/totals.auctionCount`. The numerator counts each uniquely
-  priced completed order whether mapped or unmapped; the denominator counts every tracked
-  current-stream variation, including failed and canceled orders. A **Gross Profits** card
+  `totals.completedPaymentCount/totals.totalSalesCount`. The numerator counts each uniquely
+  priced canonical completion whether mapped or unmapped. The denominator counts unique
+  current-stream variations whose latest observed outcome is `payment_complete`,
+  `payment_failed`, or `canceled`; active bidding and `not_observed`, processing, fixing,
+  or unrecognized observations are excluded. A **Gross Profits** card
   renders `totals.profitCents`: mapped, completed sold-price revenue
   minus the committed Google Sheets unit-cost snapshots. Completed-but-unmapped sales are
   excluded and trigger a visible incomplete-count warning until inventory items are
@@ -540,9 +559,10 @@ The live selector lists only persisted variations for the active local stream an
 mapping unavailable until at least one such record exists. If the controller still holds
 its internal unrecorded startup placeholder, the first canonical view selects the newest
 recorded variation. A non-null `activeBiddingVariationNumber` is the effective current
-variation and a changed marker takes focus even while the employee reviews history.
-Repeated observations of the same marker and payment/status-only updates preserve the
-employee's current selection.
+variation. A changed marker takes focus only when the employee was already viewing the
+previous current/latest variation. If the employee manually selects history, new
+variations and status changes continue updating the selector without taking focus;
+returning to the current/latest variation resumes automatic follow.
 Selection navigation itself is local UI state and does not write to storage.
 
 The demo exists only while the side panel remains loaded. It uses mock inventory, treats
@@ -560,8 +580,10 @@ write succeeds, its data-free
 invalidation causes an open Live session panel to refetch and render that canonical
 record. The employee does not need to refresh TikTok, reopen the panel, or Resume again.
 The panel calls only the persisted on-video marker the current bidding auction. It
-auto-follows that marker so an employee can map the item before the sale reaches Sold
-Items, while the local ID remains distinct from a verified TikTok room ID.
+auto-follows the next marker while the employee is viewing the current auction so the
+item can be mapped before the sale reaches Sold Items. A historical selection remains
+fixed while the dropdown continues receiving newer variations. The local ID remains
+distinct from a verified TikTok room ID.
 
 Next tagger work includes:
 
@@ -740,9 +762,11 @@ is saving, publishes only the worker's successfully persisted response, and offe
 after safe errors. Capture invalidations use the same GET boundary, are serialized with
 employee changes, and retain the last good view on refresh failure. Repeated notices are
 coalesced, and one trailing refresh catches changes that arrive during a load or save.
-A changed active bidding marker becomes the selected tagger view automatically, so the
-employee can map during bidding without reopening the variation menu. A repeated marker
-or payment/status change to an existing variation does not change the selection.
+A changed active bidding marker becomes the selected tagger view automatically only when
+the employee was following the previous current/latest variation, so normal live tagging
+continues without reopening the menu. When the employee manually reviews history, new
+markers, repeated markers, and payment/status changes update the dropdown without
+changing the selection. Returning to the current/latest variation re-enables follow.
 Reopening the panel still
 rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
 directly.
@@ -1031,9 +1055,11 @@ Browser support beyond Chrome is a later decision.
       variation/payment facts, and the sanitized Attributed GMV display under the
       worker-resolved active local stream;
    3. **Completed:** data-free invalidations refresh the open tagger in real time,
-      auto-follow each changed bidding variation before it sells, and visibly update
-      sanitized payment status and the four Metrics cards. A prioritized work queue,
-      visible capture state, TikTok identity, and broader live validation remain next.
+      auto-follow each changed bidding variation before it sells while the employee is
+      viewing the current auction, preserve a manually selected historical variation as
+      newer options update, and visibly update sanitized payment status and the four
+      Metrics cards. A prioritized work queue, visible capture state, TikTok identity,
+      and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening
       baseline contract;

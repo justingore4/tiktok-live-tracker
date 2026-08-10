@@ -82,6 +82,11 @@ test("side panel exposes bottom performance metrics and renders their values", (
     "Metrics must appear after Inventory and before the footer",
   );
   assert.match(
+    css,
+    /\.tracker-workspace\s*\+\s*\.stream-session-panel\s*\{[\s\S]*?margin-top:\s*14px;/,
+    "the reordered stream controls must keep the standard section gap below Metrics",
+  );
+  assert.match(
     metricsSection,
     /aria-labelledby="metrics-title"/,
   );
@@ -133,7 +138,7 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
-    /function renderMetrics\(view\)\s*{[\s\S]*?completedPaymentCount\s*=\s*view\.totals\.completedPaymentCount[\s\S]*?auctionCount\s*=\s*view\.totals\.auctionCount[\s\S]*?completedSalesRatio\s*=\s*`\$\{completedPaymentCount\}\/\$\{auctionCount\}`[\s\S]*?completedSalesValue\.textContent\s*=\s*completedSalesRatio/,
+    /function renderMetrics\(view\)\s*{[\s\S]*?completedPaymentCount\s*=\s*view\.totals\.completedPaymentCount[\s\S]*?totalSalesCount\s*=\s*view\.totals\.totalSalesCount[\s\S]*?completedSalesRatio\s*=\s*`\$\{completedPaymentCount\}\/\$\{totalSalesCount\}`[\s\S]*?completedSalesValue\.textContent\s*=\s*completedSalesRatio/,
   );
   assert.match(
     source,

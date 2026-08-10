@@ -73,13 +73,9 @@
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
-  const savedModeButton = document.querySelector("#saved-session-mode");
+  const appShell = document.querySelector(".app-shell");
+  const appFooter = document.querySelector(".app-footer");
   const demoModeButton = document.querySelector("#offline-demo-mode");
-  const modeDescription = document.querySelector("#mode-description");
-  const savedSessionStatus = document.querySelector("#saved-session-status");
-  const savedSessionStatusText = document.querySelector(
-    "#saved-session-status-text",
-  );
   const savedSessionError = document.querySelector("#saved-session-error");
   const savedSessionErrorTitle = document.querySelector(
     "#saved-session-error-title",
@@ -166,6 +162,9 @@
     "#inventory-import-confirmation-message",
   );
   const streamSessionPanel = document.querySelector("#stream-session-panel");
+  const streamSessionHeading = document.querySelector(
+    ".stream-session-heading",
+  );
   const streamSessionBadge = document.querySelector("#stream-session-badge");
   const streamSessionStatus = document.querySelector("#stream-session-status");
   const streamSessionStatusTitle = document.querySelector(
@@ -288,7 +287,6 @@
       "function"
   ) {
     console.error("[TikTok Live Tracker] Tagger lifecycle failed to load.");
-    savedSessionStatus.hidden = true;
     savedSessionError.hidden = false;
     savedSessionErrorMessage.textContent =
       "The tracker did not load completely. Reload the extension and try again.";
@@ -648,6 +646,73 @@
     };
   }
 
+  function setTrackerWorkspaceVisible(visible) {
+    trackerWorkspace.hidden = !visible;
+
+    if (appFooter) {
+      appFooter.hidden = !visible;
+    }
+  }
+
+  function reorderAppSections(sections) {
+    if (!appShell) {
+      return;
+    }
+
+    const orderedSections = sections.filter(
+      (section) => section && section !== mappingAnnouncement,
+    );
+    const currentOrder = Array.from(appShell.children).filter((child) =>
+      orderedSections.includes(child),
+    );
+    const orderAlreadyMatches =
+      currentOrder.length === orderedSections.length &&
+      orderedSections.every((section, index) => currentOrder[index] === section);
+
+    if (orderAlreadyMatches) {
+      return;
+    }
+
+    orderedSections.forEach((section) => {
+      appShell.insertBefore(section, mappingAnnouncement ?? null);
+    });
+  }
+
+  function updateLayoutOrder(snapshot = streamSnapshot) {
+    const activeAndResumed =
+      snapshot.activeSession !== null && snapshot.resumed === true;
+    const streamFailed = snapshot.phase === "error";
+
+    if (activeAndResumed) {
+      reorderAppSections(
+        streamFailed
+          ? [
+              inventoryImportPanel,
+              savedSessionError,
+              streamSessionPanel,
+              trackerWorkspace,
+              appFooter,
+            ]
+          : [
+              inventoryImportPanel,
+              savedSessionError,
+              trackerWorkspace,
+              streamSessionPanel,
+              appFooter,
+            ],
+      );
+      return;
+    }
+
+    reorderAppSections([
+      inventoryImportPanel,
+      streamSessionPanel,
+      savedSessionError,
+      trackerWorkspace,
+      appFooter,
+    ]);
+  }
+
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
     unsubscribePersistentController?.();
@@ -661,9 +726,8 @@
     captureRefreshFocusSku = null;
     captureRefreshHadVariationFocus = false;
     lastRenderedSavedVariations = new Map();
-    savedSessionStatus.hidden = true;
     savedSessionError.hidden = true;
-    trackerWorkspace.hidden = true;
+    setTrackerWorkspaceVisible(false);
     trackerWorkspace.toggleAttribute("inert", true);
   }
 
@@ -724,19 +788,21 @@
   function updateModeControls() {
     const savedMode = activeMode === "saved_session";
 
-    savedModeButton.setAttribute("aria-pressed", String(savedMode));
+    demoModeButton.textContent = "Demo";
     demoModeButton.setAttribute("aria-pressed", String(!savedMode));
+    const demoToggleLabel = savedMode
+      ? "Switch to offline demo mode"
+      : "Return to live session";
+    demoModeButton.setAttribute("aria-label", demoToggleLabel);
+    demoModeButton.title = demoToggleLabel;
     demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
     streamSessionPanel.hidden = !savedMode;
     inventoryImportPanel.hidden =
       !savedMode ||
       streamSnapshot.activeSession !== null ||
       shouldPrepareInventoryForStreamRetry(streamSnapshot);
-    modeDescription.textContent = savedMode
-      ? "Start or resume a local tracker stream. Mappings and unpaid changes are saved and restored when this panel reopens."
-      : `Temporary simulator. Demo actions are not saved or applied to TikTok.${streamSnapshot.activeSession ? " Your live tracker stream remains active in the background." : ""}`;
     dataModeBadge.textContent = savedMode ? "Live session" : "Demo data";
-    sessionFooterLabel.textContent = !savedMode
+    const footerText = !savedMode
       ? "Offline demo - not saved"
       : !streamSnapshot.activeSession
         ? "No active tracker stream"
@@ -749,6 +815,23 @@
           error: "Live session data needs attention",
           ready: "Saved locally",
         }[savedSnapshot?.phase] ?? "Live session";
+    const footerPhase = !savedMode
+      ? "demo"
+      : !streamSnapshot.activeSession
+        ? "inactive"
+        : !streamSnapshot.resumed
+          ? "resume"
+          : savedSnapshot?.phase ?? "idle";
+
+    setFooterStatus(footerText, footerPhase);
+  }
+
+  function setFooterStatus(text, phase) {
+    if (sessionFooterLabel.textContent !== text) {
+      sessionFooterLabel.textContent = text;
+    }
+
+    appFooter.dataset.phase = phase;
   }
 
   function requireDemoSeedResult(result, action) {
@@ -1017,8 +1100,8 @@
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
     const completedPaymentCount = view.totals.completedPaymentCount;
-    const auctionCount = view.totals.auctionCount;
-    const completedSalesRatio = `${completedPaymentCount}/${auctionCount}`;
+    const totalSalesCount = view.totals.totalSalesCount;
+    const completedSalesRatio = `${completedPaymentCount}/${totalSalesCount}`;
     const formattedTotalGmv =
       typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
         ? attributedGmvDisplay.trim()
@@ -1673,6 +1756,7 @@
   function renderStreamSnapshot(snapshot) {
     const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
+    updateLayoutOrder(snapshot);
     updateModeControls();
     inventoryImportController.setActiveStream(snapshot.activeSession !== null);
 
@@ -1710,6 +1794,13 @@
     streamSessionPanel.dataset.state = dataState;
     streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
     streamSessionBadge.dataset.state = dataState;
+    const badgeContainer = dataState === "active"
+      ? streamSessionStatus
+      : streamSessionHeading;
+
+    if (streamSessionBadge.parentElement !== badgeContainer) {
+      badgeContainer.append(streamSessionBadge);
+    }
     streamSessionStatus.hidden = failed;
     streamSessionError.hidden = !failed;
     streamSessionActions.hidden = failed || checking || busy;
@@ -1770,9 +1861,8 @@
           ? "Looking for an active tracker stream that can be resumed."
           : "Waiting for the local session change to finish safely.";
       if (!persistentController) {
-        savedSessionStatus.hidden = true;
         savedSessionError.hidden = true;
-        trackerWorkspace.hidden = true;
+        setTrackerWorkspaceVisible(false);
       }
       setWorkspaceBusy(true);
       return;
@@ -1872,9 +1962,8 @@
     const failed = snapshot.phase === "error";
     const hasView = snapshot.view !== null;
 
-    savedSessionStatus.hidden = failed;
     savedSessionError.hidden = !failed;
-    trackerWorkspace.hidden = !hasView;
+    setTrackerWorkspaceVisible(hasView);
 
     if (failed) {
       const loadFailure = snapshot.error?.scope === "load" || !hasView;
@@ -1910,12 +1999,8 @@
     }
 
     hasFocusedSavedError = false;
-    savedSessionStatus.dataset.phase = snapshot.phase;
     const nextStatusText = getSavedStatusText(snapshot);
-
-    if (savedSessionStatusText.textContent !== nextStatusText) {
-      savedSessionStatusText.textContent = nextStatusText;
-    }
+    setFooterStatus(nextStatusText, snapshot.phase);
     setWorkspaceBusy(snapshot.busy === true);
 
     if (hasView && snapshot.phase === "ready") {
@@ -2042,9 +2127,8 @@
     updateModeControls();
 
     if (activeMode === "offline_demo") {
-      savedSessionStatus.hidden = true;
       savedSessionError.hidden = true;
-      trackerWorkspace.hidden = false;
+      setTrackerWorkspaceVisible(true);
       setWorkspaceBusy(false);
       const view = renderAll();
 
@@ -2102,8 +2186,9 @@
 
         const view = snapshot.view;
 
-        mappingAnnouncement.textContent =
-          `Reviewing auction ${describeSelectedVariation(view)}. A newly captured variation will open automatically.`;
+        mappingAnnouncement.textContent = view.isReviewingHistory
+          ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
+          : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
       } catch (error) {
         mappingAnnouncement.textContent =
           error?.message ?? "That variation could not be selected.";
@@ -2340,12 +2425,10 @@
 
   soldPriceInput.addEventListener("input", clearPriceError);
 
-  savedModeButton.addEventListener("click", () => {
-    selectMode("saved_session");
-  });
-
   demoModeButton.addEventListener("click", () => {
-    selectMode("offline_demo");
+    selectMode(
+      activeMode === "offline_demo" ? "saved_session" : "offline_demo",
+    );
   });
 
   inventorySheetReference.addEventListener("input", () => {

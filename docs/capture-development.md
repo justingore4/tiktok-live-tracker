@@ -159,9 +159,11 @@ without expanding a rounded value such as `$4.64K` into invented cents. Per the 
 requirement, TikTok's aggregate includes buyer-paid shipping, so these values are not
 expected to match and their difference is not used to alter inventory or a sale.
 **Completed Sales/Total Sales** shows the canonical count of uniquely priced
-`Payment complete` orders over the count of every variation tracked in the current stream.
-The numerator includes completed orders that are still unmapped. The denominator includes
-every payment state, including failed and canceled orders. **Gross Profits** is mapped
+`Payment complete` orders over unique current-stream variations whose latest observed
+outcome is `payment_complete`, `payment_failed`, or `canceled`. The numerator includes
+completed orders that are still unmapped. The denominator excludes the active bidding
+variation and `not_observed`, `payment_processing`, `payment_fixing`, and `unrecognized`
+observations. **Gross Profits** is mapped
 completed sold-price revenue minus the committed unit-cost snapshots
 from the Google Sheets baseline pinned to those sales. Completed-but-unmapped sales are
 excluded from this subtotal and trigger a count-based incomplete warning until mapped;
@@ -227,7 +229,8 @@ fails closed until that public placeholder is replaced.
    into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
    headers, and replace the dummy rows with the physical opening count and unit cost.
    Give the authorizing Google account read access.
-5. With no local tracker stream active, open **Live session**, paste the Sheet ID or its
+5. With no local tracker stream active, open the side panel, which defaults to **Live
+   session**. Paste the Sheet ID or its
    HTTPS `docs.google.com` sharing link, and select **Connect and preview**. The manifest
    grants `identity`, the exact `https://sheets.googleapis.com/*` host, and only
    `https://www.googleapis.com/auth/spreadsheets.readonly`. That Google scope can read
@@ -279,9 +282,17 @@ screen test-user run does not complete those release reviews.
    repository's `extension` directory.
 2. Refresh any TikTok dashboard tab that was already open so it receives the current
    content scripts.
-3. Complete the inventory-import checks above, then choose **Live session** and Start a
-   local tracker stream from the confirmed baseline, or Resume the already-active stream.
-   This does not start or control TikTok LIVE.
+3. Complete the inventory-import checks above, then remain in the default **Live session**
+   and Start a local tracker stream from the confirmed baseline, or Resume the
+   already-active stream.
+   Before Start, confirm Google Sheets inventory appears before the local Start controls.
+   After Start or Resume, confirm Variation is the first section below the header. The
+   final substantive section should compact to the tracker-active date row, with the
+   **Active** pill inside that row, followed by **End Stream Tracking**. Its redundant
+   heading and safety note should be hidden only while actively tracking. A single
+   saved-state indicator belongs in the footer; there should not be a duplicate status
+   box below Metrics. Retryable saved-data errors must remain visible near the top. This
+   does not start or control TikTok LIVE.
 4. Open `https://shop.tiktok.com/streamer/live/product/dashboard`. Keep the video auction
    card visible and select TikTok's left-side **Sold items** view so all three scoped
    capture paths can be checked.
@@ -311,10 +322,12 @@ screen test-user run does not complete those release reviews.
    including a compact display such as `$4.64K`. The second value includes buyer-paid
    shipping per the product requirement and therefore need not equal the first. Change
    the TikTok metric without refreshing the page and confirm Total GMV updates live and
-   survives a side-panel reopen. Confirm **Completed Sales/Total Sales** shows the
-   number of uniquely priced completed orders, including those still unmapped, over every
-   current-stream variation. Confirm failed and canceled orders remain in the denominator,
-   and mapping corrections do not change either count. Confirm **Gross Profits** equals
+   survives a side-panel reopen. Confirm **Completed Sales/Total Sales** shows the number
+   of uniquely priced canonical completions, including those still unmapped, over unique
+   current-stream variations whose latest observed outcome is `payment_complete`,
+   `payment_failed`, or `canceled`. Confirm the active bidding variation plus
+   `not_observed`, processing, fixing, and unrecognized observations remain excluded, and
+   mapping corrections do not change either count. Confirm **Gross Profits** equals
    mapped completed sold-price revenue minus the pinned Google Sheets unit costs. Leave a
    completed order unmapped and confirm it is excluded while the warning shows one
    incomplete sale; map or remap it and confirm the subtotal and warning recalculate
@@ -334,9 +347,11 @@ screen test-user run does not complete those release reviews.
     Repeat these checks across later tracker streams and imported baselines.
 
 Only the persisted `activeBiddingVariationNumber` from the strict on-video card is called
-the current bidding auction. A changed marker is selected automatically; repeated marker
-observations and status-only changes do not move an employee's historical selection. A
-richer prioritized queue across the persisted auction history remains future work.
+the current bidding auction. A changed marker is selected automatically only while the
+employee is viewing the previously current auction. While the employee reviews a
+historical variation, new markers and status changes continue updating the selector but
+do not change its selection. Returning to the current auction resumes automatic follow.
+A richer prioritized queue across the persisted auction history remains future work.
 
 ### Read-only root diagnostic
 
@@ -522,8 +537,10 @@ export and any live Google dependency remain intentionally absent.
   Total GMV deliberately mirrors TikTok's possibly rounded display; it is not converted
   to exact cents or used for inventory accounting.
 - The local stream ID is tracker-owned, not TikTok-verified.
-- The open tagger treats only the strict on-video marker as current bidding, auto-displays
-  each changed marker, and retains the same mapping when Sold Items payment truth arrives.
+- The open tagger treats only the strict on-video marker as current bidding. It
+  auto-displays the next changed marker while the current auction is selected, but keeps
+  a manually selected historical variation in view while newer options continue updating.
+  The same mapping remains attached when Sold Items payment truth arrives.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.

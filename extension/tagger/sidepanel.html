@@ -15,41 +15,19 @@
           <p class="eyebrow">Seller tool</p>
           <h1>TikTok Live Tracker</h1>
         </div>
-        <span class="prototype-badge">Prototype</span>
-      </header>
-
-      <section class="mode-panel" aria-labelledby="mode-title">
-        <div class="mode-heading">
-          <div>
-            <p class="eyebrow">Workspace</p>
-            <h2 id="mode-title">Choose where changes go</h2>
-          </div>
-          <div class="mode-controls" role="group" aria-label="Tracker mode">
-            <button
-              id="saved-session-mode"
-              class="mode-button"
-              type="button"
-              aria-pressed="true"
-              aria-describedby="mode-description"
-            >
-              Live session
-            </button>
-            <button
-              id="offline-demo-mode"
-              class="mode-button"
-              type="button"
-              aria-pressed="false"
-              aria-describedby="mode-description"
-            >
-              Offline demo
-            </button>
-          </div>
+        <div class="header-actions">
+          <button
+            id="offline-demo-mode"
+            class="header-demo-toggle"
+            type="button"
+            aria-pressed="false"
+            aria-label="Switch to offline demo mode"
+          >
+            Demo
+          </button>
+          <span class="prototype-badge">Prototype</span>
         </div>
-        <p id="mode-description" class="mode-description">
-          Start or resume a local tracker stream. Mappings and unpaid changes
-          are saved and restored when this panel reopens.
-        </p>
-      </section>
+      </header>
 
       <section
         id="inventory-import-panel"
@@ -285,7 +263,7 @@
             aria-describedby="stream-session-safety-note"
             hidden
           >
-            End stream
+            End Stream Tracking
           </button>
         </div>
 
@@ -344,17 +322,6 @@
             Retry
           </button>
         </div>
-      </section>
-
-      <section
-        id="saved-session-status"
-        class="session-message session-status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        <span class="session-message-dot" aria-hidden="true"></span>
-        <span id="saved-session-status-text">Restoring live session data...</span>
       </section>
 
       <section
@@ -618,12 +585,12 @@
           </div>
         </dl>
       </section>
+      </div>
 
-      <footer class="app-footer">
+      <footer class="app-footer" role="status" aria-live="polite" aria-atomic="true" hidden>
         <span class="status-dot" aria-hidden="true"></span>
         <span id="session-footer-label">Saved locally</span>
       </footer>
-      </div>
 
       <p
         id="mapping-announcement"

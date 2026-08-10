@@ -13,6 +13,7 @@ const {
   hydrateReconciliationState,
   mapVariation,
   markUnpaid,
+  observeBiddingVariation,
   observePaymentStatuses,
   observeVariations,
   recordPaymentComplete,
@@ -257,12 +258,78 @@ test("observes payment statuses and canonicalizes terminal cancellation", () => 
   assert.equal(afterSummary.auctions[0].status, "pending");
   assert.deepEqual(afterSummary.itemPerformance, beforeSummary.itemPerformance);
   assert.equal(afterSummary.totals.committedSalesCount, 0);
+  assert.equal(afterSummary.totals.totalSalesCount, 2);
   assert.equal(afterSummary.totals.completedGmvCents, 0);
   assert.equal(afterSummary.totals.profitCents, 0);
   assert.deepEqual(
     hydrateReconciliationState(JSON.parse(JSON.stringify(state))),
     state,
   );
+});
+
+test("totalSalesCount includes only unique terminal Sold Items statuses in the selected stream", () => {
+  const state = createState();
+
+  observeBiddingVariation(state, {
+    streamId: STREAM_ONE,
+    variationNumber: 70,
+  });
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 71,
+        observedPaymentStatus:
+          OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      },
+      {
+        variationNumber: 72,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      },
+      {
+        variationNumber: 73,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+      },
+      {
+        variationNumber: 74,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+      {
+        variationNumber: 75,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 76,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+      },
+    ],
+  });
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 74,
+        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      },
+    ],
+  });
+  recordPaymentComplete(state, {
+    streamId: "another-stream",
+    variationNumber: 74,
+    soldPriceCents: 2500,
+  });
+
+  const selectedSummary = calculateSummary(state, { streamId: STREAM_ONE });
+  const otherSummary = calculateSummary(state, {
+    streamId: "another-stream",
+  });
+
+  assert.equal(selectedSummary.totals.auctionCount, 7);
+  assert.equal(selectedSummary.totals.totalSalesCount, 3);
+  assert.equal(selectedSummary.totals.completedPaymentCount, 0);
+  assert.equal(selectedSummary.activeBiddingVariationNumber, 70);
+  assert.equal(otherSummary.totals.totalSalesCount, 1);
+  assert.equal(otherSummary.totals.completedPaymentCount, 1);
 });
 
 test("nonterminal payment states are flexible until cancellation becomes sticky", () => {

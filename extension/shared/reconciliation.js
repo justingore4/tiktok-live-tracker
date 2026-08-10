@@ -51,6 +51,11 @@
       OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
     ]);
+    const TOTAL_SALE_OBSERVED_PAYMENT_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      OBSERVED_PAYMENT_STATUSES.CANCELED,
+    ]);
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -2113,6 +2118,7 @@
       const totals = {
         auctionCount: auctions.length,
         completedPaymentCount: 0,
+        totalSalesCount: 0,
         committedSalesCount: 0,
         unmappedCompletedCount: 0,
         pendingMappedCount: 0,
@@ -2128,6 +2134,14 @@
       const warnings = [];
 
       auctions.forEach((auction) => {
+        if (
+          TOTAL_SALE_OBSERVED_PAYMENT_STATUSES.has(
+            auction.observedPaymentStatus,
+          )
+        ) {
+          totals.totalSalesCount += 1;
+        }
+
         if (auction.paymentStatus === "payment_complete") {
           totals.completedPaymentCount += 1;
           totals.completedGmvCents += auction.soldPriceCents;

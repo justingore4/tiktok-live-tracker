@@ -276,6 +276,7 @@ test("captured Sold Items observations survive worker restart under the active s
   assert.deepEqual(summary.totals, {
     auctionCount: 2,
     completedPaymentCount: 1,
+    totalSalesCount: 2,
     committedSalesCount: 0,
     unmappedCompletedCount: 1,
     pendingMappedCount: 0,
