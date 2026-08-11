@@ -66,11 +66,6 @@
         description:
           "Opening quantity minus mapped completed sales across the inventory baseline, clamped to zero for the Sheet replacement value. Pending and canceled orders do not permanently reduce this count.",
       }),
-      Object.freeze({
-        term: "Provisional report",
-        description:
-          "One or more unresolved, unmapped, or conflicting orders can still make sales, profit, or inventory totals incomplete. Ending tracking is never blocked.",
-      }),
     ]);
     const WARNING_MESSAGES = Object.freeze({
       active_bidding_at_end:
@@ -417,21 +412,6 @@
       ].filter(Boolean).join(" ");
     }
 
-    function getCompleteness(report, lifecycleStatus) {
-      const reportStatus = report?.completeness?.status;
-      const final = reportStatus === "final" && lifecycleStatus === "finalized";
-
-      return {
-        state: final ? "final" : "provisional",
-        label: final ? "Final" : "Provisional",
-        description: final
-          ? "All captured completed orders are mapped and no unresolved payment or inventory exceptions remain."
-          : lifecycleStatus === "pending_end"
-            ? "The stream-end save is still being finalized. Review notices before replacing inventory counts."
-            : "Some captured orders or inventory mappings still need attention. Review notices before replacing inventory counts.",
-      };
-    }
-
     function appendTextElement(document, parent, tagName, text, className) {
       const element = document.createElement(tagName);
       element.textContent = String(text ?? "");
@@ -679,14 +659,7 @@
 
     function renderReport(document, record) {
       const report = record.report;
-      const completeness = getCompleteness(report, record.lifecycleStatus);
       const metadata = isPlainRecord(report?.metadata) ? report.metadata : {};
-      const stateBadge = document.querySelector("#report-state-badge");
-
-      stateBadge.dataset.state = completeness.state;
-      stateBadge.textContent = completeness.label;
-      document.querySelector("#report-state-description").textContent =
-        completeness.description;
       document.querySelector("#stream-started").textContent =
         formatTimestamp(metadata.startedAt);
       document.querySelector("#stream-ended").textContent =
@@ -1042,7 +1015,6 @@
       formatTimestamp,
       formatPercentage,
       formatUsdCents,
-      getCompleteness,
       getRequestedReportId,
       mountStreamReportPage,
       renderReport,

@@ -13,16 +13,33 @@
 
     const MESSAGE_CHANNEL = "tiktok-live-tracker.stream-report";
     const MESSAGE_VERSION = 1;
+    const MAX_ACTIVE_REPORTS = 5;
+    const MAX_ARCHIVED_REPORTS = 25;
+    const MAX_TOTAL_REPORTS =
+      MAX_ACTIVE_REPORTS + MAX_ARCHIVED_REPORTS;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const COMMAND_TYPES = Object.freeze({
       LIST_REPORTS: "list_reports",
+      LIST_ARCHIVED_REPORTS: "list_archived_reports",
       GET_REPORT: "get_report",
+      ARCHIVE_REPORTS: "archive_reports",
+      RESTORE_REPORTS: "restore_reports",
+      DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.LIST_REPORTS]: ["type"],
+      [COMMAND_TYPES.LIST_ARCHIVED_REPORTS]: ["type"],
       [COMMAND_TYPES.GET_REPORT]: ["reportId", "type"],
+      [COMMAND_TYPES.ARCHIVE_REPORTS]: ["reportIds", "type"],
+      [COMMAND_TYPES.RESTORE_REPORTS]: ["reportIds", "type"],
+      [COMMAND_TYPES.DELETE_ARCHIVED_REPORTS]: ["reportIds", "type"],
     });
+    const REPORT_ID_LIST_COMMANDS = new Set([
+      COMMAND_TYPES.ARCHIVE_REPORTS,
+      COMMAND_TYPES.RESTORE_REPORTS,
+      COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+    ]);
 
     class StreamReportProtocolError extends Error {
       constructor(code, message) {
@@ -88,6 +105,25 @@
         )
       ) {
         fail("INVALID_REPORT_ID", "The stream report ID is invalid.");
+      }
+
+      if (REPORT_ID_LIST_COMMANDS.has(command.type)) {
+        if (
+          !Array.isArray(command.reportIds) ||
+          command.reportIds.length < 1 ||
+          command.reportIds.length > MAX_ARCHIVED_REPORTS ||
+          command.reportIds.some(
+            (reportId) =>
+              typeof reportId !== "string" ||
+              !REPORT_ID_PATTERN.test(reportId),
+          ) ||
+          new Set(command.reportIds).size !== command.reportIds.length
+        ) {
+          fail(
+            "INVALID_REPORT_IDS",
+            `reportIds must contain 1 to ${MAX_ARCHIVED_REPORTS} unique stream report IDs.`,
+          );
+        }
       }
 
       return command;
@@ -162,6 +198,9 @@
 
     return Object.freeze({
       COMMAND_TYPES,
+      MAX_ACTIVE_REPORTS,
+      MAX_ARCHIVED_REPORTS,
+      MAX_TOTAL_REPORTS,
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,
       REPORT_ID_PATTERN,

@@ -105,7 +105,10 @@
         !protocol ||
         !protocol.COMMAND_TYPES ||
         typeof protocol.validateCommand !== "function" ||
-        !(protocol.REPORT_ID_PATTERN instanceof RegExp)
+        !(protocol.REPORT_ID_PATTERN instanceof RegExp) ||
+        !Number.isSafeInteger(protocol.MAX_ACTIVE_REPORTS) ||
+        !Number.isSafeInteger(protocol.MAX_ARCHIVED_REPORTS) ||
+        !Number.isSafeInteger(protocol.MAX_TOTAL_REPORTS)
       ) {
         throw new TypeError("A valid stream-report protocol is required.");
       }
@@ -141,8 +144,9 @@
       if (
         !storage ||
         !storage.LIFECYCLE_STATUSES ||
-        !Number.isSafeInteger(storage.MAX_REPORTS) ||
-        storage.MAX_REPORTS < 1 ||
+        storage.MAX_ACTIVE_REPORTS !== protocol.MAX_ACTIVE_REPORTS ||
+        storage.MAX_ARCHIVED_REPORTS !== protocol.MAX_ARCHIVED_REPORTS ||
+        storage.MAX_TOTAL_REPORTS !== protocol.MAX_TOTAL_REPORTS ||
         !Number.isSafeInteger(storage.MAX_ARCHIVE_BYTES) ||
         storage.MAX_ARCHIVE_BYTES < 1024 ||
         !Number.isSafeInteger(storage.STORAGE_SCHEMA_VERSION) ||
@@ -207,71 +211,111 @@
         );
       }
 
-      function boundArchive(candidateRecords) {
-        const sorted = [...candidateRecords].sort(sortNewestFirst);
-        const pending = sorted.filter(
-          (record) =>
-            record.lifecycleStatus ===
-            storage.LIFECYCLE_STATUSES.PENDING_END,
-        );
-        const finalized = sorted.filter(
-          (record) =>
-            record.lifecycleStatus ===
-            storage.LIFECYCLE_STATUSES.FINALIZED,
-        );
-
-        if (pending.length > storage.MAX_REPORTS) {
-          fail(
-            "REPORT_ARCHIVE_FULL",
-            "Too many stream reports are waiting for End recovery.",
-          );
-        }
-
-        const retainedFinalized = finalized
-          .sort(sortNewestFirst)
-          .slice(0, storage.MAX_REPORTS - pending.length);
-        const bounded = [...pending, ...retainedFinalized]
-          .sort(sortNewestFirst);
-
-        function archiveByteLength(recordsToMeasure) {
-          const serialized = JSON.stringify({
-            schemaVersion: storage.STORAGE_SCHEMA_VERSION,
-            records: recordsToMeasure,
-          });
-
-          return new TextEncoder().encode(serialized).byteLength;
-        }
-
-        while (
-          archiveByteLength(bounded) > storage.MAX_ARCHIVE_BYTES &&
-          bounded.some(
-            (record) =>
-              record.lifecycleStatus ===
-                storage.LIFECYCLE_STATUSES.FINALIZED,
-          )
-        ) {
-          const oldestFinalizedIndex = bounded.findLastIndex(
-            (record) =>
-              record.lifecycleStatus ===
-                storage.LIFECYCLE_STATUSES.FINALIZED,
-          );
-          bounded.splice(oldestFinalizedIndex, 1);
-        }
-
-        if (archiveByteLength(bounded) > storage.MAX_ARCHIVE_BYTES) {
-          fail(
-            "REPORT_ARCHIVE_FULL",
-            "The pending stream report exceeds the safe local archive size.",
-          );
-        }
-
-        return bounded;
+      async function persist(candidateRecords) {
+        records = await reportStore.saveRecords(candidateRecords);
+        return records;
       }
 
-      async function persist(candidateRecords) {
-        const bounded = boundArchive(candidateRecords);
-        records = await reportStore.saveRecords(bounded);
-        return records;
+      function isFinalized(record) {
+        return record.lifecycleStatus ===
+          storage.LIFECYCLE_STATUSES.FINALIZED;
+      }
+
+      function isActiveRecord(record) {
+        return isFinalized(record) && record.archived === false;
+      }
+
+      function isArchivedRecord(record) {
+        return isFinalized(record) && record.archived === true;
+      }
+
+      function getActiveRecords(candidateRecords = records) {
+        return candidateRecords.filter(isActiveRecord);
+      }
+
+      function getArchivedRecords(candidateRecords = records) {
+        return candidateRecords.filter(isArchivedRecord);
+      }
+
+      function sortOldestFirst(left, right) {
+        return (
+          left.report.metadata.endedAt.localeCompare(
+            right.report.metadata.endedAt,
+          ) || left.reportId.localeCompare(right.reportId)
+        );
+      }
+
+      function createPublicRecord(record) {
+        if (!record) {
+          return { reportId: null, lifecycleStatus: null, report: null };
+        }
+
+        return cloneSerializable({
+          reportId: record.reportId,
+          lifecycleStatus: record.lifecycleStatus,
+          report: record.report,
+        });
+      }
+
+      function requireTotalCapacity(additionalCount) {
+        if (records.length + additionalCount > storage.MAX_TOTAL_REPORTS) {
+          fail(
+            "REPORT_TOTAL_LIMIT_REACHED",
+            `Saved reports already contain the ${storage.MAX_TOTAL_REPORTS}-report local limit. Permanently delete an archived report before continuing.`,
+          );
+        }
+      }
+
+      function finalizePendingRecord(candidateRecords, reportId) {
+        const existing = candidateRecords.find(
+          (record) => record.reportId === reportId,
+        );
+
+        if (!existing) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        if (isFinalized(existing)) {
+          return candidateRecords;
+        }
+
+        if (existing.archived !== false) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "A report awaiting End recovery cannot be archived.",
+          );
+        }
+
+        let nextRecords = candidateRecords.map((record) =>
+          record.reportId === reportId
+            ? {
+                ...record,
+                lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+              }
+            : record,
+        );
+        const activeRecords = getActiveRecords(nextRecords);
+
+        if (activeRecords.length > storage.MAX_ACTIVE_REPORTS) {
+          if (
+            getArchivedRecords(nextRecords).length >=
+            storage.MAX_ARCHIVED_REPORTS
+          ) {
+            fail(
+              "REPORT_ARCHIVED_LIMIT_REACHED",
+              `Archived Reports already contains ${storage.MAX_ARCHIVED_REPORTS} reports. Permanently delete one before ending tracking.`,
+            );
+          }
+
+          const oldest = [...activeRecords].sort(sortOldestFirst)[0];
+          nextRecords = nextRecords.map((record) =>
+            record.reportId === oldest.reportId
+              ? { ...record, archived: true }
+              : record,
+          );
+        }
+
+        return nextRecords;
       }
 
       function findByStreamId(streamId) {
@@ -350,8 +394,21 @@
         const record = {
           reportId,
           lifecycleStatus: storage.LIFECYCLE_STATUSES.PENDING_END,
+          archived: false,
           report: cloneSerializable(report),
         };
+
+        if (existing && isFinalized(existing)) {
+          fail(
+            "REPORT_ALREADY_FINALIZED",
+            "A finalized stream report cannot be replaced.",
+          );
+        }
+
+        if (!existing) {
+          requireTotalCapacity(1);
+        }
+
         const nextRecords = existing
           ? records.map((candidate) =>
               candidate.reportId === reportId ? record : candidate,
@@ -359,7 +416,7 @@
           : [...records, record];
 
         await persist(nextRecords);
-        return cloneSerializable(record);
+        return createPublicRecord(findByReportId(reportId));
       }
 
       async function finalizeReport(reportId) {
@@ -374,22 +431,12 @@
           fail("REPORT_NOT_FOUND", "The stream report does not exist.");
         }
 
-        if (
-          existing.lifecycleStatus === storage.LIFECYCLE_STATUSES.FINALIZED
-        ) {
-          return cloneSerializable(existing);
+        if (isFinalized(existing)) {
+          return createPublicRecord(existing);
         }
 
-        const finalized = {
-          ...existing,
-          lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
-        };
-        await persist(
-          records.map((record) =>
-            record.reportId === reportId ? finalized : record,
-          ),
-        );
-        return cloneSerializable(findByReportId(reportId));
+        await persist(finalizePendingRecord(records, reportId));
+        return createPublicRecord(findByReportId(reportId));
       }
 
       async function repairPendingReports(activeStreamId) {
@@ -397,28 +444,26 @@
         const normalizedActiveStreamId = activeStreamId === null
           ? null
           : requireNonEmptyString(activeStreamId, "activeStreamId");
-        let repairedCount = 0;
-        const repaired = records.map((record) => {
-          if (
-            record.lifecycleStatus !==
-              storage.LIFECYCLE_STATUSES.PENDING_END ||
-            record.report.metadata.streamId === normalizedActiveStreamId
-          ) {
-            return record;
-          }
+        const repairIds = records
+          .filter(
+            (record) =>
+              record.lifecycleStatus ===
+                storage.LIFECYCLE_STATUSES.PENDING_END &&
+              record.report.metadata.streamId !== normalizedActiveStreamId,
+          )
+          .sort(sortOldestFirst)
+          .map((record) => record.reportId);
+        let repaired = records;
 
-          repairedCount += 1;
-          return {
-            ...record,
-            lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
-          };
+        repairIds.forEach((reportId) => {
+          repaired = finalizePendingRecord(repaired, reportId);
         });
 
-        if (repairedCount > 0) {
+        if (repairIds.length > 0) {
           await persist(repaired);
         }
 
-        return { repairedCount };
+        return { repairedCount: repairIds.length };
       }
 
       async function discardPendingReportForStream(streamId) {
@@ -443,7 +488,18 @@
       async function listReports() {
         await ensureLoaded();
         return {
-          reports: [...records].sort(sortNewestFirst).map(createSummary),
+          reports: getActiveRecords()
+            .sort(sortNewestFirst)
+            .map(createSummary),
+        };
+      }
+
+      async function listArchivedReports() {
+        await ensureLoaded();
+        return {
+          reports: getArchivedRecords()
+            .sort(sortNewestFirst)
+            .map(createSummary),
         };
       }
 
@@ -455,11 +511,7 @@
         });
         const record = findByReportId(reportId);
 
-        if (!record) {
-          return { reportId: null, lifecycleStatus: null, report: null };
-        }
-
-        return cloneSerializable(record);
+        return createPublicRecord(record);
       }
 
       async function getReportForStream(streamId) {
@@ -467,11 +519,118 @@
         const normalizedStreamId = requireNonEmptyString(streamId, "streamId");
         const record = findByStreamId(normalizedStreamId);
 
-        if (!record) {
-          return { reportId: null, lifecycleStatus: null, report: null };
+        return createPublicRecord(record);
+      }
+
+      function requireReportsById(reportIds) {
+        const selected = reportIds.map((reportId) => findByReportId(reportId));
+
+        if (selected.some((record) => record === null)) {
+          fail("REPORT_NOT_FOUND", "At least one stream report does not exist.");
         }
 
-        return cloneSerializable(record);
+        return selected;
+      }
+
+      async function archiveReports(reportIds) {
+        await ensureLoaded();
+        const selected = requireReportsById(reportIds);
+
+        if (selected.some((record) => !isFinalized(record))) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "A report awaiting End recovery cannot be archived.",
+          );
+        }
+
+        if (selected.some((record) => record.archived)) {
+          fail(
+            "REPORT_NOT_ACTIVE",
+            "Only active Business Records can be archived.",
+          );
+        }
+
+        if (
+          getArchivedRecords().length + reportIds.length >
+          storage.MAX_ARCHIVED_REPORTS
+        ) {
+          fail(
+            "REPORT_ARCHIVED_LIMIT_REACHED",
+            `Archived Reports already contains the ${storage.MAX_ARCHIVED_REPORTS}-report limit. Permanently delete one before archiving another.`,
+          );
+        }
+
+        const selectedIds = new Set(reportIds);
+        await persist(
+          records.map((record) =>
+            selectedIds.has(record.reportId)
+              ? { ...record, archived: true }
+              : record,
+          ),
+        );
+        return { reportIds: [...reportIds] };
+      }
+
+      async function restoreReports(reportIds) {
+        await ensureLoaded();
+        const selected = requireReportsById(reportIds);
+
+        if (selected.some((record) => !isFinalized(record))) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "A report awaiting End recovery cannot be restored.",
+          );
+        }
+
+        if (selected.some((record) => !record.archived)) {
+          fail(
+            "REPORT_NOT_ARCHIVED",
+            "Only archived reports can be restored.",
+          );
+        }
+
+        const availableSlots =
+          storage.MAX_ACTIVE_REPORTS - getActiveRecords().length;
+
+        if (availableSlots === 0 || reportIds.length > availableSlots) {
+          fail(
+            "REPORT_ACTIVE_LIMIT_REACHED",
+            `Business Records can contain at most ${storage.MAX_ACTIVE_REPORTS} reports. Archive another report before restoring this selection.`,
+          );
+        }
+
+        const selectedIds = new Set(reportIds);
+        await persist(
+          records.map((record) =>
+            selectedIds.has(record.reportId)
+              ? { ...record, archived: false }
+              : record,
+          ),
+        );
+        return { reportIds: [...reportIds] };
+      }
+
+      async function deleteArchivedReports(reportIds) {
+        await ensureLoaded();
+        const selected = requireReportsById(reportIds);
+
+        if (selected.some((record) => !isArchivedRecord(record))) {
+          fail(
+            "REPORT_NOT_ARCHIVED",
+            "Only archived reports can be permanently deleted.",
+          );
+        }
+
+        const selectedIds = new Set(reportIds);
+        await persist(
+          records.filter((record) => !selectedIds.has(record.reportId)),
+        );
+        return { reportIds: [...reportIds] };
+      }
+
+      function snapshotReportIdCommand(type, reportIds) {
+        const command = cloneSerializable({ type, reportIds });
+        return protocol.validateCommand(command);
       }
 
       async function execute(command) {
@@ -480,8 +639,16 @@
         switch (validated.type) {
           case protocol.COMMAND_TYPES.LIST_REPORTS:
             return listReports();
+          case protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS:
+            return listArchivedReports();
           case protocol.COMMAND_TYPES.GET_REPORT:
             return getReport(validated.reportId);
+          case protocol.COMMAND_TYPES.ARCHIVE_REPORTS:
+            return archiveReports(validated.reportIds);
+          case protocol.COMMAND_TYPES.RESTORE_REPORTS:
+            return restoreReports(validated.reportIds);
+          case protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS:
+            return deleteArchivedReports(validated.reportIds);
           default:
             fail(
               "UNKNOWN_COMMAND",
@@ -509,6 +676,34 @@
 
           return enqueue(() => execute(snapshot));
         },
+        archiveReports(reportIds) {
+          let command;
+
+          try {
+            command = snapshotReportIdCommand(
+              protocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+              reportIds,
+            );
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => archiveReports(command.reportIds));
+        },
+        deleteArchivedReports(reportIds) {
+          let command;
+
+          try {
+            command = snapshotReportIdCommand(
+              protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+              reportIds,
+            );
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => deleteArchivedReports(command.reportIds));
+        },
         discardPendingReportForStream(streamId) {
           return enqueue(() => discardPendingReportForStream(streamId));
         },
@@ -524,6 +719,9 @@
         listReports() {
           return enqueue(listReports);
         },
+        listArchivedReports() {
+          return enqueue(listArchivedReports);
+        },
         prepareReport(input) {
           let snapshot;
 
@@ -537,6 +735,20 @@
         },
         repairPendingReports(activeStreamId) {
           return enqueue(() => repairPendingReports(activeStreamId));
+        },
+        restoreReports(reportIds) {
+          let command;
+
+          try {
+            command = snapshotReportIdCommand(
+              protocol.COMMAND_TYPES.RESTORE_REPORTS,
+              reportIds,
+            );
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => restoreReports(command.reportIds));
         },
       });
     }

@@ -27,6 +27,18 @@ function createStore(options = {}) {
         });
       }
 
+      const byteLength = new TextEncoder().encode(JSON.stringify({
+        schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+        records: candidate,
+      })).byteLength;
+
+      if (byteLength > storage.MAX_ARCHIVE_BYTES) {
+        throw new storage.StreamReportStorageError(
+          "REPORT_ARCHIVE_FULL",
+          "Saved stream reports exceed the safe local archive size.",
+        );
+      }
+
       records = clone(candidate);
       saves.push(clone(records));
       return clone(records);
@@ -93,6 +105,31 @@ const STREAM_ONE =
   "local-stream:11111111-1111-4111-8111-111111111111";
 const STARTED_AT = "2026-08-10T10:00:00.000Z";
 
+function getActiveCount(records) {
+  return records.filter(
+    (record) => record.lifecycleStatus === "finalized" && !record.archived,
+  ).length;
+}
+
+function createSavedRecord(index, options = {}) {
+  const uuid = `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`;
+  const endedAt = `2026-08-${String(index).padStart(2, "0")}T12:00:00.000Z`;
+  const report = createReport({
+    reconciliationState: {},
+    streamId: `local-stream:${uuid}`,
+    startedAt: "2026-08-01T10:00:00.000Z",
+    endedAt,
+    generatedAt: endedAt,
+  });
+
+  return {
+    reportId: report.reportId,
+    lifecycleStatus: options.lifecycleStatus ?? "finalized",
+    archived: options.archived ?? false,
+    report,
+  };
+}
+
 test("prepares before End, finalizes idempotently, and exposes strict reads", async () => {
   const store = createStore();
   const coordinator = createCoordinator(store);
@@ -109,9 +146,11 @@ test("prepares before End, finalizes idempotently, and exposes strict reads", as
 
   assert.equal(prepared.lifecycleStatus, "pending_end");
   assert.equal(store.read()[0].lifecycleStatus, "pending_end");
+  assert.equal(store.read()[0].archived, false);
 
   const finalized = await coordinator.finalizeReport(prepared.reportId);
   assert.equal(finalized.lifecycleStatus, "finalized");
+  assert.equal(Object.hasOwn(finalized, "archived"), false);
   assert.deepEqual(
     await coordinator.finalizeReport(prepared.reportId),
     finalized,
@@ -169,15 +208,15 @@ test("retries replace the same stream report and pending repair follows session 
   assert.equal(store.read()[0].lifecycleStatus, "finalized");
 });
 
-test("bounded archive prunes the oldest finalized report without pruning pending", async () => {
+test("a sixth finalized report archives the oldest active record without deleting it", async () => {
   const store = createStore();
   const timestamps = Array.from(
-    { length: storage.MAX_REPORTS + 1 },
+    { length: storage.MAX_ACTIVE_REPORTS + 1 },
     (_, index) => `2026-08-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
   );
   const coordinator = createCoordinator(store, timestamps);
 
-  for (let index = 1; index <= storage.MAX_REPORTS; index += 1) {
+  for (let index = 1; index <= storage.MAX_ACTIVE_REPORTS; index += 1) {
     const uuid = `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`;
     const record = await coordinator.prepareReport({
       reconciliationState: {},
@@ -187,24 +226,30 @@ test("bounded archive prunes the oldest finalized report without pruning pending
     await coordinator.finalizeReport(record.reportId);
   }
 
-  const pending = await coordinator.prepareReport({
+  const sixth = await coordinator.prepareReport({
     reconciliationState: {},
     streamId:
       "local-stream:99999999-1111-4111-8111-111111111111",
     startedAt: STARTED_AT,
   });
-  const retained = store.read();
-
-  assert.equal(retained.length, storage.MAX_REPORTS);
+  assert.equal(store.read().length, 6);
   assert.equal(
-    retained.some((record) => record.reportId === pending.reportId),
-    true,
+    (await coordinator.dispatch({ type: "list_reports" })).reports.length,
+    storage.MAX_ACTIVE_REPORTS,
   );
+
+  await coordinator.finalizeReport(sixth.reportId);
+  const retained = store.read();
+  const archived = await coordinator.dispatch({
+    type: "list_archived_reports",
+  });
+
+  assert.equal(retained.length, 6);
+  assert.equal(getActiveCount(retained), storage.MAX_ACTIVE_REPORTS);
+  assert.equal(archived.reports.length, 1);
   assert.equal(
-    retained.some((record) =>
-      record.reportId.startsWith("stream-report:00000001-"),
-    ),
-    false,
+    archived.reports[0].reportId.startsWith("stream-report:00000001-"),
+    true,
   );
 });
 
@@ -241,72 +286,41 @@ test("End-without-report discards only the exact pending stream report", async (
   );
 });
 
-test("archive byte cap prunes finalized reports but never a pending report", async () => {
-  const padding = "x".repeat(1_300_000);
-  const records = Array.from({ length: 4 }, (_, index) => {
-    const uuid = `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`;
-    const streamId = `local-stream:${uuid}`;
-    const report = {
-      ...createReport({
-        reconciliationState: {},
-        streamId,
-        startedAt: STARTED_AT,
-        endedAt: `2026-08-0${index + 1}T12:00:00.000Z`,
-        generatedAt: `2026-08-0${index + 1}T12:00:00.000Z`,
-      }),
-      padding,
-    };
-
-    return {
-      reportId: report.reportId,
-      lifecycleStatus: "finalized",
-      report,
-    };
-  });
+test("archive byte cap rejects a new report without deleting saved records", async () => {
+  const record = createSavedRecord(1, { archived: true });
+  const measure = (candidate) => new TextEncoder().encode(JSON.stringify({
+    schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+    records: candidate,
+  })).byteLength;
+  record.report.padding = "x".repeat(
+    storage.MAX_ARCHIVE_BYTES - measure([record]) - 100,
+  );
+  const records = [record];
   const store = createStore({ records });
   const coordinator = createCoordinator(store, [
     "2026-08-10T12:00:00.000Z",
   ]);
-  const pending = await coordinator.prepareReport({
-    reconciliationState: {},
-    streamId:
-      "local-stream:99999999-1111-4111-8111-111111111111",
-    startedAt: STARTED_AT,
-  });
-  const retained = store.read();
 
-  assert.equal(
-    retained.some((record) => record.reportId === pending.reportId),
-    true,
+  await assert.rejects(
+    coordinator.prepareReport({
+      reconciliationState: {},
+      streamId:
+        "local-stream:99999999-1111-4111-8111-111111111111",
+      startedAt: STARTED_AT,
+    }),
+    (error) => error.code === "REPORT_ARCHIVE_FULL",
   );
-  assert.equal(retained.length < 5, true);
-  assert.equal(
-    new TextEncoder().encode(JSON.stringify(retained)).byteLength <=
-      storage.MAX_ARCHIVE_BYTES,
-    true,
-  );
+  assert.deepEqual(store.read(), records);
 });
 
-test("archive byte cap rejects rather than pruning pending reports", async () => {
-  const streamId =
-    "local-stream:88888888-1111-4111-8111-111111111111";
-  const report = {
-    ...createReport({
-      reconciliationState: {},
-      streamId,
-      startedAt: STARTED_AT,
-      endedAt: "2026-08-09T12:00:00.000Z",
-      generatedAt: "2026-08-09T12:00:00.000Z",
+test("a full 5 active plus 25 archived archive blocks prepare without deletion", async () => {
+  const records = Array.from(
+    { length: storage.MAX_TOTAL_REPORTS },
+    (_, index) => createSavedRecord(index + 1, {
+      archived: index >= storage.MAX_ACTIVE_REPORTS,
     }),
-    padding: "x".repeat(storage.MAX_ARCHIVE_BYTES),
-  };
-  const store = createStore({
-    records: [{
-      reportId: report.reportId,
-      lifecycleStatus: "pending_end",
-      report,
-    }],
-  });
+  );
+  const store = createStore({ records });
   const coordinator = createCoordinator(store);
 
   await assert.rejects(
@@ -315,7 +329,144 @@ test("archive byte cap rejects rather than pruning pending reports", async () =>
       streamId: STREAM_ONE,
       startedAt: STARTED_AT,
     }),
-    (error) => error.code === "REPORT_ARCHIVE_FULL",
+    (error) => error.code === "REPORT_TOTAL_LIMIT_REACHED",
   );
-  assert.equal(store.read()[0].reportId, report.reportId);
+  assert.deepEqual(store.read(), records);
+});
+
+test("archive, restore, and permanent delete mutations are atomic and keep reports immutable", async () => {
+  const records = [
+    createSavedRecord(1),
+    createSavedRecord(2),
+    createSavedRecord(3),
+  ];
+  const originalReport = clone(records[0].report);
+  const store = createStore({ records });
+  const coordinator = createCoordinator(store);
+  const firstTwo = records.slice(0, 2).map((record) => record.reportId);
+
+  assert.deepEqual(
+    await coordinator.dispatch({
+      type: "archive_reports",
+      reportIds: firstTwo,
+    }),
+    { reportIds: firstTwo },
+  );
+  assert.equal((await coordinator.listReports()).reports.length, 1);
+  assert.deepEqual(
+    (await coordinator.listArchivedReports()).reports.map(
+      (summary) => summary.reportId,
+    ),
+    [...firstTwo].reverse(),
+  );
+  assert.deepEqual(store.read()[0].report, originalReport);
+  assert.equal(Object.hasOwn(await coordinator.getReport(firstTwo[0]), "archived"), false);
+
+  assert.deepEqual(
+    await coordinator.dispatch({
+      type: "restore_reports",
+      reportIds: firstTwo,
+    }),
+    { reportIds: firstTwo },
+  );
+  assert.equal((await coordinator.listReports()).reports.length, 3);
+
+  await coordinator.dispatch({
+    type: "archive_reports",
+    reportIds: firstTwo,
+  });
+  assert.deepEqual(
+    await coordinator.dispatch({
+      type: "delete_archived_reports",
+      reportIds: firstTwo,
+    }),
+    { reportIds: firstTwo },
+  );
+  assert.deepEqual(store.read().map((record) => record.reportId), [
+    records[2].reportId,
+  ]);
+});
+
+test("restore and archive capacity failures preserve every selected record", async () => {
+  const active = Array.from(
+    { length: storage.MAX_ACTIVE_REPORTS },
+    (_, index) => createSavedRecord(index + 1),
+  );
+  const archived = createSavedRecord(6, { archived: true });
+  const restoreStore = createStore({ records: [...active, archived] });
+  const restoreCoordinator = createCoordinator(restoreStore);
+
+  await assert.rejects(
+    restoreCoordinator.dispatch({
+      type: "restore_reports",
+      reportIds: [archived.reportId],
+    }),
+    (error) => error.code === "REPORT_ACTIVE_LIMIT_REACHED",
+  );
+  assert.deepEqual(restoreStore.read(), [...active, archived]);
+
+  const fullArchive = Array.from(
+    { length: storage.MAX_ARCHIVED_REPORTS },
+    (_, index) => createSavedRecord(index + 1, { archived: true }),
+  );
+  const activeRecord = createSavedRecord(30);
+  const archiveStore = createStore({ records: [...fullArchive, activeRecord] });
+  const archiveCoordinator = createCoordinator(archiveStore);
+
+  await assert.rejects(
+    archiveCoordinator.dispatch({
+      type: "archive_reports",
+      reportIds: [activeRecord.reportId],
+    }),
+    (error) => error.code === "REPORT_ARCHIVED_LIMIT_REACHED",
+  );
+  assert.deepEqual(archiveStore.read(), [...fullArchive, activeRecord]);
+});
+
+test("pending reports stay out of both lists and cannot be archive-managed", async () => {
+  const store = createStore();
+  const coordinator = createCoordinator(store);
+  const pending = await coordinator.prepareReport({
+    reconciliationState: {},
+    streamId: STREAM_ONE,
+    startedAt: STARTED_AT,
+  });
+
+  assert.deepEqual(await coordinator.listReports(), { reports: [] });
+  assert.deepEqual(await coordinator.listArchivedReports(), { reports: [] });
+  await assert.rejects(
+    coordinator.dispatch({
+      type: "archive_reports",
+      reportIds: [pending.reportId],
+    }),
+    (error) => error.code === "REPORT_NOT_FINALIZED",
+  );
+  assert.equal(store.read()[0].lifecycleStatus, "pending_end");
+});
+
+test("bulk restore and permanent delete reject mixed selections without partial changes", async () => {
+  const active = createSavedRecord(1);
+  const archivedOne = createSavedRecord(2, { archived: true });
+  const archivedTwo = createSavedRecord(3, { archived: true });
+  const records = [active, archivedOne, archivedTwo];
+  const store = createStore({ records });
+  const coordinator = createCoordinator(store);
+
+  await assert.rejects(
+    coordinator.dispatch({
+      type: "restore_reports",
+      reportIds: [archivedOne.reportId, active.reportId],
+    }),
+    (error) => error.code === "REPORT_NOT_ARCHIVED",
+  );
+  assert.deepEqual(store.read(), records);
+
+  await assert.rejects(
+    coordinator.dispatch({
+      type: "delete_archived_reports",
+      reportIds: [archivedTwo.reportId, active.reportId],
+    }),
+    (error) => error.code === "REPORT_NOT_ARCHIVED",
+  );
+  assert.deepEqual(store.read(), records);
 });

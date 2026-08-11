@@ -101,17 +101,25 @@ auctioned again, the employee maps its new variation number.
   stream and baseline into one immutable local report before the active-session pointer
   is cleared, then opens its extension-owned report page. Unresolved payment states,
   pending reservations, unmapped completed sales, capture conflicts, an active bidding
-  marker, or oversold inventory never block End; they label the report **Provisional**
-  and appear as notices. A report is **Final** only when none of those captured
-  exceptions remains.
-- A local **Stream reports** archive that lists the newest reports after tracking has
-  ended and retains up to five reports within a conservative 4 MiB archive cap in
-  `chrome.storage.local`. Each report can be
-  reopened, printed or saved as a PDF through Chrome, and used to copy or download a
-  formula-injection-safe, Google Sheets-ready inventory replacement table. Its completed
-  orders table is collapsed by default for screen browsing and is always expanded in
-  printed or PDF output. An emergency
-  **End without report** action is shown only when report-aware End fails.
+  marker, or oversold inventory never block End; they appear as explicit attention
+  notices and counts in the report.
+- A two-tier local report library. **Business Records** keeps up to five current reports;
+  **Archived stream reports** keeps up to 25 more, subject to a conservative combined cap
+  of approximately 4 MiB in `chrome.storage.local`. Saving a sixth Business Record
+  atomically moves the oldest finalized one into archive when space permits—nothing is
+  silently deleted.
+  If all five current slots and 25 archive slots are occupied, the archive byte cap is
+  reached, or no finalized record can move safely, report-aware End fails before clearing
+  the active stream and preserves every existing report. The employee can free archive
+  space and retry, or deliberately use **End without report**.
+- Current and archived reports open the same local report page, where they can be printed
+  or saved as a PDF and can copy/download the formula-injection-safe Google Sheets
+  inventory handoff. Current reports can be archived manually when space permits.
+  Archived reports can be restored only into available Business Records slots, with a
+  multi-selection restore performed atomically. Archive deletion supports Select, Select
+  all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
+  failed request changes nothing. The completed-orders table is collapsed by default for
+  screen browsing and always expanded in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   completed-price GMV without shipping, TikTok's last Attributed GMV display, mapped
   COGS and gross profit, completed-sale rows, exact-SKU performance, combined
@@ -260,12 +268,13 @@ replacement count is `max(0, calculated remaining)`. If the raw calculated amoun
 negative, the report preserves that negative result as an oversold/recount warning while
 exporting zero so Google Sheets never receives a negative quantity.
 
-**Final** means the captured snapshot has no active bidding marker, unresolved order,
-pending reservation, payment-fixing order, unmapped completed sale, reconciliation
-conflict, or oversold/recount warning. Otherwise the report is **Provisional** and lists
-the reasons. Provisional conditions never prevent the employee from ending local
-tracking, but its inventory and profit figures should be reviewed before updating the
-Sheet.
+The report retains strict completeness metadata and reason codes internally, but the
+employee UI does not display a Final/Provisional state label. Instead, it lists the
+specific captured conditions that need attention: an active bidding marker, unresolved
+order, pending reservation, payment-fixing order, unmapped completed sale,
+reconciliation conflict, or oversold/recount warning. Those conditions never prevent the
+employee from ending local tracking, but inventory and profit figures should be reviewed
+before updating the Sheet.
 
 ### Not implemented yet
 
@@ -321,9 +330,9 @@ Sheet.
       and
    3. **Completed:** authorize read-only access, preview and confirm the selected Sheet,
       and initialize a new immutable inventory baseline.
-6. **Completed:** freeze an immutable end-of-stream business report, retain a bounded
-   local archive, render SKU and product analytics, and provide printable/PDF plus exact
-   six-column copy/CSV inventory handoffs.
+6. **Completed:** freeze an immutable end-of-stream business report, retain five Business
+   Records plus a managed 25-report archive, render SKU and product analytics, and
+   provide printable/PDF plus exact six-column copy/CSV inventory handoffs.
 7. Optionally add automatic Google Sheets writes after the local report remains the
    durable source of truth.
 
@@ -343,7 +352,7 @@ Sheet.
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
 | `extension/shared/reconciliation-coordinator.js` | Serialized canonical-state commands and persistence | Implemented in service worker |
 | `extension/shared/stream-session*.js` | Versioned active-stream state, storage, and serialized lifecycle commands | Implemented in service worker |
-| `extension/shared/stream-report*.js` | Strict report projection, protocol, bounded local archive, and serialized lifecycle | Implemented in service worker |
+| `extension/shared/stream-report*.js` | Strict report projection, protocol, two-tier local record store, and serialized lifecycle | Implemented in service worker |
 | `extension/tagger/` | Sheets preview/confirmation, live-refreshed variation history, inventory picker, active-stream/report controls, and persistence clients | Import, capture refetch, and report archive implemented; prioritized queue pending |
 | `extension/report/` | Locally loaded printable report, PDF/browser print action, analytics, and inventory copy/CSV handoff | Implemented |
 | `backend/` | Optional future server-side Sheets/reporting code | Placeholder |
@@ -523,16 +532,16 @@ prototype data. There is no silent reset.
     it, and confirm a later Sold Items change is still captured.
 24. Open **End Stream Tracking** while the stream still contains a pending inventory
     reservation and a completed sale without an item. Confirm the readiness text explains
-    that the report will be provisional and that neither condition blocks End. Select
+    both attention items by count and that neither condition blocks End. Select
     **Keep stream active** once and verify tracking continues. Open it again and select
     **End and create report**. TikTok LIVE must remain unaffected, the local stream must
     end only after its report is saved, and the new report must open in a separate tab.
     If report creation or local storage fails, normal End must leave the active stream in
     place and offer the explicit **End without report** recovery action.
-25. In the report, verify **Provisional** and its notices match the unresolved conditions.
-    A clean stream with no active bidding marker, unresolved/fixing order, pending
-    reservation, unmapped completed sale, conflict, or oversold/recount condition must be
-    labeled **Final**. Verify the completed-sale table includes mapped and unmapped
+25. In the report, verify its attention notices match the unresolved conditions. A clean
+    stream with no active bidding marker, unresolved/fixing order, pending reservation,
+    unmapped completed sale, conflict, or oversold/recount condition must show no
+    attention notice. Verify the completed-sale table includes mapped and unmapped
     completions, the SKU and combined product rankings retain ties, and the inventory
     table contains every SKU from the pinned baseline. Use **Print / Save as PDF**, choose
     Chrome's **Save as PDF** destination, and save a copy outside the extension if the
@@ -550,15 +559,31 @@ prototype data. There is no silent reset.
     backup. The CSV is formula-injection-safe and preserves the valid six-column Sheet
     values. A replacement quantity is clamped to zero when calculated inventory is
     negative; review the report's raw oversold amount and physically recount that SKU
-    instead of treating the zero as proof that stock was exact. Do not use a provisional
-    report's replacement counts without resolving or manually reviewing its notices.
-28. Return to the side panel after End. Confirm **Stream reports** lists the saved report,
-    selecting it reopens the report page, and the archive survives a browser or
-    service-worker restart. The extension retains at most the newest five reports and
-    removes older finalized reports as newer ones are saved. Before the next TikTok LIVE,
-    reload the dashboard, confirm Sold Items belongs to the new stream rather than stale
-    rows, import/confirm the updated `Inventory` baseline, and only then start a new local
-    tracker stream.
+    instead of treating the zero as proof that stock was exact. Do not use replacement
+    counts without resolving or manually reviewing every attention notice.
+28. Return to the side panel after End. Confirm **Business Records** lists the saved
+    report with its date, completed/total count, and GMV. Open it and verify the same PDF
+    and inventory-download actions remain available. End enough isolated test streams to
+    create six reports: Business Records must retain the newest five and automatically
+    move the oldest finalized report into **Archived stream reports**, without deleting
+    or changing it. Open that archived report and verify its report/PDF/CSV output is
+    unchanged.
+29. Use **More actions** on a Business Record to archive it manually. The action must fail
+    without changing anything if the 25 archive slots or shared byte cap are full. With
+    an open Business Records slot, select archived reports and use **Restore selected**;
+    the complete selection must move back atomically. If the selection is larger than the
+    number of open slots, no selected report may move. Exercise **Select all** and **Clear
+    selection**, then choose **Delete selected**. Cancel the confirmation once and verify
+    nothing changes; confirm it only for disposable test records and verify only those
+    archived records are permanently removed.
+30. At five Business Records plus 25 archived reports—or when the combined cap of
+    approximately 4 MiB is reached—attempt another report-aware End. It must show an
+    explicit storage-full error, preserve all 30 records, and leave the local tracker
+    stream active for retry. Free
+    archived space and retry, or deliberately choose **End without report**. No capacity
+    path may silently delete a report. Before the next TikTok LIVE, reload the dashboard,
+    confirm Sold Items belongs to the new stream rather than stale rows, import/confirm
+    the updated `Inventory` baseline, and only then start a new local tracker stream.
 
 The capture boundary must resolve to exactly one visible
 `[data-tid="m4b_space"]` element. If TikTok renders zero or multiple visible matches,
@@ -619,13 +644,13 @@ notices. It contains no buyer identity, Google Sheet ID or sharing link, OAuth t
 raw TikTok DOM text. Printing/Save as PDF and CSV download create local files only when
 the employee requests them; the extension does not upload those files.
 
-The archive retains at most five reports within a 4 MiB cap and prunes older finalized
-reports first when either limit is reached. Removing
-the unpacked extension or clearing its extension storage deletes the in-extension report
-archive and cannot be undone by the tracker. Save any required PDF or CSV outside the
-extension before uninstalling, clearing storage, or allowing a report to age out of the
-five-report archive. Files already saved to the computer are independent of extension
-storage.
+The library retains up to five Business Records and 25 archived reports within a combined
+cap of approximately 4 MiB. It never silently prunes an archived record to make room.
+Permanent archive deletion requires an explicit employee selection and confirmation; it
+cannot be undone by the tracker. Removing the unpacked extension or clearing its extension
+storage still deletes the entire in-extension library. Save required PDF or CSV files outside the
+extension before deleting reports, uninstalling, or clearing storage. Files already
+saved to the computer are independent of extension storage.
 
 A public Chrome Web Store release needs a matching production OAuth client, an accurate
 privacy policy and Store data-use disclosures, and compliance with Google's Limited Use

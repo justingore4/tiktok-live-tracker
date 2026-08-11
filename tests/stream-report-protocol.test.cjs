@@ -6,7 +6,7 @@ const protocol = require("../extension/shared/stream-report-protocol.js");
 const REPORT_ID =
   "stream-report:11111111-1111-4111-8111-111111111111";
 
-test("creates strict list and get stream-report messages", () => {
+test("creates strict read and archive-management stream-report messages", () => {
   assert.equal(
     protocol.MESSAGE_CHANNEL,
     "tiktok-live-tracker.stream-report",
@@ -14,8 +14,15 @@ test("creates strict list and get stream-report messages", () => {
   assert.equal(protocol.MESSAGE_VERSION, 1);
   assert.deepEqual(protocol.COMMAND_TYPES, {
     LIST_REPORTS: "list_reports",
+    LIST_ARCHIVED_REPORTS: "list_archived_reports",
     GET_REPORT: "get_report",
+    ARCHIVE_REPORTS: "archive_reports",
+    RESTORE_REPORTS: "restore_reports",
+    DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
   });
+  assert.equal(protocol.MAX_ACTIVE_REPORTS, 5);
+  assert.equal(protocol.MAX_ARCHIVED_REPORTS, 25);
+  assert.equal(protocol.MAX_TOTAL_REPORTS, 30);
 
   assert.deepEqual(
     protocol.createStreamReportMessage({ type: "list_reports" }),
@@ -23,6 +30,17 @@ test("creates strict list and get stream-report messages", () => {
       channel: protocol.MESSAGE_CHANNEL,
       version: 1,
       command: { type: "list_reports" },
+    },
+  );
+  assert.deepEqual(
+    protocol.createStreamReportMessage({
+      type: "archive_reports",
+      reportIds: [REPORT_ID],
+    }),
+    {
+      channel: protocol.MESSAGE_CHANNEL,
+      version: 1,
+      command: { type: "archive_reports", reportIds: [REPORT_ID] },
     },
   );
   assert.deepEqual(
@@ -44,6 +62,17 @@ test("rejects malformed report messages and IDs", () => {
     {},
     { type: "list_reports", extra: true },
     { type: "get_report", reportId: "stream-report:bad" },
+    { type: "archive_reports", reportIds: [] },
+    { type: "restore_reports", reportIds: [REPORT_ID, REPORT_ID] },
+    { type: "delete_archived_reports", reportIds: ["bad"] },
+    {
+      type: "archive_reports",
+      reportIds: Array.from(
+        { length: protocol.MAX_ARCHIVED_REPORTS + 1 },
+        (_, index) =>
+          `stream-report:${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+      ),
+    },
     { type: "unknown" },
   ];
 
@@ -64,4 +93,3 @@ test("rejects malformed report messages and IDs", () => {
     (error) => error.code === "INVALID_MESSAGE",
   );
 });
-

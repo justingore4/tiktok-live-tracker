@@ -470,7 +470,13 @@ function createWorkerHarness(options = {}) {
       FINALIZED: "finalized",
       PENDING_END: "pending_end",
     },
-    MAX_REPORTS: 5,
+    MAX_ACTIVE_REPORTS: 5,
+    MAX_ARCHIVED_REPORTS: 25,
+    MAX_TOTAL_REPORTS: 30,
+    TARGET_ARCHIVE_BYTES: 4 * 1024 * 1024,
+    LEGACY_MIGRATION_HEADROOM_BYTES: 4 * 1024,
+    MAX_ARCHIVE_BYTES: (4 * 1024 * 1024) + (4 * 1024),
+    STORAGE_SCHEMA_VERSION: 2,
     StreamReportStorageError: FakeStreamReportStorageError,
     createStreamReportStore(receivedOptions) {
       reportCalls.push({ type: "create_store", options: receivedOptions });
@@ -568,9 +574,18 @@ function createWorkerHarness(options = {}) {
         command: JSON.parse(JSON.stringify(command)),
       });
       return options.reportDispatchResult ?? (
-        command.type === streamReportProtocol.COMMAND_TYPES.LIST_REPORTS
+        [
+          streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
+          streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+        ].includes(command.type)
           ? { reports: [] }
-          : { reportId: null, lifecycleStatus: null, report: null }
+          : [
+              streamReportProtocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+              streamReportProtocol.COMMAND_TYPES.RESTORE_REPORTS,
+              streamReportProtocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+            ].includes(command.type)
+            ? { reportIds: [...command.reportIds] }
+            : { reportId: null, lifecycleStatus: null, report: null }
       );
     },
   };
@@ -2325,14 +2340,25 @@ test("a post-End finalization failure returns the saved pending report for resta
   assert.equal(harness.consoleErrors.length, 1);
 });
 
-test("report reads are restricted to the exact side panel and packaged report page", async () => {
+test("report reads and archive mutations enforce exact extension senders", async () => {
   const harness = createWorkerHarness();
   const message = harness.createReportMessage({ type: "list_reports" });
+  const archivedListMessage = harness.createReportMessage({
+    type: "list_archived_reports",
+  });
+  const reportId =
+    "stream-report:11111111-1111-4111-8111-111111111111";
   const sidePanelRead = harness.send(message);
   const reportPageRead = harness.send(
-    message,
+    archivedListMessage,
     harness.createSender({
       url: `${harness.reportPageUrl}?reportId=test`,
+    }),
+  );
+  const reportPageGet = harness.send(
+    harness.createReportMessage({ type: "get_report", reportId }),
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${encodeURIComponent(reportId)}`,
     }),
   );
   const dashboardRead = harness.send(message, harness.createCaptureSender());
@@ -2345,7 +2371,72 @@ test("report reads are restricted to the exact side panel and packaged report pa
     ok: true,
     data: { reports: [] },
   });
+  assert.deepEqual(await reportPageGet.response, {
+    ok: true,
+    data: { reportId: null, lifecycleStatus: null, report: null },
+  });
   assert.deepEqual(await dashboardRead.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
+
+  for (const type of [
+    "archive_reports",
+    "restore_reports",
+    "delete_archived_reports",
+  ]) {
+    const mutation = harness.createReportMessage({
+      type,
+      reportIds: [reportId],
+    });
+    const sidePanelMutation = harness.send(mutation);
+    const reportPageMutation = harness.send(
+      mutation,
+      harness.createSender({ url: `${harness.reportPageUrl}#saved` }),
+    );
+
+    assert.deepEqual(await sidePanelMutation.response, {
+      ok: true,
+      data: { reportIds: [reportId] },
+    });
+    assert.deepEqual(await reportPageMutation.response, {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message: "The packaged report page has read-only report access.",
+      },
+    });
+  }
+
+  const unrelatedExtensionPage = harness.send(
+    harness.createReportMessage({
+      type: "archive_reports",
+      reportIds: [reportId],
+    }),
+    harness.createSender({
+      url: `chrome-extension://${harness.extensionId}/other.html`,
+    }),
+  );
+  assert.deepEqual(await unrelatedExtensionPage.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
+  const dashboardMutation = harness.send(
+    harness.createReportMessage({
+      type: "delete_archived_reports",
+      reportIds: [reportId],
+    }),
+    harness.createCaptureSender(),
+  );
+  assert.deepEqual(await dashboardMutation.response, {
     ok: false,
     error: {
       code: "UNAUTHORIZED_MESSAGE_SENDER",

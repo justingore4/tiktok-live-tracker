@@ -277,9 +277,8 @@
           <h3 id="stream-session-end-title">End and create the stream report?</h3>
           <p>
             The tracker will freeze a local business report before ending. Unresolved
-            variations never block End; they make the report provisional and appear in
-            its attention list. Ending stops new capture for this local tracker stream
-            and does not end TikTok LIVE.
+            variations never block End; they appear in its attention list. Ending stops
+            new capture for this local tracker stream and does not end TikTok LIVE.
           </p>
           <p
             id="end-report-readiness"
@@ -632,6 +631,8 @@
         <p class="stream-reports-description">
           Open a saved report to print or save it as a PDF, copy the complete
           updated Inventory table, or download its Google Sheets-ready CSV.
+          Limit of 5 reports on this dashboard, older reports will go to archived
+          once the limit is reached
         </p>
         <div
           id="stream-reports-list"
@@ -652,7 +653,164 @@
             Retry reports
           </button>
         </div>
+        <div class="stream-reports-navigation">
+          <button
+            id="view-archived-reports"
+            class="secondary-action"
+            type="button"
+          >
+            View archived reports
+          </button>
+          <span id="archived-reports-short-count" class="archived-reports-short-count">
+            0 archived
+          </span>
+        </div>
       </section>
+
+      <section
+        id="archived-reports-view"
+        class="archived-reports-view"
+        aria-labelledby="archived-reports-title"
+        aria-busy="false"
+        hidden
+      >
+        <button
+          id="back-to-business-records"
+          class="archive-back-button"
+          type="button"
+        >
+          <span aria-hidden="true">&#8592;</span>
+          Back to Business Records
+        </button>
+
+        <div class="archived-reports-heading">
+          <div>
+            <p class="eyebrow">Business records</p>
+            <h2 id="archived-reports-title">Archived stream reports</h2>
+          </div>
+          <span id="archived-reports-count" class="stream-reports-count">
+            0 archived
+          </span>
+        </div>
+        <p class="archived-reports-description">
+          Open any archived report, restore it to the dashboard, or permanently
+          delete reports you no longer need.
+        </p>
+
+        <div class="archived-reports-controls">
+          <button
+            id="toggle-archived-selection"
+            class="secondary-action compact-action"
+            type="button"
+            aria-pressed="false"
+          >
+            Select
+          </button>
+        </div>
+
+        <div
+          id="archived-selection-toolbar"
+          class="archived-selection-toolbar"
+          hidden
+        >
+          <p
+            id="archived-selection-summary"
+            class="archived-selection-summary"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            0 selected
+          </p>
+          <div class="archived-selection-utilities">
+            <button id="select-all-archived-reports" class="text-action" type="button">
+              Select all
+            </button>
+            <button id="clear-archived-selection" class="text-action" type="button">
+              Clear selection
+            </button>
+          </div>
+          <p id="archived-restore-guidance" class="archived-restore-guidance"></p>
+          <div class="archived-selection-actions">
+            <button
+              id="restore-selected-reports"
+              class="secondary-action"
+              type="button"
+            >
+              Restore selected
+            </button>
+            <button
+              id="delete-selected-reports"
+              class="danger-action"
+              type="button"
+            >
+              Delete selected
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="archived-reports-list"
+          class="stream-reports-list archived-reports-list"
+          role="list"
+        ></div>
+        <p id="archived-reports-empty" class="archived-reports-empty" role="status" hidden>
+          No archived reports yet.
+        </p>
+        <div
+          id="archived-reports-error"
+          class="stream-reports-error"
+          role="alert"
+          tabindex="-1"
+          hidden
+        >
+          <p id="archived-reports-error-message">
+            Archived reports could not be loaded. Nothing was changed.
+          </p>
+          <button id="retry-archived-reports" class="secondary-action" type="button">
+            Retry
+          </button>
+        </div>
+        <p
+          id="archived-reports-feedback"
+          class="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+      </section>
+
+      <dialog
+        id="report-action-confirmation"
+        class="report-action-confirmation"
+        aria-labelledby="report-action-confirmation-title"
+        aria-describedby="report-action-confirmation-message"
+      >
+        <form method="dialog">
+          <h2 id="report-action-confirmation-title">Delete report forever?</h2>
+          <p id="report-action-confirmation-message">
+            This permanently deletes the saved report from this Chrome profile and
+            cannot be undone. TikTok LIVE and Google Sheets will not be changed.
+          </p>
+          <div class="report-action-confirmation-actions">
+            <button
+              id="cancel-report-action"
+              class="secondary-action"
+              type="submit"
+              value="cancel"
+            >
+              Cancel
+            </button>
+            <button
+              id="confirm-report-action"
+              class="danger-action"
+              type="button"
+            >
+              Delete forever
+            </button>
+          </div>
+        </form>
+      </dialog>
 
       <footer class="app-footer" role="status" aria-live="polite" aria-atomic="true" hidden>
         <span class="status-dot" aria-hidden="true"></span>

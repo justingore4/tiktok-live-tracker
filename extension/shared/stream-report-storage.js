@@ -12,9 +12,16 @@
     "use strict";
 
     const STORAGE_KEY = "tiktokLiveTracker.streamReports";
-    const STORAGE_SCHEMA_VERSION = 1;
-    const MAX_REPORTS = 5;
-    const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
+    const LEGACY_STORAGE_SCHEMA_VERSION = 1;
+    const STORAGE_SCHEMA_VERSION = 2;
+    const MAX_ACTIVE_REPORTS = 5;
+    const MAX_ARCHIVED_REPORTS = 25;
+    const MAX_TOTAL_REPORTS =
+      MAX_ACTIVE_REPORTS + MAX_ARCHIVED_REPORTS;
+    const TARGET_ARCHIVE_BYTES = 4 * 1024 * 1024;
+    const LEGACY_MIGRATION_HEADROOM_BYTES = 4 * 1024;
+    const MAX_ARCHIVE_BYTES =
+      TARGET_ARCHIVE_BYTES + LEGACY_MIGRATION_HEADROOM_BYTES;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const LIFECYCLE_STATUSES = Object.freeze({
@@ -115,13 +122,17 @@
       return { storageArea, streamReport };
     }
 
-    function hydrateRecord(streamReport, record, index) {
+    function hydrateRecord(streamReport, record, index, options = {}) {
       const path = `records[${index}]`;
+      const legacy = options.legacy === true;
+      const expectedKeys = legacy
+        ? ["lifecycleStatus", "report", "reportId"]
+        : ["archived", "lifecycleStatus", "report", "reportId"];
 
-      if (!hasExactKeys(record, ["lifecycleStatus", "report", "reportId"])) {
+      if (!hasExactKeys(record, expectedKeys)) {
         fail(
           "INVALID_REPORT_ARCHIVE",
-          `${path} must contain exactly lifecycleStatus, report, and reportId.`,
+          `${path} has an invalid saved report shape.`,
         );
       }
 
@@ -136,6 +147,22 @@
         fail(
           "INVALID_REPORT_ARCHIVE",
           `${path}.lifecycleStatus is invalid.`,
+        );
+      }
+
+      const archived = legacy ? false : record.archived;
+
+      if (typeof archived !== "boolean") {
+        fail("INVALID_REPORT_ARCHIVE", `${path}.archived is invalid.`);
+      }
+
+      if (
+        archived &&
+        record.lifecycleStatus !== LIFECYCLE_STATUSES.FINALIZED
+      ) {
+        fail(
+          "INVALID_REPORT_ARCHIVE",
+          `${path} cannot archive a report while End recovery is pending.`,
         );
       }
 
@@ -161,26 +188,32 @@
       return {
         reportId: record.reportId,
         lifecycleStatus: record.lifecycleStatus,
+        archived,
         report: cloneSerializable(report),
       };
     }
 
-    function hydrateRecords(streamReport, records) {
+    function hydrateRecords(streamReport, records, options = {}) {
       if (!Array.isArray(records)) {
         fail("INVALID_REPORT_ARCHIVE", "records must be an array.");
       }
 
-      if (records.length > MAX_REPORTS) {
+      if (records.length > MAX_TOTAL_REPORTS) {
         fail(
           "INVALID_REPORT_ARCHIVE",
-          `records cannot contain more than ${MAX_REPORTS} reports.`,
+          `records cannot contain more than ${MAX_TOTAL_REPORTS} reports.`,
         );
       }
 
       const reportIds = new Set();
       const streamIds = new Set();
-      return records.map((record, index) => {
-        const hydrated = hydrateRecord(streamReport, record, index);
+      const hydratedRecords = records.map((record, index) => {
+        const hydrated = hydrateRecord(
+          streamReport,
+          record,
+          index,
+          options,
+        );
         const streamId = hydrated.report?.metadata?.streamId;
 
         if (reportIds.has(hydrated.reportId)) {
@@ -208,6 +241,67 @@
         streamIds.add(streamId);
         return hydrated;
       });
+
+      const activeCount = hydratedRecords.filter(
+        (record) =>
+          !record.archived &&
+          record.lifecycleStatus === LIFECYCLE_STATUSES.FINALIZED,
+      ).length;
+      const archivedCount = hydratedRecords.filter(
+        (record) => record.archived,
+      ).length;
+      const pendingCount = hydratedRecords.filter(
+        (record) =>
+          record.lifecycleStatus === LIFECYCLE_STATUSES.PENDING_END,
+      ).length;
+
+      if (activeCount > MAX_ACTIVE_REPORTS) {
+        fail(
+          "INVALID_REPORT_ARCHIVE",
+          `records cannot contain more than ${MAX_ACTIVE_REPORTS} active Business Records.`,
+        );
+      }
+
+      if (archivedCount > MAX_ARCHIVED_REPORTS) {
+        fail(
+          "INVALID_REPORT_ARCHIVE",
+          `records cannot contain more than ${MAX_ARCHIVED_REPORTS} archived reports.`,
+        );
+      }
+
+      if (pendingCount > 1) {
+        fail(
+          "INVALID_REPORT_ARCHIVE",
+          "records cannot contain more than one report awaiting End recovery.",
+        );
+      }
+
+      return hydratedRecords;
+    }
+
+    function createEnvelope(records) {
+      return {
+        schemaVersion: STORAGE_SCHEMA_VERSION,
+        records,
+      };
+    }
+
+    function getEnvelopeByteLength(envelope) {
+      return new TextEncoder().encode(JSON.stringify(envelope)).byteLength;
+    }
+
+    function requireSafeEnvelopeSize(
+      envelope,
+      maxBytes = MAX_ARCHIVE_BYTES,
+    ) {
+      if (getEnvelopeByteLength(envelope) > maxBytes) {
+        fail(
+          "REPORT_ARCHIVE_FULL",
+          "Saved stream reports exceed the safe local archive size.",
+        );
+      }
+
+      return envelope;
     }
 
     function createStreamReportStore(options) {
@@ -256,22 +350,53 @@
           );
         }
 
-        if (envelope.schemaVersion !== STORAGE_SCHEMA_VERSION) {
+        if (
+          envelope.schemaVersion !== STORAGE_SCHEMA_VERSION &&
+          envelope.schemaVersion !== LEGACY_STORAGE_SCHEMA_VERSION
+        ) {
           fail(
             "UNSUPPORTED_STORAGE_VERSION",
             `Stream-report storage version ${envelope.schemaVersion} is not supported.`,
           );
         }
 
-        return hydrateRecords(streamReport, envelope.records);
+        const legacy =
+          envelope.schemaVersion === LEGACY_STORAGE_SCHEMA_VERSION;
+        requireSafeEnvelopeSize(
+          envelope,
+          legacy ? TARGET_ARCHIVE_BYTES : MAX_ARCHIVE_BYTES,
+        );
+        const hydratedRecords = hydrateRecords(
+          streamReport,
+          envelope.records,
+          { legacy },
+        );
+        // Existing records migrate without eviction. The effective ceiling
+        // includes a small fixed headroom for the v2 archive flags.
+        const migratedEnvelope = requireSafeEnvelopeSize(
+          createEnvelope(hydratedRecords),
+        );
+
+        if (legacy) {
+          try {
+            await storageArea.set({ [STORAGE_KEY]: migratedEnvelope });
+          } catch (error) {
+            fail(
+              "STORAGE_WRITE_FAILED",
+              "Could not migrate saved stream reports in browser storage.",
+              error,
+            );
+          }
+        }
+
+        return hydratedRecords;
       }
 
       async function saveRecords(records) {
         const hydratedRecords = hydrateRecords(streamReport, records);
-        const envelope = {
-          schemaVersion: STORAGE_SCHEMA_VERSION,
-          records: hydratedRecords,
-        };
+        const envelope = requireSafeEnvelopeSize(
+          createEnvelope(hydratedRecords),
+        );
 
         try {
           await storageArea.set({ [STORAGE_KEY]: envelope });
@@ -291,11 +416,16 @@
 
     return Object.freeze({
       LIFECYCLE_STATUSES,
+      LEGACY_STORAGE_SCHEMA_VERSION,
+      LEGACY_MIGRATION_HEADROOM_BYTES,
+      MAX_ACTIVE_REPORTS,
       MAX_ARCHIVE_BYTES,
-      MAX_REPORTS,
+      MAX_ARCHIVED_REPORTS,
+      MAX_TOTAL_REPORTS,
       REPORT_ID_PATTERN,
       STORAGE_KEY,
       STORAGE_SCHEMA_VERSION,
+      TARGET_ARCHIVE_BYTES,
       StreamReportStorageError,
       createStreamReportStore,
     });

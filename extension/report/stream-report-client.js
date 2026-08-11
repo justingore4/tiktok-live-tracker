@@ -25,7 +25,11 @@
 
     const REQUIRED_COMMAND_TYPES = Object.freeze([
       "LIST_REPORTS",
+      "LIST_ARCHIVED_REPORTS",
       "GET_REPORT",
+      "ARCHIVE_REPORTS",
+      "RESTORE_REPORTS",
+      "DELETE_ARCHIVED_REPORTS",
     ]);
 
     class StreamReportClientError extends Error {
@@ -106,6 +110,10 @@
         protocol.MESSAGE_VERSION < 1 ||
         !isPlainRecord(protocol.COMMAND_TYPES) ||
         !(protocol.REPORT_ID_PATTERN instanceof RegExp) ||
+        !Number.isSafeInteger(protocol.MAX_ACTIVE_REPORTS) ||
+        protocol.MAX_ACTIVE_REPORTS < 1 ||
+        !Number.isSafeInteger(protocol.MAX_ARCHIVED_REPORTS) ||
+        protocol.MAX_ARCHIVED_REPORTS < 1 ||
         typeof protocol.createStreamReportMessage !== "function"
       ) {
         throw new TypeError("A valid stream-report message protocol is required.");
@@ -226,6 +234,37 @@
       return { reportId: value.reportId.trim() };
     }
 
+    function requireReportIdsOptions(value, protocol) {
+      if (
+        !hasExactKeys(value, ["reportIds"]) ||
+        !Array.isArray(value.reportIds) ||
+        value.reportIds.length < 1 ||
+        value.reportIds.length > protocol.MAX_ARCHIVED_REPORTS
+      ) {
+        fail(
+          "INVALID_CLIENT_COMMAND",
+          `Report options must contain 1 to ${protocol.MAX_ARCHIVED_REPORTS} report IDs.`,
+        );
+      }
+
+      const reportIds = value.reportIds.map((reportId) => {
+        if (
+          typeof reportId !== "string" ||
+          !protocol.REPORT_ID_PATTERN.test(reportId)
+        ) {
+          fail("INVALID_CLIENT_COMMAND", "A report ID is invalid.");
+        }
+
+        return reportId;
+      });
+
+      if (new Set(reportIds).size !== reportIds.length) {
+        fail("INVALID_CLIENT_COMMAND", "Report IDs must be unique.");
+      }
+
+      return { reportIds };
+    }
+
     function requireCanonicalTimestamp(value, fieldName) {
       if (typeof value !== "string") {
         fail("INVALID_RESPONSE", `${fieldName} must be a UTC timestamp.`);
@@ -248,11 +287,11 @@
       return value;
     }
 
-    function parseListData(data, protocol) {
+    function parseListData(data, protocol, maxReports) {
       if (
         !hasExactKeys(data, ["reports"]) ||
         !Array.isArray(data.reports) ||
-        data.reports.length > 20
+        data.reports.length > maxReports
       ) {
         fail(
           "INVALID_RESPONSE",
@@ -339,6 +378,24 @@
       });
 
       return { reports };
+    }
+
+    function parseMutationData(data, requestedReportIds) {
+      if (
+        !hasExactKeys(data, ["reportIds"]) ||
+        !Array.isArray(data.reportIds) ||
+        data.reportIds.length !== requestedReportIds.length ||
+        data.reportIds.some(
+          (reportId, index) => reportId !== requestedReportIds[index],
+        )
+      ) {
+        fail(
+          "INVALID_RESPONSE",
+          "The stream-report service returned an invalid mutation result.",
+        );
+      }
+
+      return { reportIds: [...data.reportIds] };
     }
 
     function parseGetData(data, protocol, streamReport, requestedReportId) {
@@ -485,7 +542,18 @@
           () => ({
             type: protocol.COMMAND_TYPES.LIST_REPORTS,
           }),
-          (data) => parseListData(data, protocol),
+          (data) =>
+            parseListData(data, protocol, protocol.MAX_ACTIVE_REPORTS),
+        );
+      }
+
+      function listArchivedReports() {
+        return enqueueCommand(
+          () => ({
+            type: protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+          }),
+          (data) =>
+            parseListData(data, protocol, protocol.MAX_ARCHIVED_REPORTS),
         );
       }
 
@@ -507,7 +575,46 @@
         );
       }
 
-      return Object.freeze({ getReport, listReports });
+      function createMutationMethod(commandType) {
+        return function mutateReports(optionsValue) {
+          let requestedReportIds;
+
+          return enqueueCommand(
+            () => {
+              const { reportIds } = requireReportIdsOptions(
+                optionsValue,
+                protocol,
+              );
+              requestedReportIds = reportIds;
+
+              return {
+                type: commandType,
+                reportIds,
+              };
+            },
+            (data) => parseMutationData(data, requestedReportIds),
+          );
+        };
+      }
+
+      const archiveReports = createMutationMethod(
+        protocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+      );
+      const restoreReports = createMutationMethod(
+        protocol.COMMAND_TYPES.RESTORE_REPORTS,
+      );
+      const deleteArchivedReports = createMutationMethod(
+        protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+      );
+
+      return Object.freeze({
+        archiveReports,
+        deleteArchivedReports,
+        getReport,
+        listArchivedReports,
+        listReports,
+        restoreReports,
+      });
     }
 
     return Object.freeze({

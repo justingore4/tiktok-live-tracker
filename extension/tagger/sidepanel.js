@@ -72,6 +72,8 @@
     globalThis.TikTokLiveTrackerInventoryImportController;
   const streamReportProtocol =
     globalThis.TikTokLiveTrackerStreamReportProtocol;
+  const MAX_DASHBOARD_REPORTS =
+    streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
   const streamReportClientModule =
     globalThis.TikTokLiveTrackerStreamReportClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
@@ -223,6 +225,78 @@
   );
   const retryStreamReportsButton = document.querySelector(
     "#retry-stream-reports",
+  );
+  const viewArchivedReportsButton = document.querySelector(
+    "#view-archived-reports",
+  );
+  const archivedReportsShortCount = document.querySelector(
+    "#archived-reports-short-count",
+  );
+  const archivedReportsView = document.querySelector(
+    "#archived-reports-view",
+  );
+  const backToBusinessRecordsButton = document.querySelector(
+    "#back-to-business-records",
+  );
+  const archivedReportsCount = document.querySelector(
+    "#archived-reports-count",
+  );
+  const toggleArchivedSelectionButton = document.querySelector(
+    "#toggle-archived-selection",
+  );
+  const archivedSelectionToolbar = document.querySelector(
+    "#archived-selection-toolbar",
+  );
+  const archivedSelectionSummary = document.querySelector(
+    "#archived-selection-summary",
+  );
+  const selectAllArchivedReportsButton = document.querySelector(
+    "#select-all-archived-reports",
+  );
+  const clearArchivedSelectionButton = document.querySelector(
+    "#clear-archived-selection",
+  );
+  const restoreSelectedReportsButton = document.querySelector(
+    "#restore-selected-reports",
+  );
+  const deleteSelectedReportsButton = document.querySelector(
+    "#delete-selected-reports",
+  );
+  const archivedRestoreGuidance = document.querySelector(
+    "#archived-restore-guidance",
+  );
+  const archivedReportsList = document.querySelector(
+    "#archived-reports-list",
+  );
+  const archivedReportsEmpty = document.querySelector(
+    "#archived-reports-empty",
+  );
+  const archivedReportsError = document.querySelector(
+    "#archived-reports-error",
+  );
+  const archivedReportsErrorMessage = document.querySelector(
+    "#archived-reports-error-message",
+  );
+  const retryArchivedReportsButton = document.querySelector(
+    "#retry-archived-reports",
+  );
+  const archivedReportsFeedback = document.querySelector(
+    "#archived-reports-feedback",
+  );
+  const reportActionConfirmation = document.querySelector(
+    "#report-action-confirmation",
+  );
+  const reportActionConfirmationTitle = document.querySelector(
+    "#report-action-confirmation-title",
+  );
+  const reportActionConfirmationMessage = document.querySelector(
+    "#report-action-confirmation-message",
+  );
+  const cancelReportActionButton = document.querySelector(
+    "#cancel-report-action",
+  );
+  const confirmReportActionButton = document.querySelector(
+    "#confirm-report-action",
   );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const dataModeBadge = document.querySelector("#data-mode-badge");
@@ -390,8 +464,17 @@
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
   let streamReportSummaries = [];
+  let archivedReportSummaries = [];
   let streamReportsLoading = false;
   let streamReportsLoadError = null;
+  let archivedReportsLoadError = null;
+  let archivedReportsViewOpen = false;
+  let archivedSelectionMode = false;
+  let selectedArchivedReportIds = new Set();
+  let openReportActions = null;
+  let reportMutationBusy = false;
+  let pendingReportDeletion = null;
+  let pendingReportDeletionReturnFocus = null;
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -696,7 +779,8 @@
   function updateFooterVisibility() {
     if (appFooter) {
       appFooter.hidden =
-        trackerWorkspace.hidden && streamReportsPanel.hidden;
+        archivedReportsViewOpen ||
+        (trackerWorkspace.hidden && streamReportsPanel.hidden);
     }
   }
 
@@ -941,8 +1025,8 @@
       );
 
     return issues.length === 0
-      ? "The report currently qualifies as final based on captured data."
-      : `The report will be provisional: ${issues.join(", ")}.`;
+      ? "No captured issues currently require attention."
+      : `Report attention items: ${issues.join(", ")}.`;
   }
 
   function openStreamReport(reportId) {
@@ -963,84 +1047,522 @@
     return Promise.resolve(opened);
   }
 
-  function createStreamReportLink(summary) {
+  function getAvailableDashboardReportSlots() {
+    return Math.max(
+      0,
+      MAX_DASHBOARD_REPORTS - streamReportSummaries.length,
+    );
+  }
+
+  function closeReportActionsMenu(options = {}) {
+    if (!openReportActions) {
+      return;
+    }
+
+    const { button, menu } = openReportActions;
+
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    openReportActions = null;
+
+    if (options.restoreFocus === true && button.isConnected) {
+      button.focus();
+    }
+  }
+
+  function getReportMenuItems(menu) {
+    return Array.from(menu.querySelectorAll('[role="menuitem"]')).filter(
+      (item) => !item.disabled && !item.hidden,
+    );
+  }
+
+  function openReportActionsMenu(button, menu, focusPosition = null) {
+    if (openReportActions?.menu !== menu) {
+      closeReportActionsMenu();
+    }
+
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    openReportActions = { button, menu };
+
+    if (focusPosition !== null) {
+      const items = getReportMenuItems(menu);
+      const index = focusPosition === "last" ? items.length - 1 : 0;
+
+      items[index]?.focus();
+    }
+  }
+
+  function handleReportMenuKeydown(event, button, menu) {
+    const items = getReportMenuItems(menu);
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = null;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeReportActionsMenu({ restoreFocus: true });
+      return;
+    }
+
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = items.length - 1;
+    } else if (event.key === "ArrowDown") {
+      nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      nextIndex = currentIndex < 0
+        ? items.length - 1
+        : (currentIndex - 1 + items.length) % items.length;
+    } else if (event.key === "Tab") {
+      closeReportActionsMenu();
+      return;
+    }
+
+    if (nextIndex !== null && items.length > 0) {
+      event.preventDefault();
+      items[nextIndex].focus();
+    }
+  }
+
+  function createReportMenuAction(label, action, onActivate) {
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.reportAction = action;
+    button.textContent = label;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeReportActionsMenu();
+      onActivate();
+    });
+    return button;
+  }
+
+  function setReportInteractionError(error, archived) {
+    const message =
+      error?.message ?? "The saved report could not be changed. Nothing was changed.";
+
+    if (archived) {
+      archivedReportsLoadError = message;
+    } else {
+      streamReportsLoadError = message;
+    }
+
+    renderStreamReportsPanel();
+    (archived ? archivedReportsError : streamReportsError).focus();
+  }
+
+  function createStreamReportLink(summary, options = {}) {
+    const archived = options.archived === true;
+    const selectionEnabled = archived && archivedSelectionMode;
     const wrapper = document.createElement("div");
     const button = document.createElement("button");
     const title = document.createElement("span");
     const meta = document.createElement("span");
-    const state = document.createElement("span");
+    const moreButton = document.createElement("button");
+    const moreGlyph = document.createElement("span");
+    const menu = document.createElement("div");
     const completedCount = Number.isSafeInteger(summary.completedPaymentCount)
       ? summary.completedPaymentCount
       : 0;
     const totalCount = Number.isSafeInteger(summary.totalSalesCount)
       ? summary.totalSalesCount
       : 0;
+    const formattedTimestamp = formatReportTimestamp(summary.endedAt);
+    const menuId = `report-actions-${archived ? "archived" : "dashboard"}-${summary.reportId.replace(/[^a-z0-9_-]/gi, "-")}`;
 
+    wrapper.className = "stream-report-row";
+    wrapper.dataset.selectionMode = String(selectionEnabled);
     wrapper.setAttribute("role", "listitem");
+
+    if (selectionEnabled) {
+      const checkboxLabel = document.createElement("label");
+      const checkbox = document.createElement("input");
+      const checkboxMark = document.createElement("span");
+
+      checkboxLabel.className = "archive-report-checkbox-label";
+      checkbox.className = "archive-report-checkbox";
+      checkbox.type = "checkbox";
+      checkbox.value = summary.reportId;
+      checkbox.checked = selectedArchivedReportIds.has(summary.reportId);
+      checkbox.disabled = reportMutationBusy;
+      checkbox.setAttribute(
+        "aria-label",
+        `Select stream report from ${formattedTimestamp}`,
+      );
+      checkboxMark.className = "archive-report-checkbox-mark";
+      checkboxMark.setAttribute("aria-hidden", "true");
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selectedArchivedReportIds.add(summary.reportId);
+        } else {
+          selectedArchivedReportIds.delete(summary.reportId);
+        }
+
+        renderArchivedSelectionControls();
+      });
+      checkboxLabel.append(checkbox, checkboxMark);
+      wrapper.append(checkboxLabel);
+    }
+
     button.type = "button";
     button.className = "stream-report-link";
     button.dataset.reportId = summary.reportId;
     button.setAttribute(
       "aria-label",
-      `Open ${summary.completeness} stream report from ${formatReportTimestamp(summary.endedAt)}`,
+      `Open stream report from ${formattedTimestamp}`,
     );
 
     title.className = "stream-report-link-title";
-    title.textContent = formatReportTimestamp(summary.endedAt);
+    title.textContent = formattedTimestamp;
     meta.className = "stream-report-link-meta";
     meta.textContent =
       `${completedCount}/${totalCount} completed - ` +
       viewModel.formatUsdCents(summary.completedGmvCents ?? 0);
-    state.className = "stream-report-link-state";
-    state.dataset.completeness = summary.completeness;
-    state.textContent = summary.completeness;
-
-    button.append(title, meta, state);
+    button.append(title, meta);
     button.addEventListener("click", () => {
       Promise.resolve(openStreamReport(summary.reportId)).catch((error) => {
-        streamReportsLoadError =
-          error?.message ?? "The saved report could not be opened.";
-        renderStreamReportsPanel();
-        streamReportsError.focus();
+        setReportInteractionError(error, archived);
       });
     });
 
-    wrapper.append(button);
+    moreButton.type = "button";
+    moreButton.className = "report-more-button";
+    moreButton.disabled = reportMutationBusy;
+    moreButton.setAttribute("aria-haspopup", "menu");
+    moreButton.setAttribute("aria-expanded", "false");
+    moreButton.setAttribute("aria-controls", menuId);
+    moreButton.setAttribute(
+      "aria-label",
+      `More actions for stream report from ${formattedTimestamp}`,
+    );
+    moreGlyph.className = "report-more-glyph";
+    moreGlyph.setAttribute("aria-hidden", "true");
+    moreGlyph.textContent = "\u2026";
+    moreButton.append(moreGlyph);
+
+    menu.id = menuId;
+    menu.className = "report-actions-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", `Actions for report from ${formattedTimestamp}`);
+    menu.hidden = true;
+
+    if (!archived) {
+      menu.append(
+        createReportMenuAction("Archive", "archive", () => {
+          void runReportMutation("archive", [summary.reportId]);
+        }),
+      );
+    } else {
+      if (getAvailableDashboardReportSlots() > 0) {
+        menu.append(
+          createReportMenuAction("Restore", "restore", () => {
+            void runReportMutation("restore", [summary.reportId]);
+          }),
+        );
+      }
+
+      menu.append(
+        createReportMenuAction("Delete forever", "delete", () => {
+          requestPermanentReportDeletion([summary.reportId], moreButton);
+        }),
+      );
+    }
+
+    moreButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+
+      if (menu.hidden) {
+        openReportActionsMenu(moreButton, menu);
+      } else {
+        closeReportActionsMenu({ restoreFocus: true });
+      }
+    });
+    moreButton.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        openReportActionsMenu(
+          moreButton,
+          menu,
+          event.key === "ArrowUp" ? "last" : "first",
+        );
+      }
+    });
+    menu.addEventListener("keydown", (event) => {
+      handleReportMenuKeydown(event, moreButton, menu);
+    });
+    menu.addEventListener("click", (event) => event.stopPropagation());
+
+    wrapper.append(button, moreButton, menu);
     return wrapper;
+  }
+
+  function renderArchivedSelectionControls() {
+    const selectedCount = selectedArchivedReportIds.size;
+    const availableSlots = getAvailableDashboardReportSlots();
+    const allSelected =
+      archivedReportSummaries.length > 0 &&
+      selectedCount === archivedReportSummaries.length;
+
+    archivedSelectionToolbar.hidden = !archivedSelectionMode;
+    toggleArchivedSelectionButton.setAttribute(
+      "aria-pressed",
+      String(archivedSelectionMode),
+    );
+    toggleArchivedSelectionButton.textContent = archivedSelectionMode
+      ? "Done"
+      : "Select";
+    archivedSelectionSummary.textContent =
+      `${selectedCount} selected - ${availableSlots} ${availableSlots === 1 ? "slot" : "slots"} available`;
+    selectAllArchivedReportsButton.disabled =
+      reportMutationBusy || archivedReportSummaries.length === 0 || allSelected;
+    clearArchivedSelectionButton.disabled =
+      reportMutationBusy || selectedCount === 0;
+    restoreSelectedReportsButton.hidden = availableSlots === 0;
+    restoreSelectedReportsButton.disabled =
+      reportMutationBusy ||
+      selectedCount === 0 ||
+      selectedCount > availableSlots;
+    deleteSelectedReportsButton.disabled =
+      reportMutationBusy || selectedCount === 0;
+
+    if (availableSlots === 0) {
+      archivedRestoreGuidance.textContent =
+        "Dashboard full: 5 of 5 reports. Archive a dashboard report before restoring.";
+    } else if (selectedCount > availableSlots) {
+      archivedRestoreGuidance.textContent =
+        `Only ${availableSlots} ${availableSlots === 1 ? "dashboard slot is" : "dashboard slots are"} available. Clear part of the selection before restoring.`;
+    } else {
+      archivedRestoreGuidance.textContent =
+        `${availableSlots} of 5 dashboard ${availableSlots === 1 ? "slot is" : "slots are"} available.`;
+    }
+  }
+
+  function syncArchivedReportCheckboxes() {
+    archivedReportsList
+      .querySelectorAll(".archive-report-checkbox")
+      .forEach((checkbox) => {
+        checkbox.checked = selectedArchivedReportIds.has(checkbox.value);
+      });
+  }
+
+  function renderArchivedReportsView() {
+    const savedMode = activeMode === "saved_session";
+    const inactive = streamSnapshot.activeSession === null;
+    const canOpen = savedMode && inactive;
+    const hasError = typeof archivedReportsLoadError === "string";
+    const archivedIds = new Set(
+      archivedReportSummaries.map((summary) => summary.reportId),
+    );
+
+    if (!canOpen) {
+      archivedReportsViewOpen = false;
+    }
+
+    selectedArchivedReportIds = new Set(
+      [...selectedArchivedReportIds].filter((reportId) =>
+        archivedIds.has(reportId),
+      ),
+    );
+    if (archivedReportSummaries.length === 0) {
+      archivedSelectionMode = false;
+      selectedArchivedReportIds.clear();
+    }
+
+    closeReportActionsMenu();
+    archivedReportsView.hidden = !archivedReportsViewOpen;
+    archivedReportsView.setAttribute(
+      "aria-busy",
+      String(streamReportsLoading || reportMutationBusy),
+    );
+    appShell.classList.toggle(
+      "archived-reports-open",
+      archivedReportsViewOpen,
+    );
+    archivedReportsCount.textContent =
+      `${archivedReportSummaries.length} archived`;
+    toggleArchivedSelectionButton.hidden =
+      archivedReportSummaries.length === 0;
+    toggleArchivedSelectionButton.disabled =
+      streamReportsLoading || reportMutationBusy;
+    archivedReportsList.replaceChildren(
+      ...archivedReportSummaries.map((summary) =>
+        createStreamReportLink(summary, { archived: true }),
+      ),
+    );
+    archivedReportsEmpty.hidden =
+      streamReportsLoading || archivedReportSummaries.length > 0 || hasError;
+    archivedReportsError.hidden = !hasError;
+    archivedReportsErrorMessage.textContent = hasError
+      ? archivedReportsLoadError
+      : "Archived reports could not be loaded. Nothing was changed.";
+    renderArchivedSelectionControls();
   }
 
   function renderStreamReportsPanel() {
     const savedMode = activeMode === "saved_session";
     const inactive = streamSnapshot.activeSession === null;
     const hasReports = streamReportSummaries.length > 0;
+    const hasArchivedReports = archivedReportSummaries.length > 0;
     const hasError = typeof streamReportsLoadError === "string";
 
+    closeReportActionsMenu();
     streamReportsPanel.hidden =
-      !savedMode || !inactive || (!hasReports && !hasError);
+      !savedMode ||
+      !inactive ||
+      (!hasReports && !hasArchivedReports && !hasError);
     streamReportsPanel.setAttribute(
       "aria-busy",
-      String(streamReportsLoading),
+      String(streamReportsLoading || reportMutationBusy),
     );
     streamReportsCount.textContent =
-      `${streamReportSummaries.length} saved`;
+      `${streamReportSummaries.length}/${MAX_DASHBOARD_REPORTS} saved`;
+    archivedReportsShortCount.textContent =
+      `${archivedReportSummaries.length} archived`;
+    viewArchivedReportsButton.disabled =
+      streamReportsLoading || reportMutationBusy;
     streamReportsList.replaceChildren(
-      ...streamReportSummaries.map(createStreamReportLink),
+      ...streamReportSummaries.map((summary) =>
+        createStreamReportLink(summary, { archived: false }),
+      ),
     );
     streamReportsError.hidden = !hasError;
     streamReportsErrorMessage.textContent = hasError
       ? streamReportsLoadError
       : "Saved reports could not be loaded. Nothing was changed.";
+    renderArchivedReportsView();
     updateFooterVisibility();
+  }
+
+  function openArchivedReportsDashboard() {
+    if (
+      activeMode !== "saved_session" ||
+      streamSnapshot.activeSession !== null
+    ) {
+      return;
+    }
+
+    archivedReportsViewOpen = true;
+    renderStreamReportsPanel();
+    archivedReportsView.scrollIntoView({ block: "start" });
+    backToBusinessRecordsButton.focus();
+  }
+
+  function closeArchivedReportsDashboard() {
+    archivedReportsViewOpen = false;
+    archivedSelectionMode = false;
+    selectedArchivedReportIds.clear();
+    renderStreamReportsPanel();
+
+    if (streamReportsPanel.hidden) {
+      streamSessionStatus.focus();
+    } else {
+      streamReportsPanel.scrollIntoView({ block: "start" });
+      viewArchivedReportsButton.focus();
+    }
+  }
+
+  function announceReportMutation(message, archived) {
+    if (archived) {
+      archivedReportsFeedback.textContent = "";
+      archivedReportsFeedback.textContent = message;
+      return;
+    }
+
+    mappingAnnouncement.textContent = "";
+    mappingAnnouncement.textContent = message;
+  }
+
+  async function runReportMutation(action, reportIds) {
+    const ids = [...new Set(reportIds)];
+    const archivedAction = action !== "archive";
+
+    if (reportMutationBusy || ids.length === 0) {
+      return;
+    }
+
+    if (
+      action === "restore" &&
+      ids.length > getAvailableDashboardReportSlots()
+    ) {
+      announceReportMutation(
+        "There are not enough dashboard slots for that selection. Archive a dashboard report or clear part of the selection.",
+        true,
+      );
+      renderArchivedReportsView();
+      return;
+    }
+
+    reportMutationBusy = true;
+    streamReportsLoadError = null;
+    archivedReportsLoadError = null;
+    renderStreamReportsPanel();
+
+    try {
+      if (action === "archive") {
+        await streamReportClient.archiveReports({ reportIds: ids });
+      } else if (action === "restore") {
+        await streamReportClient.restoreReports({ reportIds: ids });
+      } else if (action === "delete") {
+        await streamReportClient.deleteArchivedReports({ reportIds: ids });
+      } else {
+        throw new Error("The report action is not supported.");
+      }
+
+      ids.forEach((reportId) => selectedArchivedReportIds.delete(reportId));
+      announceReportMutation(
+        action === "archive"
+          ? `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} archived.`
+          : action === "restore"
+            ? `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} restored to Business Records.`
+            : `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} permanently deleted from this Chrome profile.`,
+        archivedAction,
+      );
+      await refreshStreamReports();
+    } catch (error) {
+      setReportInteractionError(error, archivedAction);
+    } finally {
+      reportMutationBusy = false;
+      renderStreamReportsPanel();
+    }
+  }
+
+  function requestPermanentReportDeletion(reportIds, returnFocusTarget = null) {
+    const ids = [...new Set(reportIds)];
+
+    if (ids.length === 0 || reportMutationBusy) {
+      return;
+    }
+
+    pendingReportDeletion = ids;
+    pendingReportDeletionReturnFocus = returnFocusTarget;
+    reportActionConfirmationTitle.textContent =
+      ids.length === 1
+        ? "Delete report forever?"
+        : `Delete ${ids.length} reports forever?`;
+    reportActionConfirmationMessage.textContent =
+      ids.length === 1
+        ? "This permanently deletes the saved report from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed."
+        : `This permanently deletes ${ids.length} saved reports from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed.`;
+    confirmReportActionButton.textContent = "Delete forever";
+    reportActionConfirmation.showModal();
   }
 
   async function refreshStreamReports(options = {}) {
     streamReportsLoading = true;
     streamReportsLoadError = null;
+    archivedReportsLoadError = null;
     renderStreamReportsPanel();
 
     try {
-      const response = await streamReportClient.listReports();
-      streamReportSummaries = response.reports;
+      const [dashboardResponse, archivedResponse] = await Promise.all([
+        streamReportClient.listReports(),
+        streamReportClient.listArchivedReports(),
+      ]);
+      streamReportSummaries = dashboardResponse.reports;
+      archivedReportSummaries = archivedResponse.reports;
       streamReportsLoading = false;
       renderStreamReportsPanel();
 
@@ -1052,9 +1574,18 @@
       return latest;
     } catch (error) {
       streamReportsLoading = false;
-      streamReportsLoadError =
+      const message =
         error?.message ?? "Saved reports could not be loaded. Nothing was changed.";
+      streamReportsLoadError = message;
+      archivedReportsLoadError = message;
       renderStreamReportsPanel();
+
+      if (options.focusError === true) {
+        (archivedReportsViewOpen
+          ? archivedReportsError
+          : streamReportsError).focus();
+      }
+
       return null;
     }
   }
@@ -2953,12 +3484,105 @@
   });
 
   retryStreamReportsButton.addEventListener("click", () => {
-    Promise.resolve(refreshStreamReports()).catch((error) => {
+    Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {
       console.error(
         "[TikTok Live Tracker] Unexpected stream-report retry failure.",
         error,
       );
     });
+  });
+
+  viewArchivedReportsButton.addEventListener("click", () => {
+    openArchivedReportsDashboard();
+  });
+
+  backToBusinessRecordsButton.addEventListener("click", () => {
+    closeArchivedReportsDashboard();
+  });
+
+  toggleArchivedSelectionButton.addEventListener("click", () => {
+    archivedSelectionMode = !archivedSelectionMode;
+
+    if (!archivedSelectionMode) {
+      selectedArchivedReportIds.clear();
+    }
+
+    renderArchivedReportsView();
+    toggleArchivedSelectionButton.focus();
+  });
+
+  selectAllArchivedReportsButton.addEventListener("click", () => {
+    selectedArchivedReportIds = new Set(
+      archivedReportSummaries.map((summary) => summary.reportId),
+    );
+    syncArchivedReportCheckboxes();
+    renderArchivedSelectionControls();
+  });
+
+  clearArchivedSelectionButton.addEventListener("click", () => {
+    selectedArchivedReportIds.clear();
+    syncArchivedReportCheckboxes();
+    renderArchivedSelectionControls();
+  });
+
+  restoreSelectedReportsButton.addEventListener("click", () => {
+    void runReportMutation("restore", [...selectedArchivedReportIds]);
+  });
+
+  deleteSelectedReportsButton.addEventListener("click", () => {
+    requestPermanentReportDeletion(
+      [...selectedArchivedReportIds],
+      deleteSelectedReportsButton,
+    );
+  });
+
+  retryArchivedReportsButton.addEventListener("click", () => {
+    Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected archived-report retry failure.",
+        error,
+      );
+    });
+  });
+
+  confirmReportActionButton.addEventListener("click", () => {
+    const reportIds = pendingReportDeletion;
+
+    if (!reportIds || reportIds.length === 0) {
+      reportActionConfirmation.close();
+      return;
+    }
+
+    pendingReportDeletion = null;
+    reportActionConfirmation.close();
+    void runReportMutation("delete", reportIds);
+  });
+
+  reportActionConfirmation.addEventListener("close", () => {
+    const restoreFocus = pendingReportDeletion !== null;
+    const returnFocusTarget = pendingReportDeletionReturnFocus;
+
+    pendingReportDeletion = null;
+    pendingReportDeletionReturnFocus = null;
+
+    if (
+      restoreFocus &&
+      returnFocusTarget?.isConnected &&
+      !returnFocusTarget.hidden &&
+      !returnFocusTarget.disabled
+    ) {
+      returnFocusTarget.focus();
+    }
+  });
+
+  document.addEventListener("click", () => {
+    closeReportActionsMenu();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && openReportActions) {
+      closeReportActionsMenu({ restoreFocus: true });
+    }
   });
 
   retrySavedSessionButton.addEventListener("click", () => {

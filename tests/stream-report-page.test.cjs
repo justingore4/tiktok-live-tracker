@@ -8,6 +8,7 @@ const clientModule = require("../extension/report/stream-report-client.js");
 const reportPage = require("../extension/report/report-page.js");
 
 const REPORT_ID = "stream-report:11111111-1111-4111-8111-111111111111";
+const SECOND_REPORT_ID = "stream-report:22222222-2222-4222-8222-222222222222";
 const STARTED_AT = "2026-08-10T01:00:00.000Z";
 const ENDED_AT = "2026-08-10T02:00:00.000Z";
 
@@ -78,8 +79,6 @@ const REPORT_SELECTORS = [
   "#report-error-message",
   "#report-generated-at",
   "#report-loading",
-  "#report-state-badge",
-  "#report-state-description",
   "#report-warnings",
   "#retry-report",
   "#sales-count",
@@ -275,6 +274,8 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Ctrl\+V/);
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
+  assert.doesNotMatch(html, /report-state-badge|report-state-description/);
+  assert.doesNotMatch(source, /\bFinal\b|\bProvisional\b/);
   assert.match(css, /@media print/);
   assert.match(css, /display:\s*table-header-group/);
   assert.match(css, /break-inside:\s*avoid/);
@@ -369,7 +370,6 @@ test("report rendering preserves text, renders SKU and product ties, and never c
     allText(document.querySelector("#completed-sales-rows")),
     /<img src=x onerror="stealOAuthToken\(\)">/,
   );
-  assert.equal(document.querySelector("#report-state-badge").textContent, "Provisional");
   assert.equal(document.querySelector("#sku-count-list").textContent, "SKU: SKU-A Updated count: 0");
 });
 
@@ -524,6 +524,148 @@ test("stream report client strictly parses list and hydrates an exact GET respon
     type: protocol.COMMAND_TYPES.GET_REPORT,
     reportId: REPORT_ID,
   });
+});
+
+test("stream report client lists archived reports and strictly echoes archive mutations", async () => {
+  const sentCommands = [];
+  const summary = {
+    reportId: REPORT_ID,
+    startedAt: STARTED_AT,
+    endedAt: ENDED_AT,
+    completeness: "provisional",
+    completedPaymentCount: 2,
+    totalSalesCount: 3,
+    completedGmvCents: 2500,
+    attributedGmvDisplay: "$30.00",
+  };
+  const client = createClient({
+    runtime: {
+      async sendMessage(message) {
+        sentCommands.push(message.command);
+
+        if (
+          message.command.type ===
+          protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS
+        ) {
+          return { ok: true, data: { reports: [summary] } };
+        }
+
+        return {
+          ok: true,
+          data: { reportIds: [...message.command.reportIds] },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(await client.listArchivedReports(), { reports: [summary] });
+  assert.deepEqual(
+    await client.archiveReports({ reportIds: [REPORT_ID] }),
+    { reportIds: [REPORT_ID] },
+  );
+  assert.deepEqual(
+    await client.restoreReports({ reportIds: [REPORT_ID, SECOND_REPORT_ID] }),
+    { reportIds: [REPORT_ID, SECOND_REPORT_ID] },
+  );
+  assert.deepEqual(
+    await client.deleteArchivedReports({ reportIds: [SECOND_REPORT_ID] }),
+    { reportIds: [SECOND_REPORT_ID] },
+  );
+  assert.deepEqual(sentCommands, [
+    { type: protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS },
+    { type: protocol.COMMAND_TYPES.ARCHIVE_REPORTS, reportIds: [REPORT_ID] },
+    {
+      type: protocol.COMMAND_TYPES.RESTORE_REPORTS,
+      reportIds: [REPORT_ID, SECOND_REPORT_ID],
+    },
+    {
+      type: protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+      reportIds: [SECOND_REPORT_ID],
+    },
+  ]);
+});
+
+test("stream report client rejects invalid mutation requests and altered mutation results", async () => {
+  let deliveryCount = 0;
+  const invalidRequestClient = createClient({
+    runtime: {
+      async sendMessage() {
+        deliveryCount += 1;
+        return { ok: true, data: { reportIds: [] } };
+      },
+    },
+  });
+
+  await assert.rejects(
+    invalidRequestClient.archiveReports({ reportIds: [] }),
+    (error) => error.code === "INVALID_CLIENT_COMMAND",
+  );
+  await assert.rejects(
+    invalidRequestClient.restoreReports({ reportIds: [REPORT_ID, REPORT_ID] }),
+    (error) => error.code === "INVALID_CLIENT_COMMAND",
+  );
+  await assert.rejects(
+    invalidRequestClient.deleteArchivedReports({ reportIds: ["not-a-report"] }),
+    (error) => error.code === "INVALID_CLIENT_COMMAND",
+  );
+  assert.equal(deliveryCount, 0);
+
+  const alteredResponseClient = createClient({
+    runtime: {
+      async sendMessage() {
+        return { ok: true, data: { reportIds: [SECOND_REPORT_ID] } };
+      },
+    },
+  });
+  await assert.rejects(
+    alteredResponseClient.archiveReports({ reportIds: [REPORT_ID] }),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
+});
+
+test("stream report client enforces separate dashboard and archived list limits", async () => {
+  function createSummary(index) {
+    return {
+      reportId: `stream-report:${String(index + 1).padStart(8, "0")}-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      startedAt: STARTED_AT,
+      endedAt: new Date(Date.parse(ENDED_AT) - index * 1000).toISOString(),
+      completeness: "provisional",
+      completedPaymentCount: 0,
+      totalSalesCount: 0,
+      completedGmvCents: 0,
+      attributedGmvDisplay: null,
+    };
+  }
+
+  const client = createClient({
+    runtime: {
+      async sendMessage(message) {
+        const listLimit =
+          message.command.type === protocol.COMMAND_TYPES.LIST_REPORTS
+            ? protocol.MAX_ACTIVE_REPORTS
+            : protocol.MAX_ARCHIVED_REPORTS;
+
+        return {
+          ok: true,
+          data: {
+            reports: Array.from(
+              { length: listLimit + 1 },
+              (_value, index) => createSummary(index),
+            ),
+          },
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    client.listReports(),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
+  await assert.rejects(
+    client.listArchivedReports(),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
 });
 
 test("stream report client rejects malformed summaries and mismatched records", async () => {

@@ -202,11 +202,12 @@ separate warning and does not permanently reduce that replacement count. A negat
 result is retained as an oversold/recount notice while the copy/CSV value is clamped to
 zero.
 
-The report is **Final** only when captured state has no active bidding variation,
-unresolved order, pending reservation, payment-fixing order, unmapped completed sale,
-conflict, or oversold/recount condition. Any such condition makes it **Provisional** and
-adds a notice, but never blocks End. The report is frozen after End; ended streams cannot
-be reopened for later corrections in the tagger.
+The strict saved record retains internal completeness status and reason codes. An active
+bidding variation, unresolved order, pending reservation, payment-fixing order, unmapped
+completed sale, conflict, or oversold/recount condition adds a specific attention notice
+but never blocks End. The employee UI does not show Final/Provisional state wording. The
+report is frozen after End; ended streams cannot be reopened for later corrections in the
+tagger.
 
 These captured facts hydrate into reconciliation state version 7. Each stream record has
 an immutable inventory-baseline pin plus nullable `attributedGmvDisplay` and
@@ -403,15 +404,16 @@ screen test-user run does not complete those release reviews.
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
     Repeat these checks across later tracker streams and imported baselines.
 14. Select **End Stream Tracking**. Confirm the dialog says **End and create the stream
-    report?**, reports whether the captured snapshot currently qualifies as Final or will
-    be Provisional, and does not block for a pending, fixing, unmapped, conflicting, or
-    oversold condition. Select **Keep stream active** once, then reopen and select **End
-    and create report**. The local stream must end only after its report is saved; TikTok
-    LIVE must not change. If report persistence is deliberately failed, normal End must
-    retain the active stream and expose **End without report** as the explicit fallback.
+    report?**, lists each pending, fixing, unmapped, conflicting, or oversold attention
+    count without a Final/Provisional label, and does not block End for any of them. Select
+    **Keep stream active** once, then reopen and select **End and create report**. The local
+    stream must end only after its report is saved; TikTok LIVE must not change. If report
+    persistence is deliberately failed, normal End must retain the active stream and
+    expose **End without report** as the explicit fallback.
 15. Confirm the report opens in a new extension tab. Verify its start/end timestamps,
-    Final/Provisional notices, captured performance totals, mapped and unmapped completed
-    rows, exact-SKU table, combined item-and-style top performers across sizes, and ties.
+    attention notices, captured performance totals, mapped and unmapped completed rows,
+    exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
+    neither the report nor its side-panel archive link shows Final/Provisional wording.
     Confirm **Items sold this stream** starts collapsed, expands on activation, and keeps
     the completed-sales count visible in both states.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
@@ -425,14 +427,26 @@ screen test-user run does not complete those release reviews.
     `SKU: <sku> Updated count: <quantity>` and are not the A1 paste table. Alternatively,
     download the CSV and use **File -> Import -> Upload -> Replace current sheet** only
     after making the backup. If a row is oversold, the exported count is zero but its raw
-    shortage/recount warning remains; physically recount it. Review every notice before
-    using a Provisional report's counts.
-17. Reopen the side panel and confirm **Stream reports** lists the new report with its
-    completeness badge and completed/total count. Open it, retry a simulated list failure,
-    and restart Chrome/the worker to verify local recovery. The archive retains at most
-    five reports within a 4 MiB archive cap; save required PDF/CSV files before older
-    finalized reports age out, extension
-    storage is cleared, or the extension is removed.
+    shortage/recount warning remains; physically recount it. Review every attention notice
+    before using the replacement counts.
+17. Reopen the side panel and confirm **Business Records** lists the new report with its
+    date, completed/total count, and GMV. Open it, retry a simulated list failure, and
+    restart Chrome/the worker to verify local recovery. Create six isolated test reports:
+    only the newest five should remain in Business Records, while the oldest finalized
+    one must move intact to **Archived stream reports**. Open that archived report and
+    verify its Print/Save-as-PDF and inventory CSV actions still work.
+18. Exercise **More actions -> Archive** on a current report. In the archive, use Select,
+    Select all, and Clear selection. Restore a selection no larger than the available
+    Business Records slots and verify every selected report moves atomically. Attempt an
+    oversized restore and verify none moves. Select disposable archived records, choose
+    **Delete selected**, cancel the confirmation once, then confirm and verify only the
+    selected archived records are permanently deleted.
+19. Fill five Business Records and 25 archived slots, or use a test fixture that reaches
+    the combined cap of approximately 4 MiB. The next report-aware End must fail
+    explicitly before ending the stream and preserve every record. Manual Archive must
+    likewise fail without a mutation when archive capacity is unavailable. Delete
+    selected archived test records and retry End, or deliberately choose **End without report**. No report may be silently
+    pruned on any capacity path.
 
 Only the persisted `activeBiddingVariationNumber` from the strict on-video card is called
 the current bidding auction. A changed marker is selected automatically only while the
@@ -492,8 +506,8 @@ Until a later identity stage finds such an ID, follow these rules:
   operational guidance rather than an End prerequisite.
 - Report-aware End is available for a known active local stream. Processing/fixing
   reservations, completed sales without items, and every other reconciliation exception
-  do not block the confirmation; they make the saved report Provisional. The employee
-  can End without first resuming the inventory workspace.
+  do not block the confirmation; the readiness area lists them as attention counts. The
+  employee can End without first resuming the inventory workspace.
 - Normal End freezes and saves the local report before it clears the active stream. A
   report/storage failure leaves the stream active and exposes **End without report** as a
   deliberate recovery choice. Neither action ends TikTok LIVE. Ended streams cannot yet
@@ -634,12 +648,14 @@ any live Google dependency remain intentionally absent.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - A report is limited to facts durably captured before End. It cannot recover a Sold
-  Items row TikTok did not render, and its Final label describes internal captured-state
-  completeness rather than independently verifying TikTok's full stream totals.
-- Reports are stored locally in a five-record archive. Clearing extension storage or
-  uninstalling removes them; save required PDF/CSV copies first. Reports contain local
-  stream timestamps, inventory/SKU/cost/count data, captured sale prices and status
-  aggregates, and profit, but no buyer, Sheet ID/link, token, or raw DOM text.
+  Items row TikTok did not render. Internal completeness metadata does not independently
+  verify TikTok's full stream totals and is not shown as a customer-facing state label.
+- Reports are stored locally as five Business Records plus as many as 25 archived records
+  under a combined cap of approximately 4 MiB. Capacity never silently deletes an
+  existing report; archive deletion is employee-selected and explicitly confirmed.
+  Clearing extension storage or uninstalling removes the entire library, so save required
+  PDF/CSV copies first. Reports contain local stream timestamps, inventory/SKU/cost/count
+  data, captured sale prices and status aggregates, and profit, but no buyer, Sheet ID/link, token, or raw DOM text.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.
   Its only analytics-derived value is the sanitized Attributed GMV display.
   The separate worker-owned importer contacts the Sheets API only before a stream is

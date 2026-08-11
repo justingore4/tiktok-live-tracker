@@ -119,6 +119,11 @@ const inventoryImportService =
   });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const reportPageUrl = chrome.runtime.getURL("report/report.html");
+const reportReadCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.GET_REPORT,
+]);
 const captureDashboardUrlPattern =
   /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
 const captureStateChangedNotification = Object.freeze({
@@ -292,6 +297,17 @@ function validateSender(sender, command, boundary) {
         boundary.protocol,
         "UNAUTHORIZED_MESSAGE_SENDER",
         "Only the extension side panel and packaged report page can read stream reports.",
+      );
+    }
+
+    if (
+      fromReportPage &&
+      !reportReadCommandTypes.has(command.type)
+    ) {
+      failBoundary(
+        boundary.protocol,
+        "UNAUTHORIZED_MESSAGE_SENDER",
+        "The packaged report page has read-only report access.",
       );
     }
 

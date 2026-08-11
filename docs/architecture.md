@@ -457,13 +457,15 @@ never trap the employee in an active tracker session. A worker restart repairs a
 `pending_end` record: it finalizes it when the matching stream is no longer active and
 keeps it pending when the stream still exists. One stream has at most one report.
 
-Business exceptions never block report creation. A report is `final` only when the
-snapshot has no active bidding marker, unresolved order, pending inventory reservation,
+Business exceptions never block report creation. The strict report retains its internal
+`completeness.status` (`final` or `provisional`) and stable reason codes: only a snapshot
+with no active bidding marker, unresolved order, pending inventory reservation,
 payment-fixing order, unmapped completed sale, reconciliation conflict, or oversold SKU
-requiring recount. Otherwise it is `provisional`, with stable reason codes and visible
-notices. Lifecycle `pending_end` also renders provisionally until recovery finalizes it.
-The classification describes captured data completeness; it does not claim that TikTok
-rendered every historical Sold Items row.
+requiring recount receives the former value. The employee UI deliberately does not render
+either state word or a completeness badge; it presents the specific attention notices and
+End-readiness counts instead. Lifecycle `pending_end` remains internal recovery state.
+These fields describe captured-data completeness; they do not claim that TikTok rendered
+every historical Sold Items row.
 
 The report retains these deliberately different measures:
 
@@ -541,11 +543,20 @@ the **Active** pill into the row, hides the redundant heading and safety note, a
 the **End Stream Tracking** action. Setup, resume, loading, and error states retain the
 full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
 error alerts remain available near the top so failures are not hidden by that layout.
-After End, the inactive side panel shows **Stream reports** only when at least one local
-record exists or report-list loading failed. Each button identifies Final/Provisional
-state plus completed/total sales and exact completed-price GMV, and opens the extension's
-report page in a new tab. Report-list Retry refetches the canonical archive; the panel
-does not read `chrome.storage` directly.
+After End, the inactive side panel shows up to five **Business Records**. Each record
+shows its timestamp, completed/total sales, and exact completed-price GMV, then opens the
+same extension report page in a new tab. **View archived reports** switches to a managed
+archive of up to 25 additional records; archived records remain openable and therefore
+retain the report page's PDF and inventory-download actions. **Back to Business Records**
+returns to the five current slots. Report-list Retry refetches the canonical library; the
+panel does not read `chrome.storage` directly.
+
+Each current record's **More actions** menu can move that record into archive. Archived
+selection mode supports Select/Select all/Clear selection, atomic **Restore selected**
+into currently available Business Records slots, and **Delete selected** behind an
+explicit permanent-delete confirmation. Restore rejects the entire selection when it is
+larger than the available slot count. Archive deletion applies only to archived records;
+canceling confirmation or any failed worker command changes nothing.
 
 Shared tagger behavior includes:
 
@@ -642,9 +653,9 @@ TikTok LIVE. Creating or activating another baseline is blocked while any local 
 stream is active, so a session cannot cross a recount boundary. End is available for a
 known active local stream, including before the inventory workspace is resumed and while
 pending reservations or completed sales without items remain unresolved; those states
-produce a provisional report rather than a blocker. If report persistence itself fails,
-the normal action preserves the active stream and offers an explicit **End without
-report** fallback.
+are retained as attention notices rather than blockers. If report persistence itself
+fails, the normal action preserves the active stream and offers an explicit **End
+without report** fallback.
 
 Ended streams cannot yet be reopened in the tagger, so the archived report is a frozen
 record rather than a post-End editing workspace. Employees should finish corrections and
@@ -794,11 +805,11 @@ End-of-stream reports use a third strict local envelope beneath
 
 ```text
 {
-  schemaVersion: 1,
-  reports: [{
+  schemaVersion: 2,
+  records: [{
     reportId: "stream-report:<uuid>",
-    streamId: "local-stream:<same uuid>",
     lifecycleStatus: "pending_end" | "finalized",
+    archived: true | false,
     report: { version: 1, ...strict frozen projection }
   }]
 }
@@ -806,12 +817,29 @@ End-of-stream reports use a third strict local envelope beneath
 
 The store hydrates and validates the complete nested report, verifies that wrapper and
 report identities agree, detaches every read/write, and never replaces malformed or
-future data. It retains at most five reports within a 4 MiB archive cap, ordered newest
-first. Pruning removes the
-oldest finalized records while preserving an in-flight `pending_end` record for recovery.
-This is a convenience archive, not indefinite retention: clearing extension storage or
-uninstalling the extension deletes it, and older finalized reports age out as new ones
-arrive. A PDF or CSV explicitly saved outside the extension is not part of that archive.
+future data. Version-1 records migrate strictly to version 2 as non-archived records;
+unknown future versions still fail closed.
+
+The finalized library has two tiers under a combined cap of approximately 4 MiB: no more
+than five non-archived **Business Records** and no more than 25 archived records, with 30
+total records. At most one non-archived `pending_end` record temporarily stages the
+report-aware End transaction. It is hidden from both employee lists, is never eligible for archive/restore/deletion,
+does not consume one of the five finalized Business Records slots, and still counts
+toward the total-record and byte caps. A small fixed allowance lets a valid near-cap
+version-1 envelope acquire its version-2 archive fields without data loss while keeping
+the effective enforced ceiling approximately 4 MiB. Finalizing what would be a sixth
+Business Record atomically moves the oldest finalized Business Record into archive when
+capacity permits. Equal end times use report identity as the stable tie-break.
+
+There is no automatic report deletion. If the archive already contains 25 reports, the
+combined byte cap is reached, or no finalized current record can move, preparation fails
+before the active stream is cleared and leaves every record intact. Manual archive,
+multi-report restore, and archived-only deletion are serialized worker operations.
+Archive and restore are all-or-none; restore additionally rejects a selection larger
+than the available Business Records slots. Permanent deletion accepts only archived
+records and requires the separate employee confirmation in the panel. Clearing extension
+storage or uninstalling the extension still deletes the complete in-extension library.
+A PDF or CSV explicitly saved outside the extension is not part of that library.
 
 The extension service worker now creates the adapter with `chrome.storage.local` and is
 the sole canonical-state command owner. Its reconciliation coordinator:
@@ -1220,7 +1248,8 @@ Browser support beyond Chrome is a later decision.
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
 8. **Completed:** immutable end-of-stream projection, report-aware End/recovery,
-   bounded local archive, printable/Save-as-PDF business page, exact SKU and combined
+   two-tier local Business Records/archive library, printable/Save-as-PDF business page,
+   exact SKU and combined
    product analytics, and six-column clipboard/CSV inventory handoff.
 9. Optional automatic Google Sheets writes, broader real-stream report validation, and
    release hardening.

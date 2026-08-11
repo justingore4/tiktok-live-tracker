@@ -330,7 +330,12 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     /Unresolved\s+variations never block End/i,
   );
   assert.match(html, /freeze a local business report before ending/i);
-  assert.match(html, /make the report provisional/i);
+  assert.match(html, /appear in its attention list/i);
+  const endConfirmation = html.match(
+    /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
+  )?.[0];
+  assert.ok(endConfirmation);
+  assert.doesNotMatch(endConfirmation, /\b(?:final|provisional)\b/i);
   assert.match(
     html,
     /id="stream-reports-panel"[\s\S]+aria-labelledby="stream-reports-title"[\s\S]+aria-busy="true"[\s\S]+hidden/,
@@ -338,6 +343,10 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="stream-reports-title">Stream reports</);
   assert.match(html, /id="stream-reports-count"[\s\S]+0 saved/);
   assert.match(html, /print or save it as a PDF[\s\S]+updated Inventory table[\s\S]+Google Sheets-ready CSV/i);
+  assert.match(
+    html,
+    /Limit of 5 reports on this dashboard, older reports will go to archived[\s\S]+once the limit is reached/,
+  );
   assert.match(html, /id="stream-reports-list"[\s\S]+role="list"/);
   assert.match(
     html,
@@ -476,10 +485,12 @@ test("side panel keeps setup and active-stream controls in their intended order"
     panelSource,
     /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?streamSnapshot = snapshot;[\s\S]*?updateLayoutOrder\(snapshot\);/,
   );
-  assert.match(
-    html,
-    /<\/div>\s*<section[\s\S]+id="stream-reports-panel"[\s\S]*?<\/section>\s*<footer class="app-footer"[^>]*>/,
-  );
+  assertTextOrder(html, [
+    'id="stream-reports-panel"',
+    'id="archived-reports-view"',
+    'id="report-action-confirmation"',
+    '<footer class="app-footer"',
+  ]);
   assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
 });
 
@@ -970,14 +981,38 @@ test("End Stream confirmation is not gated by unresolved payment or mapping stat
     /persistentController\.|unmapSelectedVariation|markSelectedUnpaid|chrome\.storage|\.clear\(|\.remove\(/,
   );
   assert.match(html, /Unresolved\s+variations never block End/i);
-  assert.match(html, /make the report provisional/i);
+  assert.match(html, /appear in its attention list/i);
 });
 
 test("tagger lists, opens, refreshes, and safely bypasses local stream reports", () => {
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
   const panelSource = fs.readFileSync(
     path.join(extensionDirectory, "tagger", "sidepanel.js"),
     "utf8",
   );
+  const readinessSource = panelSource.match(
+    /function describeReportReadiness\([\s\S]*?function openStreamReport/,
+  )?.[0];
+  const reportLinkSource = panelSource.match(
+    /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderStreamReportsPanel/,
+  )?.[0];
+
+  assert.ok(readinessSource);
+  assert.ok(reportLinkSource);
+  assert.match(
+    readinessSource,
+    /No captured issues currently require attention\./,
+  );
+  assert.match(readinessSource, /Report attention items:/);
+  assert.match(readinessSource, /pending mapped order/);
+  assert.match(readinessSource, /payment-fixing order/);
+  assert.match(readinessSource, /completed sale without inventory/);
+  assert.match(readinessSource, /data conflict/);
+  assert.match(readinessSource, /SKU requiring a recount/);
+  assert.doesNotMatch(readinessSource, /\b(?:final|provisional)\b/i);
 
   assert.match(
     panelSource,
@@ -994,16 +1029,25 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
   assert.match(panelSource, /chrome\.tabs\.create\(\{ url: reportUrl \}\)/);
   assert.match(
-    panelSource,
-    /function createStreamReportLink\(summary\)[\s\S]+summary\.completedPaymentCount[\s\S]+summary\.totalSalesCount[\s\S]+summary\.completeness[\s\S]+summary\.completedGmvCents/,
+    reportLinkSource,
+    /summary\.completedPaymentCount[\s\S]+summary\.totalSalesCount[\s\S]+summary\.completedGmvCents/,
+  );
+  assert.match(reportLinkSource, /Open stream report from/);
+  assert.doesNotMatch(
+    reportLinkSource,
+    /summary\.completeness|stream-report-link-state|data-completeness|\b(?:Final|Provisional)\b/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /stream-report-link-state|data-completeness/,
   );
   assert.match(
     panelSource,
-    /async function refreshStreamReports\(options = \{\}\)[\s\S]+streamReportClient\.listReports\(\)[\s\S]+response\.reports[\s\S]+options\.openLatest === true[\s\S]+openStreamReport\(latest\.reportId\)/,
+    /async function refreshStreamReports\(options = \{\}\)[\s\S]+Promise\.all\([\s\S]+streamReportClient\.listReports\(\)[\s\S]+streamReportClient\.listArchivedReports\(\)[\s\S]+dashboardResponse\.reports[\s\S]+archivedResponse\.reports[\s\S]+options\.openLatest === true[\s\S]+openStreamReport\(latest\.reportId\)/,
   );
   assert.match(
     panelSource,
-    /retryStreamReportsButton\.addEventListener\("click",[\s\S]+refreshStreamReports\(\)/,
+    /retryStreamReportsButton\.addEventListener\("click",[\s\S]+refreshStreamReports\(\{ focusError: true \}\)/,
   );
   assert.match(
     panelSource,
@@ -1012,6 +1056,127 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   assert.match(
     panelSource,
     /endStreamWithoutReportButton\.addEventListener\("click",[\s\S]+streamSessionController\.endActiveStreamWithoutReport\(\)[\s\S]+ended without a new report/,
+  );
+});
+
+test("Business Records exposes a dedicated accessible archived-report dashboard", () => {
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.html"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+
+  assert.match(
+    html,
+    /id="view-archived-reports"[\s\S]*?>\s*View archived reports\s*</,
+  );
+  assert.match(
+    html,
+    /id="archived-reports-view"[\s\S]+aria-labelledby="archived-reports-title"[\s\S]+hidden/,
+  );
+  assert.match(html, /id="archived-reports-title">Archived stream reports</);
+  assert.match(
+    html,
+    /id="back-to-business-records"[\s\S]*?Back to Business Records/,
+  );
+  assert.match(html, /id="archived-reports-list"[\s\S]+role="list"/);
+  assert.match(html, /id="toggle-archived-selection"[\s\S]+aria-pressed="false"[\s\S]*?>\s*Select\s*</);
+  assert.match(html, /id="select-all-archived-reports"[\s\S]*?>\s*Select all\s*</);
+  assert.match(html, /id="clear-archived-selection"[\s\S]*?>\s*Clear selection\s*</);
+  assert.match(html, /id="restore-selected-reports"[\s\S]*?>\s*Restore selected\s*</);
+  assert.match(html, /id="delete-selected-reports"[\s\S]*?>\s*Delete selected\s*</);
+  assert.match(
+    html,
+    /id="report-action-confirmation"[\s\S]+aria-labelledby="report-action-confirmation-title"[\s\S]+aria-describedby="report-action-confirmation-message"/,
+  );
+  assert.match(
+    html,
+    /permanently deletes the saved report from this Chrome profile[\s\S]+cannot be undone[\s\S]+TikTok LIVE and Google Sheets will not be changed/i,
+  );
+
+  assert.match(
+    styleSource,
+    /\.app-shell\.archived-reports-open[\s\S]+\.archived-reports-view/,
+  );
+  assert.match(styleSource, /\.report-more-button[\s\S]+cursor: pointer/);
+  assert.match(styleSource, /\.report-actions-menu[\s\S]+position: absolute/);
+  assert.doesNotMatch(styleSource, /\.stream-report-row:hover[\s\S]+\.report-more-button/);
+  assert.match(
+    panelSource,
+    /function openArchivedReportsDashboard\(\)[\s\S]+archivedReportsViewOpen = true[\s\S]+backToBusinessRecordsButton\.focus\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /function closeArchivedReportsDashboard\(\)[\s\S]+archivedReportsViewOpen = false[\s\S]+viewArchivedReportsButton\.focus\(\)/,
+  );
+});
+
+test("archived-report actions enforce dashboard capacity and remain keyboard operable", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const reportLinkSource = panelSource.match(
+    /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderArchivedSelectionControls/,
+  )?.[0];
+  const mutationSource = panelSource.match(
+    /async function runReportMutation\(action, reportIds\)[\s\S]*?function requestPermanentReportDeletion/,
+  )?.[0];
+
+  assert.ok(reportLinkSource);
+  assert.ok(mutationSource);
+  assert.match(reportLinkSource, /aria-haspopup/);
+  assert.match(reportLinkSource, /aria-expanded/);
+  assert.match(reportLinkSource, /aria-controls/);
+  assert.match(reportLinkSource, /More actions for stream report from/);
+  assert.match(reportLinkSource, /role", "menu"/);
+  assert.match(panelSource, /button\.setAttribute\("role", "menuitem"\)/);
+  assert.match(reportLinkSource, /"Archive", "archive"/);
+  assert.match(reportLinkSource, /"Restore", "restore"/);
+  assert.match(reportLinkSource, /"Delete forever", "delete"/);
+  assert.match(reportLinkSource, /getAvailableDashboardReportSlots\(\) > 0/);
+  assert.match(panelSource, /event\.key === "Escape"/);
+  assert.match(panelSource, /event\.key === "ArrowDown"/);
+  assert.match(panelSource, /event\.key === "ArrowUp"/);
+  assert.match(panelSource, /document\.addEventListener\("click"[\s\S]+closeReportActionsMenu/);
+
+  assert.match(
+    mutationSource,
+    /ids\.length > getAvailableDashboardReportSlots\(\)/,
+  );
+  assert.match(mutationSource, /streamReportClient\.archiveReports\(\{ reportIds: ids \}\)/);
+  assert.match(mutationSource, /streamReportClient\.restoreReports\(\{ reportIds: ids \}\)/);
+  assert.match(mutationSource, /streamReportClient\.deleteArchivedReports\(\{ reportIds: ids \}\)/);
+  assert.match(
+    panelSource,
+    /restoreSelectedReportsButton\.hidden = availableSlots === 0/,
+  );
+  assert.match(
+    panelSource,
+    /selectedCount > availableSlots[\s\S]+Clear part of the selection before restoring/,
+  );
+  assert.match(
+    panelSource,
+    /requestPermanentReportDeletion\(\[summary\.reportId\], moreButton\)/,
+  );
+  assert.match(
+    panelSource,
+    /deleteSelectedReportsButton\.addEventListener\("click"[\s\S]+requestPermanentReportDeletion/,
+  );
+  assert.match(
+    panelSource,
+    /confirmReportActionButton\.addEventListener\("click"[\s\S]+pendingReportDeletion = null;[\s\S]+reportActionConfirmation\.close\(\)[\s\S]+runReportMutation\("delete", reportIds\)/,
+  );
+  assert.match(
+    panelSource,
+    /reportActionConfirmation\.addEventListener\("close"[\s\S]+restoreFocus = pendingReportDeletion !== null[\s\S]+returnFocusTarget\.focus\(\)/,
   );
 });
 
