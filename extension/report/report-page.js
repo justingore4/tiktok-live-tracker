@@ -1,5 +1,9 @@
 (function initializeStreamReportPage(root, factory) {
-  const streamReportPage = factory();
+  const feeCalculator =
+    typeof module === "object" && module.exports
+      ? require("../shared/tiktok-fee-calculator.js")
+      : root.TikTokLiveTrackerTikTokFeeCalculator;
+  const streamReportPage = factory(feeCalculator);
 
   if (typeof module === "object" && module.exports) {
     module.exports = streamReportPage;
@@ -34,7 +38,7 @@
   }
 })(
   typeof globalThis === "undefined" ? this : globalThis,
-  function createStreamReportPageModule() {
+  function createStreamReportPageModule(feeCalculator) {
     "use strict";
 
     const SHEET_HEADERS = Object.freeze([
@@ -52,9 +56,19 @@
           "The last value displayed by TikTok during tracking. TikTok may abbreviate or round this display, and it can include buyer-paid shipping.",
       }),
       Object.freeze({
-        term: "GMV / No shipping",
+        term: "Gross Item Sales",
         description:
           "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
+      }),
+      Object.freeze({
+        term: "TikTok 6% Fees",
+        description:
+          "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
+      }),
+      Object.freeze({
+        term: "AOV",
+        description:
+          "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
       }),
       Object.freeze({
         term: "Gross profit",
@@ -232,6 +246,12 @@
       const grossProfitCents = safeInteger(
         totals.grossProfitCents ?? totals.profitCents,
       );
+      const feeMetrics =
+        typeof feeCalculator?.calculateSixPercentGmvFees === "function"
+          ? feeCalculator.calculateSixPercentGmvFees(
+              totals.attributedGmvDisplay,
+            )
+          : null;
 
       return [
         {
@@ -240,7 +260,21 @@
           note: "Last dashboard display; may include shipping",
         },
         {
-          label: "GMV / No shipping",
+          label: "TikTok 6% Fees",
+          rows: [
+            {
+              label: "Fees paid:",
+              value: feeMetrics?.feesPaidDisplay ?? "—",
+            },
+            {
+              label: "GMV after fees:",
+              value: feeMetrics?.gmvAfterFeesDisplay ?? "—",
+            },
+          ],
+          note: "Approximate values calculated from Total GMV",
+        },
+        {
+          label: "Gross Item Sales",
           value: formatUsdCents(totals.completedGmvCents),
           note: "Captured completed-order prices",
         },
@@ -268,14 +302,14 @@
           note: "Still inside the payment buffer",
         },
         {
-          label: "Average completed sale",
+          label: "AOV",
           value:
             completedCount > 0
               ? formatUsdCents(
                   Math.round(safeInteger(totals.completedGmvCents) / completedCount),
                 )
-              : "Not available",
-          note: "Sold-price average; shipping excluded",
+              : "$0.00",
+          note: "Completed-sale average; shipping excluded",
         },
         {
           label: "Mapped cost of goods",
@@ -440,7 +474,32 @@
       const cards = createSummaryMetrics(report).map((metric) => {
         const card = document.createElement("div");
         appendTextElement(document, card, "dt", metric.label);
-        appendTextElement(document, card, "dd", metric.value);
+        if (Array.isArray(metric.rows)) {
+          const rows = document.createElement("dd");
+          rows.className = "summary-card-rows";
+          metric.rows.forEach((row) => {
+            const item = document.createElement("span");
+            item.className = "summary-card-row";
+            appendTextElement(
+              document,
+              item,
+              "span",
+              row.label,
+              "summary-card-row-label",
+            );
+            appendTextElement(
+              document,
+              item,
+              "strong",
+              row.value,
+              "summary-card-row-value",
+            );
+            rows.append(item);
+          });
+          card.append(rows);
+        } else {
+          appendTextElement(document, card, "dd", metric.value);
+        }
         appendTextElement(document, card, "small", metric.note);
         return card;
       });

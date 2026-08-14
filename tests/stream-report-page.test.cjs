@@ -272,6 +272,10 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /click cell <strong>A1<\/strong>/);
   assert.match(html, /Cmd\+V/);
   assert.match(html, /Ctrl\+V/);
+  assert.match(
+    html,
+    /<script src="\.\.\/shared\/tiktok-fee-calculator\.js"><\/script>[\s\S]*?<script src="report-page\.js"><\/script>/,
+  );
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
   assert.doesNotMatch(html, /report-state-badge|report-state-description/);
@@ -279,6 +283,10 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(css, /@media print/);
   assert.match(css, /display:\s*table-header-group/);
   assert.match(css, /break-inside:\s*avoid/);
+  assert.match(
+    css,
+    /\.summary-card-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;[\s\S]*?\.summary-card-row-value\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/,
+  );
   assert.doesNotMatch(
     css,
     /\.sku-count-list\s*\{[^}]*break-inside:\s*avoid/s,
@@ -364,13 +372,125 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#completed-sales-rows").children.length, 2);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
-  assert.equal(document.querySelector("#summary-grid").children.length, 9);
+  assert.equal(document.querySelector("#summary-grid").children.length, 10);
+  assert.match(
+    allText(document.querySelector("#summary-grid")),
+    /TikTok 6% Fees[\s\S]*Fees paid:[\s\S]*≈\$2[\s\S]*GMV after fees:[\s\S]*≈\$28/,
+  );
   assert.equal(document.createdTags.includes("img"), false);
   assert.match(
     allText(document.querySelector("#completed-sales-rows")),
     /<img src=x onerror="stealOAuthToken\(\)">/,
   );
   assert.equal(document.querySelector("#sku-count-list").textContent, "SKU: SKU-A Updated count: 0");
+});
+
+test("post-stream AOV uses Gross Item Sales divided by completed sales", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 3,
+      totalSalesCount: 8,
+      completedGmvCents: 1000,
+      grossProfitCents: 400,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 4,
+      paymentFixingCount: 1,
+      attributedGmvDisplay: "$12.00",
+    },
+  }));
+  const aov = metrics.find((metric) => metric.label === "AOV");
+  const grossItemSales = metrics.find(
+    (metric) => metric.label === "Gross Item Sales",
+  );
+
+  assert.deepEqual(aov, {
+    label: "AOV",
+    value: "$3.33",
+    note: "Completed-sale average; shipping excluded",
+  });
+  assert.deepEqual(grossItemSales, {
+    label: "Gross Item Sales",
+    value: "$10.00",
+    note: "Captured completed-order prices",
+  });
+  assert.equal(
+    reportPage.DEFAULT_DEFINITIONS.find(
+      (definition) => definition.term === "Gross Item Sales",
+    )?.description,
+    "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
+  );
+});
+
+test("post-stream AOV displays zero when there are no completed sales", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 0,
+      totalSalesCount: 5,
+      completedGmvCents: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 4,
+      paymentFixingCount: 1,
+      attributedGmvDisplay: "$0.00",
+    },
+  }));
+  const aov = metrics.find((metric) => metric.label === "AOV");
+
+  assert.equal(aov.value, "$0.00");
+});
+
+test("post-stream TikTok fee card rounds both compact-GMV values to approximate whole dollars", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 2,
+      totalSalesCount: 3,
+      completedGmvCents: 2500,
+      grossProfitCents: 900,
+      unmappedCompletedCount: 1,
+      canceledOrderCount: 1,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$6.83K",
+    },
+  }));
+
+  assert.deepEqual(
+    metrics.find((metric) => metric.label === "TikTok 6% Fees"),
+    {
+      label: "TikTok 6% Fees",
+      rows: [
+        { label: "Fees paid:", value: "≈$410" },
+        { label: "GMV after fees:", value: "≈$6,420" },
+      ],
+      note: "Approximate values calculated from Total GMV",
+    },
+  );
+  assert.equal(
+    reportPage.DEFAULT_DEFINITIONS.find(
+      (definition) => definition.term === "TikTok 6% Fees",
+    )?.description,
+    "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
+  );
+});
+
+test("post-stream TikTok fee card displays em dashes when Total GMV was not captured", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 0,
+      totalSalesCount: 0,
+      completedGmvCents: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: null,
+    },
+  }));
+  const feeCard = metrics.find((metric) => metric.label === "TikTok 6% Fees");
+
+  assert.deepEqual(feeCard.rows, [
+    { label: "Fees paid:", value: "—" },
+    { label: "GMV after fees:", value: "—" },
+  ]);
 });
 
 test("inventory payloads use the exact six columns, retain zero, and omit unrelated secrets", () => {

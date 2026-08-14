@@ -70,10 +70,21 @@ auctioned again, the employee maps its new variation number.
   the next auction is selected automatically. A manually selected historical variation
   stays selected while newer auctions continue updating the selector. Inventory cards
   show remaining stock separately from pending reservations.
-- A bottom **Metrics** section showing **GMV/No shipping** as the current-stream sum of
+- A bottom **Metrics** section showing **Gross Item Sales** as the current-stream sum of
   sold prices from every priced `Payment complete` order, including completed orders
-  that still need an item. A separate **Total GMV** card mirrors TikTok's captured
-  Attributed GMV display, which includes buyer-paid shipping.
+  that still need an item. **AOV** is that exact Gross Item Sales total divided by the
+  number of uniquely priced `Payment complete` orders in the same tracker stream, rounded
+  to the nearest cent and displayed as `$0.00` when there are none. It includes mapped and
+  unmapped completions and excludes bidding, processing, fixing/temporary-failed,
+  price-less, and canceled orders. A separate **Total GMV** card mirrors TikTok's captured
+  Attributed GMV display, which includes buyer-paid shipping. One combined **TikTok 6%
+  Fees** card derives two display-only estimates from that same Total GMV: **Fees paid:**
+  is `Total GMV * 6%`, and **GMV after fees:** is `Total GMV * 94%`. Both always use the
+  approximate-equal sign and round to the nearest whole dollar. An exact TikTok display is
+  calculated from its captured amount, a compact display such as `$4.64K` is calculated
+  only from that displayed compact magnitude, and a missing Total GMV shows an em dash.
+  These estimates are not accounting or net-revenue figures and do not change sales,
+  inventory, COGS, or profit.
   **Completed Sales/Total Sales** shows the number of uniquely priced canonical
   `Payment complete` orders over unique current-stream variations whose latest observed
   outcome is `Payment complete`, `Payment failed`, or `Canceled`. The numerator includes
@@ -121,11 +132,12 @@ auctioned again, the employee maps its new variation number.
   failed request changes nothing. The completed-orders table is collapsed by default for
   screen browsing and always expanded in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
-  completed-price GMV without shipping, TikTok's last Attributed GMV display, mapped
-  COGS and gross profit, completed-sale rows, exact-SKU performance, combined
-  item-and-style product performance across sizes, and all ties for top sold and top
-  profitable entries. The baseline-wide inventory handoff retains opening, sold,
-  pending, calculated, oversold, and recount details for every SKU.
+  **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
+  Attributed GMV display, its approximate **TikTok 6% Fees** breakdown, mapped COGS and
+  gross profit, completed-sale rows, exact-SKU performance, combined item-and-style
+  product performance across sizes, and all ties for top sold and top profitable entries.
+  The baseline-wide inventory handoff retains
+  opening, sold, pending, calculated, oversold, and recount details for every SKU.
 - Restoration of mappings, reservations, and prior variation records after the side
   panel or browser is reopened. Older saved manual-unpaid records are normalized back
   into the automatic TikTok payment lifecycle during migration.
@@ -186,7 +198,7 @@ auctioned again, the employee maps its new variation number.
     later physical recount does not subtract historical sales twice;
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
-  - calculates remaining inventory, completed GMV, and gross profit;
+  - calculates remaining inventory, Gross Item Sales, and gross profit;
   - reserves a selected unit from bidding until priced completion or cancellation,
     separately from completed sales;
   - treats exact `Canceled` as a terminal inventory-allocation result that preserves the
@@ -243,15 +255,29 @@ confirms **End and create report**. Its figures are deliberately separate:
 
 - **TikTok Attributed GMV** is the last exact or compact display captured from TikTok.
   It may be rounded and, per the product requirement, can include buyer-paid shipping.
-- **GMV / No shipping** is the exact sum of captured sold prices for every uniquely
+- **TikTok 6% Fees** is a two-line estimate derived from that frozen Attributed GMV
+  display. **Fees paid:** is `Total GMV * 6%`; **GMV after fees:** is
+  `Total GMV * 94%`. Both are prefixed with `≈` and rounded to the nearest whole dollar,
+  even when TikTok supplied exact cents. Exact displays use that captured amount; compact
+  displays such as `$4.64K` use only their displayed compact magnitude and therefore do
+  not imply unavailable precision. A report with no captured Total GMV displays an em
+  dash for both values. This simple estimate does not account for refunds, discounts,
+  taxes, shipping treatment, other TikTok charges, or any seller expense, so it is not an
+  accounting statement or net revenue.
+- **Gross Item Sales** is the exact sum of captured sold prices for every uniquely
   priced `Payment complete` order, including completed orders with no inventory mapping.
+- **AOV** is `Gross Item Sales / completed Payment-complete sales`, rounded to the
+  nearest cent. Its count is the same uniquely priced, stream-scoped completion count used
+  by the completed-sales numerator, so mapped and unmapped completions contribute while
+  bidding, processing, fixing/temporary-failed, price-less, and canceled orders do not.
+  With no eligible completed sales, AOV is `$0.00`.
 - **Completed / Total sales** is uniquely priced completed orders over unique variations
   whose latest captured outcome is complete, temporary failed, or canceled. The active
   bidding item, processing, fixing, not-observed, and unrecognized states are excluded.
 - **COGS** is the sum of pinned seller unit costs for mapped completed sales. **Gross
   profit** is their sold-price revenue minus COGS; it is not net profit and excludes
   platform fees, shipping labels, refunds, ads, taxes, and other expenses. Unmapped
-  completed sales remain in GMV and completed-sale rows but cannot contribute COGS or
+  completed sales remain in Gross Item Sales and completed-sale rows but cannot contribute COGS or
   gross profit.
 - **Exact-SKU performance** groups mapped completed sales by SKU. **Product performance**
   groups those same sales by `item + style` across all sizes/SKUs. Most-sold ranks use
@@ -493,10 +519,21 @@ prototype data. There is no silent reset.
     price appears, and the sale permanently consumes the selected unit.
     Use the video auction card only to validate the current variation number; do not use
     it, Chat, or analytics to validate payment status, final price, or an individual sale.
-    Separately, confirm **GMV/No shipping** equals the exact sum of all priced completed
+    Separately, confirm **Gross Item Sales** equals the exact sum of all priced completed
     orders and **Total GMV** mirrors TikTok's **Attributed GMV** text, including compact
     text such as `$4.64K`. Per the product requirement, Total GMV includes buyer-paid
-    shipping, so the two GMV cards are not expected to match. Confirm
+    shipping, so the two metrics are not expected to match. Confirm the combined
+    **TikTok 6% Fees** card shows **Fees paid:** as Total GMV multiplied by 6% and **GMV
+    after fees:** as Total GMV multiplied by 94%. Both values must use `≈` and nearest-
+    dollar rounding for exact and compact GMV displays, and both must show an em dash when
+    Total GMV is unavailable. Confirm the same frozen estimates appear in the post-stream
+    report and never affect Gross Item Sales, COGS, gross profit, or inventory. Confirm
+    **AOV** equals
+    Gross Item Sales divided by the uniquely priced completed-order count, rounded to the
+    nearest cent. Verify it includes mapped and unmapped completions, remains unchanged by
+    mapping corrections, excludes bidding, processing, fixing/temporary-failed,
+    price-less, and canceled orders, and displays `$0.00` before the first eligible sale.
+    Confirm
     **Completed Sales/Total Sales** shows the uniquely priced canonical completed-order
     count over unique current-stream variations whose latest observed outcome is
     `Payment complete`, `Payment failed`, or `Canceled`. Verify the active bidding item and
@@ -562,7 +599,7 @@ prototype data. There is no silent reset.
     instead of treating the zero as proof that stock was exact. Do not use replacement
     counts without resolving or manually reviewing every attention notice.
 28. Return to the side panel after End. Confirm **Business Records** lists the saved
-    report with its date, completed/total count, and GMV. Open it and verify the same PDF
+    report with its date, completed/total count, and Gross Item Sales. Open it and verify the same PDF
     and inventory-download actions remain available. End enough isolated test streams to
     create six reports: Business Records must retain the newest five and automatically
     move the oldest finalized report into **Archived stream reports**, without deleting

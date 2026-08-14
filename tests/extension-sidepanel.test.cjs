@@ -220,6 +220,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "stream-session-controller.js",
     "inventory-import-client.js",
     "inventory-import-controller.js",
+    "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",

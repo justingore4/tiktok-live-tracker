@@ -91,14 +91,24 @@ test("side panel exposes bottom performance metrics and renders their values", (
     /aria-labelledby="metrics-title"/,
   );
   assert.match(metricsSection, /id="metrics-title"[^>]*>Metrics</);
-  assert.match(metricsSection, />\s*GMV\/No shipping\s*</);
+  assert.match(metricsSection, />\s*Gross Item Sales\s*</);
+  assert.match(metricsSection, />\s*AOV\s*</);
   assert.match(metricsSection, />\s*Total GMV\s*</);
+  assert.match(metricsSection, />\s*TikTok 6% Fees\s*</);
+  assert.match(metricsSection, />\s*Fees paid:\s*</);
+  assert.match(metricsSection, />\s*GMV after fees:\s*</);
   assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
   assert.match(metricsSection, />\s*Canceled Orders:\s*</);
   assert.match(metricsSection, />\s*Payment Fixing:\s*</);
   assert.match(metricsSection, />\s*Gross Profits\s*</);
   assert.match(metricsSection, /id="revenue-value"[^>]*>\$0\.00</);
+  assert.match(metricsSection, /id="aov-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="total-gmv-value"[^>]*>&mdash;</);
+  assert.match(metricsSection, /id="fees-paid-value"[^>]*[\s\S]*?>&mdash;</);
+  assert.match(
+    metricsSection,
+    /id="gmv-after-fees-value"[^>]*[\s\S]*?>&mdash;</,
+  );
   assert.match(metricsSection, /id="completed-sales-value"[^>]*>0\/0</);
   assert.match(metricsSection, /id="canceled-orders-value"[^>]*>0</);
   assert.match(metricsSection, /id="payment-fixing-value"[^>]*>0</);
@@ -113,20 +123,36 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.equal(
     [
       ...metricsSection.matchAll(
-        /class="metric-card(?:\s+metric-card-(?:order-status|profit))?"/g,
+        /class="metric-card(?:\s+metric-card-(?:fees|order-status|profit))?"/g,
       ),
     ].length,
-    5,
-    "the Metrics section must preserve the existing cards and add one combined order-status metric",
+    7,
+    "the Metrics section must preserve its existing cards and include AOV and TikTok fees",
   );
 
   assert.match(
     source,
-    /const gmvNoShippingValue = document\.querySelector\("#revenue-value"\)/,
+    /const grossItemSalesValue = document\.querySelector\("#revenue-value"\)/,
+  );
+  assert.match(
+    source,
+    /const averageOrderValue = document\.querySelector\("#aov-value"\)/,
   );
   assert.match(
     source,
     /const totalGmvValue = document\.querySelector\("#total-gmv-value"\)/,
+  );
+  assert.match(
+    source,
+    /const feesPaidValue = document\.querySelector\("#fees-paid-value"\)/,
+  );
+  assert.match(
+    source,
+    /const gmvAfterFeesValue = document\.querySelector\([\s\S]*?"#gmv-after-fees-value"/,
+  );
+  assert.match(
+    source,
+    /const tiktokFeeCalculator\s*=\s*[\s\S]*?TikTokLiveTrackerTikTokFeeCalculator/,
   );
   assert.match(
     source,
@@ -154,6 +180,26 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
+    /function renderMetrics\(view\)\s*{[\s\S]*?calculateAverageOrderValueCents\([\s\S]*?view\.totals\.completedGmvCents,[\s\S]*?view\.totals\.completedPaymentCount[\s\S]*?averageOrderValue\.textContent\s*=\s*formattedAverageOrderValue/,
+    "AOV must use Gross Item Sales divided by completed payments",
+  );
+  assert.match(
+    source,
+    /function renderMetrics\(view\)\s*{[\s\S]*?calculateSixPercentGmvFees\(attributedGmvDisplay\)[\s\S]*?feesPaidValue\.textContent\s*=\s*formattedFeesPaid[\s\S]*?gmvAfterFeesValue\.textContent\s*=\s*formattedGmvAfterFees/,
+    "the live card must render the shared Total GMV fee calculation",
+  );
+  assert.match(
+    source,
+    /formattedFeesPaid\s*=\s*tiktokFeeMetrics\?\.feesPaidDisplay\s*\?\?\s*"—"/,
+    "missing Total GMV must leave the live fee value unavailable",
+  );
+  assert.match(
+    source,
+    /formattedGmvAfterFees\s*=\s*[\s\S]*?gmvAfterFeesDisplay\s*\?\?\s*"—"/,
+    "missing Total GMV must leave the live after-fee value unavailable",
+  );
+  assert.match(
+    source,
     /function renderMetrics\(view\)\s*{[\s\S]*?completedPaymentCount\s*=\s*view\.totals\.completedPaymentCount[\s\S]*?totalSalesCount\s*=\s*view\.totals\.totalSalesCount[\s\S]*?completedSalesRatio\s*=\s*`\$\{completedPaymentCount\}\/\$\{totalSalesCount\}`[\s\S]*?completedSalesValue\.textContent\s*=\s*completedSalesRatio/,
   );
   assert.match(
@@ -177,6 +223,11 @@ test("side panel exposes bottom performance metrics and renders their values", (
     "the two order-status values must remain compact, inline, and responsive",
   );
   assert.match(
+    css,
+    /\.metric-fee-row\s*{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;/,
+    "the two fee rows must wrap safely in narrow metric cards",
+  );
+  assert.match(
     source,
     /Incomplete — 1 completed sale still needs an inventory item\./,
   );
@@ -198,7 +249,7 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
 });
 
-test("GMV/No shipping is the exact sum of unique canonical priced completed payments", () => {
+test("Gross Item Sales is the exact sum of unique canonical priced completed payments", () => {
   const state = createPinnedState();
 
   observeStatus(state, 101, "payment_processing");
@@ -269,7 +320,7 @@ test("GMV/No shipping is the exact sum of unique canonical priced completed paym
   assert.equal(
     view.totals.completedGmvCents,
     1999 + 4800,
-    "GMV/No shipping sums each canonical priced Payment complete order exactly once",
+    "Gross Item Sales sums each canonical priced Payment complete order exactly once",
   );
   assert.equal(view.totals.completedGmvCents, 6799);
   assert.equal(view.totals.committedSalesCount, 1);
@@ -278,7 +329,7 @@ test("GMV/No shipping is the exact sum of unique canonical priced completed paym
     view.variations.find(({ variationNumber }) => variationNumber === 105)
       .status,
     "unmapped_completed",
-    "a completed payment contributes to GMV/No shipping before an item is selected",
+    "a completed payment contributes to Gross Item Sales before an item is selected",
   );
   const unpricedCompletion = canonicalSummary.auctions.find(
     ({ variationNumber }) => variationNumber === 104,
@@ -304,7 +355,7 @@ test("GMV/No shipping is the exact sum of unique canonical priced completed paym
   );
 });
 
-test("saved-session refresh projects newly completed payments into GMV/No shipping", async () => {
+test("saved-session refresh projects newly completed payments into Gross Item Sales", async () => {
   let savedState = createPinnedState();
   const client = createReadClient(() => savedState);
   const controller = createPersistentTaggerController({

@@ -143,8 +143,8 @@ item carries forward into reconciliation.
 Observed processing, fixing, failed, or unrecognized status does not count a sale or
 change profit. Every mapped unresolved order remains pending regardless of which of those
 observations is latest. Exact cancellation preserves the item link as read-only history,
-releases its pending allocation, and contributes no sales, revenue, cost, or profit. A completed payment contributes to completed
-GMV, but inventory and gross profit commit only after the employee maps the variation to
+releases its pending allocation, and contributes no sales, revenue, cost, or profit. A completed payment contributes to Gross Item
+Sales, but inventory and gross profit commit only after the employee maps the variation to
 an inventory item. A complete badge whose price is temporarily unavailable remains a
 provisional displayed observation and keeps any existing reservation; later status
 changes are still accepted until a priced completion is durably saved. Exact cancellation
@@ -152,12 +152,27 @@ and priced completion are terminal mutually exclusive results, so later contradi
 observations are ignored. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
 
-The Metrics section keeps six different current-stream values. **GMV/No shipping** is
+The Metrics section keeps nine different current-stream values. **Gross Item Sales** is
 the exact integer-cent sum of every priced `Payment complete` order, including completed
 orders that are still unmapped. **Total GMV** mirrors TikTok's latest Attributed GMV text
 without expanding a rounded value such as `$4.64K` into invented cents. Per the product
 requirement, TikTok's aggregate includes buyer-paid shipping, so these values are not
 expected to match and their difference is not used to alter inventory or a sale.
+One combined **TikTok 6% Fees** card derives two presentation-only estimates from that
+same Total GMV display. **Fees paid:** is `Total GMV * 6%`, and **GMV after fees:** is
+`Total GMV * 94%`. Both always display an approximate-equal sign and round to the nearest
+whole dollar. An exact display uses its captured amount; a compact value such as `$4.64K`
+uses only its displayed compact magnitude, so the calculation does not invent precision.
+If Total GMV is unavailable, both lines show an em dash. These estimates are not
+accounting totals or net revenue: they do not model refunds, discounts, taxes, shipping
+treatment, other TikTok charges, or seller expenses, and they never alter canonical
+sales, inventory, cost, or profit.
+**AOV** divides that stream's `completedGmvCents` by its uniquely priced
+`completedPaymentCount` and rounds the result to the nearest cent. The two operands use
+the same mapped-or-unmapped completed-order population; bidding, processing,
+fixing/temporary-failed, price-less, and canceled orders are excluded. A zero eligible
+completion count displays `$0.00` rather than dividing by zero, and mapping corrections do
+not change AOV.
 **Completed Sales/Total Sales** shows the canonical count of uniquely priced
 `Payment complete` orders over unique current-stream variations whose latest observed
 outcome is `payment_complete`, `payment_failed`, or `canceled`. The numerator includes
@@ -192,6 +207,11 @@ product analytics sum those same values by exact `item + style` across sizes. To
 ranked by units and top profitable by gross profit, with all ties preserved. SKU gross
 margin is gross profit divided by mapped revenue; sell-through is that stream's mapped
 completed units divided by the baseline opening quantity.
+The report's **AOV** uses the same current-stream formula and nearest-cent rounding as the
+live card, and displays `$0.00` when no eligible completion exists.
+The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
+same 6%/94%, approximate-sign, whole-dollar, compact/exact, and missing-value rules as the
+live card. It does not recalculate the fee estimate from Gross Item Sales.
 
 The inventory export is baseline-wide. For every SKU it keeps opening quantity,
 current-stream completed allocations, completed allocations across all streams sharing
@@ -363,12 +383,23 @@ screen test-user run does not complete those release reviews.
 9. For `Payment complete`, confirm its final price is visible even before an inventory
    item is selected. Reopen and Resume once to verify the same number, status, and price
    remain durable.
-   In **Metrics**, also confirm **GMV/No shipping** equals the exact sum of all priced
+   In **Metrics**, also confirm **Gross Item Sales** equals the exact sum of all priced
    completed orders while **Total GMV** mirrors TikTok's current **Attributed GMV** text,
    including a compact display such as `$4.64K`. The second value includes buyer-paid
    shipping per the product requirement and therefore need not equal the first. Change
    the TikTok metric without refreshing the page and confirm Total GMV updates live and
-   survives a side-panel reopen. Confirm **Completed Sales/Total Sales** shows the number
+   survives a side-panel reopen. Confirm **TikTok 6% Fees** shows **Fees paid:** as Total
+   GMV multiplied by 6% and **GMV after fees:** as Total GMV multiplied by 94%. For both an
+   exact display and a compact display such as `$4.64K`, both outputs must use `≈` and
+   round to the nearest whole dollar; with no captured GMV, both must show an em dash.
+   Confirm the post-stream report preserves the same frozen estimates and that neither
+   value changes sales, inventory, COGS, or profit. Confirm **AOV** equals Gross Item
+   Sales divided by the uniquely priced completed-order count and is rounded to the
+   nearest cent. It must
+   include mapped and unmapped completions, ignore mapping corrections, exclude bidding,
+   processing, fixing/temporary-failed, price-less, and canceled orders, and show `$0.00`
+   before any eligible sale. Confirm the post-stream report preserves that same value and
+   label. Confirm **Completed Sales/Total Sales** shows the number
    of uniquely priced canonical completions, including those still unmapped, over unique
    current-stream variations whose latest observed outcome is `payment_complete`,
    `payment_failed`, or `canceled`. Confirm the active bidding variation plus
@@ -430,7 +461,7 @@ screen test-user run does not complete those release reviews.
     shortage/recount warning remains; physically recount it. Review every attention notice
     before using the replacement counts.
 17. Reopen the side panel and confirm **Business Records** lists the new report with its
-    date, completed/total count, and GMV. Open it, retry a simulated list failure, and
+    date, completed/total count, and Gross Item Sales. Open it, retry a simulated list failure, and
     restart Chrome/the worker to verify local recovery. Create six isolated test reports:
     only the newest five should remain in Business Records, while the oldest finalized
     one must move intact to **Archived stream reports**. Open that archived report and
@@ -530,7 +561,7 @@ verified TikTok identity and belongs to a later stage.
 4. Put the tab in the background, return to it, and confirm a later Sold Items variation
    or payment-status transition appears in the still-open side panel.
 5. If TikTok replaces the Sold Items root, confirm capture rebinds and the backfill does
-   not duplicate inventory or GMV.
+   not duplicate inventory or Gross Item Sales.
 6. If TikTok replaces the `auction-pin-card`, confirm the isolated current-bidding
    observer rebinds and the newest variation becomes current without duplicating a
    mapping or creating payment/inventory effects.
@@ -639,7 +670,9 @@ any live Google dependency remain intentionally absent.
   validation.
 - The isolated `guide-Step-2` Attributed GMV boundary also needs broader live validation.
   Total GMV deliberately mirrors TikTok's possibly rounded display; it is not converted
-  to exact cents or used for inventory accounting.
+  to exact cents or used for inventory accounting. The 6%/94% fee figures consequently
+  remain explicitly approximate whole-dollar estimates derived from the displayed
+  magnitude, not verified TikTok payouts, accounting totals, or net revenue.
 - The local stream ID is tracker-owned, not TikTok-verified.
 - The open tagger treats only the strict on-video marker as current bidding. It
   auto-displays the next changed marker while the current auction is selected, but keeps

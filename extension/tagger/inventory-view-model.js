@@ -195,6 +195,33 @@
       return `${value < 0 ? "-" : ""}$${dollars.toLocaleString("en-US")}.${cents}`;
     }
 
+    function calculateAverageOrderValueCents(
+      completedGmvCents,
+      completedPaymentCount,
+    ) {
+      if (
+        !Number.isSafeInteger(completedGmvCents) ||
+        completedGmvCents < 0
+      ) {
+        throw new TypeError(
+          "Gross Item Sales must be a nonnegative safe integer number of cents.",
+        );
+      }
+
+      if (
+        !Number.isSafeInteger(completedPaymentCount) ||
+        completedPaymentCount < 0
+      ) {
+        throw new TypeError(
+          "Completed payment count must be a nonnegative safe integer.",
+        );
+      }
+
+      return completedPaymentCount === 0
+        ? 0
+        : Math.round(completedGmvCents / completedPaymentCount);
+    }
+
     function getProfitDisplay(value) {
       const formattedValue = formatUsdCents(value);
 
@@ -213,6 +240,7 @@
 
     return {
       MOCK_INVENTORY,
+      calculateAverageOrderValueCents,
       filterInventoryEntries,
       formatUsdCents,
       getAvailableToTagQuantity,

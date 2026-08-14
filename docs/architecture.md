@@ -75,7 +75,7 @@ only at canonical priced completion or exact cancellation.
 Exact `Canceled` promotes the record to canonical `canceled`, preserves its item link for
 history, and releases its reservation without counting a sale, revenue, cost, or profit.
 Only a `Payment complete` badge with a parsed final price promotes the record to canonical
-`payment_complete` and makes it eligible to drive GMV, inventory, and profit.
+`payment_complete` and makes it eligible to drive Gross Item Sales, inventory, and profit.
 
 ### Employee mapping state
 
@@ -109,7 +109,7 @@ Consequences:
    unpriced-complete observations until canonical payment truth resolves.
 2. Exact `Canceled` releases that reservation automatically while retaining the SKU as
    historical attribution. The cancellation itself never contributes a sale or money.
-3. A green-but-unmapped auction still contributes to completed GMV and must be shown as
+3. A green-but-unmapped auction still contributes to Gross Item Sales and must be shown as
    an exception until an employee maps it.
 4. Reprocessing the same completed event must update the same auction record rather
    than count a second sale.
@@ -120,7 +120,7 @@ Consequences:
    `canceled` or `payment_complete`. Once either result is stored, later contradictory
    payment observations cannot reverse it.
 7. Clicking an already-selected inventory item removes only the mapping. Any pending
-   reservation is released; a completed auction keeps its final price and completed GMV
+   reservation is released; a completed auction keeps its final price and contribution to Gross Item Sales
    but becomes `unmapped_completed` until it is tagged again. A canceled variation cannot
    be mapped, unmapped, or remapped.
 
@@ -189,9 +189,12 @@ Implemented behavior includes:
   oversold warning.
 - Allowing non-canceled auctions to select an exhausted SKU and reporting the shortage as
   `Oversold by N` instead of disabling or rejecting the mapping.
-- Separating completed GMV from mapped revenue and gross profit.
+- Separating Gross Item Sales from mapped revenue and gross profit.
 - Storing the latest sanitized TikTok Attributed GMV display on its stream without
   converting a rounded compact value into invented exact cents.
+- Deriving the two **TikTok 6% Fees** display estimates from that sanitized aggregate only
+  at presentation time, always marking them approximate and rounding to whole dollars;
+  they never enter canonical sales, inventory, cost, or profit accounting.
 - Storing one active bidding variation marker per stream, with no payment or inventory
   effect, and clearing it when Sold Items supplies payment truth for that variation.
 
@@ -470,10 +473,22 @@ every historical Sold Items row.
 The report retains these deliberately different measures:
 
 - `completedGmvCents`: exact captured prices for all uniquely priced completed orders,
-  mapped or unmapped, labeled **GMV / No shipping**;
+  mapped or unmapped, labeled **Gross Item Sales**;
+- **AOV**, derived at presentation time as
+  `round(completedGmvCents / completedPaymentCount)` cents, using the same uniquely priced
+  current-stream completions as the completed-sales numerator. It includes mapped and
+  unmapped completions; bidding, processing, fixing/temporary-failed, price-less, and
+  canceled orders contribute to neither operand. A zero completion count renders `$0.00`
+  rather than dividing by zero;
 - `attributedGmvDisplay`: TikTok's last exact or compact display, labeled **TikTok
   Attributed GMV**, retained as text because it may be rounded and include buyer-paid
   shipping;
+- **TikTok 6% Fees**, derived when the report is rendered from the frozen
+  `attributedGmvDisplay`: **Fees paid:** is `Total GMV * 0.06` and **GMV after fees:** is
+  `Total GMV * 0.94`. Both outputs are always prefixed by `≈` and rounded to the nearest
+  whole dollar. Exact displays use their captured amount; compact displays use only the
+  displayed magnitude, and a missing aggregate produces an em dash for both outputs. The
+  figures are informational estimates, not stored accounting totals or net revenue;
 - `completedPaymentCount/totalSalesCount`: completed orders over terminal-outcome sales,
   excluding the active bidding marker and nonterminal processing/fixing states;
 - terminal canceled and still-fixing counts;
@@ -544,7 +559,7 @@ the **End Stream Tracking** action. Setup, resume, loading, and error states ret
 full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
 error alerts remain available near the top so failures are not hidden by that layout.
 After End, the inactive side panel shows up to five **Business Records**. Each record
-shows its timestamp, completed/total sales, and exact completed-price GMV, then opens the
+shows its timestamp, completed/total sales, and exact Gross Item Sales, then opens the
 same extension report page in a new tab. **View archived reports** switches to a managed
 archive of up to 25 additional records; archived records remain openable and therefore
 retain the report page's PDF and inventory-download actions. **Back to Business Records**
@@ -587,12 +602,23 @@ Shared tagger behavior includes:
   payment buffer without acting on TikTok or saved data.
 - A captured final price as soon as payment completes, even while unmapped; unit cost,
   gross profit/loss, and remaining inventory appear only when an item is assigned.
-- A bottom **Metrics** section labels `totals.completedGmvCents` as **GMV/No shipping**:
+- A bottom **Metrics** section labels `totals.completedGmvCents` as **Gross Item Sales**:
   the stream-scoped sum of sold prices from priced `Payment complete` records, whether
-  mapped or unmapped. A separate **Total GMV** card mirrors TikTok's captured
+  mapped or unmapped. An **AOV** card derives
+  `round(totals.completedGmvCents / totals.completedPaymentCount)` cents, so it uses that
+  same stream-scoped set of uniquely priced completions, remains independent of inventory
+  mapping, and renders `$0.00` when the completion count is zero. Bidding, processing,
+  fixing/temporary-failed, price-less, and canceled orders are excluded. A separate
+  **Total GMV** card mirrors TikTok's captured
   `totals.attributedGmvDisplay`, which includes buyer-paid shipping. The two values remain
   distinct rather than estimating shipping from their difference; compact dashboard text
   such as `$4.64K` remains compact instead of being presented as an exact cent value. A
+  combined **TikTok 6% Fees** card parses that same display only for two presentation-time
+  estimates: **Fees paid:** is 6% and **GMV after fees:** is 94%. Both render with `≈` and
+  nearest-whole-dollar rounding, whether the source display was exact or compact. A
+  missing Total GMV renders an em dash for each line. These figures do not account for
+  refunds, discounts, taxes, shipping treatment, other TikTok fees, or seller expenses,
+  and never feed sales, COGS, gross profit, or inventory. A
   **Completed Sales/Total Sales** card renders
   `totals.completedPaymentCount/totals.totalSalesCount`. The numerator counts each uniquely
   priced canonical completion whether mapped or unmapped. The denominator counts unique
@@ -620,7 +646,7 @@ Shared tagger behavior includes:
 - Demo-only **Mark unpaid after buffer** and **Undo unpaid** simulations. Live mode omits
   both controls and relies solely on captured TikTok completion or cancellation.
 - Unmapping that releases pending reservations, preserves an unpaid decision, and returns
-  a completed sale to the item-needed exception without changing its payment or GMV.
+  a completed sale to the item-needed exception without changing its payment status or Gross Item Sales contribution.
 - Mapping correction after completion, applied atomically by restoring the old SKU,
   decrementing the new SKU, and recalculating committed cost and profit.
 - An inventory warning when a truthful historical correction produces negative stock.
@@ -1238,7 +1264,7 @@ Browser support beyond Chrome is a later decision.
       auto-follow each changed bidding variation before it sells while the employee is
       viewing the current auction, preserve a manually selected historical variation as
       newer options update, and visibly update sanitized payment status and the four
-      Metrics cards. A prioritized work queue, visible capture state, TikTok identity,
+      Metrics section. A prioritized work queue, visible capture state, TikTok identity,
       and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening

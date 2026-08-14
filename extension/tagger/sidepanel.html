@@ -570,12 +570,37 @@
 
         <dl class="metrics-grid">
           <div class="metric-card">
-            <dt>GMV/No shipping</dt>
+            <dt>Gross Item Sales</dt>
             <dd id="revenue-value">$0.00</dd>
+          </div>
+          <div class="metric-card">
+            <dt>AOV</dt>
+            <dd id="aov-value">$0.00</dd>
           </div>
           <div class="metric-card">
             <dt>Total GMV</dt>
             <dd id="total-gmv-value">&mdash;</dd>
+          </div>
+          <div class="metric-card metric-card-fees">
+            <dt>TikTok 6% Fees</dt>
+            <dd>
+              <span class="metric-fee-row">
+                <span id="fees-paid-label" class="metric-fee-label">Fees paid:</span>
+                <span
+                  id="fees-paid-value"
+                  class="metric-fee-value"
+                  aria-labelledby="fees-paid-label"
+                >&mdash;</span>
+              </span>
+              <span class="metric-fee-row">
+                <span id="gmv-after-fees-label" class="metric-fee-label">GMV after fees:</span>
+                <span
+                  id="gmv-after-fees-value"
+                  class="metric-fee-value"
+                  aria-labelledby="gmv-after-fees-label"
+                >&mdash;</span>
+              </span>
+            </dd>
           </div>
           <div class="metric-card">
             <dt>Completed Sales/Total Sales</dt>
@@ -867,6 +892,7 @@
     <script src="stream-session-controller.js"></script>
     <script src="inventory-import-client.js"></script>
     <script src="inventory-import-controller.js"></script>
+    <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>

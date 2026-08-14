@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   MOCK_INVENTORY,
+  calculateAverageOrderValueCents,
   filterInventoryEntries,
   formatUsdCents,
   getProfitDisplay,
@@ -215,6 +216,27 @@ test("formats currency and positive, negative, and neutral gross profit", () => 
     tone: "neutral",
     label: "$0.00 profit",
   });
+});
+
+test("calculates AOV from Gross Item Sales and completed payments", () => {
+  assert.equal(calculateAverageOrderValueCents(6799, 2), 3400);
+  assert.equal(calculateAverageOrderValueCents(1000, 3), 333);
+  assert.equal(calculateAverageOrderValueCents(0, 0), 0);
+  assert.equal(
+    formatUsdCents(calculateAverageOrderValueCents(0, 0)),
+    "$0.00",
+  );
+});
+
+test("rejects invalid AOV inputs", () => {
+  assert.throws(
+    () => calculateAverageOrderValueCents(-1, 1),
+    /Gross Item Sales must be a nonnegative safe integer/,
+  );
+  assert.throws(
+    () => calculateAverageOrderValueCents(100, -1),
+    /Completed payment count must be a nonnegative safe integer/,
+  );
 });
 
 test("prefers a calculated remaining quantity when one is available", () => {

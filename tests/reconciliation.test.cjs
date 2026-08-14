@@ -1084,7 +1084,7 @@ test("unmapping a pending variation releases its reservation and is idempotent",
   assert.deepEqual(state, stateAfterFirstUnmap);
 });
 
-test("unmapping a completed payment preserves GMV but removes item attribution", () => {
+test("unmapping a completed payment preserves Gross Item Sales but removes item attribution", () => {
   const state = createState();
 
   mapVariation(state, auctionInput(4, { sku: "BLACK-TEE-M" }));

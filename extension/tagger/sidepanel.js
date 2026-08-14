@@ -53,6 +53,8 @@
   ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
+  const tiktokFeeCalculator =
+    globalThis.TikTokLiveTrackerTikTokFeeCalculator;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
   const reconciliationProtocol =
     globalThis.TikTokLiveTrackerReconciliationCoordinator;
@@ -314,8 +316,13 @@
   const emptyState = document.querySelector("#empty-state");
   const emptyQuery = document.querySelector("#empty-query");
   const cardTemplate = document.querySelector("#inventory-card-template");
-  const gmvNoShippingValue = document.querySelector("#revenue-value");
+  const grossItemSalesValue = document.querySelector("#revenue-value");
+  const averageOrderValue = document.querySelector("#aov-value");
   const totalGmvValue = document.querySelector("#total-gmv-value");
+  const feesPaidValue = document.querySelector("#fees-paid-value");
+  const gmvAfterFeesValue = document.querySelector(
+    "#gmv-after-fees-value",
+  );
   const completedSalesValue = document.querySelector(
     "#completed-sales-value",
   );
@@ -383,6 +390,8 @@
   if (
     !saleParser ||
     !viewModel ||
+    !tiktokFeeCalculator ||
+    typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
     !reconciliation ||
     !reconciliationProtocol ||
     !reconciliationClientModule ||
@@ -1852,13 +1861,21 @@
   }
 
   function renderMetrics(view) {
-    const formattedGmvNoShipping = viewModel.formatUsdCents(
+    const formattedGrossItemSales = viewModel.formatUsdCents(
       view.totals.completedGmvCents,
+    );
+    const formattedAverageOrderValue = viewModel.formatUsdCents(
+      viewModel.calculateAverageOrderValueCents(
+        view.totals.completedGmvCents,
+        view.totals.completedPaymentCount,
+      ),
     );
     const formattedGrossProfit = viewModel.formatUsdCents(
       view.totals.profitCents,
     );
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
+    const tiktokFeeMetrics =
+      tiktokFeeCalculator.calculateSixPercentGmvFees(attributedGmvDisplay);
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
     const completedPaymentCount = view.totals.completedPaymentCount;
     const totalSalesCount = view.totals.totalSalesCount;
@@ -1877,13 +1894,28 @@
       typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
         ? attributedGmvDisplay.trim()
         : "—";
+    const formattedFeesPaid = tiktokFeeMetrics?.feesPaidDisplay ?? "—";
+    const formattedGmvAfterFees =
+      tiktokFeeMetrics?.gmvAfterFeesDisplay ?? "—";
 
-    if (gmvNoShippingValue.textContent !== formattedGmvNoShipping) {
-      gmvNoShippingValue.textContent = formattedGmvNoShipping;
+    if (grossItemSalesValue.textContent !== formattedGrossItemSales) {
+      grossItemSalesValue.textContent = formattedGrossItemSales;
+    }
+
+    if (averageOrderValue.textContent !== formattedAverageOrderValue) {
+      averageOrderValue.textContent = formattedAverageOrderValue;
     }
 
     if (totalGmvValue.textContent !== formattedTotalGmv) {
       totalGmvValue.textContent = formattedTotalGmv;
+    }
+
+    if (feesPaidValue.textContent !== formattedFeesPaid) {
+      feesPaidValue.textContent = formattedFeesPaid;
+    }
+
+    if (gmvAfterFeesValue.textContent !== formattedGmvAfterFees) {
+      gmvAfterFeesValue.textContent = formattedGmvAfterFees;
     }
 
     if (completedSalesValue.textContent !== completedSalesRatio) {

@@ -406,6 +406,40 @@ button:disabled {
   letter-spacing: -0.04em;
 }
 
+.summary-grid .summary-card-rows {
+  display: grid;
+  gap: 9px;
+  margin-top: 18px;
+  font-size: inherit;
+  letter-spacing: normal;
+}
+
+.summary-card-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.summary-card-row-label {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.summary-card-row-value {
+  min-width: 0;
+  color: #80f5df;
+  font-size: 16px;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .summary-grid small {
   display: block;
   margin-top: 8px;
@@ -815,6 +849,20 @@ button:disabled {
     margin-top: 0.15in;
     color: #086c5c;
     font-size: 17pt;
+  }
+
+  .summary-grid .summary-card-rows {
+    gap: 0.05in;
+    margin-top: 0.1in;
+  }
+
+  .summary-card-row-label {
+    font-size: 7pt;
+  }
+
+  .summary-card-row-value {
+    color: #086c5c;
+    font-size: 10pt;
   }
 
   .performer-grid {
