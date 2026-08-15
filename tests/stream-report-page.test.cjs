@@ -128,6 +128,7 @@ function createReport(overrides = {}) {
       completedPaymentCount: 2,
       totalSalesCount: 3,
       completedGmvCents: 2500,
+      costOfGoodsCents: 600,
       grossProfitCents: 900,
       unmappedCompletedCount: 1,
       canceledOrderCount: 1,
@@ -287,6 +288,16 @@ test("packaged report surface is local, printable, and exposes the required acti
     css,
     /\.summary-card-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;[\s\S]*?\.summary-card-row-value\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/,
   );
+  assert.match(
+    css,
+    /\.summary-grid dd\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow-wrap:\s*anywhere;/,
+  );
+  assert.match(css, /\.summary-grid > \.summary-card-warning\s*\{/);
+  assert.match(css, /\.summary-grid \.summary-card-warning-note\s*\{/);
+  assert.match(
+    css,
+    /@media print[\s\S]*?\.summary-grid \.summary-card-warning-note\s*\{[\s\S]*?color:\s*#704900;/,
+  );
   assert.doesNotMatch(
     css,
     /\.sku-count-list\s*\{[^}]*break-inside:\s*avoid/s,
@@ -372,10 +383,24 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#completed-sales-rows").children.length, 2);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
-  assert.equal(document.querySelector("#summary-grid").children.length, 10);
+  assert.equal(document.querySelector("#summary-grid").children.length, 11);
   assert.match(
     allText(document.querySelector("#summary-grid")),
     /TikTok 6% Fees[\s\S]*Fees paid:[\s\S]*≈\$2[\s\S]*GMV after fees:[\s\S]*≈\$28/,
+  );
+  assert.match(
+    allText(document.querySelector("#summary-grid")),
+    /Est\. Profit After Fees[\s\S]*≈\$22[\s\S]*Incomplete — 1 completed sale still needs an inventory item\./,
+  );
+  const estimatedProfitCard = document
+    .querySelector("#summary-grid")
+    .children.find((card) =>
+      allText(card).includes("Est. Profit After Fees"),
+    );
+  assert.equal(estimatedProfitCard.className, "summary-card-warning");
+  assert.equal(
+    estimatedProfitCard.children.at(-1).className,
+    "summary-card-warning-note",
   );
   assert.equal(document.createdTags.includes("img"), false);
   assert.match(
@@ -491,6 +516,85 @@ test("post-stream TikTok fee card displays em dashes when Total GMV was not capt
     { label: "Fees paid:", value: "—" },
     { label: "GMV after fees:", value: "—" },
   ]);
+});
+
+test("post-stream estimated profit after fees uses unrounded 94% GMV minus mapped COGS", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 3,
+      totalSalesCount: 3,
+      completedGmvCents: 620000,
+      costOfGoodsCents: 32000,
+      grossProfitCents: 588000,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$6.83K",
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.deepEqual(metric, {
+    label: "Est. Profit After Fees",
+    value: "≈$6,100",
+    note: "Total GMV after 6% fee, minus mapped item costs",
+    warning: false,
+  });
+  assert.equal(
+    reportPage.DEFAULT_DEFINITIONS.find(
+      (definition) => definition.term === "Est. Profit After Fees",
+    )?.description,
+    "TikTok Attributed GMV after the estimated 6% fee, minus pinned unit costs for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+  );
+});
+
+test("post-stream estimated profit after fees shows incomplete counts and permits a loss", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 2,
+      totalSalesCount: 2,
+      completedGmvCents: 1000,
+      costOfGoodsCents: 2000,
+      grossProfitCents: -1000,
+      unmappedCompletedCount: 2,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$10.00",
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.deepEqual(metric, {
+    label: "Est. Profit After Fees",
+    value: "≈-$11",
+    note: "Incomplete — 2 completed sales still need inventory items.",
+    warning: true,
+  });
+});
+
+test("post-stream estimated profit after fees displays an em dash without Total GMV", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 0,
+      totalSalesCount: 0,
+      completedGmvCents: 0,
+      costOfGoodsCents: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: null,
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.equal(metric.value, "—");
 });
 
 test("inventory payloads use the exact six columns, retain zero, and omit unrelated secrets", () => {

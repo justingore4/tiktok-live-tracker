@@ -66,6 +66,11 @@
           "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
       }),
       Object.freeze({
+        term: "Est. Profit After Fees",
+        description:
+          "TikTok Attributed GMV after the estimated 6% fee, minus pinned unit costs for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+      }),
+      Object.freeze({
         term: "AOV",
         description:
           "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
@@ -252,6 +257,13 @@
               totals.attributedGmvDisplay,
             )
           : null;
+      const estimatedProfitAfterFees =
+        typeof feeCalculator?.calculateEstimatedProfitAfterFees === "function"
+          ? feeCalculator.calculateEstimatedProfitAfterFees(
+              totals.attributedGmvDisplay,
+              totals.costOfGoodsCents,
+            )
+          : null;
 
       return [
         {
@@ -272,6 +284,15 @@
             },
           ],
           note: "Approximate values calculated from Total GMV",
+        },
+        {
+          label: "Est. Profit After Fees",
+          value: estimatedProfitAfterFees ?? "—",
+          note:
+            unmatchedCount > 0
+              ? `Incomplete — ${unmatchedCount} completed sale${unmatchedCount === 1 ? "" : "s"} still ${unmatchedCount === 1 ? "needs an inventory item" : "need inventory items"}.`
+              : "Total GMV after 6% fee, minus mapped item costs",
+          warning: unmatchedCount > 0,
         },
         {
           label: "Gross Item Sales",
@@ -473,6 +494,9 @@
       const summary = document.querySelector("#summary-grid");
       const cards = createSummaryMetrics(report).map((metric) => {
         const card = document.createElement("div");
+        if (metric.warning) {
+          card.className = "summary-card-warning";
+        }
         appendTextElement(document, card, "dt", metric.label);
         if (Array.isArray(metric.rows)) {
           const rows = document.createElement("dd");
@@ -500,7 +524,13 @@
         } else {
           appendTextElement(document, card, "dd", metric.value);
         }
-        appendTextElement(document, card, "small", metric.note);
+        appendTextElement(
+          document,
+          card,
+          "small",
+          metric.note,
+          metric.warning ? "summary-card-warning-note" : "",
+        );
         return card;
       });
       replaceChildren(summary, cards);

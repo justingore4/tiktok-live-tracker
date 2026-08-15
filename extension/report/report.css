@@ -399,11 +399,13 @@ button:disabled {
 }
 
 .summary-grid dd {
+  min-width: 0;
   margin: 28px 0 0;
   color: #80f5df;
   font-size: clamp(22px, 3vw, 28px);
   font-weight: 820;
   letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
 }
 
 .summary-grid .summary-card-rows {
@@ -447,6 +449,15 @@ button:disabled {
   font-size: 10px;
   font-weight: 560;
   line-height: 1.35;
+}
+
+.summary-grid > .summary-card-warning {
+  border-color: rgb(244 189 80 / 42%);
+}
+
+.summary-grid .summary-card-warning-note {
+  color: #ffd36d;
+  font-weight: 700;
 }
 
 .warning-section {
@@ -863,6 +874,14 @@ button:disabled {
   .summary-card-row-value {
     color: #086c5c;
     font-size: 10pt;
+  }
+
+  .summary-grid > .summary-card-warning {
+    border-color: #9a6b16;
+  }
+
+  .summary-grid .summary-card-warning-note {
+    color: #704900;
   }
 
   .performer-grid {

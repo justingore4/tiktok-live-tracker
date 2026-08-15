@@ -195,6 +195,10 @@ Implemented behavior includes:
 - Deriving the two **TikTok 6% Fees** display estimates from that sanitized aggregate only
   at presentation time, always marking them approximate and rounding to whole dollars;
   they never enter canonical sales, inventory, cost, or profit accounting.
+- Deriving **Est. Profit After Fees** at presentation time as
+  `(Total GMV * 0.94) - costOfGoodsCents`, subtracting mapped completed-sale COGS before
+  rounding the signed result to an approximate whole dollar. Missing Total GMV produces
+  an em dash, and unmapped completions produce a count-based incomplete warning.
 - Storing one active bidding variation marker per stream, with no payment or inventory
   effect, and clearing it when Sold Items supplies payment truth for that variation.
 
@@ -489,6 +493,13 @@ The report retains these deliberately different measures:
   whole dollar. Exact displays use their captured amount; compact displays use only the
   displayed magnitude, and a missing aggregate produces an em dash for both outputs. The
   figures are informational estimates, not stored accounting totals or net revenue;
+- **Est. Profit After Fees**, derived at presentation time as
+  94% of the parsed `attributedGmvDisplay` amount minus `costOfGoodsCents`. The 94% result
+  stays unrounded until exact cent-based mapped completed COGS is subtracted, then the signed result is marked
+  approximate and rounded to the nearest whole dollar. Missing GMV produces an em dash,
+  and `unmappedCompletedCount` produces an explicit incomplete warning. Bidding,
+  processing, fixing/temporary-failed, canceled, and unmapped completed orders add no
+  unit cost. This is not a stored accounting total or true net profit;
 - `completedPaymentCount/totalSalesCount`: completed orders over terminal-outcome sales,
   excluding the active bidding marker and nonterminal processing/fixing states;
 - terminal canceled and still-fixing counts;
@@ -540,7 +551,7 @@ The tagger is a Chrome side-panel interface based on the current mockup. The emp
 should never type a variation number or interact with the hidden SKU.
 
 The Chrome side panel has two explicit modes without a separate Workspace chooser. It
-opens in Live session mode. A compact **Demo** button beside the Prototype badge is an
+opens in Live session mode. A compact **Demo** button in the header is an
 accessible pressed-state toggle between the modes:
 
 - **Live session** is the default employee workspace. It requires a persistent local
@@ -618,7 +629,15 @@ Shared tagger behavior includes:
   nearest-whole-dollar rounding, whether the source display was exact or compact. A
   missing Total GMV renders an em dash for each line. These figures do not account for
   refunds, discounts, taxes, shipping treatment, other TikTok fees, or seller expenses,
-  and never feed sales, COGS, gross profit, or inventory. A
+  and never feed sales, COGS, gross profit, or inventory. An **Est. Profit After Fees**
+  card uses the same parsed Total GMV but keeps its 94% amount unrounded until subtracting
+  `totals.costOfGoodsCents` for mapped completed sales, then displays the signed result as
+  an approximate whole dollar. It shows an em dash without Total GMV and an explicit
+  incomplete-sale count while `totals.unmappedCompletedCount` is nonzero. Bidding,
+  processing, fixing/temporary-failed, canceled, and unmapped completed orders add no
+  COGS. The estimate excludes refunds, discounts, taxes, shipping expenses, advertising,
+  labor, other platform charges, and other business costs, so it is not true net profit.
+  A
   **Completed Sales/Total Sales** card renders
   `totals.completedPaymentCount/totals.totalSalesCount`. The numerator counts each uniquely
   priced canonical completion whether mapped or unmapped. The denominator counts unique

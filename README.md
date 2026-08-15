@@ -85,6 +85,12 @@ auctioned again, the employee maps its new variation number.
   only from that displayed compact magnitude, and a missing Total GMV shows an em dash.
   These estimates are not accounting or net-revenue figures and do not change sales,
   inventory, COGS, or profit.
+  **Est. Profit After Fees** calculates `Total GMV * 94% - mapped completed COGS`
+  without first rounding the 94% amount, then shows the final result as an approximate
+  whole dollar. It can show a loss, displays an em dash when Total GMV is unavailable,
+  and gives an explicit count-based **Incomplete** warning while completed sales still
+  need inventory items. Bidding, processing, fixing/temporary-failed, canceled, and
+  unmapped completed orders add no unit cost to this estimate.
   **Completed Sales/Total Sales** shows the number of uniquely priced canonical
   `Payment complete` orders over unique current-stream variations whose latest observed
   outcome is `Payment complete`, `Payment failed`, or `Canceled`. The numerator includes
@@ -104,8 +110,8 @@ auctioned again, the employee maps its new variation number.
   Completed orders without an inventory match are excluded from that subtotal and produce
   an incomplete-count warning until they are mapped.
 - A default **Live session** mode with explicit Start, Resume, and End controls. The
-  separate Workspace chooser is removed; a compact **Demo** toggle beside the Prototype
-  badge opens or closes the isolated offline demo. The worker-made local stream ID
+  separate Workspace chooser is removed; a compact **Demo** toggle in the header opens
+  or closes the isolated offline demo. The worker-made local stream ID
   survives side-panel, browser, and service-worker restarts, while End keeps
   reconciliation history and does not act on TikTok LIVE.
 - A report-aware **End Stream Tracking** flow. Confirmation freezes the current durable
@@ -133,9 +139,10 @@ auctioned again, the employee maps its new variation number.
   screen browsing and always expanded in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
-  Attributed GMV display, its approximate **TikTok 6% Fees** breakdown, mapped COGS and
-  gross profit, completed-sale rows, exact-SKU performance, combined item-and-style
-  product performance across sizes, and all ties for top sold and top profitable entries.
+  Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
+  After Fees**, mapped COGS and gross profit, completed-sale rows, exact-SKU performance,
+  combined item-and-style product performance across sizes, and all ties for top sold and
+  top profitable entries.
   The baseline-wide inventory handoff retains
   opening, sold, pending, calculated, oversold, and recount details for every SKU.
 - Restoration of mappings, reservations, and prior variation records after the side
@@ -264,6 +271,15 @@ confirms **End and create report**. Its figures are deliberately separate:
   dash for both values. This simple estimate does not account for refunds, discounts,
   taxes, shipping treatment, other TikTok charges, or any seller expense, so it is not an
   accounting statement or net revenue.
+- **Est. Profit After Fees** is `(Total GMV * 94%) - mapped completed COGS`, with
+  the 94% amount kept unrounded until after exact cent-based COGS is subtracted. The final
+  result is prefixed with `≈` and rounded to the nearest whole dollar; losses remain
+  negative, and missing Total GMV displays an em dash. Only pinned costs for mapped
+  completed sales are subtracted. Unmapped completed sales produce an **Incomplete**
+  warning with their count, while bidding, processing, fixing/temporary-failed, and
+  canceled orders contribute no COGS. This is an operational estimate, not true net
+  profit: it does not model refunds, discounts, taxes, shipping expenses, ads, labor,
+  other platform charges, or other business costs.
 - **Gross Item Sales** is the exact sum of captured sold prices for every uniquely
   priced `Payment complete` order, including completed orders with no inventory mapping.
 - **AOV** is `Gross Item Sales / completed Payment-complete sales`, rounded to the
@@ -430,7 +446,7 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
    5. Select **Reload** for the extension on `chrome://extensions`.
 6. Click the extension's toolbar icon to open the tagger side panel. Confirm it opens
    directly in Live session mode with no Workspace chooser, and that the compact
-   **Demo** toggle is beside the **Prototype** badge.
+   **Demo** toggle appears in the header.
 
 For a shipped build, configure the OAuth client against the final Chrome Web Store item
 ID, not a temporary unpacked ID. Use the Store item's public key when a stable matching
@@ -470,7 +486,7 @@ prototype data. There is no silent reset.
     saved-state footer indicator follows it.
 11. Close and reopen the side panel. Select **Resume active stream** and confirm the same
     local stream is restored without creating a fake live variation.
-12. Select the compact **Demo** toggle beside **Prototype**. Confirm it becomes pressed,
+12. Select the compact **Demo** toggle in the header. Confirm it becomes pressed,
     the panel switches to Offline demo, and the variation dropdown lists current
     variation `#203` plus seeded history `#202`, `#201`, and `#200`.
 13. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a

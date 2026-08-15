@@ -65,11 +65,22 @@
     }
 
     function formatApproximateDollars(dollars) {
-      const grouped = dollars
+      const isNegative = dollars < 0n;
+      const absoluteDollars = isNegative ? -dollars : dollars;
+      const grouped = absoluteDollars
         .toString()
         .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-      return `≈$${grouped}`;
+      return `≈${isNegative ? "-" : ""}$${grouped}`;
+    }
+
+    function roundSignedRatioToWholeDollars(numerator, denominator) {
+      const isNegative = numerator < 0n;
+      const absoluteNumerator = isNegative ? -numerator : numerator;
+      const rounded =
+        (absoluteNumerator + denominator / 2n) / denominator;
+
+      return isNegative ? -rounded : rounded;
     }
 
     function calculateSixPercentGmvFees(attributedGmvDisplay) {
@@ -94,8 +105,37 @@
       });
     }
 
+    function calculateEstimatedProfitAfterFees(
+      attributedGmvDisplay,
+      costOfGoodsCents,
+    ) {
+      const totalGmvCents = parseAttributedGmvCents(attributedGmvDisplay);
+
+      if (
+        totalGmvCents === null ||
+        !Number.isSafeInteger(costOfGoodsCents) ||
+        costOfGoodsCents < 0
+      ) {
+        return null;
+      }
+
+      // Keep the 94% result unrounded until after exact COGS is subtracted.
+      // The numerator is expressed over 10,000 units per whole dollar:
+      // (GMV cents * 94 - COGS cents * 100) / 10,000.
+      const profitNumerator =
+        totalGmvCents * BigInt(100 - FEE_PERCENT) -
+        BigInt(costOfGoodsCents) * 100n;
+      const profitDollars = roundSignedRatioToWholeDollars(
+        profitNumerator,
+        10_000n,
+      );
+
+      return formatApproximateDollars(profitDollars);
+    }
+
     return Object.freeze({
       FEE_PERCENT,
+      calculateEstimatedProfitAfterFees,
       calculateSixPercentGmvFees,
     });
   },

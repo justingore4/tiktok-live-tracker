@@ -152,7 +152,7 @@ and priced completion are terminal mutually exclusive results, so later contradi
 observations are ignored. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
 
-The Metrics section keeps nine different current-stream values. **Gross Item Sales** is
+The Metrics section keeps ten different current-stream values. **Gross Item Sales** is
 the exact integer-cent sum of every priced `Payment complete` order, including completed
 orders that are still unmapped. **Total GMV** mirrors TikTok's latest Attributed GMV text
 without expanding a rounded value such as `$4.64K` into invented cents. Per the product
@@ -167,6 +167,15 @@ If Total GMV is unavailable, both lines show an em dash. These estimates are not
 accounting totals or net revenue: they do not model refunds, discounts, taxes, shipping
 treatment, other TikTok charges, or seller expenses, and they never alter canonical
 sales, inventory, cost, or profit.
+**Est. Profit After Fees** is derived at presentation time as
+94% of the parsed Total GMV amount minus `totals.costOfGoodsCents`. The 94% amount remains
+unrounded until the exact mapped completed-sale COGS is subtracted, then the signed result is prefixed with
+`≈` and rounded to the nearest whole dollar. Missing Total GMV shows an em dash. A
+count-based **Incomplete** warning remains while completed sales are unmapped because
+their unit costs are unknown. Bidding, processing, fixing/temporary-failed, canceled,
+and unmapped completed orders add no COGS. This estimate excludes refunds, discounts,
+taxes, shipping expenses, ads, labor, other platform charges, and other business costs,
+so it is not true net profit.
 **AOV** divides that stream's `completedGmvCents` by its uniquely priced
 `completedPaymentCount` and rounds the result to the nearest cent. The two operands use
 the same mapped-or-unmapped completed-order population; bidding, processing,
@@ -212,6 +221,9 @@ live card, and displays `$0.00` when no eligible completion exists.
 The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
 same 6%/94%, approximate-sign, whole-dollar, compact/exact, and missing-value rules as the
 live card. It does not recalculate the fee estimate from Gross Item Sales.
+The report derives **Est. Profit After Fees** from that same frozen display and the frozen
+mapped completed COGS total, without adding a serialized field or migration. It retains
+the live card's rounding, signed-loss, missing-GMV, and incomplete-count behavior.
 
 The inventory export is baseline-wide. For every SKU it keeps opening quantity,
 current-stream completed allocations, completed allocations across all streams sharing
@@ -417,7 +429,11 @@ screen test-user run does not complete those release reviews.
    mapped completed sold-price revenue minus the pinned Google Sheets unit costs. Leave a
    completed order unmapped and confirm it is excluded while the warning shows one
    incomplete sale; map or remap it and confirm the subtotal and warning recalculate
-   immediately.
+   immediately. Confirm **Est. Profit After Fees** equals unrounded `Total GMV * 94%`
+   minus mapped completed COGS, with only the final signed result rounded to an
+   approximate whole dollar. Verify an unmapped completed sale appears in its explicit
+   incomplete count, mapping or remapping recalculates it, and missing Total GMV shows an
+   em dash. End tracking and confirm the report preserves the same result and warning.
 10. Map the current bidding variation and confirm its card immediately reduces the
     displayed available count and reports one pending reservation. It must not count a
     sale or change profit. When that row moves through processing, fixing, temporary

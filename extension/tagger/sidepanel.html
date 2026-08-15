@@ -25,7 +25,6 @@
           >
             Demo
           </button>
-          <span class="prototype-badge">Prototype</span>
         </div>
       </header>
 
@@ -631,6 +630,23 @@
                 role="status"
                 aria-live="polite"
                 aria-atomic="true"
+                hidden
+              ></small>
+            </dd>
+          </div>
+          <div class="metric-card metric-card-profit">
+            <dt class="metric-title-with-description">
+              <span>Est. Profit After Fees</span>
+              <small class="metric-description">GMV post 6% fee - COGS</small>
+            </dt>
+            <dd class="metric-profit-content">
+              <span
+                id="estimated-profit-after-fees-value"
+                aria-describedby="estimated-profit-after-fees-warning"
+              >&mdash;</span>
+              <small
+                id="estimated-profit-after-fees-warning"
+                class="metric-warning"
                 hidden
               ></small>
             </dd>

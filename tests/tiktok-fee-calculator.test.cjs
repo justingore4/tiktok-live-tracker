@@ -52,3 +52,68 @@ test("fails closed for missing or noncanonical Total GMV displays", () => {
     assert.equal(calculator.calculateSixPercentGmvFees(display), null);
   }
 });
+
+test("calculates estimated profit after fees from exact Total GMV and COGS", () => {
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$100.00", 1_000),
+    "≈$84",
+  );
+});
+
+test("calculates estimated profit after fees from compact Total GMV", () => {
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$6.83K", 32_000),
+    "≈$6,100",
+  );
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$1.25M", 75_000_000),
+    "≈$425,000",
+  );
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$1B", 900_000_000),
+    "≈$931,000,000",
+  );
+});
+
+test("supports zero and formats negative estimated profit after fees", () => {
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$0.00", 0),
+    "≈$0",
+  );
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$10.00", 3_000),
+    "≈-$21",
+  );
+});
+
+test("rounds positive and negative half dollars symmetrically", () => {
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$1.00", 44),
+    "≈$1",
+  );
+  assert.equal(
+    calculator.calculateEstimatedProfitAfterFees("$1.00", 144),
+    "≈-$1",
+  );
+});
+
+test("fails closed for invalid Total GMV or COGS inputs", () => {
+  for (const [display, costOfGoodsCents] of [
+    [null, 0],
+    ["$1000.00", 0],
+    ["$10.00", -1],
+    ["$10.00", 1.5],
+    ["$10.00", Number.NaN],
+    ["$10.00", Number.POSITIVE_INFINITY],
+    ["$10.00", "100"],
+    ["$10.00", Number.MAX_SAFE_INTEGER + 1],
+  ]) {
+    assert.equal(
+      calculator.calculateEstimatedProfitAfterFees(
+        display,
+        costOfGoodsCents,
+      ),
+      null,
+    );
+  }
+});

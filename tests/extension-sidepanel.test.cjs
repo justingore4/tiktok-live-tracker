@@ -255,7 +255,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     headerSource,
     /id="offline-demo-mode"[\s\S]+type="button"[\s\S]+aria-pressed="false"[\s\S]+aria-label="Switch to offline demo mode"[\s\S]+>\s*Demo\s*</,
   );
-  assert.match(headerSource, /class="prototype-badge"[^>]*>Prototype</);
+  assert.doesNotMatch(headerSource, /prototype-badge|>\s*Prototype\s*</);
   assert.doesNotMatch(
     html,
     /id="saved-session-mode"|class="mode-panel"|class="mode-controls"|aria-label="Tracker mode"/,
@@ -730,7 +730,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(
     styleSource,
-    /\.prototype-badge,\s*\.header-demo-toggle,\s*\.demo-badge\s*\{/,
+    /\.header-demo-toggle,\s*\.demo-badge\s*\{/,
   );
   assert.match(
     styleSource,
@@ -738,15 +738,11 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(
     styleSource,
-    /\.prototype-badge\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
-  );
-  assert.match(
-    styleSource,
     /\.header-demo-toggle\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
   );
   assert.doesNotMatch(
     styleSource,
-    /\.prototype-badge\s*\{\s*display:\s*none;/,
+    /\.prototype-badge/,
   );
   assert.match(
     panelSource,

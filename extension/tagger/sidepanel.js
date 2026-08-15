@@ -336,6 +336,12 @@
   const grossProfitWarning = document.querySelector(
     "#gross-profit-warning",
   );
+  const estimatedProfitAfterFeesValue = document.querySelector(
+    "#estimated-profit-after-fees-value",
+  );
+  const estimatedProfitAfterFeesWarning = document.querySelector(
+    "#estimated-profit-after-fees-warning",
+  );
   const pendingMapping = document.querySelector("#pending-mapping");
   const mappedVariation = document.querySelector(
     '[data-field="mapped-variation"]',
@@ -392,6 +398,8 @@
     !viewModel ||
     !tiktokFeeCalculator ||
     typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
+    typeof tiktokFeeCalculator.calculateEstimatedProfitAfterFees !==
+      "function" ||
     !reconciliation ||
     !reconciliationProtocol ||
     !reconciliationClientModule ||
@@ -1876,6 +1884,11 @@
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
     const tiktokFeeMetrics =
       tiktokFeeCalculator.calculateSixPercentGmvFees(attributedGmvDisplay);
+    const estimatedProfitAfterFees =
+      tiktokFeeCalculator.calculateEstimatedProfitAfterFees(
+        attributedGmvDisplay,
+        view.totals.costOfGoodsCents,
+      );
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
     const completedPaymentCount = view.totals.completedPaymentCount;
     const totalSalesCount = view.totals.totalSalesCount;
@@ -1897,6 +1910,8 @@
     const formattedFeesPaid = tiktokFeeMetrics?.feesPaidDisplay ?? "—";
     const formattedGmvAfterFees =
       tiktokFeeMetrics?.gmvAfterFeesDisplay ?? "—";
+    const formattedEstimatedProfitAfterFees =
+      estimatedProfitAfterFees ?? "—";
 
     if (grossItemSalesValue.textContent !== formattedGrossItemSales) {
       grossItemSalesValue.textContent = formattedGrossItemSales;
@@ -1916,6 +1931,14 @@
 
     if (gmvAfterFeesValue.textContent !== formattedGmvAfterFees) {
       gmvAfterFeesValue.textContent = formattedGmvAfterFees;
+    }
+
+    if (
+      estimatedProfitAfterFeesValue.textContent !==
+      formattedEstimatedProfitAfterFees
+    ) {
+      estimatedProfitAfterFeesValue.textContent =
+        formattedEstimatedProfitAfterFees;
     }
 
     if (completedSalesValue.textContent !== completedSalesRatio) {
@@ -1946,10 +1969,16 @@
       if (grossProfitWarning.textContent !== warning) {
         grossProfitWarning.textContent = warning;
       }
+      if (estimatedProfitAfterFeesWarning.textContent !== warning) {
+        estimatedProfitAfterFeesWarning.textContent = warning;
+      }
       grossProfitWarning.hidden = false;
+      estimatedProfitAfterFeesWarning.hidden = false;
     } else {
       grossProfitWarning.hidden = true;
       grossProfitWarning.textContent = "";
+      estimatedProfitAfterFeesWarning.hidden = true;
+      estimatedProfitAfterFeesWarning.textContent = "";
     }
   }
 
