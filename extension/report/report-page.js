@@ -364,21 +364,6 @@
       };
     }
 
-    function buildSkuCountText(report) {
-      if (Array.isArray(report?.inventoryUpdateLines)) {
-        return report.inventoryUpdateLines
-          .filter((line) => typeof line === "string")
-          .join("\n");
-      }
-
-      return (Array.isArray(report?.inventory) ? report.inventory : [])
-        .map(
-          (entry) =>
-            `SKU: ${String(entry?.sku ?? "")} Updated count: ${getUpdatedQuantity(entry)}`,
-        )
-        .join("\n");
-    }
-
     function normalizeSheetCell(value) {
       return String(value ?? "")
         .replace(/[\t\r\n]+/g, " ")
@@ -730,7 +715,6 @@
         return row;
       });
       replaceChildren(body, rows);
-      document.querySelector("#sku-count-list").textContent = buildSkuCountText(report);
     }
 
     function renderDefinitions(document) {
@@ -1065,18 +1049,6 @@
           feedback(error?.message ?? "Updated inventory could not be copied.");
         }
       });
-      document.querySelector("#copy-sku-counts").addEventListener("click", async () => {
-        if (!currentRecord) {
-          return;
-        }
-
-        try {
-          await writeClipboard(navigator, buildSkuCountText(currentRecord.report));
-          feedback("SKU updated counts copied.");
-        } catch (error) {
-          feedback(error?.message ?? "SKU counts could not be copied.");
-        }
-      });
       document.querySelector("#download-inventory").addEventListener("click", () => {
         if (!currentRecord) {
           return;
@@ -1102,7 +1074,6 @@
     return Object.freeze({
       DEFAULT_DEFINITIONS,
       SHEET_HEADERS,
-      buildSkuCountText,
       createPrintDisclosureController,
       createFileStamp,
       createReportFilename,

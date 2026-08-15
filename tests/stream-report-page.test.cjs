@@ -61,7 +61,6 @@ const REPORT_SELECTORS = [
   "#completed-sales-disclosure",
   "#definitions-disclosure",
   "#copy-inventory",
-  "#copy-sku-counts",
   "#download-inventory",
   "#inventory-rows",
   "#most-profitable-items",
@@ -84,7 +83,6 @@ const REPORT_SELECTORS = [
   "#retry-report",
   "#sales-count",
   "#sales-empty",
-  "#sku-count-list",
   "#stream-ended",
   "#stream-reference",
   "#stream-started",
@@ -269,7 +267,10 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Print \/ Save as PDF/);
   assert.match(html, /Copy Updated Inventory/);
   assert.match(html, /Download Updated Inventory CSV/);
-  assert.match(html, /Copy SKU Counts/);
+  assert.doesNotMatch(html, /Copy SKU Counts/);
+  assert.doesNotMatch(html, /Simple replacement list/i);
+  assert.doesNotMatch(html, /SKU updated counts/i);
+  assert.doesNotMatch(html, /id="(?:copy-sku-counts|sku-count-list)"/);
   assert.match(html, /duplicate the <strong>Inventory<\/strong> tab as a backup/);
   assert.match(html, /click cell <strong>A1<\/strong>/);
   assert.match(html, /Cmd\+V/);
@@ -299,10 +300,7 @@ test("packaged report surface is local, printable, and exposes the required acti
     css,
     /@media print[\s\S]*?\.summary-grid \.summary-card-warning-note\s*\{[\s\S]*?color:\s*#704900;/,
   );
-  assert.doesNotMatch(
-    css,
-    /\.sku-count-list\s*\{[^}]*break-inside:\s*avoid/s,
-  );
+  assert.doesNotMatch(css, /\.sku-count-list\b/);
 });
 
 test("completed orders use one collapsed native disclosure that always prints in full", () => {
@@ -565,7 +563,6 @@ test("report rendering preserves text, renders SKU and product ties, and never c
     allText(document.querySelector("#completed-sales-rows")),
     /<img src=x onerror="stealOAuthToken\(\)">/,
   );
-  assert.equal(document.querySelector("#sku-count-list").textContent, "SKU: SKU-A Updated count: 0");
 });
 
 test("post-stream AOV uses Gross Item Sales divided by completed sales", () => {
@@ -759,14 +756,12 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
   const report = createReport();
   const tsv = reportPage.serializeInventoryTsv(report);
   const csv = reportPage.serializeInventoryCsv(report);
-  const counts = reportPage.buildSkuCountText(report);
   const expectedHeader =
     "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost";
 
   assert.equal(tsv.split("\n")[0], expectedHeader);
   assert.match(tsv, /SKU-A[^\n]*\t0\t6\.00/);
   assert.match(csv, /quantity_on_hand_at_import/);
-  assert.equal(counts, "SKU: SKU-A Updated count: 0");
 
   for (const secret of [
     report.oauthToken,
@@ -775,11 +770,10 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
   ]) {
     assert.equal(tsv.includes(secret), false);
     assert.equal(csv.includes(secret), false);
-    assert.equal(counts.includes(secret), false);
   }
 });
 
-test("long inventory renders every row and keeps the simple count list complete", () => {
+test("long inventory renders every row in the updated inventory table", () => {
   const inventory = Array.from({ length: 1000 }, (_, index) => ({
     sku: `SKU-${String(index).padStart(4, "0")}`,
     item: "Long inventory item",
@@ -816,10 +810,6 @@ test("long inventory renders every row and keeps the simple count list complete"
   });
 
   assert.equal(document.querySelector("#inventory-rows").children.length, 1000);
-  assert.equal(
-    document.querySelector("#sku-count-list").textContent.split("\n").length,
-    1000,
-  );
 });
 
 test("CSV download uses a local Blob URL, stable filename, and revokes the URL", () => {

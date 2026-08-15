@@ -674,20 +674,6 @@ button:disabled {
   text-align: center;
 }
 
-.sku-count-list {
-  max-height: 340px;
-  overflow: auto;
-  margin: 0;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: #d9e5f2;
-  background: var(--surface-subtle);
-  font: 11px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .definition-list {
   display: grid;
   grid-template-columns: minmax(140px, 0.32fr) minmax(0, 1fr);
@@ -963,8 +949,7 @@ button:disabled {
     color: #086c5c;
   }
 
-  .screen-scroll,
-  .sku-count-list {
+  .screen-scroll {
     max-height: none;
     overflow: visible;
   }
@@ -995,11 +980,6 @@ button:disabled {
   .data-table th {
     color: #111820;
     background: #e9edf2 !important;
-  }
-
-  .sku-count-list {
-    font-size: 7.5pt;
-    white-space: pre-wrap;
   }
 
   .report-footer {

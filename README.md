@@ -612,9 +612,9 @@ prototype data. There is no silent reset.
     **Inventory** tab, click cell **A1** (the first cell in the upper-left corner), and
     press **Ctrl+V** on Windows or **Cmd+V** on macOS. Verify the pasted rectangle has the
     exact six headers `sku`, `item`, `style`, `size`, `quantity_on_hand_at_import`, and
-    `unit_cost`, and that every row aligns with its SKU. The simple list uses the exact
-    human-readable form `SKU: <sku> Updated count: <quantity>`; do not paste those lines
-    into A1 because they are not the six-column inventory table.
+    `unit_cost`, and that every row aligns with its SKU. **Copy Updated Inventory**
+    provides the complete six-column handoff; paste that table at A1 rather than copying
+    individual values from the report.
 27. As an alternative, select **Download Updated Inventory CSV**, then use Google Sheets
     **File -> Import -> Upload** and choose **Replace current sheet** only after making the
     backup. The CSV is formula-injection-safe and preserves the valid six-column Sheet

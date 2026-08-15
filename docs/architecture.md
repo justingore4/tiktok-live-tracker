@@ -527,18 +527,18 @@ replacementQuantity = max(0, calculatedRemainingQuantity)
 
 Pending is intentionally separate and does not permanently reduce the replacement
 value. When calculated inventory is negative, the report preserves that raw value and
-oversold/recount warning while exporting zero. It supplies the exact simple line
-`SKU: <sku> Updated count: <replacementQuantity>` and a complete six-column table with
-the original `sku,item,style,size,unit_cost` plus the replacement count under
-`quantity_on_hand_at_import`. CSV and tab-separated clipboard serializers neutralize
-spreadsheet-formula prefixes while preserving valid Sheet values.
+oversold/recount warning while exporting zero. The retained inventory handoff is a
+complete six-column table with the original `sku,item,style,size,unit_cost` plus the
+replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
+serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet
+values.
 
 The extension-owned report page loads only the local immutable record. It supports native
-Chrome Print / Save as PDF, a Google Sheets-ready CSV download, a full-table clipboard
-copy for pasting at A1, and a separate simple SKU list. The completed-orders and
-definitions disclosures start collapsed on screen, but print styling always includes the
-entire sales table with repeated column headers and every definition. These are
-employee-initiated local outputs, not Google API writes.
+Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
+full-table clipboard copy for pasting at A1. The completed-orders and definitions
+disclosures start collapsed on screen, but print styling always includes the entire sales
+table with repeated column headers and every definition. These are employee-initiated
+local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
 live testing must still determine whether the entire list is always rendered or
@@ -1018,10 +1018,8 @@ erase the report.
 
 The novice handoff is position-based, not a SKU lookup or merge: duplicate the current
 `Inventory` tab as a backup, use **Copy Updated Inventory**, click the original tab's A1
-cell, and paste the full six-column rectangle. The CSV alternative is imported with
-**Replace current sheet** only after that backup. The human-readable
-`SKU: <sku> Updated count: <quantity>` lines are for checking or manual edits and must
-not be pasted into A1 in place of the six-column table.
+cell, and paste the full six-column rectangle. The matching CSV alternative is imported
+with **Replace current sheet** only after that backup.
 
 ## 7. Google Sheets inventory import contract
 
