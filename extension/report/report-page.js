@@ -864,29 +864,36 @@
     }
 
     function createPrintDisclosureController(document) {
-      const disclosure = document?.querySelector?.(
-        "#completed-sales-disclosure",
-      );
-      let wasOpen = null;
+      const disclosures = [
+        document?.querySelector?.("#completed-sales-disclosure"),
+        document?.querySelector?.("#definitions-disclosure"),
+      ].filter(Boolean);
+      let priorOpenStates = null;
 
       const prepare = () => {
-        if (!disclosure) {
+        if (disclosures.length === 0) {
           return;
         }
 
-        if (wasOpen === null) {
-          wasOpen = disclosure.open === true;
+        if (priorOpenStates === null) {
+          priorOpenStates = disclosures.map(
+            (disclosure) => disclosure.open === true,
+          );
         }
-        disclosure.open = true;
+        disclosures.forEach((disclosure) => {
+          disclosure.open = true;
+        });
       };
 
       const restore = () => {
-        if (!disclosure || wasOpen === null) {
+        if (priorOpenStates === null) {
           return;
         }
 
-        disclosure.open = wasOpen;
-        wasOpen = null;
+        disclosures.forEach((disclosure, index) => {
+          disclosure.open = priorOpenStates[index];
+        });
+        priorOpenStates = null;
       };
 
       return Object.freeze({ prepare, restore });

@@ -535,10 +535,10 @@ spreadsheet-formula prefixes while preserving valid Sheet values.
 
 The extension-owned report page loads only the local immutable record. It supports native
 Chrome Print / Save as PDF, a Google Sheets-ready CSV download, a full-table clipboard
-copy for pasting at A1, and a separate simple SKU list. The completed-orders disclosure
-starts collapsed on screen but print styling always includes its entire table with
-repeated column headers. These are employee-initiated local outputs, not Google API
-writes.
+copy for pasting at A1, and a separate simple SKU list. The completed-orders and
+definitions disclosures start collapsed on screen, but print styling always includes the
+entire sales table with repeated column headers and every definition. These are
+employee-initiated local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
 live testing must still determine whether the entire list is always rendered or
@@ -714,7 +714,9 @@ recorded variation. A non-null `activeBiddingVariationNumber` is the effective c
 variation. A changed marker takes focus only when the employee was already viewing the
 previous current/latest variation. If the employee manually selects history, new
 variations and status changes continue updating the selector without taking focus;
-returning to the current/latest variation resumes automatic follow.
+the compact **Return to live item** action appears while history is selected. It targets
+the active bidding variation when present and otherwise the newest captured variation;
+returning through it resumes automatic follow.
 Selection navigation itself is local UI state and does not write to storage.
 
 The demo exists only while the side panel remains loaded. It uses mock inventory, treats
@@ -972,7 +974,10 @@ A changed active bidding marker becomes the selected tagger view automatically o
 the employee was following the previous current/latest variation, so normal live tagging
 continues without reopening the menu. When the employee manually reviews history, new
 markers, repeated markers, and payment/status changes update the dropdown without
-changing the selection. Returning to the current/latest variation re-enables follow.
+changing the selection. While history is selected, a compact **Return to live item**
+action targets the active bidding variation or, when no bidding marker exists, the newest
+captured variation. Returning through it re-enables follow without issuing a mapping,
+inventory, payment, or persistence mutation.
 Reopening the panel still
 rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
 directly.
@@ -1282,8 +1287,10 @@ Browser support beyond Chrome is a later decision.
    3. **Completed:** data-free invalidations refresh the open tagger in real time,
       auto-follow each changed bidding variation before it sells while the employee is
       viewing the current auction, preserve a manually selected historical variation as
-      newer options update, and visibly update sanitized payment status and the four
-      Metrics section. A prioritized work queue, visible capture state, TikTok identity,
+      newer options update, provide a mutation-free **Return to live item** action that
+      falls back to the newest captured variation when no bid is active, and visibly
+      update sanitized payment status and the Metrics section. A prioritized work queue,
+      visible capture state, TikTok identity,
       and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening

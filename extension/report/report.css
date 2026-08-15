@@ -45,6 +45,7 @@ button {
 button:focus-visible,
 [tabindex="0"]:focus-visible,
 .completed-sales-toggle:focus-visible,
+.definitions-toggle:focus-visible,
 .skip-link:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
@@ -334,6 +335,62 @@ button:disabled {
 
 #completed-sales-disclosure[open] > .completed-sales-toggle::after {
   content: "Hide details -";
+}
+
+.definitions-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.definitions-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.definitions-toggle::after {
+  min-width: 112px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  content: "Show definitions +";
+  font-size: 11px;
+  font-weight: 740;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.definitions-toggle:hover::after {
+  color: var(--text);
+  background: rgb(255 255 255 / 6%);
+}
+
+#definitions-disclosure[open] > .definitions-toggle::after {
+  content: "Hide definitions -";
+}
+
+.definitions-summary-heading {
+  min-width: 0;
+  margin: 0;
+}
+
+.definitions-summary-heading .eyebrow {
+  display: block;
+}
+
+.definitions-title {
+  display: block;
+  font-size: 21px;
+  letter-spacing: -0.025em;
+}
+
+.definitions-content {
+  margin-top: 18px;
 }
 
 .completed-sales-summary-heading {
@@ -726,7 +783,12 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .completed-sales-toggle::after {
+  .definitions-toggle {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .completed-sales-toggle::after,
+  .definitions-toggle::after {
     grid-column: 1 / -1;
     width: 100%;
   }
@@ -794,11 +856,20 @@ button:disabled {
     display: block !important;
   }
 
-  #completed-sales-toggle {
+  #definitions-disclosure:not([open]) > #definitions-content {
+    display: block !important;
+  }
+
+  #completed-sales-toggle,
+  #definitions-toggle {
     cursor: default;
   }
 
   #completed-sales-toggle::after {
+    display: none !important;
+  }
+
+  #definitions-toggle::after {
     display: none !important;
   }
 

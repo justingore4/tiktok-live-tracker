@@ -387,7 +387,12 @@ screen test-user run does not complete those release reviews.
 7. Wait for TikTok to show a new auction. Confirm its variation becomes selected without
    opening the menu. Then confirm the prior auction remains in history when Sold Items
    supplies its payment truth, its item mapping persists, and `bidding` is replaced by
-   the observed payment wording. A later status-only update must not steal selection.
+   the observed payment wording. Select a historical variation and confirm the compact
+   **Return to live item** button appears below the selector. It must select the active
+   bidding variation, or the newest captured variation when there is no active marker,
+   then disappear and resume automatic follow. Confirm this navigation does not alter any
+   mapping, inventory, payment, or persisted auction data. A later status-only update must
+   not steal selection.
 8. Keep a variation selected while its badge changes. Confirm the visible **TikTok
    payment** value changes live among **Payment processing**, **Payment fixing**,
    **Payment failed**, **Canceled**, and **Payment complete** without a page refresh or menu
@@ -461,12 +466,13 @@ screen test-user run does not complete those release reviews.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Items sold this stream** starts collapsed, expands on activation, and keeps
-    the completed-sales count visible in both states.
+    Confirm **Items sold this stream** and **Definitions and limitations** start
+    collapsed and expand on activation; the completed-sales count remains visible in
+    both order-table states.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension. Verify the PDF includes every completed-order row even when that section
-    was collapsed on screen.
+    extension. Verify the PDF includes every completed-order row and every definition
+    even when both sections were collapsed on screen.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
     backup. In the report select **Copy Updated Inventory**, return to the original
     `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
@@ -499,7 +505,10 @@ Only the persisted `activeBiddingVariationNumber` from the strict on-video card 
 the current bidding auction. A changed marker is selected automatically only while the
 employee is viewing the previously current auction. While the employee reviews a
 historical variation, new markers and status changes continue updating the selector but
-do not change its selection. Returning to the current auction resumes automatic follow.
+do not change its selection. A compact **Return to live item** action is visible only in
+that historical-review state. It targets the active bidding variation when available and
+otherwise the newest captured variation; selecting it resumes automatic follow without a
+mapping, inventory, payment, or persistence mutation.
 A richer prioritized queue across the persisted auction history remains future work.
 
 ### Read-only root diagnostic

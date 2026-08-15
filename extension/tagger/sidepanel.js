@@ -1803,6 +1803,9 @@
     variationSelector.disabled = variations.length === 0;
 
     if (activeMode === "saved_session") {
+      const reviewingRecordedHistory =
+        variations.length > 0 && view.isReviewingHistory;
+
       if (variations.length > 0) {
         variationSelector.value = String(view.selectedVariationNumber);
         variationContext.textContent = "Live auction variations";
@@ -1814,10 +1817,13 @@
         inventoryTitle.textContent = "Waiting for a live auction variation";
       }
 
-      returnToCurrentButton.hidden = true;
+      returnToCurrentButton.classList.add("return-to-current-live");
+      returnToCurrentButton.hidden = !reviewingRecordedHistory;
+      returnToCurrentButton.textContent = "Return to live item";
       return;
     }
 
+    returnToCurrentButton.classList.remove("return-to-current-live");
     variationSelector.value = String(view.selectedVariationNumber);
     variationContext.textContent = view.isReviewingHistory
       ? "Reviewing previous variation"
@@ -3051,6 +3057,42 @@
 
   returnToCurrentButton.addEventListener("click", () => {
     if (activeMode === "saved_session") {
+      const currentView = getActiveView();
+
+      if (!persistentController || !currentView?.isReviewingHistory) {
+        return;
+      }
+
+      const returnVariation = findVariationOption(
+        currentView,
+        currentView.currentVariationNumber,
+      );
+
+      if (!returnVariation?.recorded) {
+        mappingAnnouncement.textContent =
+          "The latest live item is not available yet.";
+        return;
+      }
+
+      clearPriceError();
+      searchInput.value = "";
+      const snapshot = persistentController.selectVariation(
+        currentView.currentVariationNumber,
+      );
+      const view = snapshot.view;
+
+      if (
+        !view ||
+        view.selectedVariationNumber !== currentView.currentVariationNumber
+      ) {
+        mappingAnnouncement.textContent =
+          "The latest live item could not be selected.";
+        return;
+      }
+
+      variationSelector.focus();
+      mappingAnnouncement.textContent =
+        `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
       return;
     }
 

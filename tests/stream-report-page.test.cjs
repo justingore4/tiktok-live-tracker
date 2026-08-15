@@ -59,6 +59,7 @@ const REPORT_SELECTORS = [
   "#action-feedback",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
+  "#definitions-disclosure",
   "#copy-inventory",
   "#copy-sku-counts",
   "#download-inventory",
@@ -348,22 +349,179 @@ test("completed orders use one collapsed native disclosure that always prints in
   );
 });
 
-test("completed orders open for printing and restore their prior disclosure state", () => {
+test("definitions use a collapsed native disclosure without changing their content", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const sectionStart = html.indexOf('class="report-section definitions-section"');
+  const sectionEnd = html.indexOf("</section>", sectionStart);
+  const section = html.slice(sectionStart, sectionEnd);
+  const detailsTag = section.match(
+    /<details\s+id="definitions-disclosure"[^>]*>/,
+  )?.[0];
+  const summary = section.match(
+    /<summary[\s\S]*?id="definitions-toggle"[\s\S]*?<\/summary>/,
+  )?.[0];
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(detailsTag);
+  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
+  assert.ok(summary);
+  assert.match(summary, /aria-controls="definitions-content"/);
+  assert.match(summary, /<h2\s+id="definitions-title"[^>]*>/);
+  assert.equal((summary.match(/<h2\b/g) ?? []).length, 1);
+  assert.match(summary, /How totals are calculated/);
+  assert.match(summary, /Definitions and limitations/);
+  assert.equal((html.match(/id="definitions-content"/g) ?? []).length, 1);
+  assert.equal((html.match(/id="report-definitions"/g) ?? []).length, 1);
+  assert.match(
+    section,
+    /id="definitions-content"[\s\S]*?<dl\s+id="report-definitions"\s+class="definition-list"><\/dl>/,
+  );
+  assert.match(css, /\.definitions-toggle:focus-visible/);
+  assert.match(
+    printCss,
+    /#definitions-disclosure:not\(\[open\]\)\s*>\s*#definitions-content\s*\{\s*display:\s*block\s*!important;/,
+  );
+  assert.match(
+    printCss,
+    /#definitions-toggle::after\s*\{\s*display:\s*none\s*!important;/,
+  );
+  assert.doesNotMatch(
+    printCss,
+    /#definitions-toggle\s*\{[^}]*display:\s*none/s,
+  );
+  assert.deepEqual(reportPage.DEFAULT_DEFINITIONS, [
+    {
+      term: "TikTok Attributed GMV",
+      description:
+        "The last value displayed by TikTok during tracking. TikTok may abbreviate or round this display, and it can include buyer-paid shipping.",
+    },
+    {
+      term: "Gross Item Sales",
+      description:
+        "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
+    },
+    {
+      term: "TikTok 6% Fees",
+      description:
+        "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
+    },
+    {
+      term: "Est. Profit After Fees",
+      description:
+        "TikTok Attributed GMV after the estimated 6% fee, minus pinned unit costs for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+    },
+    {
+      term: "AOV",
+      description:
+        "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
+    },
+    {
+      term: "Gross profit",
+      description:
+        "Mapped completed-sale revenue minus the imported seller unit cost. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
+    },
+    {
+      term: "Updated count",
+      description:
+        "Opening quantity minus mapped completed sales across the inventory baseline, clamped to zero for the Sheet replacement value. Pending and canceled orders do not permanently reduce this count.",
+    },
+  ]);
+});
+
+test("print disclosures open together and restore their independent prior states", () => {
   const document = new FakeDocument();
-  const disclosure = document.querySelector("#completed-sales-disclosure");
+  const completedSales = document.querySelector("#completed-sales-disclosure");
+  const definitions = document.querySelector("#definitions-disclosure");
   const controller = reportPage.createPrintDisclosureController(document);
 
-  disclosure.open = false;
+  completedSales.open = false;
+  definitions.open = false;
   controller.prepare();
-  assert.equal(disclosure.open, true);
+  assert.equal(completedSales.open, true);
+  assert.equal(definitions.open, true);
   controller.prepare();
   controller.restore();
-  assert.equal(disclosure.open, false);
+  assert.equal(completedSales.open, false);
+  assert.equal(definitions.open, false);
 
-  disclosure.open = true;
+  completedSales.open = true;
+  definitions.open = false;
   controller.prepare();
   controller.restore();
-  assert.equal(disclosure.open, true);
+  assert.equal(completedSales.open, true);
+  assert.equal(definitions.open, false);
+
+  completedSales.open = false;
+  definitions.open = true;
+  controller.prepare();
+  controller.restore();
+  assert.equal(completedSales.open, false);
+  assert.equal(definitions.open, true);
+});
+
+test("app Print and browser print events expand definitions and restore screen state", async () => {
+  const document = new FakeDocument();
+  const completedSales = document.querySelector("#completed-sales-disclosure");
+  const definitions = document.querySelector("#definitions-disclosure");
+  const windowListeners = new Map();
+  const printedStates = [];
+
+  completedSales.open = false;
+  definitions.open = false;
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    addEventListener(name, listener) {
+      windowListeners.set(name, listener);
+    },
+    print() {
+      printedStates.push({
+        completedSales: completedSales.open,
+        definitions: definitions.open,
+      });
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [
+    { completedSales: true, definitions: true },
+  ]);
+  windowListeners.get("afterprint")();
+  assert.equal(completedSales.open, false);
+  assert.equal(definitions.open, false);
+
+  completedSales.open = true;
+  definitions.open = false;
+  windowListeners.get("beforeprint")();
+  assert.equal(completedSales.open, true);
+  assert.equal(definitions.open, true);
+  windowListeners.get("afterprint")();
+  assert.equal(completedSales.open, true);
+  assert.equal(definitions.open, false);
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {

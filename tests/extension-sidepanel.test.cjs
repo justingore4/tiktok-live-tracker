@@ -625,7 +625,27 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(
     panelSource,
-    /returnToCurrentButton\.addEventListener\("click",[\s\S]+activeMode === "saved_session"[\s\S]+getDemoSession\(\)\.selectVariation/,
+    /returnToCurrentButton\.addEventListener\("click",[\s\S]+activeMode === "saved_session"[\s\S]+persistentController\.selectVariation\([\s\S]+currentView\.currentVariationNumber[\s\S]+getDemoSession\(\)\.selectVariation/,
+  );
+  assert.match(
+    panelSource,
+    /const reviewingRecordedHistory =[\s\S]+variations\.length > 0 && view\.isReviewingHistory/,
+  );
+  assert.match(
+    panelSource,
+    /returnToCurrentButton\.hidden = !reviewingRecordedHistory;[\s\S]+returnToCurrentButton\.textContent = "Return to live item"/,
+  );
+  assert.match(
+    panelSource,
+    /findVariationOption\([\s\S]+currentView\.currentVariationNumber[\s\S]+returnVariation\?\.recorded/,
+  );
+  assert.match(
+    panelSource,
+    /The next live auction will open automatically\./,
+  );
+  assert.match(
+    styleSource,
+    /\.return-to-current-live\s*\{[\s\S]*?min-height: 34px;[\s\S]*?font-size: 10px;/,
   );
   assert.match(panelSource, /view\.selectedVariationNumber/);
   assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);

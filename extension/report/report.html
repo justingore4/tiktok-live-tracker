@@ -267,13 +267,21 @@
         </section>
 
         <section class="report-section definitions-section" aria-labelledby="definitions-title">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">How totals are calculated</p>
-              <h2 id="definitions-title">Definitions and limitations</h2>
+          <details id="definitions-disclosure">
+            <summary
+              id="definitions-toggle"
+              class="definitions-toggle"
+              aria-controls="definitions-content"
+            >
+              <h2 id="definitions-title" class="definitions-summary-heading">
+                <span class="eyebrow">How totals are calculated</span>
+                <span class="definitions-title">Definitions and limitations</span>
+              </h2>
+            </summary>
+            <div id="definitions-content" class="definitions-content">
+              <dl id="report-definitions" class="definition-list"></dl>
             </div>
-          </div>
-          <dl id="report-definitions" class="definition-list"></dl>
+          </details>
         </section>
 
         <footer class="report-footer">

@@ -135,8 +135,9 @@ auctioned again, the employee maps its new variation number.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
-  failed request changes nothing. The completed-orders table is collapsed by default for
-  screen browsing and always expanded in printed/PDF output.
+  failed request changes nothing. The completed-orders table and **Definitions and
+  limitations** section are collapsed by default for screen browsing and always expanded
+  in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
@@ -362,7 +363,10 @@ before updating the Sheet.
       active bidding variation before it sells while the employee is already viewing the
       current auction, and display its later observed TikTok payment status independently
       of inventory mapping. Reviewing history pauses automatic switching without pausing
-      selector updates. A prioritized queue, visible capture status, verified TikTok
+      selector updates and exposes a compact **Return to live item** action. That action
+      targets the active bidding variation when one exists, otherwise the newest captured
+      variation, and resumes automatic follow without changing any auction or inventory
+      data. A prioritized queue, visible capture status, verified TikTok
       stream identity, and broader live validation remain next.
 5. Connect Google Sheets inventory in three focused stages:
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
@@ -517,8 +521,12 @@ prototype data. There is no silent reset.
     TikTok starts the next auction, its number must become current without opening the
     menu. Then manually select a previous variation and let another auction begin: its
     option must appear and update in the same menu without replacing the historical
-    selection. Return to the current auction and confirm automatic switching resumes for
-    the following auction. Do not refresh TikTok, close the panel, or choose Resume again.
+    selection. Confirm a compact **Return to live item** button appears below the selector;
+    select it and verify the active bidding variation becomes selected. If there is no
+    active bidding marker, verify it instead selects the newest captured variation. The
+    button must disappear after returning, must not change any mapping, inventory, payment,
+    or persisted auction data, and automatic switching must resume for the following
+    auction. Do not refresh TikTok, close the panel, or choose Resume again.
 20. In **LIVE auctions → Sold items**, confirm completed and payment-state variations
     remain in the same selector. When the active bidding variation reaches Sold Items,
     its existing mapping must remain attached while the `bidding` marker clears and its

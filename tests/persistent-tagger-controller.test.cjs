@@ -293,7 +293,7 @@ test("resume fails closed instead of falling back to the active baseline", async
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
 });
 
-test("Sold Items fallback follows new captures only while the newest variation is selected", async () => {
+test("Sold Items fallback returns to the newest recorded variation and resumes following without a mutation", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -348,11 +348,22 @@ test("Sold Items fallback follows new captures only while the newest variation i
       (variation) => variation.variationNumber === 254,
     ),
   );
+  assert.equal(preserved.view.currentVariationNumber, 254);
+  assert.equal(preserved.view.isReviewingHistory, true);
 
-  assert.equal(
-    controller.selectVariation(254).view.selectedVariationNumber,
-    254,
+  const stateBeforeReturn = memory.getState();
+  const inventoryBeforeReturn = clone(preserved.view.inventory);
+  const callsBeforeReturn = clone(memory.calls);
+  const returned = controller.selectVariation(
+    preserved.view.currentVariationNumber,
   );
+
+  assert.equal(returned.view.selectedVariationNumber, 254);
+  assert.equal(returned.view.currentVariationNumber, 254);
+  assert.equal(returned.view.isReviewingHistory, false);
+  assert.deepEqual(returned.view.inventory, inventoryBeforeReturn);
+  assert.deepEqual(memory.getState(), stateBeforeReturn);
+  assert.deepEqual(memory.calls, callsBeforeReturn);
 
   const resumedState = memory.getState();
   reconciliation.observeVariations(resumedState, {
@@ -1219,7 +1230,7 @@ test("clearing the active marker keeps the same current variation before fallbac
   assert.equal(nextOption.selected, true);
 });
 
-test("active bidding follows only while the employee is viewing the latest variation", async () => {
+test("active bidding is the return target and resumes following without a mutation", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -1276,11 +1287,23 @@ test("active bidding follows only while the employee is viewing the latest varia
       (variation) => variation.variationNumber === 254,
     ),
   );
+  assert.equal(preserved.view.currentVariationNumber, 254);
+  assert.equal(preserved.view.isReviewingHistory, true);
 
-  assert.equal(
-    controller.selectVariation(254).view.selectedVariationNumber,
-    254,
+  const stateBeforeReturn = memory.getState();
+  const inventoryBeforeReturn = clone(preserved.view.inventory);
+  const callsBeforeReturn = clone(memory.calls);
+  const returned = controller.selectVariation(
+    preserved.view.currentVariationNumber,
   );
+
+  assert.equal(returned.view.activeBiddingVariationNumber, 254);
+  assert.equal(returned.view.selectedVariationNumber, 254);
+  assert.equal(returned.view.currentVariationNumber, 254);
+  assert.equal(returned.view.isReviewingHistory, false);
+  assert.deepEqual(returned.view.inventory, inventoryBeforeReturn);
+  assert.deepEqual(memory.getState(), stateBeforeReturn);
+  assert.deepEqual(memory.calls, callsBeforeReturn);
 
   const resumedState = memory.getState();
   reconciliation.observeBiddingVariation(resumedState, {

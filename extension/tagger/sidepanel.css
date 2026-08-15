@@ -1378,6 +1378,12 @@ button {
   outline-offset: 2px;
 }
 
+.return-to-current-live {
+  min-height: 34px;
+  padding: 4px 9px;
+  font-size: 10px;
+}
+
 .demo-badge {
   align-self: flex-start;
   padding: 6px 9px;
