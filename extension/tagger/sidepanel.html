@@ -15,17 +15,6 @@
           <p class="eyebrow">Seller tool</p>
           <h1>TikTok Live Tracker</h1>
         </div>
-        <div class="header-actions">
-          <button
-            id="offline-demo-mode"
-            class="header-demo-toggle"
-            type="button"
-            aria-pressed="false"
-            aria-label="Switch to offline demo mode"
-          >
-            Demo
-          </button>
-        </div>
       </header>
 
       <section
@@ -382,10 +371,10 @@
             </span>
           </div>
           <button id="return-to-current" class="return-to-current" type="button" hidden>
-            Return to on-screen variation #203
+            Return to live item
           </button>
         </div>
-        <span id="data-mode-badge" class="demo-badge">Live session</span>
+        <span id="data-mode-badge" class="session-badge">Live session</span>
       </section>
 
       <section
@@ -431,9 +420,9 @@
       >
         <div class="pending-heading">
           <div>
-            <p id="auction-eyebrow" class="eyebrow">Auction status</p>
+            <p id="auction-eyebrow" class="eyebrow">Live order status</p>
             <h2 id="pending-mapping-title">
-              Variation <span data-field="mapped-variation">#203</span>
+              Variation <span data-field="mapped-variation">#&mdash;</span>
             </h2>
           </div>
         </div>
@@ -486,67 +475,6 @@
         </div>
 
         <p id="state-warning" class="state-warning" role="status" hidden></p>
-
-        <fieldset id="lifecycle-controls" class="lifecycle-controls" hidden>
-          <legend id="lifecycle-controls-legend">Offline test controls</legend>
-          <p id="lifecycle-controls-note" class="demo-controls-note">
-            These controls simulate TikTok events in temporary memory and do
-            not act on TikTok.
-          </p>
-
-          <form id="complete-payment-form" novalidate>
-            <label for="sold-price">Final sold price</label>
-            <div class="price-input">
-              <span aria-hidden="true">$</span>
-              <input
-                id="sold-price"
-                name="sold-price"
-                type="text"
-                inputmode="decimal"
-                value="48.00"
-                autocomplete="off"
-                aria-describedby="sold-price-help sold-price-error"
-              >
-            </div>
-            <p id="sold-price-help" class="field-help">
-              Enter the final green-badge price for this offline simulation.
-            </p>
-            <p id="sold-price-error" class="field-error" role="alert" hidden></p>
-            <button class="primary-action" type="submit">
-              Simulate payment complete
-            </button>
-          </form>
-
-          <button id="simulate-buffer-expiry" class="secondary-action" type="button">
-            Simulate payment buffer expired
-          </button>
-          <p id="buffer-expired-note" class="buffer-expired-note" hidden>
-            Payment buffer expired in this demo. You can now mark the auction unpaid.
-          </p>
-          <button id="mark-unpaid" class="danger-action" type="button" hidden>
-            Mark unpaid after buffer
-          </button>
-          <p id="unpaid-note" class="unpaid-note" hidden>
-            This auction did not sell. Remaining inventory and profit stay
-            unchanged, and no inventory remains pending.
-          </p>
-          <button id="undo-unpaid" class="secondary-action" type="button" hidden>
-            Undo unpaid
-          </button>
-          <p id="undo-payment-note" class="demo-controls-note" hidden>
-            Offline demo only. Remove the simulated payment, keep the item
-            selected, and do not change TikTok.
-          </p>
-          <button
-            id="undo-simulated-payment"
-            class="secondary-action"
-            type="button"
-            aria-describedby="undo-payment-note"
-            hidden
-          >
-            Undo simulated payment
-          </button>
-        </fieldset>
       </section>
 
       <section class="inventory-section" aria-labelledby="inventory-title">
@@ -932,7 +860,6 @@
       </div>
     </template>
 
-    <script src="../shared/sale-parser.js"></script>
     <script src="../shared/reconciliation.js"></script>
     <script src="../shared/reconciliation-coordinator.js"></script>
     <script src="../shared/stream-session-coordinator.js"></script>

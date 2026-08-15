@@ -12,14 +12,12 @@ const {
   getInventoryAvailability,
   hydrateReconciliationState,
   mapVariation,
-  markUnpaid,
   observeAttributedGmv,
   observeBiddingVariation,
   observePaymentStatuses,
   observeVariations,
   recordPaymentComplete,
   unmapVariation,
-  undoMarkUnpaid,
 } = require("../extension/shared/reconciliation.js");
 
 const STREAM_ONE = "stream-2026-08-08";
@@ -1295,225 +1293,6 @@ test("allows a pending mapping when completed sales exhausted stock", () => {
   assert.equal(availability.reservationShortfallQuantity, 1);
 });
 
-test("marking a mapped variation unpaid never changes inventory or profit", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(20, { sku: "BLACK-TEE-M" }));
-  const unpaid = markUnpaid(state, auctionInput(20));
-  const unpaidSummary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(unpaid.status, "marked_unpaid");
-  assert.equal(unpaidSummary.totals.markedUnpaidCount, 1);
-  assert.equal(unpaidSummary.totals.committedSalesCount, 0);
-  assert.equal(inventoryItem(unpaidSummary, "BLACK-TEE-M").reservedQuantity, 0);
-  assert.equal(inventoryItem(unpaidSummary, "BLACK-TEE-M").remainingQuantity, 2);
-  assert.equal(
-    inventoryItem(unpaidSummary, "BLACK-TEE-M").availableToTagQuantity,
-    2,
-  );
-  assert.equal(unpaidSummary.totals.profitCents, 0);
-
-  const restored = undoMarkUnpaid(state, auctionInput(20));
-
-  assert.equal(restored.status, "pending");
-  const restoredSummary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(restoredSummary.totals.markedUnpaidCount, 0);
-  assert.equal(inventoryItem(restoredSummary, "BLACK-TEE-M").reservedQuantity, 1);
-  assert.equal(
-    inventoryItem(restoredSummary, "BLACK-TEE-M").availableToTagQuantity,
-    1,
-  );
-});
-
-test("manual unpaid remains an ephemeral compatibility state in v7", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(21, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(21));
-  const unmapped = unmapVariation(state, auctionInput(21));
-  const summary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(unmapped.status, "marked_unpaid");
-  assert.equal(unmapped.mappingStatus, "marked_unpaid");
-  assert.equal(unmapped.sku, null);
-  assert.equal(summary.totals.markedUnpaidCount, 1);
-  assert.equal(inventoryItem(summary, "BLACK-TEE-M").reservedQuantity, 0);
-
-  assertErrorCode(
-    () => hydrateReconciliationState(JSON.parse(JSON.stringify(state))),
-    "INVALID_STATE",
-  );
-  assert.equal(undoMarkUnpaid(state, auctionInput(21)).status, "unmapped");
-});
-
-test("a re-auction under a new variation deducts stock only when it sells", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(30, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(30));
-  mapVariation(state, auctionInput(31, { sku: "BLACK-TEE-M" }));
-  recordPaymentComplete(state, auctionInput(31, { soldPriceCents: 2500 }));
-
-  const summary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(summary.totals.auctionCount, 2);
-  assert.equal(summary.totals.markedUnpaidCount, 1);
-  assert.equal(summary.totals.committedSalesCount, 1);
-  assert.equal(inventoryItem(summary, "BLACK-TEE-M").remainingQuantity, 1);
-});
-
-test("TikTok payment completion wins after a local unpaid mark and raises a conflict", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(40, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(40));
-  const completed = recordPaymentComplete(
-    state,
-    auctionInput(40, { soldPriceCents: 3500 }),
-  );
-  const summary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(completed.status, "committed");
-  assert.equal(completed.mappingStatus, "marked_unpaid");
-  assert.equal(completed.profitCents, 2000);
-  assert.deepEqual(completed.conflicts, [
-    { code: "payment_completed_after_marked_unpaid" },
-  ]);
-  assert.equal(summary.totals.committedSalesCount, 1);
-  assert.equal(summary.totals.conflictCount, 1);
-  assert.equal(inventoryItem(summary, "BLACK-TEE-L").remainingQuantity, 0);
-});
-
-test("unmapping a late completed payment preserves its unpaid conflict", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(42, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(42));
-  recordPaymentComplete(
-    state,
-    auctionInput(42, { soldPriceCents: 3500 }),
-  );
-  const unmapped = unmapVariation(state, auctionInput(42));
-
-  assert.equal(unmapped.status, "unmapped_completed");
-  assert.equal(unmapped.mappingStatus, "marked_unpaid");
-  assert.equal(unmapped.sku, null);
-  assert.equal(unmapped.soldPriceCents, 3500);
-  assert.equal(unmapped.committedUnitCostCents, null);
-  assert.deepEqual(unmapped.conflicts, [
-    { code: "payment_completed_after_marked_unpaid" },
-  ]);
-
-  const serializedV6State = JSON.parse(JSON.stringify(state));
-  serializedV6State.version = 6;
-  const restoredState = hydrateReconciliationState(serializedV6State);
-  const restored = getAuction(restoredState, auctionInput(42));
-  const summary = calculateSummary(restoredState, { streamId: STREAM_ONE });
-
-  assert.deepEqual(restored.conflicts, unmapped.conflicts);
-  assert.equal(restored.mappingStatus, "unmapped");
-  assert.equal(summary.totals.completedPaymentCount, 1);
-  assert.equal(summary.totals.completedGmvCents, 3500);
-  assert.equal(summary.totals.committedSalesCount, 0);
-  assert.equal(summary.totals.conflictCount, 1);
-});
-
-test("a late payment remains authoritative after an unpaid item was unmapped", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(43, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(43));
-  unmapVariation(state, auctionInput(43));
-  const completed = recordPaymentComplete(
-    state,
-    auctionInput(43, { soldPriceCents: 3500 }),
-  );
-  const summary = calculateSummary(state, { streamId: STREAM_ONE });
-
-  assert.equal(completed.status, "unmapped_completed");
-  assert.equal(completed.mappingStatus, "marked_unpaid");
-  assert.equal(completed.sku, null);
-  assert.equal(completed.soldPriceCents, 3500);
-  assert.deepEqual(completed.conflicts, [
-    { code: "payment_completed_after_marked_unpaid" },
-  ]);
-  assert.equal(summary.totals.completedPaymentCount, 1);
-  assert.equal(summary.totals.completedGmvCents, 3500);
-  assert.equal(summary.totals.committedSalesCount, 0);
-  assert.equal(summary.totals.conflictCount, 1);
-});
-
-test("cannot locally mark a completed TikTok payment as unpaid", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(41, { sku: "BLACK-TEE-M" }));
-  recordPaymentComplete(state, auctionInput(41, { soldPriceCents: 2500 }));
-
-  assertErrorCode(
-    () => markUnpaid(state, auctionInput(41)),
-    "PAYMENT_ALREADY_COMPLETE",
-  );
-  assert.equal(
-    calculateSummary(state, { streamId: STREAM_ONE }).totals.committedSalesCount,
-    1,
-  );
-});
-
-test("cannot mark an observed unpriced TikTok completion unpaid", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(42, { sku: "BLACK-TEE-M" }));
-  observePaymentStatuses(state, {
-    streamId: STREAM_ONE,
-    statuses: [
-      {
-        variationNumber: 42,
-        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
-      },
-    ],
-  });
-  const stateBefore = JSON.parse(JSON.stringify(state));
-
-  assertErrorCode(
-    () => markUnpaid(state, auctionInput(42)),
-    "PAYMENT_ALREADY_COMPLETE",
-  );
-  assert.deepEqual(state, stateBefore);
-
-  const summary = calculateSummary(state, { streamId: STREAM_ONE });
-  const inventory = inventoryItem(summary, "BLACK-TEE-M");
-
-  assert.equal(inventory.remainingQuantity, 2);
-  assert.equal(inventory.reservedQuantity, 1);
-  assert.equal(inventory.availableToTagQuantity, 1);
-  assert.equal(summary.auctions[0].status, "pending");
-  assert.equal(summary.totals.markedUnpaidCount, 0);
-});
-
-test("cannot locally mark a canceled TikTok payment unpaid", () => {
-  const state = createState();
-
-  mapVariation(state, auctionInput(44, { sku: "BLACK-TEE-M" }));
-  observePaymentStatuses(state, {
-    streamId: STREAM_ONE,
-    statuses: [
-      {
-        variationNumber: 44,
-        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
-      },
-    ],
-  });
-  const beforeRejectedMark = JSON.parse(JSON.stringify(state));
-
-  assertErrorCode(
-    () => markUnpaid(state, auctionInput(44)),
-    "PAYMENT_ALREADY_CANCELED",
-  );
-  assert.deepEqual(state, beforeRejectedMark);
-  assert.equal(getAuction(state, auctionInput(44)).status, "canceled");
-});
-
 test("correcting a committed mapping moves inventory and profit to the new SKU", () => {
   const state = createState();
 
@@ -1594,46 +1373,6 @@ test("historical completed corrections may record real sales beyond stock", () =
   ]);
 });
 
-test("canceled history is immutable while marked-unpaid history remains editable and unreserved", () => {
-  const state = createState();
-
-  observePaymentStatuses(state, {
-    streamId: STREAM_ONE,
-    statuses: [
-      {
-        variationNumber: 72,
-        observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
-      },
-    ],
-  });
-  mapVariation(state, auctionInput(73, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(73));
-  unmapVariation(state, auctionInput(73));
-  observePendingPayment(state, 74);
-  mapVariation(state, auctionInput(74, { sku: "BLACK-TEE-L" }));
-
-  const beforeCanceledMapping = JSON.parse(JSON.stringify(state));
-
-  assertErrorCode(
-    () => mapVariation(state, auctionInput(72, { sku: "BLACK-TEE-L" })),
-    "CANCELED_VARIATION_IMMUTABLE",
-  );
-  assert.deepEqual(state, beforeCanceledMapping);
-  const unpaidMapping = mapVariation(
-    state,
-    auctionInput(73, { sku: "BLACK-TEE-L" }),
-  );
-
-  assert.equal(getAuction(state, auctionInput(72)).status, "canceled");
-  assert.equal(getAuction(state, auctionInput(72)).sku, null);
-  assert.equal(unpaidMapping.status, "marked_unpaid");
-  assert.equal(unpaidMapping.sku, "BLACK-TEE-L");
-  assert.equal(
-    getInventoryAvailability(state, { sku: "BLACK-TEE-L" }).reservedQuantity,
-    1,
-  );
-});
-
 test("hydrates a detached state after a JSON storage round trip", () => {
   const state = createState();
 
@@ -1700,16 +1439,26 @@ test("strictly migrates v6 manual-unpaid flags into automatic reservation mappin
     variationNumber: 100,
   });
   mapVariation(state, auctionInput(100, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(100));
   mapVariation(state, auctionInput(101, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(101));
   unmapVariation(state, auctionInput(101));
   mapVariation(state, auctionInput(102, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(102));
   recordPaymentComplete(
     state,
     auctionInput(102, { soldPriceCents: 3000 }),
   );
+  const legacyAuctions = new Map(
+    state.streams[0].variations.map((auction) => [
+      auction.variationNumber,
+      auction,
+    ]),
+  );
+
+  legacyAuctions.get(100).mappingStatus = "marked_unpaid";
+  legacyAuctions.get(101).mappingStatus = "marked_unpaid";
+  legacyAuctions.get(102).mappingStatus = "marked_unpaid";
+  legacyAuctions.get(102).conflicts.push({
+    code: "payment_completed_after_marked_unpaid",
+  });
 
   const v6State = JSON.parse(JSON.stringify(state));
   v6State.version = 6;
@@ -1756,7 +1505,6 @@ test("v6 payment-after-cancellation conflicts migrate back to irreversible cance
     attributedGmvDisplay: "$99.99",
   });
   mapVariation(state, auctionInput(110, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(110));
   recordPaymentComplete(
     state,
     auctionInput(110, { soldPriceCents: 3500 }),
@@ -1765,8 +1513,17 @@ test("v6 payment-after-cancellation conflicts migrate back to irreversible cance
     state,
     auctionInput(110, { soldPriceCents: 3600 }),
   );
-  state.streams[0].variations[0].conflicts.push({
-    code: "payment_completed_after_canceled",
+  Object.assign(state.streams[0].variations[0], {
+    mappingStatus: "marked_unpaid",
+    conflicts: [
+      { code: "payment_completed_after_marked_unpaid" },
+      {
+        code: "conflicting_sold_price",
+        retainedSoldPriceCents: 3500,
+        observedSoldPriceCents: 3600,
+      },
+      { code: "payment_completed_after_canceled" },
+    ],
   });
 
   const v6State = JSON.parse(JSON.stringify(state));
@@ -1819,15 +1576,18 @@ test("v3 and v5 snapshots normalize legacy unpaid and cancellation-overridden sa
     attributedGmvDisplay: "$50.00",
   });
   mapVariation(state, auctionInput(120, { sku: "BLACK-TEE-M" }));
-  markUnpaid(state, auctionInput(120));
   mapVariation(state, auctionInput(121, { sku: "BLACK-TEE-L" }));
-  markUnpaid(state, auctionInput(121));
   recordPaymentComplete(
     state,
     auctionInput(121, { soldPriceCents: 4000 }),
   );
-  state.streams[0].variations[1].conflicts.push({
-    code: "payment_completed_after_canceled",
+  state.streams[0].variations[0].mappingStatus = "marked_unpaid";
+  Object.assign(state.streams[0].variations[1], {
+    mappingStatus: "marked_unpaid",
+    conflicts: [
+      { code: "payment_completed_after_marked_unpaid" },
+      { code: "payment_completed_after_canceled" },
+    ],
   });
 
   const v3State = toLegacyState(state, 3);
@@ -1968,7 +1728,8 @@ test("keeps legacy payment-era and canonical v7 auction shapes strict", () => {
     "payment_pending";
   const currentMarkedUnpaid = createState();
   mapVariation(currentMarkedUnpaid, auctionInput(74, { sku: "BLACK-TEE-M" }));
-  markUnpaid(currentMarkedUnpaid, auctionInput(74));
+  currentMarkedUnpaid.streams[0].variations[0].mappingStatus =
+    "marked_unpaid";
   const currentCanceledConflict = createState();
   mapVariation(currentCanceledConflict, auctionInput(75, { sku: "BLACK-TEE-M" }));
   recordPaymentComplete(

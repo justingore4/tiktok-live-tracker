@@ -59,18 +59,10 @@ button {
 
 .app-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 11px;
   align-items: center;
   margin-bottom: 17px;
-}
-
-.header-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  min-width: 0;
 }
 
 .brand-mark {
@@ -127,8 +119,7 @@ button {
   text-transform: uppercase;
 }
 
-.header-demo-toggle,
-.demo-badge {
+.session-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -137,41 +128,6 @@ button {
   font-weight: 760;
   letter-spacing: 0.04em;
   white-space: nowrap;
-}
-
-.header-demo-toggle {
-  width: 70px;
-  min-height: 26px;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  background: rgb(18 23 32 / 82%);
-  font-size: 10px;
-  font-weight: 760;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.header-demo-toggle:hover:not(:disabled) {
-  color: var(--text);
-  background: rgb(255 255 255 / 5%);
-}
-
-.header-demo-toggle[aria-pressed="true"] {
-  border-color: rgb(39 211 180 / 38%);
-  color: #d8f7f1;
-  background: rgb(39 211 180 / 14%);
-}
-
-.header-demo-toggle:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.header-demo-toggle:disabled {
-  cursor: wait;
-  opacity: 0.62;
 }
 
 .inventory-import-panel {
@@ -1384,7 +1340,7 @@ button {
   font-size: 10px;
 }
 
-.demo-badge {
+.session-badge {
   align-self: flex-start;
   padding: 6px 9px;
   color: #b9f9ec;
@@ -1716,96 +1672,19 @@ button {
   line-height: 1.45;
 }
 
-.lifecycle-controls {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  margin: 15px 0 0;
-  padding: 13px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: rgb(9 12 17 / 45%);
-}
-
-.lifecycle-controls legend {
-  padding: 0 5px;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.demo-controls-note,
 .field-help,
-.field-error,
-.buffer-expired-note,
-.unpaid-note {
+.field-error {
   margin: 0;
   font-size: 10px;
   line-height: 1.45;
 }
 
-.demo-controls-note,
 .field-help {
   color: var(--text-subtle);
 }
 
 .field-error {
   color: #ff9ea6;
-}
-
-.buffer-expired-note {
-  color: #ffdc96;
-}
-
-.unpaid-note {
-  color: #c7d0dc;
-}
-
-#complete-payment-form {
-  display: grid;
-  gap: 8px;
-}
-
-#complete-payment-form > label {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 690;
-}
-
-.price-input {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface-raised);
-}
-
-.price-input:focus-within {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 3px rgb(72 165 255 / 18%);
-}
-
-.price-input > span {
-  padding-left: 11px;
-  color: var(--text-muted);
-  font-weight: 720;
-}
-
-.price-input input {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 11px 10px 4px;
-  border: 0;
-  outline: 0;
-  color: var(--text);
-  background: transparent;
-  font-weight: 690;
-}
-
-.price-input:has(input[aria-invalid="true"]) {
-  border-color: #ff8f98;
 }
 
 .primary-action,
@@ -2391,7 +2270,6 @@ button {
   box-shadow: 0 0 0 3px rgb(255 115 126 / 12%);
 }
 
-.app-footer[data-phase="demo"] .status-dot,
 .app-footer[data-phase="inactive"] .status-dot {
   background: var(--text-subtle);
   box-shadow: 0 0 0 3px rgb(119 132 151 / 10%);
@@ -2453,7 +2331,7 @@ button {
     width: 100%;
   }
 
-  .demo-badge {
+  .session-badge {
     align-self: flex-end;
   }
 

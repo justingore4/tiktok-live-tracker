@@ -16,8 +16,6 @@
       "INITIALIZE_STATE",
       "MAP_VARIATION",
       "UNMAP_VARIATION",
-      "MARK_UNPAID",
-      "UNDO_MARK_UNPAID",
     ]);
 
     class ReconciliationClientError extends Error {
@@ -319,15 +317,6 @@
         };
       }
 
-      function markUnpaid(optionsValue) {
-        return enqueueCommand(() =>
-          createVariationCommand(
-            protocol.COMMAND_TYPES.MARK_UNPAID,
-            optionsValue,
-          ),
-        );
-      }
-
       function unmapVariation(optionsValue) {
         return enqueueCommand(() =>
           createVariationCommand(
@@ -337,22 +326,11 @@
         );
       }
 
-      function undoMarkUnpaid(optionsValue) {
-        return enqueueCommand(() =>
-          createVariationCommand(
-            protocol.COMMAND_TYPES.UNDO_MARK_UNPAID,
-            optionsValue,
-          ),
-        );
-      }
-
       return Object.freeze({
         getState,
         initializeState,
         mapVariation,
-        markUnpaid,
         unmapVariation,
-        undoMarkUnpaid,
       });
     }
 

@@ -83,16 +83,16 @@ Only a `Payment complete` badge with a parsed final price promotes the record to
 | --- | --- |
 | `unmapped` | No inventory entry has been selected |
 | `mapped` | The variation is linked to a valid inventory `sku` |
-| `marked_unpaid` | Legacy/offline-demo simulation only; Live mode does not create it |
+| `marked_unpaid` | Legacy manual-unpaid state; version 1–6 snapshots normalize it before Live use, and version 7 rejects it |
 
 The engine derives a user-facing auction status from both axes:
 
 | Derived status | Meaning |
 | --- | --- |
 | `unmapped` | No completed payment and no inventory mapping |
-| `mapped` | Inventory is selected in an isolated demo state that does not reserve stock |
+| `mapped` | Legacy display state with inventory selected but no pending reservation |
 | `pending` | Inventory is mapped and canonical payment truth is still unresolved |
-| `marked_unpaid` | Locally closed as unpaid; remaining stock is unchanged and its reservation is released |
+| `marked_unpaid` | Legacy manual-unpaid state normalized during migration |
 | `canceled` | TikTok canonically canceled the auction; its item link is retained, its reservation is released, and no sale is counted |
 | `unmapped_completed` | TikTok shows payment complete, but the inventory item is unknown |
 | `committed` | Payment is complete and the inventory item is mapped |
@@ -136,19 +136,16 @@ buffer expires:
 3. If the same physical item is auctioned again, TikTok assigns a new variation number.
 4. The employee maps that new variation as a separate auction.
 
-Live mode does not infer cancellation with a timer and exposes no **Mark unpaid** or
-**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge. Manual unpaid
-simulation remains confined to Offline demo and cannot mutate canonical live state.
+The Live tagger does not infer cancellation with a timer and exposes no **Mark unpaid** or
+**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge.
 
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
 rules module. The saved tagger uses its read model while the service-worker coordinator
-owns persistent mapping, rejects legacy manual-unpaid commands, and owns captured
+owns persistent mapping and captured
 variation, current-bidding, payment-status, payment-complete, and Attributed-GMV
-operations. The
-separate offline demo also uses its payment-complete operation. Simulated-payment undo is
-a private demo-session checkpoint, not a reconciliation-engine operation.
+operations.
 
 The module also exposes a strict hydration boundary for data read from persistence. It
 rebuilds a detached canonical state only after validating versions, inventory, streams,
@@ -567,20 +564,14 @@ live testing must still determine whether the entire list is always rendered or
 virtualized. No underlying TikTok API or network payload has been selected. The current
 capture can only report facts that reached durable reconciliation state before End.
 
-## 5. Employee tagger — live session and offline demo implemented
+## 5. Employee tagger — Live session implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
-The Chrome side panel has two explicit modes without a separate Workspace chooser. It
-opens in Live session mode. A compact **Demo** button in the header is an
-accessible pressed-state toggle between the modes:
-
-- **Live session** is the default employee workspace. It requires a persistent local
-  active stream, restores the last durable reconciliation state, persists mapping
-  corrections, and displays loading, saving, success, and retryable error states.
-- **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
-  isolated state, sends no persistent commands, and resets when recreated or reloaded.
+The Chrome side panel is a single **Live session** employee workspace. It requires a
+persistent local active stream, restores the last durable reconciliation state, persists
+mapping corrections, and displays loading, saving, success, and retryable error states.
 
 Before Start, Live session presents Google Sheets inventory import followed by the local
 Start controls. Once a stream is started or resumed, the tracker workspace and Variation
@@ -608,14 +599,14 @@ canceling confirmation or any failed worker command changes nothing.
 
 Shared tagger behavior includes:
 
-- A native variation dropdown. Live-session mode shows canonical stream records from the
-  current-bidding and Sold Items paths; the isolated Offline demo retains its clearly
-  labeled prototype history. The active option is formatted
+- A native variation dropdown showing canonical stream records from the current-bidding
+  and Sold Items paths. The active option is formatted
   `#N - bidding - <selected item or No item selected>`.
 - Stable variation identity with automatic selection of the next active bidding marker
   while the employee is following the current auction. A manually selected historical
   variation stays selected while newer markers and status changes update the dropdown.
-- Responsive, employee-facing inventory cards using mock data.
+- Responsive, employee-facing inventory cards using the stream's pinned Google Sheets
+  inventory baseline.
 - Search across item, style, and size.
 - Engine-derived remaining, pending, available, and oversold states. Cards show a pending
   reservation from mapping during bidding until completion or cancellation. Zero-stock
@@ -627,12 +618,9 @@ Shared tagger behavior includes:
   row.
 - A canceled result that keeps the historical item link visible, reports that its
   reservation was released and stock stayed unchanged, greys out every inventory card,
-  rejects map/unmap/remap commands, and hides payment-lifecycle actions that no longer
-  apply.
+  and rejects map/unmap/remap commands.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
-- Clearly labeled offline-demo controls that simulate a completed payment and expired
-  payment buffer without acting on TikTok or saved data.
 - A captured final price as soon as payment completes, even while unmapped; unit cost,
   gross profit/loss, and remaining inventory appear only when an item is assigned.
 - A bottom **Metrics** section labels `totals.completedGmvCents` as **Gross Item Sales**:
@@ -681,12 +669,7 @@ Shared tagger behavior includes:
   assigned. Historical unmapping, mapping, and remapping recalculate the subtotal and
   warning immediately. This basic figure excludes shipping, platform fees, taxes,
   discounts, refunds, and other expenses.
-- **Undo simulated payment**, which restores only the selected variation's isolated demo
-  payment state while preserving later mapping corrections and edits to other variations,
-  removes that simulated revenue/profit deduction, and returns focus to item selection.
-- Demo-only **Mark unpaid after buffer** and **Undo unpaid** simulations. Live mode omits
-  both controls and relies solely on captured TikTok completion or cancellation.
-- Unmapping that releases pending reservations, preserves an unpaid decision, and returns
+- Unmapping that releases pending reservations and returns
   a completed sale to the item-needed exception without changing its payment status or Gross Item Sales contribution.
 - Mapping correction after completion, applied atomically by restoring the old SKU,
   decrementing the new SKU, and recalculating committed cost and profit.
@@ -698,18 +681,18 @@ Shared tagger behavior includes:
   read-only.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-Live-session mode requires a persistent local tracker stream and an imported inventory
+The Live session requires a persistent local tracker stream and an imported inventory
 baseline. Before Start, the side panel asks the worker for import readiness. The Start
 control remains unavailable until a confirmed active baseline has a nonempty Sheet
 fingerprint, and the worker independently enforces the same requirement before creating
 and durably saving a `local-stream:<uuid>` identity. It then pins that stream to the
-baseline. Offline-demo inventory cannot authorize a new Start.
+baseline.
 
 Reopening the panel offers Resume for the same identity; the worker verifies or repairs
 its missing pin before returning the active session. Capture also verifies the pin before
 recording a fact. An existing pin can never be changed. Compatibility remains deliberately
-narrow: an already-active legacy session may resume with its existing baseline, and the
-old mock baseline is used only to repair a previously active legacy session whose
+narrow: an already-active legacy session may resume with its existing baseline, and a
+fixed legacy recovery baseline is used only to repair a previously active legacy session whose
 reconciliation record is truly absent. That recovery path cannot seed a new stream or
 replace non-null canonical state.
 
@@ -740,14 +723,6 @@ the compact **Return to live item** action appears while history is selected. It
 the active bidding variation when present and otherwise the newest captured variation;
 returning through it resumes automatic follow.
 Selection navigation itself is local UI state and does not write to storage.
-
-The demo exists only while the side panel remains loaded. It uses mock inventory, treats
-`#203` as on screen, and presents previous variations `#202`, `#201`, and `#200` with
-completed, unselected, and unpaid examples. It seeds no pending reservation. Navigation does not create or mutate auction
-records; every demo variation shares one isolated reconciliation state so corrections
-immediately recalculate shared inventory and profit. Reloading resets changes to those
-demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
-reverse a TikTok event or modify the live session.
 
 Capture adds the on-video bidding marker, Sold Items variations, sanitized payment
 states, and completed prices to
@@ -915,8 +890,8 @@ the sole canonical-state command owner. Its reconciliation coordinator:
 
 - lazily loads saved state once per worker lifetime;
 - represents a missing key as explicitly uninitialized rather than inventing inventory;
-- accepts transitional one-time mock initialization, append-only baseline creation,
-  explicit mapping, unmapping, unpaid commands, worker-authorized
+- accepts transitional one-time legacy recovery initialization, append-only baseline
+  creation, explicit mapping, unmapping, worker-authorized
   Sold Items variation/payment-status observations, current-bidding observations,
   Attributed GMV observations, and completed payments;
 - treats an identical replay of the same baseline ID as a no-op and rejects that ID if
@@ -949,7 +924,7 @@ Resume, or capture delivery verifies and repairs the missing pin. A conflicting 
 pin fails closed. Baseline creation and replacement initialization are rejected while a
 session is active, preventing the active pointer from changing during a stream. The sole
 upgrade-recovery exception applies when an older saved active session has no
-reconciliation state at all: Retry may create the transitional mock baseline and pin
+reconciliation state at all: Retry may create the fixed legacy recovery baseline and pin
 that same saved stream ID. It never replaces nonnull, malformed, or future-version data.
 
 Worker messages use strict versioned envelopes and return plain success or error data.
@@ -1005,7 +980,7 @@ The side panel first uses dedicated import and stream-session client/controllers
 active session it offers Sheets import and keeps Start unavailable until the worker
 reports a confirmed imported baseline. After a panel or browser restart it offers Resume;
 while resumed it offers an inline-confirmed End. Malformed, corrupt, future-version, and
-failed reads never trigger initialization or replacement. A guarded mock preparation
+failed reads never trigger initialization or replacement. A guarded legacy recovery
 runs only from Retry to repair an already-active session left by the older
 session-before-inventory startup sequence. Only a successfully started or resumed and
 pinned session mounts the persistent tagger controller, which renders inventory from the
@@ -1029,10 +1004,8 @@ Reopening the panel still
 rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
 directly.
 
-The tagger runtime client deliberately exposes no payment-complete command. Offline-demo
-actions send no runtime messages, and their simulations remain detached from canonical
-state. An already-mounted live controller may finish loading in the background while the
-demo is open. The capture runtime client has the inverse narrow authority: it may submit
+The tagger runtime client deliberately exposes no payment-complete command. The capture
+runtime client has the inverse narrow authority: it may submit
 only Sold Items variation numbers, one current bidding variation number, sanitized
 payment-status codes, completed variation/price facts, and the sanitized Attributed GMV
 display, never mappings, stream
@@ -1041,8 +1014,7 @@ Sheets reader is a separate worker-owned boundary. The local report may serializ
 six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
 to a later stage.
 
-Offline simulation checkpoints and resets must never overwrite captured or persisted
-canonical state. Exact pre-completion `Canceled` is now authoritative for allocation;
+Exact pre-completion `Canceled` is authoritative for allocation;
 production refunds or post-completion cancellations still require their own future event
 rather than reversing a `payment_complete` record.
 
@@ -1319,8 +1291,8 @@ Browser support beyond Chrome is a later decision.
 ## 10. Development sequence
 
 1. **Completed:** sale parser and read-only capture probe.
-2. **Completed:** offline reconciliation engine and automated tests.
-3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
+2. **Completed:** reconciliation engine and automated tests.
+3. **Completed:** tagger foundation, mapping workflow, and captured payment lifecycle display.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
 5. **Capture hardening completed:** bounded scheduling, SPA lifecycle recovery, exact

@@ -14,7 +14,6 @@ const formatUsdCents = inventoryViewModel.formatUsdCents;
 
 function createDisplay(overrides = {}) {
   return liveAuctionViewModel.createDisplay({
-    activeMode: "saved_session",
     view: {
       activeBiddingVariationNumber: 225,
       activeAuctionMapping: null,
@@ -25,11 +24,7 @@ function createDisplay(overrides = {}) {
   });
 }
 
-test("live auction display stays hidden only outside an available live workspace", () => {
-  assert.equal(
-    createDisplay({ activeMode: "offline_demo" }).hidden,
-    true,
-  );
+test("live auction display stays hidden only without an available Live workspace", () => {
   assert.equal(
     createDisplay({ view: null }).hidden,
     true,

@@ -20,7 +20,7 @@ const streamSessionStorage = require(
   "../extension/shared/stream-session-storage.js"
 );
 const mappingWorkflow = require("../extension/tagger/mapping-workflow.js");
-const { MOCK_INVENTORY } = require(
+const { LEGACY_RECOVERY_INVENTORY } = require(
   "../extension/tagger/inventory-view-model.js"
 );
 const persistentTaggerController = require(
@@ -38,6 +38,7 @@ const STUSSY_L_SKU = "STUSSY-TEE-BLACK-L";
 const STUSSY_M_SKU = "STUSSY-TEE-BLACK-M";
 const NIKE_XL_SKU = "NIKE-HOODIE-GREY-XL";
 const NIKE_L_SKU = "NIKE-HOODIE-GREY-L";
+const TEST_INVENTORY = LEGACY_RECOVERY_INVENTORY;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -132,7 +133,7 @@ function createRuntime(stateCoordinator) {
 }
 
 function createController(stateCoordinator, options = {}) {
-  const inventory = options.inventory ?? MOCK_INVENTORY;
+  const inventory = options.inventory ?? TEST_INVENTORY;
   const currentVariationNumber =
     options.currentVariationNumber ?? CURRENT_VARIATION;
   const variationNumbers = options.variationNumbers ?? [
@@ -158,7 +159,7 @@ function createController(stateCoordinator, options = {}) {
 async function startPreparedStream(
   stateCoordinator,
   activeStreamCoordinator,
-  inventory = MOCK_INVENTORY,
+  inventory = TEST_INVENTORY,
 ) {
   const client = reconciliationClient.createReconciliationClient({
     runtime: createRuntime(stateCoordinator),
@@ -372,7 +373,7 @@ test("live capture and persistent tagging reconcile six inventory entries withou
   assert.equal(snapshot.view.totals.committedRevenueCents, 0);
   assert.equal(snapshot.view.totals.costOfGoodsCents, 0);
   assert.equal(snapshot.view.totals.profitCents, 0);
-  MOCK_INVENTORY.forEach(({ quantityReceived, sku }) => {
+  TEST_INVENTORY.forEach(({ quantityReceived, sku }) => {
     assert.deepEqual(inventoryQuantities(snapshot, sku), {
       availableToTagQuantity: quantityReceived,
       remainingQuantity: quantityReceived,
@@ -391,7 +392,7 @@ test("live capture and persistent tagging reconcile six inventory entries withou
   assert.equal(reopened.view.auction.status, "unmapped_completed");
   assert.equal(reopened.view.auction.paymentStatus, "payment_complete");
   assert.equal(reopened.view.auction.soldPriceCents, SOLD_PRICE_CENTS);
-  MOCK_INVENTORY.forEach(({ quantityReceived, sku }) => {
+  TEST_INVENTORY.forEach(({ quantityReceived, sku }) => {
     assert.equal(
       inventoryEntry(reopened, sku).remainingQuantity,
       quantityReceived,

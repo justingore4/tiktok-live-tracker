@@ -63,7 +63,7 @@ auctioned again, the employee maps its new variation number.
 - A Manifest V3 Chrome extension whose isolated capture script is available only on the
   exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
   dashboard path.
-- A responsive Chrome side-panel prototype with mock inventory, search, pending reservations,
+- A responsive Chrome side-panel prototype with imported Google Sheets inventory, search, pending reservations,
   zero-stock and oversold states, one-click item mapping and unmapping, and a current/previous
   variation selector. The active on-video auction is labeled `bidding` and can be mapped
   before the sale reaches Sold Items. While the employee is viewing the current auction,
@@ -118,9 +118,8 @@ auctioned again, the employee maps its new variation number.
   revenue from mapped, completed orders minus their pinned Google Sheets unit costs.
   Completed orders without an inventory match are excluded from that subtotal and produce
   an incomplete-count warning until they are mapped.
-- A default **Live session** mode with explicit Start, Resume, and End controls. The
-  separate Workspace chooser is removed; a compact **Demo** toggle in the header opens
-  or closes the isolated offline demo. The worker-made local stream ID
+- A **Live session** workspace with explicit Start, Resume, and End controls. The
+  worker-made local stream ID
   survives side-panel, browser, and service-worker restarts, while End keeps
   reconciliation history and does not act on TikTok LIVE.
 - A report-aware **End Stream Tracking** flow. Confirmation freezes the current durable
@@ -160,13 +159,6 @@ auctioned again, the employee maps its new variation number.
   into the automatic TikTok payment lifecycle during migration.
 - Loading, saving, retry, and fail-closed error states that keep the last successfully
   saved view visible when a command fails.
-- An in-memory lifecycle demo for variations `#200` through `#203`. It keeps on-screen
-  variation `#203` distinct from the previous variation being reviewed, and previous
-  mappings can be corrected directly from the same inventory cards.
-- Offline controls that can simulate payment completion, undo only that variation's
-  simulated completion, expire its payment buffer, **Mark unpaid**, and **Undo unpaid**.
-- Engine-derived final price, unit cost, gross profit/loss, and inventory results after
-  a simulated completed payment.
 - A read-only `MutationObserver` capture probe with bounded scheduling so ordinary
   dashboard updates cannot indefinitely postpone scans while the page is executing.
 - SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
@@ -228,8 +220,7 @@ auctioned again, the employee maps its new variation number.
     item link, releases its reservation, and contributes no sale or money;
   - treats cancellation as terminal and rejects later payment or mapping mutations;
   - supports mapping corrections and click-again unmapping for every non-canceled order;
-    Live mode relies exclusively on captured TikTok payment truth while Offline demo
-    retains isolated lifecycle simulations;
+    payment results rely exclusively on captured TikTok truth;
   - applies completed historical corrections atomically by restoring the old SKU,
     decrementing the new SKU, and recalculating its cost snapshot and gross profit;
   - keeps zero-stock inventory selectable and surfaces `Oversold by N` instead of
@@ -264,8 +255,8 @@ auctioned again, the employee maps its new variation number.
   guarded Retry also repairs an older active session whose reconciliation state was
   never initialized, without replacing any existing canonical data.
 - A strict tagger runtime client and controller that send employee mutations through
-  that coordinator. Live UI exposes mapping and unmapping only; the worker explicitly
-  rejects legacy manual-unpaid commands. The tagger never
+  that coordinator. Live UI and its runtime protocol expose mapping and unmapping only;
+  no manual-unpaid command exists. The tagger never
   accesses browser storage directly and cannot create authoritative payment-complete
   events.
 - Automated capture, parser, reconciliation, persistence, service-worker, and tagger
@@ -353,10 +344,10 @@ before updating the Sheet.
 
 ## Development roadmap
 
-1. Build the offline tagger interface in three focused stages:
+1. Build the tagger interface in three focused stages:
    1. **Completed:** interface foundation;
    2. **Completed:** item-mapping workflow;
-   3. **Completed:** payment lifecycle controls and testing.
+   3. **Completed:** captured payment lifecycle display and testing.
 2. Persist canonical stream state in browser storage in three focused stages:
    1. **Completed:** versioned storage envelope, strict hydration, and adapter tests;
    2. **Completed:** coordinate serialized state updates through the extension service
@@ -463,20 +454,12 @@ PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper
       `REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com` in
       `extension/manifest.json` with that public client ID. Do not add a client secret.
    5. Select **Reload** for the extension on `chrome://extensions`.
-6. Click the extension's toolbar icon to open the tagger side panel. Confirm it opens
-   directly in Live session mode with no Workspace chooser, and that the compact
-   **Demo** toggle appears in the header.
+6. Click the extension's toolbar icon to open the Live session tagger side panel.
 
 For a shipped build, configure the OAuth client against the final Chrome Web Store item
 ID, not a temporary unpacked ID. Use the Store item's public key when a stable matching
 unpacked-development ID is required. The checked-in placeholder intentionally makes a
 misconfigured build fail before requesting Google authorization.
-
-If this Chrome profile previously used the old saved `demo-stream` prototype, its test
-mappings still exist by design and can affect shared inventory. Before the first real
-stream test, remove the unpacked extension from `chrome://extensions` and load it again,
-or clear its local extension storage, only if you intentionally want to discard that
-prototype data. There is no silent reset.
 
 7. In Google Sheets, create a spreadsheet from
    [`docs/google-sheets-inventory-template.csv`](docs/google-sheets-inventory-template.csv):
@@ -493,8 +476,8 @@ prototype data. There is no silent reset.
    re-reads the `Inventory` tab; if anything changed after preview, nothing is imported
    and a fresh preview is required. An import supports at most 1,000 inventory rows;
    larger Sheets fail as a whole rather than rendering or importing a partial list.
-10. Select **Start stream**. A new live tracker stream now requires a confirmed imported
-    baseline; offline demo inventory cannot satisfy Start. The worker starts the local
+10. Select **Start stream**. A new live tracker stream requires a confirmed imported
+    baseline. The worker starts the local
     stream and permanently pins it to that baseline. This does not start TikTok LIVE.
     Until capture records an on-video bidding variation or a Sold Items row, confirm the
     variation selector waits for a live auction variation and inventory mapping is
@@ -505,30 +488,16 @@ prototype data. There is no silent reset.
     saved-state footer indicator follows it.
 11. Close and reopen the side panel. Select **Resume active stream** and confirm the same
     local stream is restored without creating a fake live variation.
-12. Select the compact **Demo** toggle in the header. Confirm it becomes pressed,
-    the panel switches to Offline demo, and the variation dropdown lists current
-    variation `#203` plus seeded history `#202`, `#201`, and `#200`.
-13. Select `#202`, confirm the banner says **Reviewing previous variation**, then select a
-    different inventory card and confirm its completed-sale inventory and profit update.
-14. Return to `#203`, map `Stussy tee - black, L`, and exercise the isolated Offline
-    demo lifecycle. Demo controls may expose manual buffer-expiry and unpaid simulations;
-    those controls never appear in Live mode or alter saved live data.
-15. Simulate a `$48.00` completed payment and confirm `$48.00`, `+$36.00 profit`, and
-    `4 left`; then use **Undo simulated payment** and confirm the item remains selected,
-    returns to the unresolved reservation state, and shows `4 left` with `1 pending`.
-16. Test the demo-only buffer-expiry, mark-unpaid, and undo-unpaid simulations. Select
-    **Demo** again to return to the default Live session and confirm none of those
-    controls appear there and none of the demo-only changes altered saved data.
-17. Keep that local stream active, open
+12. Keep that local stream active, open
     `https://shop.tiktok.com/streamer/live/product/dashboard`, and refresh the dashboard
     once after loading or reloading the unpacked extension.
-18. Open DevTools and confirm the Console contains the exact active route:
+13. Open DevTools and confirm the Console contains the exact active route:
 
    ```text
    [TikTok Live Tracker] Capture probe active on /streamer/live/product/dashboard.
    ```
 
-19. Keep the active Live session side panel open while an auction is running. Confirm the
+14. Keep the active Live session side panel open while an auction is running. Confirm the
     variation shown in the card at the bottom of the video appears automatically as
     `#N - bidding - No item selected`. Select its inventory item before bidding ends and
     confirm the same option keeps `bidding` but replaces `No item selected` with the item,
@@ -557,7 +526,7 @@ prototype data. There is no silent reset.
     authoritative. Reopen the panel and allow the service worker to suspend/restart during
     an auction; confirm the stream-paired latest display is recovered without showing data
     from another variation or stream.
-20. In **LIVE auctions → Sold items**, confirm completed and payment-state variations
+15. In **LIVE auctions → Sold items**, confirm completed and payment-state variations
     remain in the same selector. When the active bidding variation reaches Sold Items,
     its existing mapping must remain attached while the `bidding` marker clears and its
     payment wording takes over. Under **TikTok payment**, confirm its exact observed state appears as
@@ -607,21 +576,21 @@ prototype data. There is no silent reset.
     If a completed order has no inventory item, confirm it is excluded from that subtotal
     and the card reports how many completed sales still need items. Map or remap one and
     confirm the subtotal and warning recalculate immediately.
-21. Map an item during bidding, confirm `1 pending`, then let TikTok move it through
+16. Map an item during bidding, confirm `1 pending`, then let TikTok move it through
     processing and temporary failed. Switch away and back, then reopen and Resume once;
     the mapping and reservation must remain durable throughout. If TikTok completes it,
     confirm pending disappears while one unit remains consumed. On a different test
     variation, wait for exact `Canceled` and confirm its pending unit is restored
     automatically with no employee action.
-22. On any non-canceled variation, select a SKU already showing `0 left`. Confirm the
+17. On any non-canceled variation, select a SKU already showing `0 left`. Confirm the
     card stays enabled, never says **Sold out**, and reports `Oversold by 1`. Assign that
     SKU again and confirm the warning increments. Canceling one pending order must reduce
     or remove its oversold amount. Only reviewing a canceled variation disables all
     inventory cards.
-23. Use TikTok's own navigation to leave the dashboard and return without reloading the
+18. Use TikTok's own navigation to leave the dashboard and return without reloading the
     tab; confirm capture becomes active again. Put the tab in the background, return to
     it, and confirm a later Sold Items change is still captured.
-24. Open **End Stream Tracking** while the stream still contains a pending inventory
+19. Open **End Stream Tracking** while the stream still contains a pending inventory
     reservation and a completed sale without an item. Confirm the readiness text explains
     both attention items by count and that neither condition blocks End. Select
     **Keep stream active** once and verify tracking continues. Open it again and select
@@ -629,7 +598,7 @@ prototype data. There is no silent reset.
     end only after its report is saved, and the new report must open in a separate tab.
     If report creation or local storage fails, normal End must leave the active stream in
     place and offer the explicit **End without report** recovery action.
-25. In the report, verify its attention notices match the unresolved conditions. A clean
+20. In the report, verify its attention notices match the unresolved conditions. A clean
     stream with no active bidding marker, unresolved/fixing order, pending reservation,
     unmapped completed sale, conflict, or oversold/recount condition must show no
     attention notice. Verify the completed-sale table includes mapped and unmapped
@@ -637,7 +606,7 @@ prototype data. There is no silent reset.
     table contains every SKU from the pinned baseline. Use **Print / Save as PDF**, choose
     Chrome's **Save as PDF** destination, and save a copy outside the extension if the
     report must be retained.
-26. To replace the Sheet counts, first duplicate the Google Sheets **Inventory** tab as a
+21. To replace the Sheet counts, first duplicate the Google Sheets **Inventory** tab as a
     backup. In the report select **Copy Updated Inventory**, return to the original
     **Inventory** tab, click cell **A1** (the first cell in the upper-left corner), and
     press **Ctrl+V** on Windows or **Cmd+V** on macOS. Verify the pasted rectangle has the
@@ -645,21 +614,21 @@ prototype data. There is no silent reset.
     `unit_cost`, and that every row aligns with its SKU. **Copy Updated Inventory**
     provides the complete six-column handoff; paste that table at A1 rather than copying
     individual values from the report.
-27. As an alternative, select **Download Updated Inventory CSV**, then use Google Sheets
+22. As an alternative, select **Download Updated Inventory CSV**, then use Google Sheets
     **File -> Import -> Upload** and choose **Replace current sheet** only after making the
     backup. The CSV is formula-injection-safe and preserves the valid six-column Sheet
     values. A replacement quantity is clamped to zero when calculated inventory is
     negative; review the report's raw oversold amount and physically recount that SKU
     instead of treating the zero as proof that stock was exact. Do not use replacement
     counts without resolving or manually reviewing every attention notice.
-28. Return to the side panel after End. Confirm **Business Records** lists the saved
+23. Return to the side panel after End. Confirm **Business Records** lists the saved
     report with its date, completed/total count, and Gross Item Sales. Open it and verify the same PDF
     and inventory-download actions remain available. End enough isolated test streams to
     create six reports: Business Records must retain the newest five and automatically
     move the oldest finalized report into **Archived stream reports**, without deleting
     or changing it. Open that archived report and verify its report/PDF/CSV output is
     unchanged.
-29. Use **More actions** on a Business Record to archive it manually. The action must fail
+24. Use **More actions** on a Business Record to archive it manually. The action must fail
     without changing anything if the 25 archive slots or shared byte cap are full. With
     an open Business Records slot, select archived reports and use **Restore selected**;
     the complete selection must move back atomically. If the selection is larger than the
@@ -667,7 +636,7 @@ prototype data. There is no silent reset.
     selection**, then choose **Delete selected**. Cancel the confirmation once and verify
     nothing changes; confirm it only for disposable test records and verify only those
     archived records are permanently removed.
-30. At five Business Records plus 25 archived reports—or when the combined cap of
+25. At five Business Records plus 25 archived reports—or when the combined cap of
     approximately 4 MiB is reached—attempt another report-aware End. It must show an
     explicit storage-full error, preserve all 30 records, and leave the local tracker
     stream active for retry. Free
@@ -683,13 +652,9 @@ capture fails closed and retries instead of scanning elsewhere. See
 and the remaining live-stream checks.
 
 Live-session identity and employee changes survive side-panel reloads and service-worker
-restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID.
-Offline-demo changes still reset when that disposable demo is recreated or the panel is
-reloaded.
-
-**Undo simulated payment** and demo unpaid controls affect only the private, in-memory
-Offline demo. Live mode has no manual unpaid controls. No demo control acts on TikTok or
-can reverse captured payment truth.
+restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID. The
+tagger has no manual unpaid or payment-undo controls; TikTok's captured payment truth is
+authoritative.
 
 ## Credentials and privacy
 

@@ -1,30 +1,8 @@
 (function initializeTaggerLifecycle() {
   "use strict";
 
-  const DEMO_STREAM_ID = "demo-stream";
-  const DEMO_CURRENT_VARIATION_NUMBER = 203;
-  const DEFAULT_DEMO_SOLD_PRICE = "48.00";
-  const DEMO_VARIATION_SEEDS = Object.freeze([
-    Object.freeze({
-      variationNumber: 202,
-      sku: "STUSSY-TEE-BLACK-M",
-      status: "committed",
-      soldPriceCents: 2000,
-    }),
-    Object.freeze({
-      variationNumber: 201,
-      status: "unmapped",
-    }),
-    Object.freeze({
-      variationNumber: 200,
-      sku: "CARHARTT-JACKET-BROWN-M",
-      status: "marked_unpaid",
-    }),
-  ]);
-  const DEMO_VARIATION_NUMBERS = Object.freeze([
-    DEMO_CURRENT_VARIATION_NUMBER,
-    ...DEMO_VARIATION_SEEDS.map((seed) => seed.variationNumber),
-  ]);
+  const FALLBACK_CURRENT_VARIATION_NUMBER = 203;
+  const FALLBACK_VARIATION_NUMBERS = Object.freeze([203, 202, 201, 200]);
   const CAPTURE_STATE_NOTIFICATION_CHANNEL =
     "tiktok-live-tracker.capture-state";
   const CAPTURE_STATE_NOTIFICATION_VERSION = 1;
@@ -51,7 +29,6 @@
     "GOOGLE_AUTH_SCOPE_MISSING",
     "GOOGLE_SCOPE_NOT_GRANTED",
   ]);
-  const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const tiktokFeeCalculator =
     globalThis.TikTokLiveTrackerTikTokFeeCalculator;
@@ -89,7 +66,6 @@
     globalThis.TikTokLiveTrackerPersistentTaggerController;
   const appShell = document.querySelector(".app-shell");
   const appFooter = document.querySelector(".app-footer");
-  const demoModeButton = document.querySelector("#offline-demo-mode");
   const savedSessionError = document.querySelector("#saved-session-error");
   const savedSessionErrorTitle = document.querySelector(
     "#saved-session-error-title",
@@ -307,7 +283,6 @@
     "#confirm-report-action",
   );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
-  const dataModeBadge = document.querySelector("#data-mode-badge");
   const variationContext = document.querySelector("#variation-context");
   const variationSelector = document.querySelector("#variation-selector");
   const returnToCurrentButton = document.querySelector("#return-to-current");
@@ -363,7 +338,6 @@
     '[data-field="mapped-variation"]',
   );
   const mappedItem = document.querySelector("#mapped-item");
-  const auctionEyebrow = document.querySelector("#auction-eyebrow");
   const auctionStatus = document.querySelector("#auction-status");
   const tiktokPaymentStatus = document.querySelector(
     "#tiktok-payment-status",
@@ -382,35 +356,11 @@
   const remainingInventoryResult = document.querySelector(
     '[data-field="remaining-inventory"]',
   );
-  const undoPaymentNote = document.querySelector("#undo-payment-note");
-  const undoSimulatedPaymentButton = document.querySelector(
-    "#undo-simulated-payment",
-  );
   const stateWarning = document.querySelector("#state-warning");
-  const lifecycleControls = document.querySelector("#lifecycle-controls");
-  const lifecycleControlsLegend = document.querySelector(
-    "#lifecycle-controls-legend",
-  );
-  const lifecycleControlsNote = document.querySelector(
-    "#lifecycle-controls-note",
-  );
-  const completePaymentForm = document.querySelector(
-    "#complete-payment-form",
-  );
-  const soldPriceInput = document.querySelector("#sold-price");
-  const soldPriceError = document.querySelector("#sold-price-error");
-  const simulateBufferButton = document.querySelector(
-    "#simulate-buffer-expiry",
-  );
-  const bufferExpiredNote = document.querySelector("#buffer-expired-note");
-  const markUnpaidButton = document.querySelector("#mark-unpaid");
-  const unpaidNote = document.querySelector("#unpaid-note");
-  const undoUnpaidButton = document.querySelector("#undo-unpaid");
   const mappingAnnouncement = document.querySelector("#mapping-announcement");
   const sessionFooterLabel = document.querySelector("#session-footer-label");
 
   if (
-    !saleParser ||
     !viewModel ||
     !tiktokFeeCalculator ||
     typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
@@ -477,8 +427,6 @@
     runtime: chrome.runtime,
     protocol: liveBidProtocol,
   });
-  let activeMode = "saved_session";
-  let demoSession = null;
   let persistentController = null;
   let unsubscribePersistentController = null;
   let mountedStreamId = null;
@@ -725,7 +673,6 @@
     if (
       !captureRefreshDirty ||
       captureRefreshTimerId !== null ||
-      activeMode !== "saved_session" ||
       !streamSnapshot.resumed ||
       streamSnapshot.activeSession === null ||
       persistentController === null
@@ -742,7 +689,6 @@
       if (
         scheduledController !== persistentController ||
         scheduledStreamId !== mountedStreamId ||
-        activeMode !== "saved_session" ||
         !streamSnapshot.resumed
       ) {
         return;
@@ -784,7 +730,6 @@
 
   function canRefreshLiveBid() {
     return (
-      activeMode === "saved_session" &&
       streamSnapshot.resumed &&
       streamSnapshot.activeSession !== null &&
       persistentController !== null &&
@@ -880,32 +825,8 @@
     return false;
   }
 
-  function createDemoSession() {
-    const nextSession = mappingWorkflow.createMappingSession({
-      inventory: viewModel.MOCK_INVENTORY,
-      reconciliation,
-      streamId: DEMO_STREAM_ID,
-      variationNumber: DEMO_CURRENT_VARIATION_NUMBER,
-      variationNumbers: DEMO_VARIATION_NUMBERS,
-      offlineSimulation: true,
-    });
-
-    seedDemoVariationHistory(nextSession);
-    return nextSession;
-  }
-
-  function getDemoSession() {
-    if (demoSession === null) {
-      demoSession = createDemoSession();
-    }
-
-    return demoSession;
-  }
-
   function getActiveView() {
-    return activeMode === "offline_demo"
-      ? getDemoSession().getViewState()
-      : savedSnapshot?.view ?? null;
+    return savedSnapshot?.view ?? null;
   }
 
   function createEmptySavedSnapshot() {
@@ -1025,8 +946,8 @@
         reconciliation,
         mappingWorkflow,
         streamId: activeSession.streamId,
-        currentVariationNumber: DEMO_CURRENT_VARIATION_NUMBER,
-        variationNumbers: DEMO_VARIATION_NUMBERS,
+        currentVariationNumber: FALLBACK_CURRENT_VARIATION_NUMBER,
+        variationNumbers: FALLBACK_VARIATION_NUMBERS,
       });
     const mountedController = persistentController;
 
@@ -1046,16 +967,13 @@
 
   function setWorkspaceBusy(busy) {
     const streamUnavailable =
-      activeMode === "saved_session" &&
-      (!streamSnapshot.resumed || streamSnapshot.activeSession === null);
+      !streamSnapshot.resumed || streamSnapshot.activeSession === null;
     const shouldBeBusy =
-      Boolean(busy) ||
-      (activeMode === "saved_session" && streamSnapshot.busy) ||
-      streamUnavailable;
+      Boolean(busy) || streamSnapshot.busy || streamUnavailable;
     const shouldBeInert =
       shouldBeBusy ||
-      (activeMode === "saved_session" &&
-        (savedSnapshot?.phase === "error" || endConfirmationOpen));
+      savedSnapshot?.phase === "error" ||
+      endConfirmationOpen;
 
     trackerWorkspace.setAttribute("aria-busy", String(shouldBeBusy));
     trackerWorkspace.toggleAttribute("inert", shouldBeInert);
@@ -1067,29 +985,14 @@
     );
   }
 
-  function updateModeControls() {
-    const savedMode = activeMode === "saved_session";
-
-    demoModeButton.textContent = "Demo";
-    demoModeButton.setAttribute("aria-pressed", String(!savedMode));
-    const demoToggleLabel = savedMode
-      ? "Switch to offline demo mode"
-      : "Return to live session";
-    demoModeButton.setAttribute("aria-label", demoToggleLabel);
-    demoModeButton.title = demoToggleLabel;
-    demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
-    streamSessionPanel.hidden = !savedMode;
+  function updateSessionControls() {
     inventoryImportPanel.hidden =
-      !savedMode ||
       streamSnapshot.activeSession !== null ||
       shouldPrepareInventoryForStreamRetry(streamSnapshot);
-    dataModeBadge.textContent = savedMode ? "Live session" : "Demo data";
-    const footerText = !savedMode
-      ? "Offline demo - not saved"
-      : !streamSnapshot.activeSession
-        ? "No active tracker stream"
-        : !streamSnapshot.resumed
-          ? "Tracker stream ready to resume"
+    const footerText = !streamSnapshot.activeSession
+      ? "No active tracker stream"
+      : !streamSnapshot.resumed
+        ? "Tracker stream ready to resume"
       : {
           idle: "Restoring live session data",
           loading: "Restoring live session data",
@@ -1097,13 +1000,11 @@
           error: "Live session data needs attention",
           ready: "Saved locally",
         }[savedSnapshot?.phase] ?? "Live session";
-    const footerPhase = !savedMode
-      ? "demo"
-      : !streamSnapshot.activeSession
-        ? "inactive"
-        : !streamSnapshot.resumed
-          ? "resume"
-          : savedSnapshot?.phase ?? "idle";
+    const footerPhase = !streamSnapshot.activeSession
+      ? "inactive"
+      : !streamSnapshot.resumed
+        ? "resume"
+        : savedSnapshot?.phase ?? "idle";
 
     setFooterStatus(footerText, footerPhase);
     renderStreamReportsPanel();
@@ -1498,15 +1399,13 @@
   }
 
   function renderArchivedReportsView() {
-    const savedMode = activeMode === "saved_session";
     const inactive = streamSnapshot.activeSession === null;
-    const canOpen = savedMode && inactive;
     const hasError = typeof archivedReportsLoadError === "string";
     const archivedIds = new Set(
       archivedReportSummaries.map((summary) => summary.reportId),
     );
 
-    if (!canOpen) {
+    if (!inactive) {
       archivedReportsViewOpen = false;
     }
 
@@ -1551,7 +1450,6 @@
   }
 
   function renderStreamReportsPanel() {
-    const savedMode = activeMode === "saved_session";
     const inactive = streamSnapshot.activeSession === null;
     const hasReports = streamReportSummaries.length > 0;
     const hasArchivedReports = archivedReportSummaries.length > 0;
@@ -1559,7 +1457,6 @@
 
     closeReportActionsMenu();
     streamReportsPanel.hidden =
-      !savedMode ||
       !inactive ||
       (!hasReports && !hasArchivedReports && !hasError);
     streamReportsPanel.setAttribute(
@@ -1586,10 +1483,7 @@
   }
 
   function openArchivedReportsDashboard() {
-    if (
-      activeMode !== "saved_session" ||
-      streamSnapshot.activeSession !== null
-    ) {
+    if (streamSnapshot.activeSession !== null) {
       return;
     }
 
@@ -1739,51 +1633,6 @@
     }
   }
 
-  function requireDemoSeedResult(result, action) {
-    if (!result.ok) {
-      throw new Error(`Could not ${action}: ${result.message}`);
-    }
-
-    return result;
-  }
-
-  function seedDemoVariationHistory(session) {
-    DEMO_VARIATION_SEEDS.forEach((seed) => {
-      requireDemoSeedResult(
-        session.selectVariation(seed.variationNumber),
-        `select demo variation ${seed.variationNumber}`,
-      );
-
-      if (seed.sku) {
-        requireDemoSeedResult(
-          session.selectSku(seed.sku),
-          `map demo variation ${seed.variationNumber}`,
-        );
-      }
-
-      if (seed.status === "committed") {
-        requireDemoSeedResult(
-          session.completePayment(seed.soldPriceCents),
-          `complete demo variation ${seed.variationNumber}`,
-        );
-      } else if (seed.status === "marked_unpaid") {
-        requireDemoSeedResult(
-          session.simulatePaymentBufferExpired(),
-          `expire demo variation ${seed.variationNumber}`,
-        );
-        requireDemoSeedResult(
-          session.markUnpaid(),
-          `mark demo variation ${seed.variationNumber} unpaid`,
-        );
-      }
-    });
-
-    requireDemoSeedResult(
-      session.selectVariation(DEMO_CURRENT_VARIATION_NUMBER),
-      "return to the current demo variation",
-    );
-  }
-
   function formatItemName(entry) {
     return entry.style ? `${entry.item} - ${entry.style}` : entry.item;
   }
@@ -1799,8 +1648,7 @@
     const stockAriaLabel = stock.ariaLabel ?? stock.label;
     const selected = entry.selected;
     const itemName = formatItemName(entry);
-    const canTagSelectedVariation =
-      activeMode !== "saved_session" || hasSelectedRecordedVariation(view);
+    const canTagSelectedVariation = hasSelectedRecordedVariation(view);
 
     button.dataset.sku = entry.sku;
     button.dataset.stockState = stock.state;
@@ -1866,8 +1714,6 @@
       selectedLabel.textContent = "Sold";
     } else if (canceled && selected) {
       selectedLabel.textContent = "Canceled item";
-    } else if (auction?.status === "marked_unpaid" && selected) {
-      selectedLabel.textContent = "Unpaid";
     } else {
       selectedLabel.textContent = "Selected";
     }
@@ -1908,7 +1754,6 @@
 
   function renderLiveAuction(view) {
     const display = liveAuctionViewModel.createDisplay({
-      activeMode,
       view,
       liveAuction: liveAuctionSnapshot.liveAuction,
       formatUsdCents: viewModel.formatUsdCents,
@@ -1944,9 +1789,7 @@
 
   function renderVariationNavigation(view) {
     const fragment = document.createDocumentFragment();
-    const variations = activeMode === "saved_session"
-      ? getRecordedVariations(view)
-      : view.variations;
+    const variations = getRecordedVariations(view);
 
     if (variations.length === 0) {
       const option = document.createElement("option");
@@ -1970,38 +1813,23 @@
     variationSelector.replaceChildren(fragment);
     variationSelector.disabled = variations.length === 0;
 
-    if (activeMode === "saved_session") {
-      const reviewingRecordedHistory =
-        variations.length > 0 && view.isReviewingHistory;
+    const reviewingRecordedHistory =
+      variations.length > 0 && view.isReviewingHistory;
 
-      if (variations.length > 0) {
-        variationSelector.value = String(view.selectedVariationNumber);
-        variationContext.textContent = "Live auction variations";
-        inventoryTitle.textContent =
-          `Review or tag variation #${view.selectedVariationNumber}`;
-      } else {
-        variationContext.textContent =
-          "Waiting for a live auction variation";
-        inventoryTitle.textContent = "Waiting for a live auction variation";
-      }
-
-      returnToCurrentButton.classList.add("return-to-current-live");
-      returnToCurrentButton.hidden = !reviewingRecordedHistory;
-      returnToCurrentButton.textContent = "Return to live item";
-      return;
+    if (variations.length > 0) {
+      variationSelector.value = String(view.selectedVariationNumber);
+      variationContext.textContent = "Live auction variations";
+      inventoryTitle.textContent =
+        `Review or tag variation #${view.selectedVariationNumber}`;
+    } else {
+      variationContext.textContent =
+        "Waiting for a live auction variation";
+      inventoryTitle.textContent = "Waiting for a live auction variation";
     }
 
-    returnToCurrentButton.classList.remove("return-to-current-live");
-    variationSelector.value = String(view.selectedVariationNumber);
-    variationContext.textContent = view.isReviewingHistory
-      ? "Reviewing previous variation"
-      : "On screen now";
-    returnToCurrentButton.hidden = !view.isReviewingHistory;
-    returnToCurrentButton.textContent =
-      `Return to on-screen variation #${view.currentVariationNumber}`;
-    inventoryTitle.textContent = view.isReviewingHistory
-      ? `Review or correct variation #${view.selectedVariationNumber}`
-      : `Find the item for variation #${view.currentVariationNumber}`;
+    returnToCurrentButton.classList.add("return-to-current-live");
+    returnToCurrentButton.hidden = !reviewingRecordedHistory;
+    returnToCurrentButton.textContent = "Return to live item";
   }
 
   function renderInventory(view, focusSku = null) {
@@ -2278,10 +2106,6 @@
         : "Canceled · no inventory item assigned";
     }
 
-    if (auction.mappingStatus === "marked_unpaid") {
-      return "Marked unpaid locally";
-    }
-
     if (!auction.sku) {
       return "No item selected";
     }
@@ -2322,51 +2146,6 @@
     mappingStatus.textContent = getInventoryTagLabel(auction);
   }
 
-  function renderLifecycleControls(view) {
-    const committed = view.auction?.status === "committed";
-    const canceled = view.auction?.status === "canceled";
-    const markedUnpaid = view.auction?.status === "marked_unpaid";
-    const completionAwaitingPrice = isObservedCompletionAwaitingPrice(
-      view.auction,
-    );
-    const offlineDemo = activeMode === "offline_demo";
-    const canUndoSimulatedPayment =
-      offlineDemo && view.controls.canUndoSimulatedPayment;
-    const canUndoUnpaid = offlineDemo && view.controls.canUndoUnpaid;
-
-    lifecycleControlsLegend.textContent = "Offline test controls";
-    lifecycleControlsNote.textContent =
-      "These controls simulate TikTok events in temporary memory and do not act on TikTok.";
-    undoPaymentNote.textContent = view.mapping
-      ? "Offline demo only. Remove the simulated payment, keep the item selected, and do not change TikTok."
-      : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
-
-    lifecycleControls.hidden =
-      !offlineDemo ||
-      canceled ||
-      completionAwaitingPrice ||
-      (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
-      (committed && !canUndoSimulatedPayment) ||
-      (!offlineDemo && committed);
-    completePaymentForm.hidden =
-      !offlineDemo || !view.controls.canCompletePayment;
-    simulateBufferButton.hidden =
-      !offlineDemo || !view.controls.canSimulateBufferExpiry;
-    bufferExpiredNote.hidden = !(
-      offlineDemo &&
-      view.demo.paymentBufferExpired &&
-      (view.auction?.status === "mapped" ||
-        view.auction?.status === "pending")
-    );
-    markUnpaidButton.hidden =
-      !offlineDemo || completionAwaitingPrice || !view.controls.canMarkUnpaid;
-    markUnpaidButton.disabled = completionAwaitingPrice;
-    unpaidNote.hidden = !markedUnpaid;
-    undoUnpaidButton.hidden = !offlineDemo || !view.controls.canUndoUnpaid;
-    undoPaymentNote.hidden = !canUndoSimulatedPayment;
-    undoSimulatedPaymentButton.hidden = !canUndoSimulatedPayment;
-  }
-
   function renderAuction(view) {
     const auction = view.auction;
 
@@ -2379,9 +2158,6 @@
     mappedItem.textContent = auction.sku
       ? `${formatItemName(auction)}, size ${auction.size}`
       : "No item selected. Select the matching inventory entry below.";
-    auctionEyebrow.textContent = activeMode === "offline_demo"
-      ? "Demo order status"
-      : "Live order status";
     renderOrderStatuses(auction);
     auctionStatus.dataset.status = auction.status;
     pendingMapping.dataset.status = auction.status;
@@ -2389,7 +2165,6 @@
 
     renderSaleResults(view);
     renderStateWarning(view);
-    renderLifecycleControls(view);
   }
 
   function renderAll(options = {}) {
@@ -2407,66 +2182,11 @@
 
     if (options.focusStatus && !pendingMapping.hidden) {
       auctionStatus.focus();
-    } else if (options.focusControl === "mark_unpaid") {
-      markUnpaidButton.focus();
     } else if (options.focusVariation) {
       variationSelector.focus();
     }
 
     return view;
-  }
-
-  function clearPriceError() {
-    soldPriceInput.removeAttribute("aria-invalid");
-    soldPriceError.textContent = "";
-    soldPriceError.hidden = true;
-  }
-
-  function showPriceError(message) {
-    soldPriceInput.setAttribute("aria-invalid", "true");
-    soldPriceError.textContent = message;
-    soldPriceError.hidden = false;
-    soldPriceInput.focus();
-  }
-
-  function announceMapping(result) {
-    if (result.action === "unmapped") {
-      const detail =
-        {
-          committed:
-            "Payment remains complete, but inventory and gross profit need a replacement item.",
-          marked_unpaid:
-            "The unpaid status remains and no item is selected.",
-          pending:
-            "Its pending reservation was released and no item is selected.",
-        }[result.previousStatus] ?? "No item is selected.";
-
-      mappingAnnouncement.textContent =
-        `Variation ${result.view.variationNumber} item unselected. ${detail}`;
-      return;
-    }
-
-    const mapping = result.mapping;
-    const itemDescription = `${formatItemName(mapping)}, size ${mapping.size}`;
-    const paymentLabel =
-      result.view.auction?.observedPaymentStatusLabel ??
-      getObservedPaymentStatusLabel(undefined);
-
-    if (result.action === "completed_sale_mapped") {
-      const profit = viewModel.getProfitDisplay(mapping.profitCents);
-
-      mappingAnnouncement.textContent = `Payment-complete variation ${mapping.variationNumber} matched to ${itemDescription}. Sold for ${viewModel.formatUsdCents(mapping.soldPriceCents)}; ${profit.label} recorded.`;
-    } else if (result.action === "committed_mapping_corrected") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} corrected to ${itemDescription}. Inventory and gross profit recalculated.`;
-    } else if (result.action === "unpaid_mapping_corrected") {
-      mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
-    } else if (result.action === "remapped") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} changed to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
-    } else if (result.action === "unchanged") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} is already mapped to ${itemDescription}.`;
-    } else {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} mapped to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
-    }
   }
 
   function describeSelectedVariation(view) {
@@ -2597,13 +2317,11 @@
 
   function renderInventoryImportSnapshot(snapshot) {
     inventoryImportSnapshot = snapshot;
-    const savedMode = activeMode === "saved_session";
     const streamExists = streamSnapshot.activeSession !== null;
     const busy = snapshot.busy === true;
     const failed = snapshot.phase === "error";
     const preview = snapshot.preview;
     const showPanel =
-      savedMode &&
       !streamExists &&
       !shouldPrepareInventoryForStreamRetry(streamSnapshot);
 
@@ -2761,7 +2479,7 @@
     const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
     updateLayoutOrder(snapshot);
-    updateModeControls();
+    updateSessionControls();
     inventoryImportController.setActiveStream(snapshot.activeSession !== null);
 
     if (streamWasActive && snapshot.activeSession === null) {
@@ -2773,10 +2491,6 @@
           );
         },
       );
-    }
-
-    if (activeMode !== "saved_session") {
-      return;
     }
 
     const failed = snapshot.phase === "error";
@@ -2941,10 +2655,9 @@
       savedSnapshot?.view?.selectedVariationNumber ?? null;
 
     savedSnapshot = snapshot;
-    updateModeControls();
+    updateSessionControls();
 
     if (
-      activeMode !== "saved_session" ||
       !streamSnapshot.resumed ||
       streamSnapshot.activeSession === null
     ) {
@@ -3121,169 +2834,65 @@
     });
   }
 
-  function selectMode(mode) {
-    if (mode === activeMode) {
-      return;
-    }
-
-    activeMode = mode;
-    endConfirmationOpen = false;
-    streamSessionEndConfirmation.hidden = true;
-    clearPriceError();
-    searchInput.value = "";
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
-    updateModeControls();
-
-    if (activeMode === "offline_demo") {
-      resetLiveBidTracking();
-      savedSessionError.hidden = true;
-      setTrackerWorkspaceVisible(true);
-      setWorkspaceBusy(false);
-      const view = renderAll();
-
-      variationSelector.focus();
-      mappingAnnouncement.textContent =
-        `Offline demo opened on ${describeSelectedVariation(view)}. Demo actions are temporary and are not saved.`;
-      return;
-    }
-
-    armCaptureRefresh();
-    scheduleLiveBidRefresh();
-    hasFocusedSavedError = false;
-    hasFocusedStreamError = false;
-    renderStreamSnapshot(streamSessionController.getSnapshot());
-    if (streamSnapshot.resumed && persistentController) {
-      renderSavedSnapshot(persistentController.getSnapshot());
-    }
-
-    if (
-      streamSnapshot.resumed &&
-      persistentController &&
-      savedSnapshot.phase === "ready" &&
-      savedSnapshot.view
-    ) {
-      focusSavedWorkspaceAfterRetry = false;
-      if (hasSelectedRecordedVariation(savedSnapshot.view)) {
-        variationSelector.focus();
-        mappingAnnouncement.textContent =
-          `Returned to live auction tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
-      } else {
-        streamSessionStatus.focus();
-        mappingAnnouncement.textContent =
-          "Returned to live auction tracking. Waiting for a captured variation.";
-      }
-    } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
-      resumeStreamButton.focus();
-    } else if (!streamSnapshot.activeSession && streamSnapshot.phase === "ready") {
-      startStreamButton.focus();
-    }
-  }
-
   variationSelector.addEventListener("change", () => {
-    if (activeMode === "saved_session") {
-      if (!persistentController || variationSelector.value === "") {
-        mappingAnnouncement.textContent =
-          "Waiting for a live auction variation.";
-        return;
-      }
-
-      try {
-        clearPriceError();
-        searchInput.value = "";
-        const snapshot = persistentController.selectVariation(
-          Number(variationSelector.value),
-        );
-
-        const view = snapshot.view;
-
-        mappingAnnouncement.textContent = view.isReviewingHistory
-          ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
-          : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
-      } catch (error) {
-        mappingAnnouncement.textContent =
-          error?.message ?? "That variation could not be selected.";
-      }
-
+    if (!persistentController || variationSelector.value === "") {
+      mappingAnnouncement.textContent =
+        "Waiting for a live auction variation.";
       return;
     }
 
-    const result = getDemoSession().selectVariation(
-      Number(variationSelector.value),
-    );
-
-    if (!result.ok) {
-      renderAll();
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    clearPriceError();
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
-    searchInput.value = "";
-    const view = renderAll();
-    mappingAnnouncement.textContent = view.isReviewingHistory
-      ? `Reviewing previous ${describeSelectedVariation(view)}. Select an inventory card to tag or correct this variation.`
-      : `Returned to on-screen ${describeSelectedVariation(view)}.`;
-  });
-
-  returnToCurrentButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
-      const currentView = getActiveView();
-
-      if (!persistentController || !currentView?.isReviewingHistory) {
-        return;
-      }
-
-      const returnVariation = findVariationOption(
-        currentView,
-        currentView.currentVariationNumber,
-      );
-
-      if (!returnVariation?.recorded) {
-        mappingAnnouncement.textContent =
-          "The latest live item is not available yet.";
-        return;
-      }
-
-      clearPriceError();
+    try {
       searchInput.value = "";
       const snapshot = persistentController.selectVariation(
-        currentView.currentVariationNumber,
+        Number(variationSelector.value),
       );
       const view = snapshot.view;
 
-      if (
-        !view ||
-        view.selectedVariationNumber !== currentView.currentVariationNumber
-      ) {
-        mappingAnnouncement.textContent =
-          "The latest live item could not be selected.";
-        return;
-      }
-
-      variationSelector.focus();
+      mappingAnnouncement.textContent = view.isReviewingHistory
+        ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
+        : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
+    } catch (error) {
       mappingAnnouncement.textContent =
-        `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
+        error?.message ?? "That variation could not be selected.";
+    }
+  });
+
+  returnToCurrentButton.addEventListener("click", () => {
+    const currentView = getActiveView();
+
+    if (!persistentController || !currentView?.isReviewingHistory) {
       return;
     }
 
-    const result = getDemoSession().selectVariation(
-      DEMO_CURRENT_VARIATION_NUMBER,
+    const returnVariation = findVariationOption(
+      currentView,
+      currentView.currentVariationNumber,
     );
 
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
+    if (!returnVariation?.recorded) {
+      mappingAnnouncement.textContent =
+        "The latest live item is not available yet.";
       return;
     }
 
-    clearPriceError();
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
     searchInput.value = "";
-    const view = renderAll();
+    const snapshot = persistentController.selectVariation(
+      currentView.currentVariationNumber,
+    );
+    const view = snapshot.view;
+
+    if (
+      !view ||
+      view.selectedVariationNumber !== currentView.currentVariationNumber
+    ) {
+      mappingAnnouncement.textContent =
+        "The latest live item could not be selected.";
+      return;
+    }
 
     variationSelector.focus();
     mappingAnnouncement.textContent =
-      `Returned to on-screen ${describeSelectedVariation(view)}.`;
+      `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
   });
 
   inventoryGrid.addEventListener("click", (event) => {
@@ -3293,151 +2902,32 @@
       return;
     }
 
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
+    const view = getActiveView();
 
-      if (!hasSelectedRecordedVariation(view)) {
-        mappingAnnouncement.textContent =
-          "Wait for a captured live auction variation before selecting inventory.";
-        return;
-      }
-
-      if (view.auction?.paymentStatus === "canceled") {
-        mappingAnnouncement.textContent =
-          `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
-        return;
-      }
-
-      const selected = button.getAttribute("aria-pressed") === "true";
-
-      runSavedMutation(
-        () => selected
-          ? persistentController.unmapSelectedVariation()
-          : persistentController.mapSelectedSku(button.dataset.sku),
-        {
-          type: selected ? "unmap_variation" : "map_variation",
-          variationNumber: view.selectedVariationNumber,
-          focusSku: button.dataset.sku,
-        },
-      );
-      return;
-    }
-
-    const result = getDemoSession().selectSku(button.dataset.sku);
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    clearPriceError();
-    renderAll({ focusSku: button.dataset.sku });
-    announceMapping(result);
-  });
-
-  completePaymentForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    if (activeMode !== "offline_demo") {
+    if (!hasSelectedRecordedVariation(view)) {
       mappingAnnouncement.textContent =
-        "Payment simulation is available only in Offline demo mode.";
+        "Wait for a captured live auction variation before selecting inventory.";
       return;
     }
 
-    const normalizedPrice = soldPriceInput.value.replace(/^\s*\$/, "");
-    const soldPriceCents = saleParser.parseMoneyToCents(normalizedPrice);
-
-    if (soldPriceCents === null || soldPriceCents < 1) {
-      showPriceError("Enter a valid sold price greater than $0.00.");
+    if (view.auction?.paymentStatus === "canceled") {
+      mappingAnnouncement.textContent =
+        `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
       return;
     }
 
-    const result = getDemoSession().completePayment(soldPriceCents);
+    const selected = button.getAttribute("aria-pressed") === "true";
 
-    if (!result.ok) {
-      showPriceError(result.message);
-      return;
-    }
-
-    clearPriceError();
-    const view = renderAll({ focusStatus: true });
-    const profit = viewModel.getProfitDisplay(view.auction.profitCents);
-
-    mappingAnnouncement.textContent = `Payment complete for variation ${view.variationNumber}. Sold for ${viewModel.formatUsdCents(view.auction.soldPriceCents)}. ${profit.label}.`;
-  });
-
-  simulateBufferButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().simulatePaymentBufferExpired();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusControl: "mark_unpaid" });
-    mappingAnnouncement.textContent = `Payment buffer expired for variation ${result.view.variationNumber} in this demo.`;
-  });
-
-  markUnpaidButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().markUnpaid();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = `Variation ${result.view.variationNumber} marked unpaid. Remaining inventory and profit stay unchanged; its reservation is released.`;
-  });
-
-  undoUnpaidButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().undoMarkUnpaid();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = result.mapping
-      ? `Unpaid mark removed from variation ${result.view.variationNumber}. Waiting for payment.`
-      : `Unpaid mark removed from variation ${result.view.variationNumber}. No item is selected.`;
-  });
-
-  undoSimulatedPaymentButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().undoSimulatedPayment();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    clearPriceError();
-    searchInput.value = "";
-    renderAll(
-      result.mapping
-        ? { focusSku: result.mapping.sku }
-        : { focusStatus: true },
+    runSavedMutation(
+      () => selected
+        ? persistentController.unmapSelectedVariation()
+        : persistentController.mapSelectedSku(button.dataset.sku),
+      {
+        type: selected ? "unmap_variation" : "map_variation",
+        variationNumber: view.selectedVariationNumber,
+        focusSku: button.dataset.sku,
+      },
     );
-    mappingAnnouncement.textContent = result.mapping
-      ? `Simulated payment undone for variation ${result.view.variationNumber}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`
-      : `Simulated payment undone for variation ${result.view.variationNumber}. No item is selected; remaining inventory and gross profit were restored.`;
   });
 
   searchInput.addEventListener("input", () => renderAll());
@@ -3453,14 +2943,6 @@
     searchInput.value = "";
     searchInput.focus();
     renderAll();
-  });
-
-  soldPriceInput.addEventListener("input", clearPriceError);
-
-  demoModeButton.addEventListener("click", () => {
-    selectMode(
-      activeMode === "offline_demo" ? "saved_session" : "offline_demo",
-    );
   });
 
   inventorySheetReference.addEventListener("input", () => {
@@ -3702,7 +3184,7 @@
           "Recovering the legacy inventory for this already-active tracker stream.";
         return persistentTaggerControllerModule.ensureInventoryInitialized({
           client: persistentClient,
-          inventory: viewModel.MOCK_INVENTORY,
+          inventory: viewModel.LEGACY_RECOVERY_INVENTORY,
         });
       })
       .then(() => streamSessionController.retry())

@@ -58,9 +58,7 @@ function createReadClient(readState) {
     getState: read,
     initializeState: read,
     mapVariation: read,
-    markUnpaid: read,
     unmapVariation: read,
-    undoMarkUnpaid: read,
   };
 }
 

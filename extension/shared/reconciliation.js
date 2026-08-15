@@ -1448,10 +1448,6 @@
         return "canceled";
       }
 
-      if (auction.mappingStatus === "marked_unpaid") {
-        return "marked_unpaid";
-      }
-
       if (hasPendingReservation(auction)) {
         return "pending";
       }
@@ -1680,10 +1676,7 @@
       );
 
       auction.sku = sku;
-
-      if (auction.mappingStatus !== "marked_unpaid") {
-        auction.mappingStatus = "mapped";
-      }
+      auction.mappingStatus = "mapped";
 
       if (auction.paymentStatus === "payment_complete") {
         auction.committedUnitCostCents = inventoryItem.unitCostCents;
@@ -1948,10 +1941,7 @@
 
       auction.sku = null;
       auction.committedUnitCostCents = null;
-
-      if (auction.mappingStatus !== "marked_unpaid") {
-        auction.mappingStatus = "unmapped";
-      }
+      auction.mappingStatus = "unmapped";
 
       return createAuctionView(state, auction);
     }
@@ -1994,12 +1984,6 @@
         return createAuctionView(state, auction);
       }
 
-      if (auction.mappingStatus === "marked_unpaid") {
-        addConflict(auction, {
-          code: "payment_completed_after_marked_unpaid",
-        });
-      }
-
       auction.paymentStatus = "payment_complete";
       auction.observedPaymentStatus =
         OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
@@ -2036,58 +2020,6 @@
         status: "observed",
         attributedGmvDisplay,
       };
-    }
-
-    function markUnpaid(state, input) {
-      requireState(state);
-      const key = validateAuctionKey(input);
-      const auction = findAuction(state, key.streamId, key.variationNumber);
-
-      if (!auction || !auction.sku) {
-        fail(
-          "VARIATION_NOT_MAPPED",
-          "A variation must be mapped to an inventory SKU before it can be marked unpaid.",
-        );
-      }
-
-      if (
-        auction.paymentStatus === "payment_complete" ||
-        auction.observedPaymentStatus ===
-          OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
-      ) {
-        fail(
-          "PAYMENT_ALREADY_COMPLETE",
-          "A completed TikTok payment cannot be marked unpaid locally.",
-        );
-      }
-
-      if (auction.paymentStatus === "canceled") {
-        fail(
-          "PAYMENT_ALREADY_CANCELED",
-          "A canceled TikTok payment cannot be marked unpaid locally.",
-        );
-      }
-
-      // The caller confirms that TikTok's payment buffer has expired. This
-      // engine records that decision but does not control when the UI exposes it.
-      auction.mappingStatus = "marked_unpaid";
-      return createAuctionView(state, auction);
-    }
-
-    function undoMarkUnpaid(state, input) {
-      requireState(state);
-      const key = validateAuctionKey(input);
-      const auction = findAuction(state, key.streamId, key.variationNumber);
-
-      if (!auction) {
-        fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
-      }
-
-      if (auction.mappingStatus === "marked_unpaid") {
-        auction.mappingStatus = auction.sku ? "mapped" : "unmapped";
-      }
-
-      return createAuctionView(state, auction);
     }
 
     function getAuction(state, input) {
@@ -2166,7 +2098,6 @@
         committedSalesCount: 0,
         unmappedCompletedCount: 0,
         pendingMappedCount: 0,
-        markedUnpaidCount: 0,
         conflictCount: 0,
         completedGmvCents: 0,
         committedRevenueCents: 0,
@@ -2217,10 +2148,6 @@
 
         if (auction.status === "pending") {
           totals.pendingMappedCount += 1;
-        }
-
-        if (auction.status === "marked_unpaid") {
-          totals.markedUnpaidCount += 1;
         }
 
         auction.conflicts.forEach((conflict) => {
@@ -2301,8 +2228,6 @@
       unmapVariation,
       recordPaymentComplete,
       observeAttributedGmv,
-      markUnpaid,
-      undoMarkUnpaid,
       getAuction,
       calculateSummary,
     };

@@ -589,9 +589,9 @@ Until a later identity stage finds such an ID, follow these rules:
 
 - Use one local tracker stream for one real TikTok LIVE.
 - Start preflights reconciliation state and requires a nonempty active baseline created
-  by confirmed Google Sheets import. It never promotes offline-demo inventory. The worker
+  by confirmed Google Sheets import. The worker
   permanently pins the new stream to that imported baseline. Only an already-active
-  legacy session with truly absent reconciliation state may use the narrow mock-repair
+  legacy session with truly absent reconciliation state may use the narrow compatibility-repair
   Retry path; that compatibility path cannot start a new session or replace saved state.
 - Do not try to recount or activate another inventory baseline during a tracker stream.
   The worker rejects baseline creation while a session is active. End the session only

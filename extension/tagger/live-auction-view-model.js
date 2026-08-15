@@ -57,12 +57,12 @@
         : null;
     }
 
-    function createDisplay({ activeMode, view, liveAuction, formatUsdCents }) {
+    function createDisplay({ view, liveAuction, formatUsdCents }) {
       if (typeof formatUsdCents !== "function") {
         throw new TypeError("A currency formatter is required.");
       }
 
-      if (activeMode !== "saved_session" || !view) {
+      if (!view) {
         return {
           hidden: true,
           variationNumber: null,

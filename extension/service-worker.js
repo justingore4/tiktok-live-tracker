@@ -764,22 +764,7 @@ function mutatesEmployeeStream(command) {
   ].includes(command.type);
 }
 
-function isManualUnpaidCommand(command) {
-  return [
-    reconciliationCoordinator.COMMAND_TYPES.MARK_UNPAID,
-    reconciliationCoordinator.COMMAND_TYPES.UNDO_MARK_UNPAID,
-  ].includes(command.type);
-}
-
 async function dispatchReconciliationCommand(command) {
-  if (isManualUnpaidCommand(command)) {
-    failBoundary(
-      reconciliationCoordinator,
-      "MANUAL_UNPAID_DISABLED",
-      "Live payment failures and cancellations are tracked automatically from TikTok.",
-    );
-  }
-
   if (initializesInventoryState(command)) {
     return initializeInventoryState(command);
   }

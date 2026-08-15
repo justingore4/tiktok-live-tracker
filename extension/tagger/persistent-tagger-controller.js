@@ -12,7 +12,6 @@
   function createPersistentTaggerControllerModule() {
     "use strict";
 
-    const MODE = "saved_session";
     const PHASES = Object.freeze({
       IDLE: "idle",
       LOADING: "loading",
@@ -362,7 +361,6 @@
 
       function createSnapshot() {
         return {
-          mode: MODE,
           phase,
           operation,
           busy: phase === PHASES.LOADING || phase === PHASES.SAVING,
@@ -866,7 +864,6 @@
     }
 
     return {
-      MODE,
       OPERATIONS,
       PHASES,
       PersistentTaggerControllerError,

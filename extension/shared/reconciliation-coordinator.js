@@ -27,8 +27,6 @@
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
-      MARK_UNPAID: "mark_unpaid",
-      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STATE]: ["type"],
@@ -76,16 +74,6 @@
       ],
       [COMMAND_TYPES.RECORD_PAYMENT_COMPLETE]: [
         "soldPriceCents",
-        "streamId",
-        "type",
-        "variationNumber",
-      ],
-      [COMMAND_TYPES.MARK_UNPAID]: [
-        "streamId",
-        "type",
-        "variationNumber",
-      ],
-      [COMMAND_TYPES.UNDO_MARK_UNPAID]: [
         "streamId",
         "type",
         "variationNumber",
@@ -529,12 +517,6 @@
                 variationNumber: command.variationNumber,
                 soldPriceCents: command.soldPriceCents,
               }),
-            );
-          case COMMAND_TYPES.MARK_UNPAID:
-          case COMMAND_TYPES.UNDO_MARK_UNPAID:
-            fail(
-              "MANUAL_UNPAID_DISABLED",
-              "Manual unpaid controls are disabled; TikTok cancellation status is authoritative.",
             );
           default:
             fail("UNKNOWN_COMMAND", `State command ${commandType} is not supported.`);

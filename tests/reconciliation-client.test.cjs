@@ -14,9 +14,6 @@ const protocol = Object.freeze({
     INITIALIZE_STATE: "initialize_state",
     MAP_VARIATION: "map_variation",
     UNMAP_VARIATION: "unmap_variation",
-    RECORD_PAYMENT_COMPLETE: "record_payment_complete",
-    MARK_UNPAID: "mark_unpaid",
-    UNDO_MARK_UNPAID: "undo_mark_unpaid",
   }),
 });
 const inventory = Object.freeze([
@@ -93,11 +90,6 @@ test("sends exact versioned envelopes for every employee command", async () => {
     streamId: "stream-1",
     variationNumber: 203,
   });
-  await client.markUnpaid({ streamId: "stream-1", variationNumber: 203 });
-  await client.undoMarkUnpaid({
-    streamId: "stream-1",
-    variationNumber: 203,
-  });
 
   assert.deepEqual(harness.calls, [
     {
@@ -132,24 +124,6 @@ test("sends exact versioned envelopes for every employee command", async () => {
         variationNumber: 203,
       },
     },
-    {
-      channel: protocol.MESSAGE_CHANNEL,
-      version: protocol.MESSAGE_VERSION,
-      command: {
-        type: protocol.COMMAND_TYPES.MARK_UNPAID,
-        streamId: "stream-1",
-        variationNumber: 203,
-      },
-    },
-    {
-      channel: protocol.MESSAGE_CHANNEL,
-      version: protocol.MESSAGE_VERSION,
-      command: {
-        type: protocol.COMMAND_TYPES.UNDO_MARK_UNPAID,
-        streamId: "stream-1",
-        variationNumber: 203,
-      },
-    },
   ]);
 });
 
@@ -163,8 +137,6 @@ test("exposes no API that can create payment truth", () => {
     "getState",
     "initializeState",
     "mapVariation",
-    "markUnpaid",
-    "undoMarkUnpaid",
     "unmapVariation",
   ]);
   assert.equal(client.recordPaymentComplete, undefined);
@@ -258,7 +230,7 @@ test("serializes commands through one FIFO runtime queue", async () => {
     variationNumber: 203,
     sku: "BLACK-TEE-M",
   });
-  const second = client.markUnpaid({
+  const second = client.unmapVariation({
     streamId: "stream-1",
     variationNumber: 203,
   });
@@ -277,7 +249,7 @@ test("serializes commands through one FIFO runtime queue", async () => {
     harness.calls.map((envelope) => envelope.command.type),
     [
       protocol.COMMAND_TYPES.MAP_VARIATION,
-      protocol.COMMAND_TYPES.MARK_UNPAID,
+      protocol.COMMAND_TYPES.UNMAP_VARIATION,
     ],
   );
 });
@@ -368,16 +340,6 @@ test("rejects invalid commands before contacting the runtime", async () => {
       }),
     "INVALID_CLIENT_COMMAND",
   );
-  await assertClientError(
-    () =>
-      client.markUnpaid({
-        streamId: "stream-1",
-        variationNumber: 203,
-        soldPriceCents: 4800,
-      }),
-    "INVALID_CLIENT_COMMAND",
-  );
-
   assert.equal(harness.calls.length, 0);
 });
 

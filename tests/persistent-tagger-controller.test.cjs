@@ -9,7 +9,7 @@ const controllerModule = require(
 const reconciliation = require("../extension/shared/reconciliation.js");
 const mappingWorkflow = require("../extension/tagger/mapping-workflow.js");
 
-const STREAM_ID = "demo-stream";
+const STREAM_ID = "local-stream:persistent-controller-test";
 const CURRENT_VARIATION = 203;
 const INVENTORY = Object.freeze([
   Object.freeze({
@@ -167,11 +167,11 @@ test("exports a pure saved-session controller without payment or manual-unpaid A
   ]);
   assert.doesNotMatch(
     source,
-    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment|markSelectedUnpaid|undoSelectedUnpaid/,
+    /chrome\.|recordPaymentComplete|record_payment_complete/,
   );
 });
 
-test("prepares the opening mock baseline before a stream can be started", async () => {
+test("prepares the legacy recovery baseline before a stream can be started", async () => {
   const memory = createMemoryClient(null);
 
   const prepared = await controllerModule.ensureInventoryInitialized({
@@ -484,7 +484,7 @@ test("older backfill and later payment updates do not steal the live selection",
   assert.equal(completedOption.soldPriceCents, 1800);
 });
 
-test("selects the newest recorded variation when only a prototype placeholder was selected", async () => {
+test("selects the newest recorded variation when only the startup fallback was selected", async () => {
   const state = createState();
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
@@ -513,7 +513,7 @@ test("selects the newest recorded variation when only a prototype placeholder wa
   );
 });
 
-test("initial restore selects the newest recorded variation even when the prototype number is recorded", async () => {
+test("initial restore selects the newest recorded variation even when the fallback number is recorded", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -765,11 +765,10 @@ test("starts idle, publishes detached snapshots, and unsubscribes idempotently",
   });
   const unsubscribe = controller.subscribe((snapshot) => {
     snapshots.push(snapshot);
-    snapshot.mode = "changed by listener";
+    snapshot.operation = "changed by listener";
   });
 
   assert.deepEqual(controller.getSnapshot(), {
-    mode: "saved_session",
     phase: "idle",
     operation: null,
     busy: false,
@@ -786,7 +785,7 @@ test("starts idle, publishes detached snapshots, and unsubscribes idempotently",
     snapshots.map((snapshot) => snapshot.phase),
     ["idle", "loading", "ready"],
   );
-  assert.equal(controller.getSnapshot().mode, "saved_session");
+  assert.equal(controller.getSnapshot().operation, "load");
   assert.equal(snapshots.length, 3);
 });
 

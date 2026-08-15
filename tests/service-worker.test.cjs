@@ -346,10 +346,8 @@ function createWorkerHarness(options = {}) {
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
       MAP_VARIATION: "map_variation",
-      MARK_UNPAID: "mark_unpaid",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       UNMAP_VARIATION: "unmap_variation",
-      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     },
     ReconciliationCoordinatorError: FakeCoordinatorError,
     createReconciliationCoordinator(receivedOptions) {
@@ -1595,7 +1593,7 @@ test("keeps Start idempotent for an already-active legacy stream", async () => {
   );
 });
 
-test("does not allow inactive mock initialization to bypass Sheet import", async () => {
+test("does not allow inactive legacy recovery to bypass Sheet import", async () => {
   const harness = createWorkerHarness();
   const request = harness.send(
     harness.createMessage({
@@ -2857,35 +2855,6 @@ test("retained-cost storage failure cannot reject a saved employee mapping", asy
   );
   assert.equal(harness.liveBidSyncCalls.length, 1);
   assert.equal(harness.runtimeSendMessages.length, 0);
-});
-
-test("rejects manual unpaid commands because Live payment outcomes are automatic", async () => {
-  const activeSession = {
-    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
-    startedAt: "2026-08-08T22:00:00.000Z",
-    identitySource: "local_session",
-  };
-
-  for (const typeName of ["MARK_UNPAID", "UNDO_MARK_UNPAID"]) {
-    const harness = createWorkerHarness({ initialActiveSession: activeSession });
-    const request = harness.send(
-      harness.createMessage({
-        type: harness.coordinatorModule.COMMAND_TYPES[typeName],
-        streamId: activeSession.streamId,
-        variationNumber: 203,
-      }),
-    );
-
-    assert.deepEqual(await request.response, {
-      ok: false,
-      error: {
-        code: "MANUAL_UNPAID_DISABLED",
-        message:
-          "Live payment failures and cancellations are tracked automatically from TikTok.",
-      },
-    });
-    assert.equal(harness.dispatchCalls.length, 0);
-  }
 });
 
 test("rejects employee mutations when no tracker stream is active", async () => {
