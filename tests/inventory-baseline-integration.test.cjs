@@ -202,8 +202,8 @@ test("creates one immutable opening baseline for a fresh state", () => {
   const source = clone(LEGACY_OPENING_INVENTORY);
   const state = reconciliation.createReconciliationState(source);
 
-  assert.equal(reconciliation.STATE_VERSION, 4);
-  assert.equal(state.version, 4);
+  assert.equal(reconciliation.STATE_VERSION, 7);
+  assert.equal(state.version, 7);
   assert.equal(state.inventoryBaselines.length, 1);
   assert.equal(typeof state.activeInventoryBaselineId, "string");
   assert.notEqual(state.activeInventoryBaselineId, "");
@@ -548,7 +548,7 @@ test("strictly migrates a version-3 snapshot into one pinned baseline", () => {
   const migrated = reconciliation.hydrateReconciliationState(legacy);
   const baseline = getActiveBaseline(migrated);
 
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.inventoryBaselines.length, 1);
   assert.deepEqual(baseline.inventory, NORMALIZED_OPENING_INVENTORY);
   assert.equal(baseline.sourceFingerprint, null);
@@ -668,7 +668,7 @@ test("coordinator FIFO pins against the new baseline when recount wins the race"
   assert.equal(memoryStore.getMaximumActiveSaves(), 1);
 });
 
-test("same-baseline concurrent mappings cannot claim the final unit twice", async () => {
+test("same-baseline concurrent mappings may over-allocate the final unit visibly", async () => {
   const oneUnit = clone(LEGACY_OPENING_INVENTORY);
   oneUnit[0].quantityReceived = 1;
   const memoryStore = createMemoryStateStore(
@@ -687,10 +687,8 @@ test("same-baseline concurrent mappings cannot claim the final unit twice", asyn
   ]);
   assert.deepEqual(
     results.map((result) => result.status).sort(),
-    ["fulfilled", "rejected"],
+    ["fulfilled", "fulfilled"],
   );
-  const rejected = results.find((result) => result.status === "rejected");
-  assert.equal(rejected.reason.code, "NO_STOCK_AVAILABLE");
 
   const persisted = memoryStore.getPersistedState();
   const mappedCount = persisted.streams.reduce(
@@ -699,7 +697,14 @@ test("same-baseline concurrent mappings cannot claim the final unit twice", asyn
     ).length,
     0,
   );
-  assert.equal(mappedCount, 1);
+  assert.equal(mappedCount, 2);
+  const availability = reconciliation.getInventoryAvailability(persisted, {
+    sku: "BLACK-TEE-M",
+  });
+
+  assert.equal(availability.reservedQuantity, 2);
+  assert.equal(availability.availableToTagQuantity, -1);
+  assert.equal(availability.oversoldQuantity, 1);
 });
 
 test("snapshotting a baseline command prevents caller mutation while queued", async () => {

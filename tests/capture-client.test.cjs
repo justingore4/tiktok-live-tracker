@@ -58,6 +58,38 @@ test("sends one strict batch observation envelope without caller-owned data", as
   ]);
 });
 
+test("sends only the sanitized Attributed GMV display", async () => {
+  const runtime = createRuntime();
+  const client = createCaptureClient({ protocol, runtime });
+
+  await client.observeAttributedGmv("$4.64K");
+
+  assert.deepEqual(runtime.calls[0].event, {
+    type: "observe_attributed_gmv",
+    attributedGmvDisplay: "$4.64K",
+  });
+  assert.doesNotMatch(
+    JSON.stringify(runtime.calls[0].event),
+    /buyer|title|element|selector|observedAt|streamId/i,
+  );
+});
+
+test("sends only the live bidding variation number", async () => {
+  const runtime = createRuntime();
+  const client = createCaptureClient({ protocol, runtime });
+
+  await client.observeBiddingVariation(252);
+
+  assert.deepEqual(runtime.calls[0].event, {
+    type: "observe_bidding_variation",
+    variationNumber: 252,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(runtime.calls[0].event),
+    /title|product|buyer|bidAmount|bidCount|element|selector|streamId/i,
+  );
+});
+
 test("sends only variation and price for a completed payment", async () => {
   const runtime = createRuntime();
   const client = createCaptureClient({ protocol, runtime });
@@ -244,6 +276,10 @@ test("fails before runtime delivery when event input is invalid", () => {
   assert.throws(
     () => client.recordPaymentComplete({ variationNumber: 0, soldPriceCents: 1 }),
     /positive safe integer/i,
+  );
+  assert.throws(
+    () => client.observeAttributedGmv("$1000.00"),
+    /sanitized exact or compact USD display/i,
   );
   assert.equal(runtime.calls.length, 0);
 });

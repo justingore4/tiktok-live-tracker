@@ -45,6 +45,10 @@ function createClient(overrides = {}) {
       calls.push(["end", { ...options }]);
       return Promise.resolve(response(null, "ended"));
     },
+    endStreamWithoutReport(options) {
+      calls.push(["end_without_report", { ...options }]);
+      return Promise.resolve(response(null, "ended"));
+    },
     ...overrides,
   };
 
@@ -212,6 +216,46 @@ test("a lost end response keeps the frozen ID and converges on retry", async () 
   ]);
 });
 
+test("a failed report End can explicitly recover by ending without a report", async () => {
+  const calls = [];
+  const { client } = createClient({
+    getSession() {
+      return Promise.resolve(response(SESSION));
+    },
+    endStream(options) {
+      calls.push(["end", { ...options }]);
+      return Promise.reject(
+        Object.assign(new Error("Could not save report."), {
+          code: "STORAGE_WRITE_FAILED",
+        }),
+      );
+    },
+    endStreamWithoutReport(options) {
+      calls.push(["end_without_report", { ...options }]);
+      return Promise.resolve(response(null, "ended"));
+    },
+  });
+  const controller = controllerModule.createStreamSessionController({ client });
+
+  await controller.start();
+  controller.resumeActiveStream();
+  const failed = await controller.endActiveStream();
+
+  assert.equal(failed.phase, "error");
+  assert.equal(failed.operation, "end");
+  assert.equal(failed.activeSession.streamId, SESSION.streamId);
+
+  const recovered = await controller.endActiveStreamWithoutReport();
+
+  assert.equal(recovered.phase, "ready");
+  assert.equal(recovered.activeSession, null);
+  assert.deepEqual(calls, [
+    ["end", { streamId: SESSION.streamId }],
+    ["end_without_report", { streamId: SESSION.streamId }],
+  ]);
+  assert.deepEqual(await controller.retry(), recovered);
+});
+
 test("a failed load remains closed and retry can recover", async () => {
   let attempts = 0;
   const { client } = createClient({
@@ -269,7 +313,7 @@ test("snapshots and subscriber values are detached", async () => {
 test("validates dependencies and rejects invalid client responses", async () => {
   assert.throws(
     () => controllerModule.createStreamSessionController({ client: {} }),
-    /getSession, startStream, and endStream/,
+    /getSession, startStream, endStream, and endStreamWithoutReport/,
   );
 
   const { client } = createClient({

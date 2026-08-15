@@ -15,10 +15,13 @@
       "GET_STREAM_SESSION",
       "START_STREAM",
       "END_STREAM",
+      "END_STREAM_WITHOUT_REPORT",
     ]);
     const START_STATUSES = new Set(["started", "already_active"]);
     const LOCAL_STREAM_ID_PATTERN =
       /^local-stream:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const REPORT_ID_PATTERN =
+      /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
     class StreamSessionClientError extends Error {
       constructor(code, message) {
@@ -155,19 +158,52 @@
         return result === null;
       }
 
-      if (!hasExactKeys(result, ["status"])) {
+      if (commandType === commandTypes.START_STREAM) {
+        return hasExactKeys(result, ["status"]) &&
+          START_STATUSES.has(result.status) &&
+          state.activeSession !== null;
+      }
+
+      const endCommand =
+        commandType === commandTypes.END_STREAM ||
+        commandType === commandTypes.END_STREAM_WITHOUT_REPORT;
+
+      if (!endCommand || state.activeSession !== null) {
         return false;
       }
 
-      if (commandType === commandTypes.START_STREAM) {
-        return START_STATUSES.has(result.status) && state.activeSession !== null;
+      if (hasExactKeys(result, ["status"])) {
+        return ["already_ended", "ended"].includes(result.status);
       }
 
-      return (
-        commandType === commandTypes.END_STREAM &&
-        ["already_ended", "ended"].includes(result.status) &&
-        state.activeSession === null
-      );
+      if (
+        !hasExactKeys(result, [
+          "reportId",
+          "reportLifecycleStatus",
+          "status",
+        ])
+      ) {
+        return false;
+      }
+
+      const noReport = result.reportId === null &&
+        result.reportLifecycleStatus === null;
+      const savedReport =
+        typeof result.reportId === "string" &&
+        REPORT_ID_PATTERN.test(result.reportId) &&
+        ["finalized", "pending_end"].includes(
+          result.reportLifecycleStatus,
+        );
+
+      if (commandType === commandTypes.END_STREAM_WITHOUT_REPORT) {
+        return noReport && [
+          "already_ended",
+          "ended_without_report",
+        ].includes(result.status);
+      }
+
+      return (noReport || savedReport) &&
+        ["already_ended", "ended"].includes(result.status);
     }
 
     function parseResponse(response, commandType, commandTypes) {
@@ -309,7 +345,28 @@
         });
       }
 
-      return Object.freeze({ endStream, getSession, startStream });
+      function endStreamWithoutReport(optionsValue) {
+        return enqueueCommand(() => {
+          if (!hasExactKeys(optionsValue, ["streamId"])) {
+            fail(
+              "INVALID_CLIENT_COMMAND",
+              "Command options must contain exactly: streamId.",
+            );
+          }
+
+          return {
+            type: protocol.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+            streamId: requireNonEmptyString(optionsValue.streamId, "streamId"),
+          };
+        });
+      }
+
+      return Object.freeze({
+        endStream,
+        endStreamWithoutReport,
+        getSession,
+        startStream,
+      });
     }
 
     return {

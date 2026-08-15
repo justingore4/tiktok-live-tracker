@@ -53,6 +53,8 @@
   ]);
   const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
+  const tiktokFeeCalculator =
+    globalThis.TikTokLiveTrackerTikTokFeeCalculator;
   const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
   const reconciliationProtocol =
     globalThis.TikTokLiveTrackerReconciliationCoordinator;
@@ -70,16 +72,18 @@
     globalThis.TikTokLiveTrackerInventoryImportClient;
   const inventoryImportControllerModule =
     globalThis.TikTokLiveTrackerInventoryImportController;
+  const streamReportProtocol =
+    globalThis.TikTokLiveTrackerStreamReportProtocol;
+  const MAX_DASHBOARD_REPORTS =
+    streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
+  const streamReportClientModule =
+    globalThis.TikTokLiveTrackerStreamReportClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
-  const savedModeButton = document.querySelector("#saved-session-mode");
+  const appShell = document.querySelector(".app-shell");
+  const appFooter = document.querySelector(".app-footer");
   const demoModeButton = document.querySelector("#offline-demo-mode");
-  const modeDescription = document.querySelector("#mode-description");
-  const savedSessionStatus = document.querySelector("#saved-session-status");
-  const savedSessionStatusText = document.querySelector(
-    "#saved-session-status-text",
-  );
   const savedSessionError = document.querySelector("#saved-session-error");
   const savedSessionErrorTitle = document.querySelector(
     "#saved-session-error-title",
@@ -166,6 +170,9 @@
     "#inventory-import-confirmation-message",
   );
   const streamSessionPanel = document.querySelector("#stream-session-panel");
+  const streamSessionHeading = document.querySelector(
+    ".stream-session-heading",
+  );
   const streamSessionBadge = document.querySelector("#stream-session-badge");
   const streamSessionStatus = document.querySelector("#stream-session-status");
   const streamSessionStatusTitle = document.querySelector(
@@ -197,6 +204,102 @@
   const retryStreamSessionButton = document.querySelector(
     "#retry-stream-session",
   );
+  const endStreamWithoutReportButton = document.querySelector(
+    "#end-stream-without-report",
+  );
+  const endReportReadiness = document.querySelector(
+    "#end-report-readiness",
+  );
+  const streamReportsPanel = document.querySelector(
+    "#stream-reports-panel",
+  );
+  const streamReportsCount = document.querySelector(
+    "#stream-reports-count",
+  );
+  const streamReportsList = document.querySelector(
+    "#stream-reports-list",
+  );
+  const streamReportsError = document.querySelector(
+    "#stream-reports-error",
+  );
+  const streamReportsErrorMessage = document.querySelector(
+    "#stream-reports-error-message",
+  );
+  const retryStreamReportsButton = document.querySelector(
+    "#retry-stream-reports",
+  );
+  const viewArchivedReportsButton = document.querySelector(
+    "#view-archived-reports",
+  );
+  const archivedReportsShortCount = document.querySelector(
+    "#archived-reports-short-count",
+  );
+  const archivedReportsView = document.querySelector(
+    "#archived-reports-view",
+  );
+  const backToBusinessRecordsButton = document.querySelector(
+    "#back-to-business-records",
+  );
+  const archivedReportsCount = document.querySelector(
+    "#archived-reports-count",
+  );
+  const toggleArchivedSelectionButton = document.querySelector(
+    "#toggle-archived-selection",
+  );
+  const archivedSelectionToolbar = document.querySelector(
+    "#archived-selection-toolbar",
+  );
+  const archivedSelectionSummary = document.querySelector(
+    "#archived-selection-summary",
+  );
+  const selectAllArchivedReportsButton = document.querySelector(
+    "#select-all-archived-reports",
+  );
+  const clearArchivedSelectionButton = document.querySelector(
+    "#clear-archived-selection",
+  );
+  const restoreSelectedReportsButton = document.querySelector(
+    "#restore-selected-reports",
+  );
+  const deleteSelectedReportsButton = document.querySelector(
+    "#delete-selected-reports",
+  );
+  const archivedRestoreGuidance = document.querySelector(
+    "#archived-restore-guidance",
+  );
+  const archivedReportsList = document.querySelector(
+    "#archived-reports-list",
+  );
+  const archivedReportsEmpty = document.querySelector(
+    "#archived-reports-empty",
+  );
+  const archivedReportsError = document.querySelector(
+    "#archived-reports-error",
+  );
+  const archivedReportsErrorMessage = document.querySelector(
+    "#archived-reports-error-message",
+  );
+  const retryArchivedReportsButton = document.querySelector(
+    "#retry-archived-reports",
+  );
+  const archivedReportsFeedback = document.querySelector(
+    "#archived-reports-feedback",
+  );
+  const reportActionConfirmation = document.querySelector(
+    "#report-action-confirmation",
+  );
+  const reportActionConfirmationTitle = document.querySelector(
+    "#report-action-confirmation-title",
+  );
+  const reportActionConfirmationMessage = document.querySelector(
+    "#report-action-confirmation-message",
+  );
+  const cancelReportActionButton = document.querySelector(
+    "#cancel-report-action",
+  );
+  const confirmReportActionButton = document.querySelector(
+    "#confirm-report-action",
+  );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const dataModeBadge = document.querySelector("#data-mode-badge");
   const variationContext = document.querySelector("#variation-context");
@@ -206,10 +309,33 @@
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
+  const inventorySelectionNote = document.querySelector(
+    "#inventory-selection-note",
+  );
   const resultCount = document.querySelector("#result-count");
   const emptyState = document.querySelector("#empty-state");
   const emptyQuery = document.querySelector("#empty-query");
   const cardTemplate = document.querySelector("#inventory-card-template");
+  const grossItemSalesValue = document.querySelector("#revenue-value");
+  const averageOrderValue = document.querySelector("#aov-value");
+  const totalGmvValue = document.querySelector("#total-gmv-value");
+  const feesPaidValue = document.querySelector("#fees-paid-value");
+  const gmvAfterFeesValue = document.querySelector(
+    "#gmv-after-fees-value",
+  );
+  const completedSalesValue = document.querySelector(
+    "#completed-sales-value",
+  );
+  const canceledOrdersValue = document.querySelector(
+    "#canceled-orders-value",
+  );
+  const paymentFixingValue = document.querySelector(
+    "#payment-fixing-value",
+  );
+  const grossProfitValue = document.querySelector("#gross-profit-value");
+  const grossProfitWarning = document.querySelector(
+    "#gross-profit-warning",
+  );
   const pendingMapping = document.querySelector("#pending-mapping");
   const mappedVariation = document.querySelector(
     '[data-field="mapped-variation"]',
@@ -264,6 +390,8 @@
   if (
     !saleParser ||
     !viewModel ||
+    !tiktokFeeCalculator ||
+    typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
     !reconciliation ||
     !reconciliationProtocol ||
     !reconciliationClientModule ||
@@ -273,13 +401,14 @@
     !inventoryImportProtocol ||
     !inventoryImportClientModule ||
     !inventoryImportControllerModule ||
+    !streamReportProtocol ||
+    !streamReportClientModule ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule ||
     typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
       "function"
   ) {
     console.error("[TikTok Live Tracker] Tagger lifecycle failed to load.");
-    savedSessionStatus.hidden = true;
     savedSessionError.hidden = false;
     savedSessionErrorMessage.textContent =
       "The tracker did not load completely. Reload the extension and try again.";
@@ -311,6 +440,11 @@
     inventoryImportControllerModule.createInventoryImportController({
       client: inventoryImportClient,
     });
+  const streamReportClient =
+    streamReportClientModule.createStreamReportClient({
+      runtime: chrome.runtime,
+      protocol: streamReportProtocol,
+    });
   let activeMode = "saved_session";
   let demoSession = null;
   let persistentController = null;
@@ -338,6 +472,18 @@
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
+  let streamReportSummaries = [];
+  let archivedReportSummaries = [];
+  let streamReportsLoading = false;
+  let streamReportsLoadError = null;
+  let archivedReportsLoadError = null;
+  let archivedReportsViewOpen = false;
+  let archivedSelectionMode = false;
+  let selectedArchivedReportIds = new Set();
+  let openReportActions = null;
+  let reportMutationBusy = false;
+  let pendingReportDeletion = null;
+  let pendingReportDeletionReturnFocus = null;
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -383,6 +529,7 @@
       getRecordedVariations(view).map((variation) => [
         variation.variationNumber,
         JSON.stringify([
+          variation.bidding === true,
           variation.status,
           variation.observedPaymentStatus,
           variation.soldPriceCents,
@@ -427,24 +574,19 @@
     const completedAfterUnpaid = variation?.conflicts?.some(
       (candidate) => candidate.code === "payment_completed_after_marked_unpaid",
     );
-    const completedAfterCanceled = variation?.conflicts?.some(
-      (candidate) => candidate.code === "payment_completed_after_canceled",
-    );
 
     if (priceConflict) {
       return `Payment price conflict for variation #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
     }
 
     if (variation?.status === "canceled") {
-      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and stock remains unchanged.`;
+      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and the unit returned to available inventory.`;
     }
 
     if (variation?.observedPaymentStatus === "payment_complete") {
-      const reviewDetail = completedAfterCanceled
-        ? " TikTok completion overrode its earlier cancellation; inventory was counted. Review the warning."
-        : completedAfterUnpaid
-          ? " It was previously marked unpaid; review the warning."
-          : "";
+      const reviewDetail = completedAfterUnpaid
+        ? " It was previously marked unpaid; review the warning."
+        : "";
 
       return `Payment complete captured for variation #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
     }
@@ -462,6 +604,29 @@
           )
           .map(([number]) => number)
       : [];
+    const activeBiddingVariation = findVariationOption(
+      view,
+      view.activeBiddingVariationNumber,
+    );
+    const previousActiveSignature = activeBiddingVariation
+      ? previous.get(activeBiddingVariation.variationNumber)
+      : null;
+    let wasPreviouslyBidding = false;
+
+    if (typeof previousActiveSignature === "string") {
+      try {
+        wasPreviouslyBidding =
+          JSON.parse(previousActiveSignature)?.[0] === true;
+      } catch (_error) {
+        // A stale UI-only signature must not interrupt live capture updates.
+      }
+    }
+
+    if (activeBiddingVariation && !wasPreviouslyBidding) {
+      return activeBiddingVariation.selected
+        ? `Variation #${activeBiddingVariation.variationNumber} is now bidding. It is selected and ready to tag.`
+        : `Variation #${activeBiddingVariation.variationNumber} is now bidding. Variation #${view.selectedVariationNumber} remains selected.`;
+    }
 
     if (added.length === 1 && updated.length === 0) {
       const addedVariation = findVariationOption(view, added[0]);
@@ -486,7 +651,7 @@
     }
 
     if (added.length > 0 || updated.length > 0) {
-      return `Live Sold Items updated ${added.length + updated.length} variations.`;
+      return `Live auction data updated ${added.length + updated.length} variations.`;
     }
 
     return "";
@@ -556,7 +721,7 @@
         })
         .catch((error) => {
           console.error(
-            "[TikTok Live Tracker] Unexpected live Sold Items refresh failure.",
+            "[TikTok Live Tracker] Unexpected live auction refresh failure.",
             error,
           );
         });
@@ -615,6 +780,81 @@
     };
   }
 
+  function setTrackerWorkspaceVisible(visible) {
+    trackerWorkspace.hidden = !visible;
+    updateFooterVisibility();
+  }
+
+  function updateFooterVisibility() {
+    if (appFooter) {
+      appFooter.hidden =
+        archivedReportsViewOpen ||
+        (trackerWorkspace.hidden && streamReportsPanel.hidden);
+    }
+  }
+
+  function reorderAppSections(sections) {
+    if (!appShell) {
+      return;
+    }
+
+    const orderedSections = sections.filter(
+      (section) => section && section !== mappingAnnouncement,
+    );
+    const currentOrder = Array.from(appShell.children).filter((child) =>
+      orderedSections.includes(child),
+    );
+    const orderAlreadyMatches =
+      currentOrder.length === orderedSections.length &&
+      orderedSections.every((section, index) => currentOrder[index] === section);
+
+    if (orderAlreadyMatches) {
+      return;
+    }
+
+    orderedSections.forEach((section) => {
+      appShell.insertBefore(section, mappingAnnouncement ?? null);
+    });
+  }
+
+  function updateLayoutOrder(snapshot = streamSnapshot) {
+    const activeAndResumed =
+      snapshot.activeSession !== null && snapshot.resumed === true;
+    const streamFailed = snapshot.phase === "error";
+
+    if (activeAndResumed) {
+      reorderAppSections(
+        streamFailed
+          ? [
+              inventoryImportPanel,
+              savedSessionError,
+              streamSessionPanel,
+              trackerWorkspace,
+              streamReportsPanel,
+              appFooter,
+            ]
+          : [
+              inventoryImportPanel,
+              savedSessionError,
+              trackerWorkspace,
+              streamSessionPanel,
+              streamReportsPanel,
+              appFooter,
+            ],
+      );
+      return;
+    }
+
+    reorderAppSections([
+      inventoryImportPanel,
+      streamSessionPanel,
+      savedSessionError,
+      trackerWorkspace,
+      streamReportsPanel,
+      appFooter,
+    ]);
+  }
+
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
     unsubscribePersistentController?.();
@@ -628,9 +868,8 @@
     captureRefreshFocusSku = null;
     captureRefreshHadVariationFocus = false;
     lastRenderedSavedVariations = new Map();
-    savedSessionStatus.hidden = true;
     savedSessionError.hidden = true;
-    trackerWorkspace.hidden = true;
+    setTrackerWorkspaceVisible(false);
     trackerWorkspace.toggleAttribute("inert", true);
   }
 
@@ -691,19 +930,21 @@
   function updateModeControls() {
     const savedMode = activeMode === "saved_session";
 
-    savedModeButton.setAttribute("aria-pressed", String(savedMode));
+    demoModeButton.textContent = "Demo";
     demoModeButton.setAttribute("aria-pressed", String(!savedMode));
+    const demoToggleLabel = savedMode
+      ? "Switch to offline demo mode"
+      : "Return to live session";
+    demoModeButton.setAttribute("aria-label", demoToggleLabel);
+    demoModeButton.title = demoToggleLabel;
     demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
     streamSessionPanel.hidden = !savedMode;
     inventoryImportPanel.hidden =
       !savedMode ||
       streamSnapshot.activeSession !== null ||
       shouldPrepareInventoryForStreamRetry(streamSnapshot);
-    modeDescription.textContent = savedMode
-      ? "Start or resume a local tracker stream. Mappings and unpaid changes are saved and restored when this panel reopens."
-      : `Temporary simulator. Demo actions are not saved or applied to TikTok.${streamSnapshot.activeSession ? " Your live tracker stream remains active in the background." : ""}`;
     dataModeBadge.textContent = savedMode ? "Live session" : "Demo data";
-    sessionFooterLabel.textContent = !savedMode
+    const footerText = !savedMode
       ? "Offline demo - not saved"
       : !streamSnapshot.activeSession
         ? "No active tracker stream"
@@ -716,6 +957,646 @@
           error: "Live session data needs attention",
           ready: "Saved locally",
         }[savedSnapshot?.phase] ?? "Live session";
+    const footerPhase = !savedMode
+      ? "demo"
+      : !streamSnapshot.activeSession
+        ? "inactive"
+        : !streamSnapshot.resumed
+          ? "resume"
+          : savedSnapshot?.phase ?? "idle";
+
+    setFooterStatus(footerText, footerPhase);
+    renderStreamReportsPanel();
+  }
+
+  function setFooterStatus(text, phase) {
+    if (sessionFooterLabel.textContent !== text) {
+      sessionFooterLabel.textContent = text;
+    }
+
+    appFooter.dataset.phase = phase;
+  }
+
+  function formatReportTimestamp(value) {
+    const parsed = typeof value === "string" ? new Date(value) : null;
+
+    if (!parsed || Number.isNaN(parsed.getTime())) {
+      return "Saved stream";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(parsed);
+  }
+
+  function describeReportReadiness(view = savedSnapshot?.view) {
+    const totals = view?.totals;
+
+    if (!totals) {
+      return "The saved stream will be checked when the report is created.";
+    }
+
+    const variations = Array.isArray(view?.variations)
+      ? view.variations
+      : [];
+    const unresolvedOrderCount = variations.filter(
+      (variation) =>
+        variation.recorded === true &&
+        !["committed", "unmapped_completed", "canceled"].includes(
+          variation.status,
+        ),
+    ).length;
+    const recountSkuCount = (Array.isArray(view?.inventory)
+      ? view.inventory
+      : []
+    ).filter(
+      (entry) =>
+        Number.isSafeInteger(entry.oversoldQuantity) &&
+        entry.oversoldQuantity > 0,
+    ).length;
+    const issues = [
+      [
+        Number.isSafeInteger(view?.activeBiddingVariationNumber) ? 1 : 0,
+        "active bidding variation",
+        "active bidding variations",
+      ],
+      [unresolvedOrderCount, "unresolved order", "unresolved orders"],
+      [totals.pendingMappedCount, "pending mapped order", "pending mapped orders"],
+      [totals.paymentFixingCount, "payment-fixing order", "payment-fixing orders"],
+      [totals.unmappedCompletedCount, "completed sale without inventory", "completed sales without inventory"],
+      [totals.conflictCount, "data conflict", "data conflicts"],
+      [recountSkuCount, "SKU requiring a recount", "SKUs requiring a recount"],
+    ]
+      .filter(([count]) => Number.isSafeInteger(count) && count > 0)
+      .map(([count, singular, plural]) =>
+        `${count} ${count === 1 ? singular : plural}`,
+      );
+
+    return issues.length === 0
+      ? "No captured issues currently require attention."
+      : `Report attention items: ${issues.join(", ")}.`;
+  }
+
+  function openStreamReport(reportId) {
+    const reportUrl = chrome.runtime.getURL(
+      `report/report.html?reportId=${encodeURIComponent(reportId)}`,
+    );
+
+    if (chrome.tabs && typeof chrome.tabs.create === "function") {
+      return chrome.tabs.create({ url: reportUrl });
+    }
+
+    const opened = globalThis.open(reportUrl, "_blank", "noopener");
+
+    if (!opened) {
+      throw new Error("Chrome blocked the stream report tab.");
+    }
+
+    return Promise.resolve(opened);
+  }
+
+  function getAvailableDashboardReportSlots() {
+    return Math.max(
+      0,
+      MAX_DASHBOARD_REPORTS - streamReportSummaries.length,
+    );
+  }
+
+  function closeReportActionsMenu(options = {}) {
+    if (!openReportActions) {
+      return;
+    }
+
+    const { button, menu } = openReportActions;
+
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    openReportActions = null;
+
+    if (options.restoreFocus === true && button.isConnected) {
+      button.focus();
+    }
+  }
+
+  function getReportMenuItems(menu) {
+    return Array.from(menu.querySelectorAll('[role="menuitem"]')).filter(
+      (item) => !item.disabled && !item.hidden,
+    );
+  }
+
+  function openReportActionsMenu(button, menu, focusPosition = null) {
+    if (openReportActions?.menu !== menu) {
+      closeReportActionsMenu();
+    }
+
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    openReportActions = { button, menu };
+
+    if (focusPosition !== null) {
+      const items = getReportMenuItems(menu);
+      const index = focusPosition === "last" ? items.length - 1 : 0;
+
+      items[index]?.focus();
+    }
+  }
+
+  function handleReportMenuKeydown(event, button, menu) {
+    const items = getReportMenuItems(menu);
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = null;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeReportActionsMenu({ restoreFocus: true });
+      return;
+    }
+
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = items.length - 1;
+    } else if (event.key === "ArrowDown") {
+      nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      nextIndex = currentIndex < 0
+        ? items.length - 1
+        : (currentIndex - 1 + items.length) % items.length;
+    } else if (event.key === "Tab") {
+      closeReportActionsMenu();
+      return;
+    }
+
+    if (nextIndex !== null && items.length > 0) {
+      event.preventDefault();
+      items[nextIndex].focus();
+    }
+  }
+
+  function createReportMenuAction(label, action, onActivate) {
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.reportAction = action;
+    button.textContent = label;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeReportActionsMenu();
+      onActivate();
+    });
+    return button;
+  }
+
+  function setReportInteractionError(error, archived) {
+    const message =
+      error?.message ?? "The saved report could not be changed. Nothing was changed.";
+
+    if (archived) {
+      archivedReportsLoadError = message;
+    } else {
+      streamReportsLoadError = message;
+    }
+
+    renderStreamReportsPanel();
+    (archived ? archivedReportsError : streamReportsError).focus();
+  }
+
+  function createStreamReportLink(summary, options = {}) {
+    const archived = options.archived === true;
+    const selectionEnabled = archived && archivedSelectionMode;
+    const wrapper = document.createElement("div");
+    const button = document.createElement("button");
+    const title = document.createElement("span");
+    const meta = document.createElement("span");
+    const moreButton = document.createElement("button");
+    const moreGlyph = document.createElement("span");
+    const menu = document.createElement("div");
+    const completedCount = Number.isSafeInteger(summary.completedPaymentCount)
+      ? summary.completedPaymentCount
+      : 0;
+    const totalCount = Number.isSafeInteger(summary.totalSalesCount)
+      ? summary.totalSalesCount
+      : 0;
+    const formattedTimestamp = formatReportTimestamp(summary.endedAt);
+    const menuId = `report-actions-${archived ? "archived" : "dashboard"}-${summary.reportId.replace(/[^a-z0-9_-]/gi, "-")}`;
+
+    wrapper.className = "stream-report-row";
+    wrapper.dataset.selectionMode = String(selectionEnabled);
+    wrapper.setAttribute("role", "listitem");
+
+    if (selectionEnabled) {
+      const checkboxLabel = document.createElement("label");
+      const checkbox = document.createElement("input");
+      const checkboxMark = document.createElement("span");
+
+      checkboxLabel.className = "archive-report-checkbox-label";
+      checkbox.className = "archive-report-checkbox";
+      checkbox.type = "checkbox";
+      checkbox.value = summary.reportId;
+      checkbox.checked = selectedArchivedReportIds.has(summary.reportId);
+      checkbox.disabled = reportMutationBusy;
+      checkbox.setAttribute(
+        "aria-label",
+        `Select stream report from ${formattedTimestamp}`,
+      );
+      checkboxMark.className = "archive-report-checkbox-mark";
+      checkboxMark.setAttribute("aria-hidden", "true");
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selectedArchivedReportIds.add(summary.reportId);
+        } else {
+          selectedArchivedReportIds.delete(summary.reportId);
+        }
+
+        renderArchivedSelectionControls();
+      });
+      checkboxLabel.append(checkbox, checkboxMark);
+      wrapper.append(checkboxLabel);
+    }
+
+    button.type = "button";
+    button.className = "stream-report-link";
+    button.dataset.reportId = summary.reportId;
+    button.setAttribute(
+      "aria-label",
+      `Open stream report from ${formattedTimestamp}`,
+    );
+
+    title.className = "stream-report-link-title";
+    title.textContent = formattedTimestamp;
+    meta.className = "stream-report-link-meta";
+    meta.textContent =
+      `${completedCount}/${totalCount} completed - ` +
+      viewModel.formatUsdCents(summary.completedGmvCents ?? 0);
+    button.append(title, meta);
+    button.addEventListener("click", () => {
+      Promise.resolve(openStreamReport(summary.reportId)).catch((error) => {
+        setReportInteractionError(error, archived);
+      });
+    });
+
+    moreButton.type = "button";
+    moreButton.className = "report-more-button";
+    moreButton.disabled = reportMutationBusy;
+    moreButton.setAttribute("aria-haspopup", "menu");
+    moreButton.setAttribute("aria-expanded", "false");
+    moreButton.setAttribute("aria-controls", menuId);
+    moreButton.setAttribute(
+      "aria-label",
+      `More actions for stream report from ${formattedTimestamp}`,
+    );
+    moreGlyph.className = "report-more-glyph";
+    moreGlyph.setAttribute("aria-hidden", "true");
+    moreGlyph.textContent = "\u2026";
+    moreButton.append(moreGlyph);
+
+    menu.id = menuId;
+    menu.className = "report-actions-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", `Actions for report from ${formattedTimestamp}`);
+    menu.hidden = true;
+
+    if (!archived) {
+      menu.append(
+        createReportMenuAction("Archive", "archive", () => {
+          void runReportMutation("archive", [summary.reportId]);
+        }),
+      );
+    } else {
+      if (getAvailableDashboardReportSlots() > 0) {
+        menu.append(
+          createReportMenuAction("Restore", "restore", () => {
+            void runReportMutation("restore", [summary.reportId]);
+          }),
+        );
+      }
+
+      menu.append(
+        createReportMenuAction("Delete forever", "delete", () => {
+          requestPermanentReportDeletion([summary.reportId], moreButton);
+        }),
+      );
+    }
+
+    moreButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+
+      if (menu.hidden) {
+        openReportActionsMenu(moreButton, menu);
+      } else {
+        closeReportActionsMenu({ restoreFocus: true });
+      }
+    });
+    moreButton.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        openReportActionsMenu(
+          moreButton,
+          menu,
+          event.key === "ArrowUp" ? "last" : "first",
+        );
+      }
+    });
+    menu.addEventListener("keydown", (event) => {
+      handleReportMenuKeydown(event, moreButton, menu);
+    });
+    menu.addEventListener("click", (event) => event.stopPropagation());
+
+    wrapper.append(button, moreButton, menu);
+    return wrapper;
+  }
+
+  function renderArchivedSelectionControls() {
+    const selectedCount = selectedArchivedReportIds.size;
+    const availableSlots = getAvailableDashboardReportSlots();
+    const allSelected =
+      archivedReportSummaries.length > 0 &&
+      selectedCount === archivedReportSummaries.length;
+
+    archivedSelectionToolbar.hidden = !archivedSelectionMode;
+    toggleArchivedSelectionButton.setAttribute(
+      "aria-pressed",
+      String(archivedSelectionMode),
+    );
+    toggleArchivedSelectionButton.textContent = archivedSelectionMode
+      ? "Done"
+      : "Select";
+    archivedSelectionSummary.textContent =
+      `${selectedCount} selected - ${availableSlots} ${availableSlots === 1 ? "slot" : "slots"} available`;
+    selectAllArchivedReportsButton.disabled =
+      reportMutationBusy || archivedReportSummaries.length === 0 || allSelected;
+    clearArchivedSelectionButton.disabled =
+      reportMutationBusy || selectedCount === 0;
+    restoreSelectedReportsButton.hidden = availableSlots === 0;
+    restoreSelectedReportsButton.disabled =
+      reportMutationBusy ||
+      selectedCount === 0 ||
+      selectedCount > availableSlots;
+    deleteSelectedReportsButton.disabled =
+      reportMutationBusy || selectedCount === 0;
+
+    if (availableSlots === 0) {
+      archivedRestoreGuidance.textContent =
+        "Dashboard full: 5 of 5 reports. Archive a dashboard report before restoring.";
+    } else if (selectedCount > availableSlots) {
+      archivedRestoreGuidance.textContent =
+        `Only ${availableSlots} ${availableSlots === 1 ? "dashboard slot is" : "dashboard slots are"} available. Clear part of the selection before restoring.`;
+    } else {
+      archivedRestoreGuidance.textContent =
+        `${availableSlots} of 5 dashboard ${availableSlots === 1 ? "slot is" : "slots are"} available.`;
+    }
+  }
+
+  function syncArchivedReportCheckboxes() {
+    archivedReportsList
+      .querySelectorAll(".archive-report-checkbox")
+      .forEach((checkbox) => {
+        checkbox.checked = selectedArchivedReportIds.has(checkbox.value);
+      });
+  }
+
+  function renderArchivedReportsView() {
+    const savedMode = activeMode === "saved_session";
+    const inactive = streamSnapshot.activeSession === null;
+    const canOpen = savedMode && inactive;
+    const hasError = typeof archivedReportsLoadError === "string";
+    const archivedIds = new Set(
+      archivedReportSummaries.map((summary) => summary.reportId),
+    );
+
+    if (!canOpen) {
+      archivedReportsViewOpen = false;
+    }
+
+    selectedArchivedReportIds = new Set(
+      [...selectedArchivedReportIds].filter((reportId) =>
+        archivedIds.has(reportId),
+      ),
+    );
+    if (archivedReportSummaries.length === 0) {
+      archivedSelectionMode = false;
+      selectedArchivedReportIds.clear();
+    }
+
+    closeReportActionsMenu();
+    archivedReportsView.hidden = !archivedReportsViewOpen;
+    archivedReportsView.setAttribute(
+      "aria-busy",
+      String(streamReportsLoading || reportMutationBusy),
+    );
+    appShell.classList.toggle(
+      "archived-reports-open",
+      archivedReportsViewOpen,
+    );
+    archivedReportsCount.textContent =
+      `${archivedReportSummaries.length} archived`;
+    toggleArchivedSelectionButton.hidden =
+      archivedReportSummaries.length === 0;
+    toggleArchivedSelectionButton.disabled =
+      streamReportsLoading || reportMutationBusy;
+    archivedReportsList.replaceChildren(
+      ...archivedReportSummaries.map((summary) =>
+        createStreamReportLink(summary, { archived: true }),
+      ),
+    );
+    archivedReportsEmpty.hidden =
+      streamReportsLoading || archivedReportSummaries.length > 0 || hasError;
+    archivedReportsError.hidden = !hasError;
+    archivedReportsErrorMessage.textContent = hasError
+      ? archivedReportsLoadError
+      : "Archived reports could not be loaded. Nothing was changed.";
+    renderArchivedSelectionControls();
+  }
+
+  function renderStreamReportsPanel() {
+    const savedMode = activeMode === "saved_session";
+    const inactive = streamSnapshot.activeSession === null;
+    const hasReports = streamReportSummaries.length > 0;
+    const hasArchivedReports = archivedReportSummaries.length > 0;
+    const hasError = typeof streamReportsLoadError === "string";
+
+    closeReportActionsMenu();
+    streamReportsPanel.hidden =
+      !savedMode ||
+      !inactive ||
+      (!hasReports && !hasArchivedReports && !hasError);
+    streamReportsPanel.setAttribute(
+      "aria-busy",
+      String(streamReportsLoading || reportMutationBusy),
+    );
+    streamReportsCount.textContent =
+      `${streamReportSummaries.length}/${MAX_DASHBOARD_REPORTS} saved`;
+    archivedReportsShortCount.textContent =
+      `${archivedReportSummaries.length} archived`;
+    viewArchivedReportsButton.disabled =
+      streamReportsLoading || reportMutationBusy;
+    streamReportsList.replaceChildren(
+      ...streamReportSummaries.map((summary) =>
+        createStreamReportLink(summary, { archived: false }),
+      ),
+    );
+    streamReportsError.hidden = !hasError;
+    streamReportsErrorMessage.textContent = hasError
+      ? streamReportsLoadError
+      : "Saved reports could not be loaded. Nothing was changed.";
+    renderArchivedReportsView();
+    updateFooterVisibility();
+  }
+
+  function openArchivedReportsDashboard() {
+    if (
+      activeMode !== "saved_session" ||
+      streamSnapshot.activeSession !== null
+    ) {
+      return;
+    }
+
+    archivedReportsViewOpen = true;
+    renderStreamReportsPanel();
+    archivedReportsView.scrollIntoView({ block: "start" });
+    backToBusinessRecordsButton.focus();
+  }
+
+  function closeArchivedReportsDashboard() {
+    archivedReportsViewOpen = false;
+    archivedSelectionMode = false;
+    selectedArchivedReportIds.clear();
+    renderStreamReportsPanel();
+
+    if (streamReportsPanel.hidden) {
+      streamSessionStatus.focus();
+    } else {
+      streamReportsPanel.scrollIntoView({ block: "start" });
+      viewArchivedReportsButton.focus();
+    }
+  }
+
+  function announceReportMutation(message, archived) {
+    if (archived) {
+      archivedReportsFeedback.textContent = "";
+      archivedReportsFeedback.textContent = message;
+      return;
+    }
+
+    mappingAnnouncement.textContent = "";
+    mappingAnnouncement.textContent = message;
+  }
+
+  async function runReportMutation(action, reportIds) {
+    const ids = [...new Set(reportIds)];
+    const archivedAction = action !== "archive";
+
+    if (reportMutationBusy || ids.length === 0) {
+      return;
+    }
+
+    if (
+      action === "restore" &&
+      ids.length > getAvailableDashboardReportSlots()
+    ) {
+      announceReportMutation(
+        "There are not enough dashboard slots for that selection. Archive a dashboard report or clear part of the selection.",
+        true,
+      );
+      renderArchivedReportsView();
+      return;
+    }
+
+    reportMutationBusy = true;
+    streamReportsLoadError = null;
+    archivedReportsLoadError = null;
+    renderStreamReportsPanel();
+
+    try {
+      if (action === "archive") {
+        await streamReportClient.archiveReports({ reportIds: ids });
+      } else if (action === "restore") {
+        await streamReportClient.restoreReports({ reportIds: ids });
+      } else if (action === "delete") {
+        await streamReportClient.deleteArchivedReports({ reportIds: ids });
+      } else {
+        throw new Error("The report action is not supported.");
+      }
+
+      ids.forEach((reportId) => selectedArchivedReportIds.delete(reportId));
+      announceReportMutation(
+        action === "archive"
+          ? `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} archived.`
+          : action === "restore"
+            ? `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} restored to Business Records.`
+            : `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} permanently deleted from this Chrome profile.`,
+        archivedAction,
+      );
+      await refreshStreamReports();
+    } catch (error) {
+      setReportInteractionError(error, archivedAction);
+    } finally {
+      reportMutationBusy = false;
+      renderStreamReportsPanel();
+    }
+  }
+
+  function requestPermanentReportDeletion(reportIds, returnFocusTarget = null) {
+    const ids = [...new Set(reportIds)];
+
+    if (ids.length === 0 || reportMutationBusy) {
+      return;
+    }
+
+    pendingReportDeletion = ids;
+    pendingReportDeletionReturnFocus = returnFocusTarget;
+    reportActionConfirmationTitle.textContent =
+      ids.length === 1
+        ? "Delete report forever?"
+        : `Delete ${ids.length} reports forever?`;
+    reportActionConfirmationMessage.textContent =
+      ids.length === 1
+        ? "This permanently deletes the saved report from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed."
+        : `This permanently deletes ${ids.length} saved reports from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed.`;
+    confirmReportActionButton.textContent = "Delete forever";
+    reportActionConfirmation.showModal();
+  }
+
+  async function refreshStreamReports(options = {}) {
+    streamReportsLoading = true;
+    streamReportsLoadError = null;
+    archivedReportsLoadError = null;
+    renderStreamReportsPanel();
+
+    try {
+      const [dashboardResponse, archivedResponse] = await Promise.all([
+        streamReportClient.listReports(),
+        streamReportClient.listArchivedReports(),
+      ]);
+      streamReportSummaries = dashboardResponse.reports;
+      archivedReportSummaries = archivedResponse.reports;
+      streamReportsLoading = false;
+      renderStreamReportsPanel();
+
+      const latest = streamReportSummaries[0] ?? null;
+      if (options.openLatest === true && latest) {
+        await openStreamReport(latest.reportId);
+      }
+
+      return latest;
+    } catch (error) {
+      streamReportsLoading = false;
+      const message =
+        error?.message ?? "Saved reports could not be loaded. Nothing was changed.";
+      streamReportsLoadError = message;
+      archivedReportsLoadError = message;
+      renderStreamReportsPanel();
+
+      if (options.focusError === true) {
+        (archivedReportsViewOpen
+          ? archivedReportsError
+          : streamReportsError).focus();
+      }
+
+      return null;
+    }
   }
 
   function requireDemoSeedResult(result, action) {
@@ -769,6 +1650,7 @@
 
   function createInventoryCard(entry, view) {
     const auction = view.auction;
+    const canceled = auction?.paymentStatus === "canceled";
     const variationNumber = view.variationNumber;
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const button = wrapper.querySelector(".inventory-card");
@@ -784,22 +1666,28 @@
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
     button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
+    button.dataset.lockedReason = canceled ? "canceled" : "";
     button.setAttribute("aria-pressed", String(selected));
 
     if (!canTagSelectedVariation) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a Sold Items variation before tagging.`,
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
       );
-    } else if (selected && auction?.status === "canceled") {
+    } else if (selected && canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, is linked to canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation is released and stock is unchanged. Click to unlink this item.`,
+        `${itemName}, size ${entry.size}, was selected for canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation was released and this history is read-only.`,
       );
     } else if (selected) {
       button.setAttribute(
         "aria-label",
         `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
+      );
+    } else if (canceled) {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Canceled variation ${variationNumber} is read-only.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -807,13 +1695,6 @@
       button.setAttribute(
         "aria-label",
         `${itemName}, size ${entry.size}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
-      );
-    } else if (auction?.status === "canceled") {
-      const action = auction.sku ? "Relink" : "Link";
-
-      button.setAttribute(
-        "aria-label",
-        `${action} canceled variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}. Stock counts will not change.`,
       );
     } else if (auction?.sku) {
       button.setAttribute(
@@ -843,8 +1724,8 @@
 
     if (auction?.status === "committed" && selected) {
       selectedLabel.textContent = "Sold";
-    } else if (auction?.status === "canceled" && selected) {
-      selectedLabel.textContent = "Linked";
+    } else if (canceled && selected) {
+      selectedLabel.textContent = "Canceled item";
     } else if (auction?.status === "marked_unpaid" && selected) {
       selectedLabel.textContent = "Unpaid";
     } else {
@@ -878,8 +1759,11 @@
     const item = option.item
       ? `${formatItemName(option)}, size ${option.size}`
       : "No item selected";
+    const status = option.bidding
+      ? "bidding"
+      : option.observedPaymentStatusLabel;
 
-    return `#${option.variationNumber} - ${option.observedPaymentStatusLabel} - ${item}`;
+    return `#${option.variationNumber} - ${status} - ${item}`;
   }
 
   function renderVariationNavigation(view) {
@@ -892,7 +1776,7 @@
       const option = document.createElement("option");
 
       option.value = "";
-      option.textContent = "Waiting for Sold Items variations";
+      option.textContent = "Waiting for live auction variations";
       option.disabled = true;
       option.selected = true;
       fragment.append(option);
@@ -913,13 +1797,13 @@
     if (activeMode === "saved_session") {
       if (variations.length > 0) {
         variationSelector.value = String(view.selectedVariationNumber);
-        variationContext.textContent = "Live Sold Items variations";
+        variationContext.textContent = "Live auction variations";
         inventoryTitle.textContent =
           `Review or tag variation #${view.selectedVariationNumber}`;
       } else {
         variationContext.textContent =
-          "Waiting for a variation to appear in Sold Items";
-        inventoryTitle.textContent = "Waiting for a Sold Items variation";
+          "Waiting for a live auction variation";
+        inventoryTitle.textContent = "Waiting for a live auction variation";
       }
 
       returnToCurrentButton.hidden = true;
@@ -939,6 +1823,7 @@
   }
 
   function renderInventory(view, focusSku = null) {
+    const canceled = view.auction?.paymentStatus === "canceled";
     const query = searchInput.value;
     const normalizedQuery = viewModel.normalizeSearchText(query);
     const filteredInventory = viewModel.filterInventoryEntries(
@@ -952,6 +1837,10 @@
     });
 
     inventoryGrid.replaceChildren(fragment);
+    inventoryGrid.dataset.orderState = canceled ? "canceled" : "editable";
+    inventorySelectionNote.textContent = canceled
+      ? "This order was canceled. Its previous item is shown as read-only history, its reservation was released, and inventory cannot be changed."
+      : "Selecting an item reserves one unit until TikTok reports Payment complete or Canceled. Temporary Payment failed remains pending. Zero-stock items remain selectable and show how far they are oversold.";
     inventoryGrid.hidden = filteredInventory.length === 0;
     emptyState.hidden = filteredInventory.length !== 0;
     emptyQuery.textContent = `"${query.trim()}"`;
@@ -971,6 +1860,99 @@
     }
   }
 
+  function renderMetrics(view) {
+    const formattedGrossItemSales = viewModel.formatUsdCents(
+      view.totals.completedGmvCents,
+    );
+    const formattedAverageOrderValue = viewModel.formatUsdCents(
+      viewModel.calculateAverageOrderValueCents(
+        view.totals.completedGmvCents,
+        view.totals.completedPaymentCount,
+      ),
+    );
+    const formattedGrossProfit = viewModel.formatUsdCents(
+      view.totals.profitCents,
+    );
+    const attributedGmvDisplay = view.totals.attributedGmvDisplay;
+    const tiktokFeeMetrics =
+      tiktokFeeCalculator.calculateSixPercentGmvFees(attributedGmvDisplay);
+    const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
+    const completedPaymentCount = view.totals.completedPaymentCount;
+    const totalSalesCount = view.totals.totalSalesCount;
+    const canceledOrderCount = Number.isSafeInteger(
+      view.totals.canceledOrderCount,
+    ) && view.totals.canceledOrderCount >= 0
+      ? view.totals.canceledOrderCount
+      : 0;
+    const paymentFixingCount = Number.isSafeInteger(
+      view.totals.paymentFixingCount,
+    ) && view.totals.paymentFixingCount >= 0
+      ? view.totals.paymentFixingCount
+      : 0;
+    const completedSalesRatio = `${completedPaymentCount}/${totalSalesCount}`;
+    const formattedTotalGmv =
+      typeof attributedGmvDisplay === "string" && attributedGmvDisplay.trim()
+        ? attributedGmvDisplay.trim()
+        : "—";
+    const formattedFeesPaid = tiktokFeeMetrics?.feesPaidDisplay ?? "—";
+    const formattedGmvAfterFees =
+      tiktokFeeMetrics?.gmvAfterFeesDisplay ?? "—";
+
+    if (grossItemSalesValue.textContent !== formattedGrossItemSales) {
+      grossItemSalesValue.textContent = formattedGrossItemSales;
+    }
+
+    if (averageOrderValue.textContent !== formattedAverageOrderValue) {
+      averageOrderValue.textContent = formattedAverageOrderValue;
+    }
+
+    if (totalGmvValue.textContent !== formattedTotalGmv) {
+      totalGmvValue.textContent = formattedTotalGmv;
+    }
+
+    if (feesPaidValue.textContent !== formattedFeesPaid) {
+      feesPaidValue.textContent = formattedFeesPaid;
+    }
+
+    if (gmvAfterFeesValue.textContent !== formattedGmvAfterFees) {
+      gmvAfterFeesValue.textContent = formattedGmvAfterFees;
+    }
+
+    if (completedSalesValue.textContent !== completedSalesRatio) {
+      completedSalesValue.textContent = completedSalesRatio;
+    }
+
+    const canceledOrdersDisplay = String(canceledOrderCount);
+
+    if (canceledOrdersValue.textContent !== canceledOrdersDisplay) {
+      canceledOrdersValue.textContent = canceledOrdersDisplay;
+    }
+
+    const paymentFixingDisplay = String(paymentFixingCount);
+
+    if (paymentFixingValue.textContent !== paymentFixingDisplay) {
+      paymentFixingValue.textContent = paymentFixingDisplay;
+    }
+
+    if (grossProfitValue.textContent !== formattedGrossProfit) {
+      grossProfitValue.textContent = formattedGrossProfit;
+    }
+
+    if (unmatchedCompletedCount > 0) {
+      const warning = unmatchedCompletedCount === 1
+        ? "Incomplete — 1 completed sale still needs an inventory item."
+        : `Incomplete — ${unmatchedCompletedCount} completed sales still need inventory items.`;
+
+      if (grossProfitWarning.textContent !== warning) {
+        grossProfitWarning.textContent = warning;
+      }
+      grossProfitWarning.hidden = false;
+    } else {
+      grossProfitWarning.hidden = true;
+      grossProfitWarning.textContent = "";
+    }
+  }
+
   function describeStateWarning(view) {
     const conflict = view.auction?.conflicts?.[0];
 
@@ -982,17 +1964,13 @@
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
     }
 
-    if (conflict?.code === "payment_completed_after_canceled") {
-      return "TikTok completed this payment after it was canceled. TikTok completion won, inventory was counted, and the order was flagged for review.";
-    }
-
     if (view.auction?.status === "unmapped_completed") {
       return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
     if (isObservedCompletionAwaitingPrice(view.auction)) {
       return view.auction.sku
-        ? "TikTok shows Payment complete, but the final price is still syncing. The item stays selected without a pending reservation; inventory will update automatically when the completed sale finishes syncing."
+        ? "TikTok shows Payment complete, but the final price is still syncing. The item remains reserved and pending until the completed sale finishes syncing."
         : "TikTok shows Payment complete, but the final price is still syncing. Select the matching item; inventory will update automatically when the completed sale finishes syncing.";
     }
 
@@ -1008,7 +1986,7 @@
         ? `${formatItemName(entry)}, size ${entry.size}`
         : "this inventory entry";
 
-      return `Inventory warning: ${itemLabel} is short by ${negativeInventory.oversoldQuantity}. The sale remains recorded for review.`;
+      return `Inventory warning: ${itemLabel} is oversold by ${negativeInventory.oversoldQuantity}. The sale remains recorded for review.`;
     }
 
     const unavailable = view.warnings.find(
@@ -1093,8 +2071,8 @@
 
     if (auction.paymentStatus === "canceled") {
       return auction.sku
-        ? "Item linked · reservation released · stock unchanged"
-        : "No item linked · stock unchanged";
+        ? "Canceled item · reservation released · stock restored"
+        : "Canceled · no inventory item assigned";
     }
 
     if (auction.mappingStatus === "marked_unpaid") {
@@ -1151,19 +2129,17 @@
     const offlineDemo = activeMode === "offline_demo";
     const canUndoSimulatedPayment =
       offlineDemo && view.controls.canUndoSimulatedPayment;
-    const canUndoUnpaid = view.controls.canUndoUnpaid;
+    const canUndoUnpaid = offlineDemo && view.controls.canUndoUnpaid;
 
-    lifecycleControlsLegend.textContent = offlineDemo
-      ? "Offline test controls"
-      : "Saved order controls";
-    lifecycleControlsNote.textContent = offlineDemo
-      ? "These controls simulate TikTok events in temporary memory and do not act on TikTok."
-      : "Mark unpaid only after TikTok's payment buffer has expired. These employee changes are saved locally.";
+    lifecycleControlsLegend.textContent = "Offline test controls";
+    lifecycleControlsNote.textContent =
+      "These controls simulate TikTok events in temporary memory and do not act on TikTok.";
     undoPaymentNote.textContent = view.mapping
       ? "Offline demo only. Remove the simulated payment, keep the item selected, and do not change TikTok."
       : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
 
     lifecycleControls.hidden =
+      !offlineDemo ||
       canceled ||
       completionAwaitingPrice ||
       (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
@@ -1179,14 +2155,11 @@
       (view.auction?.status === "mapped" ||
         view.auction?.status === "pending")
     );
-    markUnpaidButton.hidden = completionAwaitingPrice || (offlineDemo
-      ? !view.controls.canMarkUnpaid
-      : view.auction?.status !== "pending");
+    markUnpaidButton.hidden =
+      !offlineDemo || completionAwaitingPrice || !view.controls.canMarkUnpaid;
     markUnpaidButton.disabled = completionAwaitingPrice;
     unpaidNote.hidden = !markedUnpaid;
-    undoUnpaidButton.hidden = offlineDemo
-      ? !view.controls.canUndoUnpaid
-      : !markedUnpaid;
+    undoUnpaidButton.hidden = !offlineDemo || !view.controls.canUndoUnpaid;
     undoPaymentNote.hidden = !canUndoSimulatedPayment;
     undoSimulatedPaymentButton.hidden = !canUndoSimulatedPayment;
   }
@@ -1226,6 +2199,7 @@
     renderVariationNavigation(view);
     renderAuction(view);
     renderInventory(view, options.focusSku ?? null);
+    renderMetrics(view);
 
     if (options.focusStatus && !pendingMapping.hidden) {
       auctionStatus.focus();
@@ -1255,8 +2229,6 @@
     if (result.action === "unmapped") {
       const detail =
         {
-          canceled:
-            "The canceled order remains recorded. Its item link was removed and stock stays unchanged.",
           committed:
             "Payment remains complete, but inventory and gross profit need a replacement item.",
           marked_unpaid:
@@ -1282,10 +2254,6 @@
       mappingAnnouncement.textContent = `Payment-complete variation ${mapping.variationNumber} matched to ${itemDescription}. Sold for ${viewModel.formatUsdCents(mapping.soldPriceCents)}; ${profit.label} recorded.`;
     } else if (result.action === "committed_mapping_corrected") {
       mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} corrected to ${itemDescription}. Inventory and gross profit recalculated.`;
-    } else if (result.action === "canceled_order_mapped") {
-      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} linked to ${itemDescription}. Its reservation remains released and stock stays unchanged.`;
-    } else if (result.action === "canceled_mapping_corrected") {
-      mappingAnnouncement.textContent = `Canceled variation ${mapping.variationNumber} relinked to ${itemDescription}. Stock stays unchanged.`;
     } else if (result.action === "unpaid_mapping_corrected") {
       mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
     } else if (result.action === "remapped") {
@@ -1318,7 +2286,7 @@
       }
 
       return snapshot.operation === "refresh"
-        ? "Checking live Sold Items..."
+        ? "Checking live auction data..."
         : "Restoring live session data...";
     }
 
@@ -1327,7 +2295,7 @@
     }
 
     if (snapshot.operation === "refresh") {
-      return "Live Sold Items updated";
+      return "Live auction data updated";
     }
 
     return snapshot.operation === "load" || snapshot.operation === "initialize"
@@ -1588,6 +2556,7 @@
   function renderStreamSnapshot(snapshot) {
     const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
+    updateLayoutOrder(snapshot);
     updateModeControls();
     inventoryImportController.setActiveStream(snapshot.activeSession !== null);
 
@@ -1622,9 +2591,18 @@
             ? "resume"
             : "inactive";
 
+    endReportReadiness.textContent = describeReportReadiness();
+
     streamSessionPanel.dataset.state = dataState;
     streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
     streamSessionBadge.dataset.state = dataState;
+    const badgeContainer = dataState === "active"
+      ? streamSessionStatus
+      : streamSessionHeading;
+
+    if (streamSessionBadge.parentElement !== badgeContainer) {
+      badgeContainer.append(streamSessionBadge);
+    }
     streamSessionStatus.hidden = failed;
     streamSessionError.hidden = !failed;
     streamSessionActions.hidden = failed || checking || busy;
@@ -1636,6 +2614,8 @@
     endStreamButton.disabled = busy;
     confirmEndStreamButton.disabled = busy;
     cancelEndStreamButton.disabled = busy;
+    endStreamWithoutReportButton.hidden = true;
+    endStreamWithoutReportButton.disabled = busy;
 
     if (failed) {
       endConfirmationOpen = false;
@@ -1650,6 +2630,10 @@
         : "The tracker stream could not be updated. Nothing was changed.";
       retryStreamSessionButton.textContent =
         snapshot.error?.scope === "load" ? "Retry loading" : "Retry change";
+      endStreamWithoutReportButton.hidden = !(
+        snapshot.error?.scope === "end" &&
+        snapshot.activeSession !== null
+      );
 
       if (!hasFocusedStreamError) {
         streamSessionError.focus();
@@ -1685,9 +2669,8 @@
           ? "Looking for an active tracker stream that can be resumed."
           : "Waiting for the local session change to finish safely.";
       if (!persistentController) {
-        savedSessionStatus.hidden = true;
         savedSessionError.hidden = true;
-        trackerWorkspace.hidden = true;
+        setTrackerWorkspaceVisible(false);
       }
       setWorkspaceBusy(true);
       return;
@@ -1739,19 +2722,11 @@
       action.variationNumber ?? view.selectedVariationNumber;
 
     if (action.type === "map_variation") {
-      mappingAnnouncement.textContent = view.auction?.status === "canceled"
-        ? `Canceled variation ${variationNumber} item link saved locally. Its reservation is released and stock remains unchanged.`
-        : `Variation ${variationNumber} mapping saved locally.`;
+      mappingAnnouncement.textContent =
+        `Variation ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
-      mappingAnnouncement.textContent = view.auction?.status === "canceled"
-        ? `Canceled variation ${variationNumber} item link removed and saved locally. Stock remains unchanged.`
-        : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
-    } else if (action.type === "mark_unpaid") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} marked unpaid and saved locally. Its item stays linked without a pending reservation.`;
-    } else if (action.type === "undo_mark_unpaid") {
-      mappingAnnouncement.textContent =
-        `Unpaid mark removed from variation ${variationNumber} and saved locally. Its TikTok payment status is unchanged.`;
+        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     }
   }
 
@@ -1787,9 +2762,8 @@
     const failed = snapshot.phase === "error";
     const hasView = snapshot.view !== null;
 
-    savedSessionStatus.hidden = failed;
     savedSessionError.hidden = !failed;
-    trackerWorkspace.hidden = !hasView;
+    setTrackerWorkspaceVisible(hasView);
 
     if (failed) {
       const loadFailure = snapshot.error?.scope === "load" || !hasView;
@@ -1798,7 +2772,7 @@
       setWorkspaceBusy(false);
       trackerWorkspace.toggleAttribute("inert", true);
       savedSessionErrorTitle.textContent = refreshFailure
-        ? "Live Sold Items refresh failed"
+        ? "Live auction refresh failed"
         : loadFailure
           ? "Live session data unavailable"
           : "Change was not saved";
@@ -1807,7 +2781,7 @@
           ? `${snapshot.error.message} The last saved view is still shown; retry before making more changes.`
           : `${snapshot.error.message} Your last saved data was not changed.`
         : refreshFailure
-          ? "The newest Sold Items data could not be loaded. Retry before making more changes."
+          ? "The newest live auction data could not be loaded. Retry before making more changes."
           : "Your last saved data was not changed. Try again.";
       retrySavedSessionButton.textContent = refreshFailure
         ? "Retry live update"
@@ -1825,12 +2799,8 @@
     }
 
     hasFocusedSavedError = false;
-    savedSessionStatus.dataset.phase = snapshot.phase;
     const nextStatusText = getSavedStatusText(snapshot);
-
-    if (savedSessionStatusText.textContent !== nextStatusText) {
-      savedSessionStatusText.textContent = nextStatusText;
-    }
+    setFooterStatus(nextStatusText, snapshot.phase);
     setWorkspaceBusy(snapshot.busy === true);
 
     if (hasView && snapshot.phase === "ready") {
@@ -1884,12 +2854,12 @@
         if (hasSelectedRecordedVariation(view)) {
           variationSelector.focus();
           mappingAnnouncement.textContent = refreshCompleted
-            ? liveRefreshAnnouncement || "Live Sold Items are up to date."
-            : "Live session data restored. You can continue with the selected Sold Items variation.";
+            ? liveRefreshAnnouncement || "Live auction data is up to date."
+            : "Live session data restored. You can continue with the selected auction variation.";
         } else {
           streamSessionStatus.focus();
           mappingAnnouncement.textContent =
-            "Live tracking is ready. Waiting for a variation to appear in Sold Items.";
+            "Live tracking is ready. Waiting for a live auction variation.";
         }
       } else if (liveRefreshAnnouncement) {
         mappingAnnouncement.textContent = liveRefreshAnnouncement;
@@ -1901,6 +2871,10 @@
       if (captureRefreshDirty) {
         armCaptureRefresh();
       }
+    }
+
+    if (endConfirmationOpen) {
+      endReportReadiness.textContent = describeReportReadiness(snapshot.view);
     }
 
     previousSavedPhase = snapshot.phase;
@@ -1957,9 +2931,8 @@
     updateModeControls();
 
     if (activeMode === "offline_demo") {
-      savedSessionStatus.hidden = true;
       savedSessionError.hidden = true;
-      trackerWorkspace.hidden = false;
+      setTrackerWorkspaceVisible(true);
       setWorkspaceBusy(false);
       const view = renderAll();
 
@@ -1987,11 +2960,11 @@
       if (hasSelectedRecordedVariation(savedSnapshot.view)) {
         variationSelector.focus();
         mappingAnnouncement.textContent =
-          `Returned to live Sold Items tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
+          `Returned to live auction tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
       } else {
         streamSessionStatus.focus();
         mappingAnnouncement.textContent =
-          "Returned to live Sold Items tracking. Waiting for a captured variation.";
+          "Returned to live auction tracking. Waiting for a captured variation.";
       }
     } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
       resumeStreamButton.focus();
@@ -2004,7 +2977,7 @@
     if (activeMode === "saved_session") {
       if (!persistentController || variationSelector.value === "") {
         mappingAnnouncement.textContent =
-          "Waiting for a variation to appear in Sold Items.";
+          "Waiting for a live auction variation.";
         return;
       }
 
@@ -2017,8 +2990,9 @@
 
         const view = snapshot.view;
 
-        mappingAnnouncement.textContent =
-          `Reviewing Sold Items ${describeSelectedVariation(view)}. A newly captured variation will open automatically.`;
+        mappingAnnouncement.textContent = view.isReviewingHistory
+          ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
+          : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
       } catch (error) {
         mappingAnnouncement.textContent =
           error?.message ?? "That variation could not be selected.";
@@ -2082,7 +3056,13 @@
 
       if (!hasSelectedRecordedVariation(view)) {
         mappingAnnouncement.textContent =
-          "Wait for a captured Sold Items variation before selecting inventory.";
+          "Wait for a captured live auction variation before selecting inventory.";
+        return;
+      }
+
+      if (view.auction?.paymentStatus === "canceled") {
+        mappingAnnouncement.textContent =
+          `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
         return;
       }
 
@@ -2161,17 +3141,7 @@
   });
 
   markUnpaidButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
-
-      runSavedMutation(
-        () => persistentController.markSelectedUnpaid(),
-        {
-          type: "mark_unpaid",
-          variationNumber: view.selectedVariationNumber,
-          focusStatus: true,
-        },
-      );
+    if (activeMode !== "offline_demo") {
       return;
     }
 
@@ -2187,17 +3157,7 @@
   });
 
   undoUnpaidButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
-
-      runSavedMutation(
-        () => persistentController.undoSelectedUnpaid(),
-        {
-          type: "undo_mark_unpaid",
-          variationNumber: view.selectedVariationNumber,
-          focusStatus: true,
-        },
-      );
+    if (activeMode !== "offline_demo") {
       return;
     }
 
@@ -2255,12 +3215,10 @@
 
   soldPriceInput.addEventListener("input", clearPriceError);
 
-  savedModeButton.addEventListener("click", () => {
-    selectMode("saved_session");
-  });
-
   demoModeButton.addEventListener("click", () => {
-    selectMode("offline_demo");
+    selectMode(
+      activeMode === "offline_demo" ? "saved_session" : "offline_demo",
+    );
   });
 
   inventorySheetReference.addEventListener("input", () => {
@@ -2442,6 +3400,7 @@
     }
 
     endConfirmationOpen = true;
+    endReportReadiness.textContent = describeReportReadiness();
     renderStreamSnapshot(streamSessionController.getSnapshot());
     cancelEndStreamButton.focus();
   });
@@ -2464,11 +3423,12 @@
     streamSessionStatus.focus();
     Promise.resolve()
       .then(() => streamSessionController.endActiveStream())
-      .then((snapshot) => {
+      .then(async (snapshot) => {
         if (snapshot.phase === "ready" && snapshot.activeSession === null) {
           startStreamButton.focus();
           mappingAnnouncement.textContent =
-            "Tracker stream ended locally. TikTok LIVE was not changed, and saved order history was kept.";
+            "Tracker stream ended and its local business report was saved. TikTok LIVE was not changed.";
+          await refreshStreamReports({ openLatest: true });
         }
       })
       .catch((error) => {
@@ -2527,6 +3487,136 @@
       });
   });
 
+  endStreamWithoutReportButton.addEventListener("click", () => {
+    streamSessionError.hidden = true;
+    streamSessionStatus.hidden = false;
+    streamSessionStatusTitle.textContent = "Ending without a report...";
+    streamSessionStatusMessage.textContent =
+      "The tracker will stop locally without creating a new business report.";
+    streamSessionStatus.focus();
+
+    Promise.resolve()
+      .then(() => streamSessionController.endActiveStreamWithoutReport())
+      .then((snapshot) => {
+        if (snapshot.phase === "ready" && snapshot.activeSession === null) {
+          startStreamButton.focus();
+          mappingAnnouncement.textContent =
+            "Tracker stream ended without a new report. TikTok LIVE was not changed.";
+        }
+      })
+      .catch((error) => {
+        renderStreamSnapshot(streamSessionController.getSnapshot());
+        mappingAnnouncement.textContent =
+          error?.message ?? "The tracker stream could not be ended.";
+        console.error(
+          "[TikTok Live Tracker] Unexpected end-without-report failure.",
+          error,
+        );
+      });
+  });
+
+  retryStreamReportsButton.addEventListener("click", () => {
+    Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected stream-report retry failure.",
+        error,
+      );
+    });
+  });
+
+  viewArchivedReportsButton.addEventListener("click", () => {
+    openArchivedReportsDashboard();
+  });
+
+  backToBusinessRecordsButton.addEventListener("click", () => {
+    closeArchivedReportsDashboard();
+  });
+
+  toggleArchivedSelectionButton.addEventListener("click", () => {
+    archivedSelectionMode = !archivedSelectionMode;
+
+    if (!archivedSelectionMode) {
+      selectedArchivedReportIds.clear();
+    }
+
+    renderArchivedReportsView();
+    toggleArchivedSelectionButton.focus();
+  });
+
+  selectAllArchivedReportsButton.addEventListener("click", () => {
+    selectedArchivedReportIds = new Set(
+      archivedReportSummaries.map((summary) => summary.reportId),
+    );
+    syncArchivedReportCheckboxes();
+    renderArchivedSelectionControls();
+  });
+
+  clearArchivedSelectionButton.addEventListener("click", () => {
+    selectedArchivedReportIds.clear();
+    syncArchivedReportCheckboxes();
+    renderArchivedSelectionControls();
+  });
+
+  restoreSelectedReportsButton.addEventListener("click", () => {
+    void runReportMutation("restore", [...selectedArchivedReportIds]);
+  });
+
+  deleteSelectedReportsButton.addEventListener("click", () => {
+    requestPermanentReportDeletion(
+      [...selectedArchivedReportIds],
+      deleteSelectedReportsButton,
+    );
+  });
+
+  retryArchivedReportsButton.addEventListener("click", () => {
+    Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected archived-report retry failure.",
+        error,
+      );
+    });
+  });
+
+  confirmReportActionButton.addEventListener("click", () => {
+    const reportIds = pendingReportDeletion;
+
+    if (!reportIds || reportIds.length === 0) {
+      reportActionConfirmation.close();
+      return;
+    }
+
+    pendingReportDeletion = null;
+    reportActionConfirmation.close();
+    void runReportMutation("delete", reportIds);
+  });
+
+  reportActionConfirmation.addEventListener("close", () => {
+    const restoreFocus = pendingReportDeletion !== null;
+    const returnFocusTarget = pendingReportDeletionReturnFocus;
+
+    pendingReportDeletion = null;
+    pendingReportDeletionReturnFocus = null;
+
+    if (
+      restoreFocus &&
+      returnFocusTarget?.isConnected &&
+      !returnFocusTarget.hidden &&
+      !returnFocusTarget.disabled
+    ) {
+      returnFocusTarget.focus();
+    }
+  });
+
+  document.addEventListener("click", () => {
+    closeReportActionsMenu();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && openReportActions) {
+      closeReportActionsMenu({ restoreFocus: true });
+    }
+  });
+
   retrySavedSessionButton.addEventListener("click", () => {
     if (!persistentController) {
       return;
@@ -2564,6 +3654,12 @@
   Promise.resolve().then(() => streamSessionController.start()).catch((error) => {
     console.error(
       "[TikTok Live Tracker] Unexpected stream-session startup failure.",
+      error,
+    );
+  });
+  Promise.resolve().then(() => refreshStreamReports()).catch((error) => {
+    console.error(
+      "[TikTok Live Tracker] Unexpected stream-report startup failure.",
       error,
     );
   });

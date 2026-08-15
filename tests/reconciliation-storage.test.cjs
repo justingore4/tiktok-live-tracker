@@ -215,7 +215,7 @@ test("saves and loads a complete detached reconciliation snapshot", async () => 
   assert.equal(memoryStorage.getValues().unrelated, "preserved");
 });
 
-test("restores derived reservations only for processing and fixing payments", async () => {
+test("restores every mapped canonical-unknown reservation", async () => {
   const state = reconciliation.createReconciliationState(INVENTORY);
 
   reconciliation.mapVariation(state, {
@@ -254,14 +254,14 @@ test("restores derived reservations only for processing and fixing payments", as
       status,
     })),
     [
-      { variationNumber: 10, status: "mapped" },
+      { variationNumber: 10, status: "pending" },
       { variationNumber: 11, status: "pending" },
     ],
   );
-  assert.equal(summary.inventory[0].reservedQuantity, 1);
+  assert.equal(summary.inventory[0].reservedQuantity, 2);
   assert.equal(summary.inventory[0].remainingQuantity, 3);
-  assert.equal(summary.inventory[0].availableToTagQuantity, 2);
-  assert.equal(summary.totals.pendingMappedCount, 1);
+  assert.equal(summary.inventory[0].availableToTagQuantity, 1);
+  assert.equal(summary.totals.pendingMappedCount, 2);
 });
 
 test("returns null only when the namespaced storage key is absent", async () => {
@@ -330,7 +330,7 @@ test("lazily migrates strict legacy v1 state inside the v1 storage envelope", as
   );
 });
 
-test("lazily migrates v2 observed cancellation to canonical v4", async () => {
+test("lazily migrates v2 observed cancellation to the current state", async () => {
   const v2State = createV2State();
   const memoryStorage = createMemoryStorage({
     [STORAGE_KEY]: createEnvelope(v2State),
@@ -359,6 +359,96 @@ test("lazily migrates v2 observed cancellation to canonical v4", async () => {
     memoryStorage.getValues()[STORAGE_KEY].reconciliationState.streams[0]
       .variations[0].paymentStatus,
     "unknown",
+  );
+});
+
+test("lazily migrates a v4 baseline stream with no Attributed GMV", async () => {
+  const v4State = clone(createState());
+
+  v4State.version = 4;
+  v4State.streams.forEach((stream) => {
+    delete stream.activeBiddingVariationNumber;
+    delete stream.attributedGmvDisplay;
+  });
+  const memoryStorage = createMemoryStorage({
+    [STORAGE_KEY]: createEnvelope(v4State),
+  });
+  const store = createStore(memoryStorage);
+
+  const migrated = await store.loadState();
+
+  assert.equal(migrated.version, reconciliation.STATE_VERSION);
+  assert.equal(migrated.streams[0].attributedGmvDisplay, null);
+  assert.equal(memoryStorage.calls.set.length, 0);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.version,
+    4,
+  );
+
+  await store.saveState(migrated);
+
+  assert.equal(memoryStorage.calls.set.length, 1);
+  assert.equal(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState.streams[0]
+      .attributedGmvDisplay,
+    null,
+  );
+});
+
+test("lazily migrates v6 unpaid and cancellation-overridden state without rewriting storage", async () => {
+  const v6State = reconciliation.createReconciliationState(INVENTORY);
+
+  reconciliation.mapVariation(v6State, {
+    streamId: "legacy-v6-stream",
+    variationNumber: 20,
+    sku: "BLACK-TEE-M",
+  });
+  reconciliation.markUnpaid(v6State, {
+    streamId: "legacy-v6-stream",
+    variationNumber: 20,
+  });
+  reconciliation.mapVariation(v6State, {
+    streamId: "legacy-v6-stream",
+    variationNumber: 21,
+    sku: "GREY-HOODIE-L",
+  });
+  reconciliation.markUnpaid(v6State, {
+    streamId: "legacy-v6-stream",
+    variationNumber: 21,
+  });
+  reconciliation.recordPaymentComplete(v6State, {
+    streamId: "legacy-v6-stream",
+    variationNumber: 21,
+    soldPriceCents: 4800,
+  });
+  v6State.streams[0].variations[1].conflicts.push({
+    code: "payment_completed_after_canceled",
+  });
+  v6State.version = 6;
+  const storedV6State = clone(v6State);
+  const memoryStorage = createMemoryStorage({
+    [STORAGE_KEY]: createEnvelope(v6State),
+  });
+  const migrated = await createStore(memoryStorage).loadState();
+  const summary = reconciliation.calculateSummary(migrated, {
+    streamId: "legacy-v6-stream",
+  });
+
+  assert.equal(migrated.version, 7);
+  assert.equal(summary.auctions[0].mappingStatus, "mapped");
+  assert.equal(summary.auctions[0].status, "pending");
+  assert.equal(summary.auctions[1].mappingStatus, "mapped");
+  assert.equal(summary.auctions[1].status, "canceled");
+  assert.equal(summary.auctions[1].soldPriceCents, null);
+  assert.deepEqual(summary.auctions[1].conflicts, []);
+  assert.equal(summary.totals.completedGmvCents, 0);
+  assert.equal(summary.totals.committedRevenueCents, 0);
+  assert.equal(summary.inventory[0].reservedQuantity, 1);
+  assert.equal(summary.inventory[1].soldQuantity, 0);
+  assert.equal(memoryStorage.calls.set.length, 0);
+  assert.deepEqual(
+    memoryStorage.getValues()[STORAGE_KEY].reconciliationState,
+    storedV6State,
   );
 });
 
@@ -472,6 +562,9 @@ const corruptStateCases = [
   ["unknown mapping status", (state) => {
     state.streams[0].variations[0].mappingStatus = "maybe";
   }],
+  ["legacy marked-unpaid mapping status", (state) => {
+    state.streams[0].variations[0].mappingStatus = "marked_unpaid";
+  }],
   ["unknown payment status", (state) => {
     state.streams[0].variations[0].paymentStatus = "refunded";
   }],
@@ -553,7 +646,7 @@ for (const [label, corrupt] of corruptStateCases) {
   });
 }
 
-test("accepts the intentional late-payment conflict state", async () => {
+test("rejects ephemeral manual-unpaid state at the v7 storage boundary", async () => {
   const state = reconciliation.createReconciliationState(INVENTORY);
 
   reconciliation.mapVariation(state, {
@@ -571,14 +664,17 @@ test("accepts the intentional late-payment conflict state", async () => {
     soldPriceCents: 3600,
   });
 
-  const memoryStorage = createMemoryStorage({
-    [STORAGE_KEY]: createEnvelope(state),
-  });
+  const memoryStorage = createMemoryStorage();
+  const store = createStore(memoryStorage);
 
-  assert.deepEqual(await createStore(memoryStorage).loadState(), state);
+  await assertStorageError(
+    () => store.saveState(state),
+    "INVALID_RECONCILIATION_STATE",
+  );
+  assert.equal(memoryStorage.calls.set.length, 0);
 });
 
-test("round-trips canonical price and late-payment conflicts", async () => {
+test("round-trips price and unpaid conflicts while canceled completion stays ignored", async () => {
   const state = reconciliation.createReconciliationState(INVENTORY);
 
   reconciliation.mapVariation(state, {
@@ -639,10 +735,9 @@ test("round-trips canonical price and late-payment conflicts", async () => {
 
   await store.saveState(state);
   assert.deepEqual(await store.loadState(), state);
-  assert.deepEqual(
-    state.streams[0].variations[2].conflicts,
-    [{ code: "payment_completed_after_canceled" }],
-  );
+  assert.equal(state.streams[0].variations[2].paymentStatus, "canceled");
+  assert.equal(state.streams[0].variations[2].soldPriceCents, null);
+  assert.deepEqual(state.streams[0].variations[2].conflicts, []);
 });
 
 test("rejects an envelope with unversioned extra fields", async () => {

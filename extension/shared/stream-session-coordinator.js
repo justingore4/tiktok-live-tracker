@@ -18,11 +18,13 @@
       GET_STREAM_SESSION: "get_stream_session",
       START_STREAM: "start_stream",
       END_STREAM: "end_stream",
+      END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STREAM_SESSION]: ["type"],
       [COMMAND_TYPES.START_STREAM]: ["type"],
       [COMMAND_TYPES.END_STREAM]: ["streamId", "type"],
+      [COMMAND_TYPES.END_STREAM_WITHOUT_REPORT]: ["streamId", "type"],
     });
     const REQUIRED_STREAM_SESSION_METHODS = Object.freeze([
       "createStreamSessionState",
@@ -127,7 +129,10 @@
       }
 
       if (
-        command.type === COMMAND_TYPES.END_STREAM &&
+        [
+          COMMAND_TYPES.END_STREAM,
+          COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+        ].includes(command.type) &&
         (typeof command.streamId !== "string" ||
           command.streamId.trim() === "")
       ) {
@@ -266,6 +271,7 @@
           case COMMAND_TYPES.START_STREAM:
             return startStream();
           case COMMAND_TYPES.END_STREAM:
+          case COMMAND_TYPES.END_STREAM_WITHOUT_REPORT:
             return endStream(command);
           default:
             fail(

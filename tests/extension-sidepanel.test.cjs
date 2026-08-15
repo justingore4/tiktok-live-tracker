@@ -13,6 +13,20 @@ function extensionResourceExists(relativePath) {
   return fs.existsSync(path.join(extensionDirectory, relativePath));
 }
 
+function assertTextOrder(source, expectedTokens, message) {
+  let previousIndex = -1;
+
+  expectedTokens.forEach((token) => {
+    const index = source.indexOf(token, previousIndex + 1);
+
+    assert.ok(
+      index > previousIndex,
+      message ?? `Expected ${token} to follow the preceding layout token.`,
+    );
+    previousIndex = index;
+  });
+}
+
 test("manifest configures the Chrome side-panel resources", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(Number(manifest.minimum_chrome_version) >= 114);
@@ -39,6 +53,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeCaptureIntegrationError extends Error {}
   class FakeInventoryImportProtocolError extends Error {}
   class FakeGoogleSheetsImportError extends Error {}
+  class FakeStreamReportProtocolError extends Error {}
+  class FakeStreamReportStorageError extends Error {}
+  class FakeStreamReportCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -115,6 +132,33 @@ test("service worker opens the side panel from the toolbar action", () => {
         };
       },
     },
+    TikTokLiveTrackerStreamReport: {},
+    TikTokLiveTrackerStreamReportProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.stream-report",
+      COMMAND_TYPES: {
+        GET_REPORT: "get_report",
+        LIST_REPORTS: "list_reports",
+      },
+      StreamReportProtocolError: FakeStreamReportProtocolError,
+    },
+    TikTokLiveTrackerStreamReportStorage: {
+      StreamReportStorageError: FakeStreamReportStorageError,
+      createStreamReportStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerStreamReportCoordinator: {
+      StreamReportCoordinatorError: FakeStreamReportCoordinatorError,
+      createStreamReportCoordinator() {
+        return {
+          dispatch: () => Promise.resolve({}),
+          finalizeReport: () => Promise.resolve({}),
+          getReportForStream: () => Promise.resolve(null),
+          prepareReport: () => Promise.resolve({}),
+          repairPendingReports: () => Promise.resolve(),
+        };
+      },
+    },
     AbortController,
     clearTimeout,
     fetch: () => Promise.reject(new Error("Network is not used in this test.")),
@@ -170,14 +214,18 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/reconciliation-coordinator.js",
     "../shared/stream-session-coordinator.js",
     "../shared/inventory-import-protocol.js",
+    "../shared/stream-report-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
     "inventory-import-client.js",
     "inventory-import-controller.js",
+    "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
+    "../shared/stream-report.js",
+    "../report/stream-report-client.js",
     "sidepanel.js",
   ]);
   assert.ok(
@@ -193,22 +241,31 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
   );
+  const headerSource = html.match(/<header class="app-header">[\s\S]*?<\/header>/)?.[0];
+  const footerSource = html.match(
+    /<footer class="app-footer"[\s\S]*?<\/footer>/,
+  )?.[0];
 
+  assert.ok(headerSource);
+  assert.ok(footerSource);
   assert.match(html, /<label[^>]+for="inventory-search"/);
   assert.match(html, /<label[^>]+for="variation-selector"/);
-  assert.match(html, /class="mode-controls"[^>]+role="group"/);
+  assert.match(headerSource, /class="header-actions"/);
   assert.match(
-    html,
-    /id="saved-session-mode"[\s\S]+aria-pressed="true"[\s\S]+aria-describedby="mode-description"/,
+    headerSource,
+    /id="offline-demo-mode"[\s\S]+type="button"[\s\S]+aria-pressed="false"[\s\S]+aria-label="Switch to offline demo mode"[\s\S]+>\s*Demo\s*</,
   );
-  assert.match(
+  assert.match(headerSource, /class="prototype-badge"[^>]*>Prototype</);
+  assert.doesNotMatch(
     html,
-    /id="offline-demo-mode"[\s\S]+aria-pressed="false"[\s\S]+aria-describedby="mode-description"/,
+    /id="saved-session-mode"|class="mode-panel"|class="mode-controls"|aria-label="Tracker mode"/,
   );
-  assert.match(
-    html,
-    /id="saved-session-status"[\s\S]+role="status"[\s\S]+aria-live="polite"/,
-  );
+  assert.doesNotMatch(html, /Choose where changes go|>\s*Workspace\s*</);
+  assert.doesNotMatch(html, /id="saved-session-status(?:-text)?"/);
+  assert.match(footerSource, /role="status"/);
+  assert.match(footerSource, /aria-live="polite"/);
+  assert.match(footerSource, /aria-atomic="true"/);
+  assert.match(footerSource, /id="session-footer-label"/);
   assert.match(
     html,
     /id="stream-session-panel"[\s\S]+aria-busy="true"/,
@@ -225,6 +282,17 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="resume-stream"[\s\S]+type="button"/);
   assert.match(html, /id="end-stream"[\s\S]+type="button"/);
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
+  assert.match(
+    html,
+    /id="stream-session-end-confirmation"[\s\S]+aria-labelledby="stream-session-end-title"[\s\S]+End and create the stream report\?/,
+  );
+  assert.match(
+    html,
+    /id="end-report-readiness"[\s\S]+role="status"[\s\S]+aria-live="polite"/,
+  );
+  assert.match(html, />\s*Keep stream active\s*</);
+  assert.match(html, />\s*End and create report\s*</);
+  assert.match(html, /id="end-stream-without-report"[\s\S]+End without report/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
   assert.match(
     html,
@@ -257,13 +325,35 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     /id="inventory-import-confirmation"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
   );
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
-  assert.match(html, /Waiting for a variation to appear in Sold Items/);
-  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
+  assert.match(html, /Waiting for a live auction variation/);
   assert.match(
     html,
-    /unresolved variations do not block End/i,
+    /Unresolved\s+variations never block End/i,
   );
-  assert.match(html, /captured (?:order )?history will remain saved/i);
+  assert.match(html, /freeze a local business report before ending/i);
+  assert.match(html, /appear in its attention list/i);
+  const endConfirmation = html.match(
+    /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
+  )?.[0];
+  assert.ok(endConfirmation);
+  assert.doesNotMatch(endConfirmation, /\b(?:final|provisional)\b/i);
+  assert.match(
+    html,
+    /id="stream-reports-panel"[\s\S]+aria-labelledby="stream-reports-title"[\s\S]+aria-busy="true"[\s\S]+hidden/,
+  );
+  assert.match(html, /id="stream-reports-title">Stream reports</);
+  assert.match(html, /id="stream-reports-count"[\s\S]+0 saved/);
+  assert.match(html, /print or save it as a PDF[\s\S]+updated Inventory table[\s\S]+Google Sheets-ready CSV/i);
+  assert.match(
+    html,
+    /Limit of 5 reports on this dashboard, older reports will go to archived[\s\S]+once the limit is reached/,
+  );
+  assert.match(html, /id="stream-reports-list"[\s\S]+role="list"/);
+  assert.match(
+    html,
+    /id="stream-reports-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
+  );
+  assert.match(html, /id="retry-stream-reports"[^>]+type="button"/);
   assert.doesNotMatch(
     html,
     /resolve every pending[\s\S]+inventory reservation[\s\S]+assign an item to every completed sale/i,
@@ -295,9 +385,8 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(
     html,
-    /Remaining inventory changes only after Payment complete\.[\s\S]+Pending appears[\s\S]+only while TikTok shows Payment processing or Payment fixing[\s\S]+reduces what is available to tag\./,
+    /Selecting an item reserves one unit until TikTok reports Payment[\s\S]+complete or Canceled\.[\s\S]+Temporary Payment failed remains pending\.[\s\S]+Zero-stock items remain selectable[\s\S]+oversold\./,
   );
-  assert.match(html, /Click the selected card again to remove\s+its item/);
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
@@ -315,7 +404,10 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /<label[^>]+for="sold-price"/);
   assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
   assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
-  assert.match(html, />Saved order controls</);
+  assert.match(
+    html,
+    /id="lifecycle-controls"[^>]+hidden[\s\S]+>\s*Offline test controls\s*</,
+  );
   assert.match(html, />\s*Simulate payment complete\s*</);
   assert.match(html, />\s*Simulate payment buffer expired\s*</);
   assert.match(html, />\s*Mark unpaid after buffer\s*</);
@@ -332,6 +424,147 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /do not change TikTok/);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("side panel keeps setup and active-stream controls in their intended order", () => {
+  const panelPath = path.join(
+    extensionDirectory,
+    manifest.side_panel.default_path,
+  );
+  const html = fs.readFileSync(panelPath, "utf8");
+  const panelSource = fs.readFileSync(
+    path.join(path.dirname(panelPath), "sidepanel.js"),
+    "utf8",
+  );
+  const reorderSource = panelSource.match(
+    /function reorderAppSections\(sections\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const layoutSource = panelSource.match(
+    /function updateLayoutOrder\(snapshot = streamSnapshot\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const activeBranches = layoutSource?.match(
+    /streamFailed\s*\?\s*\[([\s\S]*?)\]\s*:\s*\[([\s\S]*?)\]/,
+  );
+  const setupBranch = layoutSource?.match(
+    /return;\s*\}\s*reorderAppSections\(\[([\s\S]*?)\]\);/,
+  )?.[1];
+
+  assert.ok(reorderSource);
+  assert.ok(layoutSource);
+  assert.ok(activeBranches);
+  assert.ok(setupBranch);
+  assert.match(
+    layoutSource,
+    /snapshot\.activeSession !== null && snapshot\.resumed === true/,
+  );
+  assertTextOrder(setupBranch, ["inventoryImportPanel", "streamSessionPanel"]);
+  assertTextOrder(activeBranches[1], [
+    "savedSessionError",
+    "streamSessionPanel",
+    "trackerWorkspace",
+    "streamReportsPanel",
+    "appFooter",
+  ]);
+  assertTextOrder(activeBranches[2], [
+    "savedSessionError",
+    "trackerWorkspace",
+    "streamSessionPanel",
+    "streamReportsPanel",
+    "appFooter",
+  ]);
+  assert.equal(activeBranches[1].trim().endsWith("appFooter,"), true);
+  assert.equal(activeBranches[2].trim().endsWith("appFooter,"), true);
+  assert.match(
+    reorderSource,
+    /appShell\.insertBefore\(section, mappingAnnouncement \?\? null\)/,
+  );
+  assert.doesNotMatch(
+    reorderSource,
+    /trackerWorkspace\.(?:append|appendChild|insertBefore)/,
+  );
+  assert.match(
+    panelSource,
+    /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?streamSnapshot = snapshot;[\s\S]*?updateLayoutOrder\(snapshot\);/,
+  );
+  assertTextOrder(html, [
+    'id="stream-reports-panel"',
+    'id="archived-reports-view"',
+    'id="report-action-confirmation"',
+    '<footer class="app-footer"',
+  ]);
+  assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
+});
+
+test("active stream compacts its session controls without changing other lifecycle states", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const sessionMarkup = html.match(
+    /<section\s+id="stream-session-panel"[\s\S]*?<\/section>/,
+  )?.[0];
+  const renderSource = panelSource.match(
+    /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?function announceSavedAction/,
+  )?.[0];
+  const activeHideRule = styleSource.match(
+    /\.stream-session-panel\[data-state="active"\] \.stream-session-heading,\s*\.stream-session-panel\[data-state="active"\] \.stream-session-safety-note\s*\{[\s\S]*?\}/,
+  )?.[0];
+
+  assert.ok(sessionMarkup);
+  assert.ok(renderSource);
+  assert.ok(activeHideRule);
+  assert.match(sessionMarkup, /class="stream-session-heading"/);
+  assert.match(sessionMarkup, /id="stream-session-safety-note"/);
+  assert.match(sessionMarkup, /id="stream-session-status-title"/);
+  assert.match(sessionMarkup, /id="stream-session-status-message"/);
+  assert.match(
+    sessionMarkup,
+    /id="end-stream"[\s\S]*?>\s*End Stream Tracking\s*<\/button>/,
+  );
+  assert.match(
+    renderSource,
+    /const active = activeSession !== null && snapshot\.resumed;/,
+  );
+  assert.match(
+    renderSource,
+    /const dataState = failed[\s\S]*?: active[\s\S]*?\? "active"[\s\S]*?: resumeAvailable[\s\S]*?\? "resume"[\s\S]*?: "inactive"/,
+  );
+  assert.match(
+    renderSource,
+    /const badgeContainer = dataState === "active"\s*\? streamSessionStatus\s*:\s*streamSessionHeading;/,
+  );
+  assert.match(
+    renderSource,
+    /if \(streamSessionBadge\.parentElement !== badgeContainer\) \{\s*badgeContainer\.append\(streamSessionBadge\);\s*\}/,
+  );
+  assert.match(renderSource, /streamSessionBadge\.textContent = "Active";/);
+  assert.match(renderSource, /streamSessionStatusTitle\.textContent = "Tracker stream active";/);
+  assert.match(
+    renderSource,
+    /streamSessionStatusMessage\.textContent =\s*`Started \$\{startedLabel\}\. This local identity will survive panel and browser restarts\.`;/,
+  );
+  assert.match(activeHideRule, /display:\s*none;/);
+  assert.match(
+    styleSource,
+    /\.stream-session-status > \.stream-session-badge\s*\{[\s\S]*?margin-left:\s*auto;/,
+  );
+  assert.match(
+    styleSource,
+    /\.stream-session-panel\[data-state="active"\] \.stream-session-status\s*\{[\s\S]*?margin-top:\s*0;/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /\.stream-session-panel\[data-state="(?:inactive|resume|error|checking)"\][^{]*(?:stream-session-heading|stream-session-safety-note)[^{]*\{[\s\S]*?display:\s*none;/,
+  );
 });
 
 test("tagger UI separates persistent commands from the offline lifecycle", () => {
@@ -435,8 +668,8 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     workflowSource,
     /reconciliation\.unmapVariation\([\s\S]+simulatedPaymentCheckpoint\.state/,
   );
-  assert.match(panelSource, /persistentController\.markSelectedUnpaid/);
-  assert.match(panelSource, /persistentController\.undoSelectedUnpaid/);
+  assert.doesNotMatch(panelSource, /persistentController\.markSelectedUnpaid/);
+  assert.doesNotMatch(panelSource, /persistentController\.undoSelectedUnpaid/);
   assert.match(panelSource, /const mountedController = persistentController/);
   assert.match(panelSource, /mountedController\.start\(\)/);
   assert.match(panelSource, /persistentController\.retry\(\)/);
@@ -466,16 +699,54 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.doesNotMatch(panelSource, /function getEndBlockingVariations\(\)/);
   assert.match(panelSource, /getRecordedVariations\(view\)/);
   assert.match(panelSource, /variation\.recorded/);
-  assert.match(panelSource, /Waiting for Sold Items variations/);
-  assert.match(panelSource, /Wait for a Sold Items variation before tagging/);
-  assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
+  assert.match(panelSource, /Waiting for live auction variations/);
+  assert.match(panelSource, /variationContext\.textContent = "Live auction variations"/);
   assert.match(
     panelSource,
-    /savedModeButton\.addEventListener\("click",[\s\S]+selectMode\("saved_session"\)/,
+    /const status = option\.bidding[\s\S]+\? "bidding"[\s\S]+return `#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}`/,
   );
   assert.match(
     panelSource,
-    /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\("offline_demo"\)/,
+    /Variation #\$\{activeBiddingVariation\.variationNumber\} is now bidding\. It is selected and ready to tag\./,
+  );
+  assert.match(panelSource, /Wait for a live auction variation before tagging/);
+  assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
+  assert.match(panelSource, /let activeMode = "saved_session"/);
+  assert.doesNotMatch(
+    panelSource,
+    /savedModeButton|#saved-session-mode|modeDescription|#mode-description/,
+  );
+  assert.match(
+    panelSource,
+    /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\([\s\S]+activeMode === "offline_demo"[\s\S]+\? "saved_session"[\s\S]+: "offline_demo"[\s\S]+\)/,
+  );
+  assert.match(
+    panelSource,
+    /demoModeButton\.setAttribute\("aria-pressed", String\(!savedMode\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /const demoToggleLabel = savedMode[\s\S]+\? "Switch to offline demo mode"[\s\S]+: "Return to live session"[\s\S]+demoModeButton\.setAttribute\("aria-label", demoToggleLabel\)/,
+  );
+  assert.match(
+    styleSource,
+    /\.prototype-badge,\s*\.header-demo-toggle,\s*\.demo-badge\s*\{/,
+  );
+  assert.match(
+    styleSource,
+    /\.header-actions\s*\{[\s\S]*?display: inline-flex;[\s\S]*?gap: 6px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.prototype-badge\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.header-demo-toggle\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /\.prototype-badge\s*\{\s*display:\s*none;/,
   );
   assert.match(
     panelSource,
@@ -544,18 +815,14 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(workflowSource, /canceled: "Canceled"/);
   assert.match(
     workflowSource,
-    /auction\?\.paymentStatus === "canceled" \|\|[\s\S]+auction\?\.paymentStatus === "payment_complete"/,
+    /const canceled = auction\?\.paymentStatus === "canceled"[\s\S]+const selectionAllowed = !canceled/,
   );
   assert.match(
     workflowSource,
-    /previousAuction\?\.paymentStatus === "canceled" \|\|[\s\S]+previousAuction\?\.paymentStatus === "payment_complete"/,
+    /if \(previousAuction\?\.paymentStatus === "canceled"\)[\s\S]+"CANCELED_VARIATION_IMMUTABLE"/,
   );
-  assert.match(workflowSource, /"canceled_order_mapped"/);
-  assert.match(workflowSource, /"canceled_mapping_corrected"/);
-  assert.match(
-    workflowSource,
-    /error\?\.code !== "NO_STOCK_AVAILABLE"[\s\S]+simulatedPaymentCheckpoints\.delete\(selectedEventKey\(\)\)/,
-  );
+  assert.doesNotMatch(workflowSource, /"SOLD_OUT"|"NO_STOCK_AVAILABLE"/);
+  assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
   assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
   assert.doesNotMatch(
     panelSource,
@@ -594,35 +861,28 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     panelSource,
     /TikTok shows Payment complete, but the final price is still syncing\./,
   );
-  assert.match(panelSource, /without a pending reservation/);
+  assert.match(panelSource, /remains reserved and pending/);
   assert.match(
     panelSource,
-    /lifecycleControls\.hidden =[\s\S]+completionAwaitingPrice \|\|/,
+    /lifecycleControls\.hidden =[\s\S]+!offlineDemo \|\|[\s\S]+completionAwaitingPrice \|\|/,
   );
   assert.match(
     panelSource,
-    /markUnpaidButton\.hidden = completionAwaitingPrice \|\|/,
+    /markUnpaidButton\.hidden =[\s\S]+!offlineDemo \|\| completionAwaitingPrice/,
   );
   assert.match(
     panelSource,
     /markUnpaidButton\.disabled = completionAwaitingPrice/,
   );
-  assert.match(
-    panelSource,
-    /"Item linked · reservation released · stock unchanged"/,
-  );
-  assert.match(panelSource, /selectedLabel\.textContent = "Linked"/);
-  assert.match(panelSource, /is linked to canceled variation/);
-  assert.match(panelSource, /Stock counts will not change/);
+  assert.match(panelSource, /"Canceled item · reservation released · stock restored"/);
+  assert.match(panelSource, /selectedLabel\.textContent = "Canceled item"/);
+  assert.match(panelSource, /this history is read-only/);
+  assert.match(panelSource, /button\.dataset\.lockedReason = canceled \? "canceled" : ""/);
+  assert.match(styleSource, /data-locked-reason="canceled"/);
   assert.match(panelSource, /const canceled = view\.auction\?\.status === "canceled"/);
   assert.match(panelSource, /lifecycleControls\.hidden =[\s\S]+canceled \|\|/);
-  assert.match(panelSource, /payment_completed_after_canceled/);
-  assert.match(
-    panelSource,
-    /TikTok completion won, inventory was counted, and the order was flagged for review/,
-  );
-  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link saved locally/);
-  assert.match(panelSource, /Canceled variation \$\{variationNumber\} item link removed/);
+  assert.doesNotMatch(panelSource, /payment_completed_after_canceled/);
+  assert.match(panelSource, /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/);
   assert.match(
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
@@ -712,14 +972,213 @@ test("End Stream confirmation is not gated by unresolved payment or mapping stat
     confirmHandlerSource,
     /streamSessionController\.endActiveStream\(\)/,
   );
-  assert.match(confirmHandlerSource, /saved order history was kept/);
+  assert.match(confirmHandlerSource, /local business report was saved/);
+  assert.match(
+    confirmHandlerSource,
+    /refreshStreamReports\(\{ openLatest: true \}\)/,
+  );
   assert.doesNotMatch(
     confirmHandlerSource,
     /persistentController\.|unmapSelectedVariation|markSelectedUnpaid|chrome\.storage|\.clear\(|\.remove\(/,
   );
-  assert.match(html, /unresolved variations do not block End/i);
-  assert.match(html, /captured (?:order )?history will remain saved/i);
-  assert.match(html, /ended streams cannot be\s+reopened in this prototype/i);
+  assert.match(html, /Unresolved\s+variations never block End/i);
+  assert.match(html, /appear in its attention list/i);
+});
+
+test("tagger lists, opens, refreshes, and safely bypasses local stream reports", () => {
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const readinessSource = panelSource.match(
+    /function describeReportReadiness\([\s\S]*?function openStreamReport/,
+  )?.[0];
+  const reportLinkSource = panelSource.match(
+    /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderStreamReportsPanel/,
+  )?.[0];
+
+  assert.ok(readinessSource);
+  assert.ok(reportLinkSource);
+  assert.match(
+    readinessSource,
+    /No captured issues currently require attention\./,
+  );
+  assert.match(readinessSource, /Report attention items:/);
+  assert.match(readinessSource, /pending mapped order/);
+  assert.match(readinessSource, /payment-fixing order/);
+  assert.match(readinessSource, /completed sale without inventory/);
+  assert.match(readinessSource, /data conflict/);
+  assert.match(readinessSource, /SKU requiring a recount/);
+  assert.doesNotMatch(readinessSource, /\b(?:final|provisional)\b/i);
+
+  assert.match(
+    panelSource,
+    /globalThis\.TikTokLiveTrackerStreamReportProtocol/,
+  );
+  assert.match(
+    panelSource,
+    /globalThis\.TikTokLiveTrackerStreamReportClient/,
+  );
+  assert.match(panelSource, /createStreamReportClient\(\{\s*runtime: chrome\.runtime/);
+  assert.match(
+    panelSource,
+    /function openStreamReport\(reportId\)[\s\S]+chrome\.runtime\.getURL\([\s\S]+report\/report\.html\?reportId=/,
+  );
+  assert.match(panelSource, /chrome\.tabs\.create\(\{ url: reportUrl \}\)/);
+  assert.match(
+    reportLinkSource,
+    /summary\.completedPaymentCount[\s\S]+summary\.totalSalesCount[\s\S]+summary\.completedGmvCents/,
+  );
+  assert.match(reportLinkSource, /Open stream report from/);
+  assert.doesNotMatch(
+    reportLinkSource,
+    /summary\.completeness|stream-report-link-state|data-completeness|\b(?:Final|Provisional)\b/,
+  );
+  assert.doesNotMatch(
+    styleSource,
+    /stream-report-link-state|data-completeness/,
+  );
+  assert.match(
+    panelSource,
+    /async function refreshStreamReports\(options = \{\}\)[\s\S]+Promise\.all\([\s\S]+streamReportClient\.listReports\(\)[\s\S]+streamReportClient\.listArchivedReports\(\)[\s\S]+dashboardResponse\.reports[\s\S]+archivedResponse\.reports[\s\S]+options\.openLatest === true[\s\S]+openStreamReport\(latest\.reportId\)/,
+  );
+  assert.match(
+    panelSource,
+    /retryStreamReportsButton\.addEventListener\("click",[\s\S]+refreshStreamReports\(\{ focusError: true \}\)/,
+  );
+  assert.match(
+    panelSource,
+    /Promise\.resolve\(\)\.then\(\(\) => refreshStreamReports\(\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /endStreamWithoutReportButton\.addEventListener\("click",[\s\S]+streamSessionController\.endActiveStreamWithoutReport\(\)[\s\S]+ended without a new report/,
+  );
+});
+
+test("Business Records exposes a dedicated accessible archived-report dashboard", () => {
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.html"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+
+  assert.match(
+    html,
+    /id="view-archived-reports"[\s\S]*?>\s*View archived reports\s*</,
+  );
+  assert.match(
+    html,
+    /id="archived-reports-view"[\s\S]+aria-labelledby="archived-reports-title"[\s\S]+hidden/,
+  );
+  assert.match(html, /id="archived-reports-title">Archived stream reports</);
+  assert.match(
+    html,
+    /id="back-to-business-records"[\s\S]*?Back to Business Records/,
+  );
+  assert.match(html, /id="archived-reports-list"[\s\S]+role="list"/);
+  assert.match(html, /id="toggle-archived-selection"[\s\S]+aria-pressed="false"[\s\S]*?>\s*Select\s*</);
+  assert.match(html, /id="select-all-archived-reports"[\s\S]*?>\s*Select all\s*</);
+  assert.match(html, /id="clear-archived-selection"[\s\S]*?>\s*Clear selection\s*</);
+  assert.match(html, /id="restore-selected-reports"[\s\S]*?>\s*Restore selected\s*</);
+  assert.match(html, /id="delete-selected-reports"[\s\S]*?>\s*Delete selected\s*</);
+  assert.match(
+    html,
+    /id="report-action-confirmation"[\s\S]+aria-labelledby="report-action-confirmation-title"[\s\S]+aria-describedby="report-action-confirmation-message"/,
+  );
+  assert.match(
+    html,
+    /permanently deletes the saved report from this Chrome profile[\s\S]+cannot be undone[\s\S]+TikTok LIVE and Google Sheets will not be changed/i,
+  );
+
+  assert.match(
+    styleSource,
+    /\.app-shell\.archived-reports-open[\s\S]+\.archived-reports-view/,
+  );
+  assert.match(styleSource, /\.report-more-button[\s\S]+cursor: pointer/);
+  assert.match(styleSource, /\.report-actions-menu[\s\S]+position: absolute/);
+  assert.doesNotMatch(styleSource, /\.stream-report-row:hover[\s\S]+\.report-more-button/);
+  assert.match(
+    panelSource,
+    /function openArchivedReportsDashboard\(\)[\s\S]+archivedReportsViewOpen = true[\s\S]+backToBusinessRecordsButton\.focus\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /function closeArchivedReportsDashboard\(\)[\s\S]+archivedReportsViewOpen = false[\s\S]+viewArchivedReportsButton\.focus\(\)/,
+  );
+});
+
+test("archived-report actions enforce dashboard capacity and remain keyboard operable", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const reportLinkSource = panelSource.match(
+    /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderArchivedSelectionControls/,
+  )?.[0];
+  const mutationSource = panelSource.match(
+    /async function runReportMutation\(action, reportIds\)[\s\S]*?function requestPermanentReportDeletion/,
+  )?.[0];
+
+  assert.ok(reportLinkSource);
+  assert.ok(mutationSource);
+  assert.match(reportLinkSource, /aria-haspopup/);
+  assert.match(reportLinkSource, /aria-expanded/);
+  assert.match(reportLinkSource, /aria-controls/);
+  assert.match(reportLinkSource, /More actions for stream report from/);
+  assert.match(reportLinkSource, /role", "menu"/);
+  assert.match(panelSource, /button\.setAttribute\("role", "menuitem"\)/);
+  assert.match(reportLinkSource, /"Archive", "archive"/);
+  assert.match(reportLinkSource, /"Restore", "restore"/);
+  assert.match(reportLinkSource, /"Delete forever", "delete"/);
+  assert.match(reportLinkSource, /getAvailableDashboardReportSlots\(\) > 0/);
+  assert.match(panelSource, /event\.key === "Escape"/);
+  assert.match(panelSource, /event\.key === "ArrowDown"/);
+  assert.match(panelSource, /event\.key === "ArrowUp"/);
+  assert.match(panelSource, /document\.addEventListener\("click"[\s\S]+closeReportActionsMenu/);
+
+  assert.match(
+    mutationSource,
+    /ids\.length > getAvailableDashboardReportSlots\(\)/,
+  );
+  assert.match(mutationSource, /streamReportClient\.archiveReports\(\{ reportIds: ids \}\)/);
+  assert.match(mutationSource, /streamReportClient\.restoreReports\(\{ reportIds: ids \}\)/);
+  assert.match(mutationSource, /streamReportClient\.deleteArchivedReports\(\{ reportIds: ids \}\)/);
+  assert.match(
+    panelSource,
+    /restoreSelectedReportsButton\.hidden = availableSlots === 0/,
+  );
+  assert.match(
+    panelSource,
+    /selectedCount > availableSlots[\s\S]+Clear part of the selection before restoring/,
+  );
+  assert.match(
+    panelSource,
+    /requestPermanentReportDeletion\(\[summary\.reportId\], moreButton\)/,
+  );
+  assert.match(
+    panelSource,
+    /deleteSelectedReportsButton\.addEventListener\("click"[\s\S]+requestPermanentReportDeletion/,
+  );
+  assert.match(
+    panelSource,
+    /confirmReportActionButton\.addEventListener\("click"[\s\S]+pendingReportDeletion = null;[\s\S]+reportActionConfirmation\.close\(\)[\s\S]+runReportMutation\("delete", reportIds\)/,
+  );
+  assert.match(
+    panelSource,
+    /reportActionConfirmation\.addEventListener\("close"[\s\S]+restoreFocus = pendingReportDeletion !== null[\s\S]+returnFocusTarget\.focus\(\)/,
+  );
 });
 
 test("an active stream can be ended before its saved workspace is resumed", () => {
@@ -785,8 +1244,8 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   );
   assert.match(panelSource, /getFocusedInventorySku\(\)/);
   assert.match(panelSource, /captureRefreshFocusSku[\s\S]+focusOptions\.focusSku/);
-  assert.match(panelSource, /Checking live Sold Items/);
-  assert.match(panelSource, /Live Sold Items updated/);
+  assert.match(panelSource, /Checking live auction data/);
+  assert.match(panelSource, /Live auction data updated/);
   assert.match(panelSource, /Retry live update/);
   assert.match(panelSource, /Captured variation #/);
   assert.match(
@@ -801,7 +1260,7 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /payment_completed_after_marked_unpaid/);
   assert.match(
     panelSource,
-    /#\$\{option\.variationNumber\} - \$\{option\.observedPaymentStatusLabel\} - \$\{item\}/,
+    /#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}/,
   );
   assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
@@ -813,9 +1272,14 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
     panelSource,
     /Now showing variation #\$\{view\.selectedVariationNumber\}\./,
   );
+  assert.match(panelSource, /view\.isReviewingHistory/);
   assert.match(
     panelSource,
-    /A newly captured variation will open automatically\./,
+    /New live auctions will keep updating in this menu without changing your selection\./,
+  );
+  assert.match(
+    panelSource,
+    /You are following the current auction, so the next live auction will open automatically\./,
   );
   assert.doesNotMatch(
     panelSource,
@@ -834,6 +1298,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
     "shared/sale-parser.js",
     "shared/capture-protocol.js",
     "capture/capture-client.js",
+    "capture/attributed-gmv-locator.js",
+    "capture/bidding-variation-locator.js",
     "capture/sale-candidate-locator.js",
     "capture/capture-event-registry.js",
     "capture/capture-scheduler.js",

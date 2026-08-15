@@ -11,10 +11,13 @@
   function createReconciliationModule() {
     "use strict";
 
-    const STATE_VERSION = 4;
     const LEGACY_STATE_VERSION = 1;
     const OBSERVED_PAYMENT_STATE_VERSION = 2;
     const CANCELED_PAYMENT_STATE_VERSION = 3;
+    const INVENTORY_BASELINE_STATE_VERSION = 4;
+    const ATTRIBUTED_GMV_STATE_VERSION = 5;
+    const BIDDING_VARIATION_STATE_VERSION = 6;
+    const STATE_VERSION = 7;
     const LEGACY_INVENTORY_BASELINE_ID =
       "inventory-baseline:00000000-0000-4000-8000-000000000000";
     const INVENTORY_BASELINE_ID_PATTERN =
@@ -30,6 +33,9 @@
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
     const MAX_OBSERVED_VARIATIONS = 1000;
     const MAX_OBSERVED_PAYMENT_STATUSES = 1000;
+    const MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH = 24;
+    const ATTRIBUTED_GMV_DISPLAY_PATTERN =
+      /^\$(?:(?:0|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}|(?:0|[1-9]\d*)(?:\.\d{1,2})?[KMB])$/;
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
       NOT_OBSERVED: "not_observed",
       PAYMENT_PROCESSING: "payment_processing",
@@ -42,9 +48,10 @@
     const OBSERVED_PAYMENT_STATUS_VALUES = new Set(
       Object.values(OBSERVED_PAYMENT_STATUSES),
     );
-    const PENDING_RESERVATION_PAYMENT_STATUSES = new Set([
-      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
-      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+    const TOTAL_SALE_OBSERVED_PAYMENT_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+      OBSERVED_PAYMENT_STATUSES.CANCELED,
     ]);
 
     class ReconciliationError extends Error {
@@ -95,6 +102,21 @@
 
     function requireVariationNumber(value) {
       return requireSafeInteger(value, "variationNumber", 1);
+    }
+
+    function requireAttributedGmvDisplay(value, fieldName) {
+      if (
+        typeof value !== "string" ||
+        value.length > MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH ||
+        !ATTRIBUTED_GMV_DISPLAY_PATTERN.test(value)
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          `${fieldName} must be a canonical TikTok Attributed GMV display.`,
+        );
+      }
+
+      return value;
     }
 
     function isPlainRecord(value) {
@@ -212,6 +234,12 @@
           failInvalidState(`${path}.code is not supported by this state version.`);
         }
 
+        if (stateVersion >= STATE_VERSION) {
+          failInvalidState(
+            `${path}.code is a legacy conflict and is not supported by this state version.`,
+          );
+        }
+
         requirePersistedRecord(conflict, path, ["code"]);
 
         if (auction.paymentStatus !== "payment_complete") {
@@ -275,6 +303,15 @@
         "unmapped",
       ].includes(auction.mappingStatus)) {
         failInvalidState(`${path}.mappingStatus is not supported.`);
+      }
+
+      if (
+        stateVersion >= STATE_VERSION &&
+        auction.mappingStatus === "marked_unpaid"
+      ) {
+        failInvalidState(
+          `${path}.mappingStatus is a legacy value and is not supported by this state version.`,
+        );
       }
 
       const supportedPaymentStatuses =
@@ -434,6 +471,27 @@
         failInvalidState(
           `${path} is missing its payment-after-unpaid conflict.`,
         );
+      }
+
+      if (stateVersion < STATE_VERSION) {
+        const completedAfterCancellation = hydratedAuction.conflicts.some(
+          (conflict) => conflict.code === "payment_completed_after_canceled",
+        );
+
+        if (completedAfterCancellation) {
+          hydratedAuction.paymentStatus = "canceled";
+          hydratedAuction.observedPaymentStatus =
+            OBSERVED_PAYMENT_STATUSES.CANCELED;
+          hydratedAuction.soldPriceCents = null;
+          hydratedAuction.committedUnitCostCents = null;
+          hydratedAuction.conflicts = [];
+        }
+
+        if (hydratedAuction.mappingStatus === "marked_unpaid") {
+          hydratedAuction.mappingStatus = hydratedAuction.sku
+            ? "mapped"
+            : "unmapped";
+        }
       }
 
       return hydratedAuction;
@@ -606,7 +664,22 @@
         const path = `state.streams[${streamIndex}]`;
         const expectedKeys = legacy
           ? ["streamId", "variations"]
-          : ["inventoryBaselineId", "streamId", "variations"];
+          : candidate.version === INVENTORY_BASELINE_STATE_VERSION
+            ? ["inventoryBaselineId", "streamId", "variations"]
+            : candidate.version === ATTRIBUTED_GMV_STATE_VERSION
+              ? [
+                  "attributedGmvDisplay",
+                  "inventoryBaselineId",
+                  "streamId",
+                  "variations",
+                ]
+              : [
+                  "activeBiddingVariationNumber",
+                  "attributedGmvDisplay",
+                  "inventoryBaselineId",
+                  "streamId",
+                  "variations",
+                ];
 
         requirePersistedRecord(stream, path, expectedKeys);
         const streamId = requirePersistedString(
@@ -626,6 +699,30 @@
               `${path}.inventoryBaselineId`,
             );
         const baseline = baselinesById.get(inventoryBaselineId);
+        let attributedGmvDisplay = null;
+        let activeBiddingVariationNumber = null;
+
+        if (
+          !legacy &&
+          candidate.version !== INVENTORY_BASELINE_STATE_VERSION &&
+          stream.attributedGmvDisplay !== null
+        ) {
+          const display = requirePersistedString(
+            stream.attributedGmvDisplay,
+            `${path}.attributedGmvDisplay`,
+          );
+
+          if (
+            display.length > MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH ||
+            !ATTRIBUTED_GMV_DISPLAY_PATTERN.test(display)
+          ) {
+            failInvalidState(
+              `${path}.attributedGmvDisplay is not a canonical TikTok Attributed GMV display.`,
+            );
+          }
+
+          attributedGmvDisplay = display;
+        }
 
         if (!baseline) {
           failInvalidState(
@@ -660,7 +757,50 @@
           return hydratedAuction;
         });
 
-        return { streamId, inventoryBaselineId, variations };
+        if (
+          !legacy &&
+          candidate.version > ATTRIBUTED_GMV_STATE_VERSION &&
+          stream.activeBiddingVariationNumber !== null
+        ) {
+          activeBiddingVariationNumber = requirePersistedInteger(
+            stream.activeBiddingVariationNumber,
+            `${path}.activeBiddingVariationNumber`,
+            1,
+          );
+
+          if (!variationNumbers.has(activeBiddingVariationNumber)) {
+            failInvalidState(
+              `${path}.activeBiddingVariationNumber does not reference an existing variation.`,
+            );
+          }
+
+          const activeAuction = variations.find(
+            (auction) =>
+              auction.variationNumber === activeBiddingVariationNumber,
+          );
+          const remainsEligibleForBidding =
+            activeAuction.paymentStatus === "unknown" &&
+            activeAuction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED;
+
+          if (!remainsEligibleForBidding) {
+            if (candidate.version < STATE_VERSION) {
+              activeBiddingVariationNumber = null;
+            } else {
+              failInvalidState(
+                `${path}.activeBiddingVariationNumber must reference an unobserved, nonterminal variation.`,
+              );
+            }
+          }
+        }
+
+        return {
+          streamId,
+          inventoryBaselineId,
+          activeBiddingVariationNumber,
+          attributedGmvDisplay,
+          variations,
+        };
       });
     }
 
@@ -678,6 +818,9 @@
           candidate.version !== LEGACY_STATE_VERSION &&
           candidate.version !== OBSERVED_PAYMENT_STATE_VERSION &&
           candidate.version !== CANCELED_PAYMENT_STATE_VERSION &&
+          candidate.version !== INVENTORY_BASELINE_STATE_VERSION &&
+          candidate.version !== ATTRIBUTED_GMV_STATE_VERSION &&
+          candidate.version !== BIDDING_VARIATION_STATE_VERSION &&
           candidate.version !== STATE_VERSION
         ) {
           fail(
@@ -686,7 +829,7 @@
           );
         }
 
-        if (candidate.version < STATE_VERSION) {
+        if (candidate.version < INVENTORY_BASELINE_STATE_VERSION) {
           requirePersistedRecord(candidate, "state", [
             "inventory",
             "streams",
@@ -1184,6 +1327,8 @@
       state.streams.push({
         streamId,
         inventoryBaselineId: baseline.baselineId,
+        activeBiddingVariationNumber: null,
+        attributedGmvDisplay: null,
         variations: [],
       });
 
@@ -1199,6 +1344,8 @@
         stream = {
           streamId,
           inventoryBaselineId: baseline.baselineId,
+          activeBiddingVariationNumber: null,
+          attributedGmvDisplay: null,
           variations: [],
         };
         state.streams.push(stream);
@@ -1284,10 +1431,7 @@
       return Boolean(
         auction.sku &&
         auction.mappingStatus === "mapped" &&
-        auction.paymentStatus === "unknown" &&
-        PENDING_RESERVATION_PAYMENT_STATUSES.has(
-          auction.observedPaymentStatus,
-        ),
+        auction.paymentStatus === "unknown",
       );
     }
 
@@ -1410,7 +1554,11 @@
       const remainingQuantity =
         inventoryItem.quantityOnHandAtImport - soldQuantity;
       const availableToTagQuantity = remainingQuantity - reservedQuantity;
-      const oversoldQuantity = Math.max(0, -remainingQuantity);
+      const oversoldQuantity = Math.max(
+        0,
+        soldQuantity + reservedQuantity -
+          inventoryItem.quantityOnHandAtImport,
+      );
       const reservationShortfallQuantity = Math.max(
         0,
         reservedQuantity - Math.max(0, remainingQuantity),
@@ -1514,32 +1662,15 @@
 
       let auction = findAuction(state, key.streamId, key.variationNumber);
 
-      if (auction?.sku === sku) {
-        return createAuctionView(state, auction);
+      if (auction?.paymentStatus === "canceled") {
+        fail(
+          "CANCELED_VARIATION_IMMUTABLE",
+          "A canceled variation's inventory mapping cannot be changed.",
+        );
       }
 
-      const historicalCorrection = Boolean(
-        auction &&
-        (
-          auction.paymentStatus === "payment_complete" ||
-          auction.paymentStatus === "canceled" ||
-          auction.mappingStatus === "marked_unpaid"
-        ),
-      );
-
-      if (!historicalCorrection) {
-        const availability = getInventoryAvailability(state, {
-          sku,
-          streamId: key.streamId,
-          variationNumber: key.variationNumber,
-        });
-
-        if (availability.availableForCurrentAuctionQuantity <= 0) {
-          fail(
-            "NO_STOCK_AVAILABLE",
-            `Inventory does not have an available unit for SKU ${sku}.`,
-          );
-        }
+      if (auction?.sku === sku) {
+        return createAuctionView(state, auction);
       }
 
       auction ??= getOrCreateAuction(
@@ -1614,6 +1745,51 @@
         status: newlyObservedCount === 0 ? "already_observed" : "observed",
         observedCount: variationNumbers.length,
         newlyObservedCount,
+      };
+    }
+
+    function observeBiddingVariation(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A bidding-variation observation is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const variationNumber = requireVariationNumber(input.variationNumber);
+      const existingAuction = findAuction(state, streamId, variationNumber);
+
+      if (
+        existingAuction &&
+        (
+          existingAuction.paymentStatus === "payment_complete" ||
+          existingAuction.paymentStatus === "canceled" ||
+          existingAuction.observedPaymentStatus !==
+            OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED
+        )
+      ) {
+        return {
+          status: "ignored_sold_variation",
+          variationNumber,
+        };
+      }
+
+      const stream = getOrCreateStream(state, streamId);
+
+      getOrCreateAuction(state, streamId, variationNumber);
+
+      if (stream.activeBiddingVariationNumber === variationNumber) {
+        return {
+          status: "already_observed",
+          variationNumber,
+        };
+      }
+
+      stream.activeBiddingVariationNumber = variationNumber;
+
+      return {
+        status: "observed",
+        variationNumber,
       };
     }
 
@@ -1730,6 +1906,18 @@
         updatedCount += 1;
       });
 
+      const stream = findStream(state, streamId);
+
+      if (
+        stream?.activeBiddingVariationNumber !== null &&
+        statuses.some(
+          ({ variationNumber }) =>
+            variationNumber === stream.activeBiddingVariationNumber,
+        )
+      ) {
+        stream.activeBiddingVariationNumber = null;
+      }
+
       return {
         status: updatedCount === 0 ? "already_observed" : "observed",
         observedCount: statuses.length,
@@ -1745,6 +1933,13 @@
 
       if (!auction) {
         fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
+      }
+
+      if (auction.paymentStatus === "canceled") {
+        fail(
+          "CANCELED_VARIATION_IMMUTABLE",
+          "A canceled variation's inventory mapping cannot be changed.",
+        );
       }
 
       if (auction.sku === null) {
@@ -1774,6 +1969,15 @@
         key.streamId,
         key.variationNumber,
       );
+      const stream = findStream(state, key.streamId);
+
+      if (auction.paymentStatus === "canceled") {
+        return createAuctionView(state, auction);
+      }
+
+      if (stream?.activeBiddingVariationNumber === key.variationNumber) {
+        stream.activeBiddingVariationNumber = null;
+      }
 
       if (auction.paymentStatus === "payment_complete") {
         auction.observedPaymentStatus =
@@ -1796,12 +2000,6 @@
         });
       }
 
-      if (auction.paymentStatus === "canceled") {
-        addConflict(auction, {
-          code: "payment_completed_after_canceled",
-        });
-      }
-
       auction.paymentStatus = "payment_complete";
       auction.observedPaymentStatus =
         OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
@@ -1809,6 +2007,35 @@
       snapshotCommittedCost(state, auction);
 
       return createAuctionView(state, auction);
+    }
+
+    function observeAttributedGmv(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "An Attributed GMV observation is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const attributedGmvDisplay = requireAttributedGmvDisplay(
+        input.attributedGmvDisplay,
+        "attributedGmvDisplay",
+      );
+      const stream = getOrCreateStream(state, streamId);
+
+      if (stream.attributedGmvDisplay === attributedGmvDisplay) {
+        return {
+          status: "already_observed",
+          attributedGmvDisplay,
+        };
+      }
+
+      stream.attributedGmvDisplay = attributedGmvDisplay;
+
+      return {
+        status: "observed",
+        attributedGmvDisplay,
+      };
     }
 
     function markUnpaid(state, input) {
@@ -1933,6 +2160,9 @@
       const totals = {
         auctionCount: auctions.length,
         completedPaymentCount: 0,
+        canceledOrderCount: 0,
+        paymentFixingCount: 0,
+        totalSalesCount: 0,
         committedSalesCount: 0,
         unmappedCompletedCount: 0,
         pendingMappedCount: 0,
@@ -1942,13 +2172,39 @@
         committedRevenueCents: 0,
         costOfGoodsCents: 0,
         profitCents: 0,
+        attributedGmvDisplay:
+          selectedStream?.attributedGmvDisplay ?? null,
       };
       const warnings = [];
 
       auctions.forEach((auction) => {
+        if (
+          TOTAL_SALE_OBSERVED_PAYMENT_STATUSES.has(
+            auction.observedPaymentStatus,
+          )
+        ) {
+          totals.totalSalesCount += 1;
+        }
+
         if (auction.paymentStatus === "payment_complete") {
           totals.completedPaymentCount += 1;
           totals.completedGmvCents += auction.soldPriceCents;
+        }
+
+        if (auction.paymentStatus === "canceled") {
+          totals.canceledOrderCount += 1;
+        }
+
+        if (
+          auction.paymentStatus === "unknown" &&
+          (
+            auction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED ||
+            auction.observedPaymentStatus ===
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING
+          )
+        ) {
+          totals.paymentFixingCount += 1;
         }
 
         if (auction.status === "unmapped_completed") {
@@ -2015,6 +2271,8 @@
 
       return {
         streamId: options.streamId ?? null,
+        activeBiddingVariationNumber:
+          selectedStream?.activeBiddingVariationNumber ?? null,
         inventoryScope: "inventory_baseline",
         inventoryBaselineId: baseline.baselineId,
         inventory,
@@ -2037,10 +2295,12 @@
       getInventoryAvailability,
       pinStreamToInventoryBaseline,
       observePaymentStatuses,
+      observeBiddingVariation,
       observeVariations,
       mapVariation,
       unmapVariation,
       recordPaymentComplete,
+      observeAttributedGmv,
       markUnpaid,
       undoMarkUnpaid,
       getAuction,

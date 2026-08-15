@@ -67,6 +67,10 @@
           "observe_variations" ||
         reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES !==
           "observe_payment_statuses" ||
+        reconciliationCoordinator.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV !==
+          "observe_attributed_gmv" ||
+        reconciliationCoordinator.COMMAND_TYPES.OBSERVE_BIDDING_VARIATION !==
+          "observe_bidding_variation" ||
         reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE !==
           "record_payment_complete" ||
         reconciliationCoordinator.COMMAND_TYPES
@@ -169,6 +173,24 @@
         });
 
         switch (event.type) {
+          case captureProtocol.EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV:
+            command = {
+              type:
+                reconciliationCoordinator.COMMAND_TYPES
+                  .OBSERVE_ATTRIBUTED_GMV,
+              streamId,
+              attributedGmvDisplay: event.attributedGmvDisplay,
+            };
+            break;
+          case captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION:
+            command = {
+              type:
+                reconciliationCoordinator.COMMAND_TYPES
+                  .OBSERVE_BIDDING_VARIATION,
+              streamId,
+              variationNumber: event.variationNumber,
+            };
+            break;
           case captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS:
             command = {
               type:

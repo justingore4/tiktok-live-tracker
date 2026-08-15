@@ -4,6 +4,10 @@ importScripts(
   "shared/reconciliation.js",
   "shared/reconciliation-storage.js",
   "shared/reconciliation-coordinator.js",
+  "shared/stream-report.js",
+  "shared/stream-report-protocol.js",
+  "shared/stream-report-storage.js",
+  "shared/stream-report-coordinator.js",
   "shared/stream-session.js",
   "shared/stream-session-storage.js",
   "shared/stream-session-coordinator.js",
@@ -19,6 +23,13 @@ const reconciliationStorage =
   globalThis.TikTokLiveTrackerReconciliationStorage;
 const reconciliationCoordinator =
   globalThis.TikTokLiveTrackerReconciliationCoordinator;
+const streamReport = globalThis.TikTokLiveTrackerStreamReport;
+const streamReportProtocol =
+  globalThis.TikTokLiveTrackerStreamReportProtocol;
+const streamReportStorage =
+  globalThis.TikTokLiveTrackerStreamReportStorage;
+const streamReportCoordinator =
+  globalThis.TikTokLiveTrackerStreamReportCoordinator;
 const streamSession = globalThis.TikTokLiveTrackerStreamSession;
 const streamSessionStorage =
   globalThis.TikTokLiveTrackerStreamSessionStorage;
@@ -50,6 +61,19 @@ const stateCoordinator =
   reconciliationCoordinator.createReconciliationCoordinator({
     reconciliation,
     stateStore,
+  });
+const reportStore = streamReportStorage.createStreamReportStore({
+  storageArea: chrome.storage.local,
+  streamReport,
+});
+const reportCoordinator =
+  streamReportCoordinator.createStreamReportCoordinator({
+    now: () => new Date().toISOString(),
+    protocol: streamReportProtocol,
+    reconciliation,
+    reportStore,
+    storage: streamReportStorage,
+    streamReport,
   });
 const streamSessionStore =
   streamSessionStorage.createStreamSessionStateStore({
@@ -94,6 +118,12 @@ const inventoryImportService =
     setTimeoutImpl: (...args) => globalThis.setTimeout(...args),
   });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
+const reportPageUrl = chrome.runtime.getURL("report/report.html");
+const reportReadCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.GET_REPORT,
+]);
 const captureDashboardUrlPattern =
   /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
 const captureStateChangedNotification = Object.freeze({
@@ -120,6 +150,8 @@ function failBoundary(protocol, code, message) {
     BoundaryError = captureIntegration.CaptureIntegrationError;
   } else if (protocol === streamSessionCoordinator) {
     BoundaryError = streamSessionCoordinator.StreamSessionCoordinatorError;
+  } else if (protocol === streamReportProtocol) {
+    BoundaryError = streamReportProtocol.StreamReportProtocolError;
   } else if (protocol === inventoryImportProtocol) {
     BoundaryError = inventoryImportProtocol.InventoryImportProtocolError;
   }
@@ -152,6 +184,14 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === streamReportProtocol.MESSAGE_CHANNEL) {
+    return {
+      coordinator: reportCoordinator,
+      label: "stream-report",
+      protocol: streamReportProtocol,
+    };
+  }
+
   if (message.channel === captureProtocol.MESSAGE_CHANNEL) {
     return {
       coordinator: captureEventIntegration,
@@ -180,6 +220,10 @@ function validateMessage(message, boundary) {
 
   if (protocol === inventoryImportProtocol) {
     return inventoryImportProtocol.validateInventoryImportMessage(message);
+  }
+
+  if (protocol === streamReportProtocol) {
+    return streamReportProtocol.validateStreamReportMessage(message);
   }
 
   const expectedKeys = ["channel", "command", "version"];
@@ -236,6 +280,40 @@ function validateSender(sender, command, boundary) {
     return;
   }
 
+  if (boundary.protocol === streamReportProtocol) {
+    const fromSidePanel =
+      sender?.id === chrome.runtime.id && sender.url === sidePanelUrl;
+    const fromReportPage =
+      sender?.id === chrome.runtime.id &&
+      typeof sender.url === "string" &&
+      (
+        sender.url === reportPageUrl ||
+        sender.url.startsWith(`${reportPageUrl}?`) ||
+        sender.url.startsWith(`${reportPageUrl}#`)
+      );
+
+    if (!fromSidePanel && !fromReportPage) {
+      failBoundary(
+        boundary.protocol,
+        "UNAUTHORIZED_MESSAGE_SENDER",
+        "Only the extension side panel and packaged report page can read stream reports.",
+      );
+    }
+
+    if (
+      fromReportPage &&
+      !reportReadCommandTypes.has(command.type)
+    ) {
+      failBoundary(
+        boundary.protocol,
+        "UNAUTHORIZED_MESSAGE_SENDER",
+        "The packaged report page has read-only report access.",
+      );
+    }
+
+    return;
+  }
+
   if (
     !sender ||
     sender.id !== chrome.runtime.id ||
@@ -253,6 +331,8 @@ function validateSender(sender, command, boundary) {
     [
       reconciliationCoordinator.COMMAND_TYPES.OBSERVE_VARIATIONS,
       reconciliationCoordinator.COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES,
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV,
+      reconciliationCoordinator.COMMAND_TYPES.OBSERVE_BIDDING_VARIATION,
       reconciliationCoordinator.COMMAND_TYPES.RECORD_PAYMENT_COMPLETE,
     ].includes(command.type)
   ) {
@@ -419,6 +499,109 @@ async function pinStreamToPreparedInventory(streamId) {
   });
 }
 
+async function repairPendingReportsForSession(state, options = {}) {
+  const activeStreamId = state.activeSession?.streamId ?? null;
+
+  try {
+    return await reportCoordinator.repairPendingReports(activeStreamId);
+  } catch (error) {
+    if (options.required === true) {
+      throw error;
+    }
+
+    console.error(
+      "[TikTok Live Tracker] Could not repair pending stream reports.",
+      error,
+    );
+    return { repairedCount: 0 };
+  }
+}
+
+function createEndResponse(response, reportRecord, statusOverride = null) {
+  const state = hydrateStreamSessionResponse(response);
+  const status = statusOverride ?? response?.result?.status;
+
+  return {
+    state,
+    result: {
+      status,
+      reportId: reportRecord?.reportId ?? null,
+      reportLifecycleStatus: reportRecord?.lifecycleStatus ?? null,
+    },
+  };
+}
+
+async function endStreamWithoutReport(command) {
+  const { state: sessionState } = await getStreamSessionResponse();
+
+  if (
+    sessionState.activeSession !== null &&
+    sessionState.activeSession.streamId !== command.streamId
+  ) {
+    return activeStreamCoordinator.dispatch(command);
+  }
+
+  if (sessionState.activeSession !== null) {
+    await reportCoordinator.discardPendingReportForStream(command.streamId);
+  } else {
+    await repairPendingReportsForSession(sessionState, { required: true });
+  }
+
+  const response = await activeStreamCoordinator.dispatch(command);
+  const status = response?.result?.status === "ended"
+    ? "ended_without_report"
+    : response?.result?.status;
+
+  return createEndResponse(response, null, status);
+}
+
+async function endStreamWithReport(command) {
+  const { state: sessionState } = await getStreamSessionResponse();
+  const activeSession = sessionState.activeSession;
+
+  if (activeSession === null) {
+    await repairPendingReportsForSession(sessionState, { required: true });
+    const existing = await reportCoordinator.getReportForStream(
+      command.streamId,
+    );
+    const response = await activeStreamCoordinator.dispatch(command);
+    return createEndResponse(
+      response,
+      existing.reportId === null ? null : existing,
+    );
+  }
+
+  if (activeSession.streamId !== command.streamId) {
+    return activeStreamCoordinator.dispatch(command);
+  }
+
+  const reconciliationResponse = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  const preparedReport = await reportCoordinator.prepareReport({
+    reconciliationState: reconciliationResponse?.state,
+    streamId: activeSession.streamId,
+    startedAt: activeSession.startedAt,
+  });
+  const response = await activeStreamCoordinator.dispatch(command);
+  let finalizedReport = preparedReport;
+
+  try {
+    finalizedReport = await reportCoordinator.finalizeReport(
+      preparedReport.reportId,
+    );
+  } catch (error) {
+    // The report was saved before End. A later read/Start repairs this
+    // pending marker without misreporting a successfully persisted End.
+    console.error(
+      "[TikTok Live Tracker] Stream ended, but report finalization is pending repair.",
+      error,
+    );
+  }
+
+  return createEndResponse(response, finalizedReport);
+}
+
 async function dispatchStreamSessionCommand(command) {
   if (
     command.type ===
@@ -426,6 +609,8 @@ async function dispatchStreamSessionCommand(command) {
   ) {
     inventoryImportService.invalidatePreviews();
     const { state: existingState } = await getStreamSessionResponse();
+
+    await repairPendingReportsForSession(existingState);
 
     if (existingState.activeSession === null) {
       await requirePreparedInventoryBaseline({ requireImported: true });
@@ -452,11 +637,26 @@ async function dispatchStreamSessionCommand(command) {
   ) {
     const { response, state } = await getStreamSessionResponse();
 
+    await repairPendingReportsForSession(state);
+
     if (state.activeSession !== null) {
       await pinStreamToPreparedInventory(state.activeSession.streamId);
     }
 
     return response;
+  }
+
+  if (
+    command.type === streamSessionCoordinator.COMMAND_TYPES.END_STREAM
+  ) {
+    return endStreamWithReport(command);
+  }
+
+  if (
+    command.type ===
+      streamSessionCoordinator.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT
+  ) {
+    return endStreamWithoutReport(command);
   }
 
   return activeStreamCoordinator.dispatch(command);
@@ -517,12 +717,25 @@ function mutatesEmployeeStream(command) {
   return [
     reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
     reconciliationCoordinator.COMMAND_TYPES.UNMAP_VARIATION,
+  ].includes(command.type);
+}
+
+function isManualUnpaidCommand(command) {
+  return [
     reconciliationCoordinator.COMMAND_TYPES.MARK_UNPAID,
     reconciliationCoordinator.COMMAND_TYPES.UNDO_MARK_UNPAID,
   ].includes(command.type);
 }
 
 async function dispatchReconciliationCommand(command) {
+  if (isManualUnpaidCommand(command)) {
+    failBoundary(
+      reconciliationCoordinator,
+      "MANUAL_UNPAID_DISABLED",
+      "Live payment failures and cancellations are tracked automatically from TikTok.",
+    );
+  }
+
   if (initializesInventoryState(command)) {
     return initializeInventoryState(command);
   }
@@ -569,6 +782,13 @@ function dispatchBoundaryCommand(boundary, command) {
     return dispatchStreamSessionCommand(command);
   }
 
+  if (boundary.protocol === streamReportProtocol) {
+    return getStreamSessionResponse().then(async ({ state }) => {
+      await repairPendingReportsForSession(state, { required: true });
+      return reportCoordinator.dispatch(command);
+    });
+  }
+
   if (boundary.protocol === reconciliationCoordinator) {
     return dispatchReconciliationCommand(command);
   }
@@ -606,6 +826,9 @@ function serializeError(error, boundary) {
     error instanceof streamSession.StreamSessionError ||
     error instanceof streamSessionStorage.StreamSessionStorageError ||
     error instanceof streamSessionCoordinator.StreamSessionCoordinatorError ||
+    error instanceof streamReportProtocol.StreamReportProtocolError ||
+    error instanceof streamReportStorage.StreamReportStorageError ||
+    error instanceof streamReportCoordinator.StreamReportCoordinatorError ||
     error instanceof captureProtocol.CaptureProtocolError ||
     error instanceof captureIntegration.CaptureIntegrationError ||
     error instanceof inventoryImportProtocol.InventoryImportProtocolError ||

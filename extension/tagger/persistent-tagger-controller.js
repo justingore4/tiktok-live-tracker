@@ -26,16 +26,12 @@
       INITIALIZE: "initialize",
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
-      MARK_UNPAID: "mark_unpaid",
-      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     });
     const REQUIRED_CLIENT_METHODS = Object.freeze([
       "getState",
       "initializeState",
       "mapVariation",
-      "markUnpaid",
       "unmapVariation",
-      "undoMarkUnpaid",
     ]);
 
     class PersistentTaggerControllerError extends Error {
@@ -102,7 +98,7 @@
         )
       ) {
         throw new TypeError(
-          "client must provide saved-state read, initialize, mapping, unmapping, and unpaid methods.",
+          "client must provide saved-state read, initialize, mapping, and unmapping methods.",
         );
       }
 
@@ -356,7 +352,9 @@
       let view = null;
       let projectionSession = null;
       let selectedVariationNumber = currentVariationNumber;
-      let followedVariationHighWaterMark = null;
+      // This baseline advances with canonical capture even while an employee
+      // deliberately keeps a historical variation selected.
+      let latestVariationNumber = currentVariationNumber;
       let started = false;
       let activePromise = null;
       let queuedRefresh = null;
@@ -390,6 +388,25 @@
         publish();
       }
 
+      function decorateProjectionView(
+        candidateView,
+        activeBiddingVariationNumber,
+        currentVariationNumber,
+      ) {
+        return {
+          ...candidateView,
+          activeBiddingVariationNumber,
+          currentVariationNumber,
+          isReviewingHistory:
+            candidateView.selectedVariationNumber !== currentVariationNumber,
+          variations: candidateView.variations.map((variation) => ({
+            ...variation,
+            current:
+              variation.variationNumber === currentVariationNumber,
+          })),
+        };
+      }
+
       function buildProjection(candidateState, preferredVariationNumber) {
         const canonicalState =
           reconciliation.hydrateReconciliationState(candidateState);
@@ -397,9 +414,23 @@
           canonicalState,
           streamId,
         );
-        const recordedVariationNumbers = canonicalState.streams
-          .find((stream) => stream.streamId === streamId)
-          ?.variations.map((variation) => variation.variationNumber) ?? [];
+        const canonicalStream = canonicalState.streams.find(
+          (stream) => stream.streamId === streamId,
+        );
+        const recordedVariationNumbers =
+          canonicalStream?.variations.map(
+            (variation) => variation.variationNumber,
+          ) ?? [];
+        const activeBiddingVariationNumber =
+          canonicalStream?.activeBiddingVariationNumber ?? null;
+        const newestRecordedVariationNumber =
+          recordedVariationNumbers.length === 0
+            ? null
+            : Math.max(...recordedVariationNumbers);
+        const currentCanonicalVariationNumber =
+          activeBiddingVariationNumber ??
+          newestRecordedVariationNumber ??
+          currentVariationNumber;
         const candidateSession = mappingWorkflow.createMappingSession({
           inventory: pinnedInventory,
           reconciliation,
@@ -416,13 +447,12 @@
         const firstRecordedVariation = candidateView.variations.find(
           (variation) => variation.recorded,
         );
-        const selectionTarget = preferredVariation?.recorded
-          ? preferredVariation
-          : firstRecordedVariation ?? preferredVariation;
+        const selectionTarget = preferredVariation ?? firstRecordedVariation;
 
         if (
           selectionTarget &&
-          selectionTarget.variationNumber !== currentVariationNumber
+          selectionTarget.variationNumber !==
+            candidateView.selectedVariationNumber
         ) {
           const selection = candidateSession.selectVariation(
             selectionTarget.variationNumber,
@@ -433,11 +463,15 @@
           }
         }
 
+        candidateView = decorateProjectionView(
+          candidateView,
+          activeBiddingVariationNumber,
+          currentCanonicalVariationNumber,
+        );
+
         return {
-          newestRecordedVariationNumber:
-            recordedVariationNumbers.length === 0
-              ? null
-              : Math.max(...recordedVariationNumbers),
+          activeBiddingVariationNumber,
+          currentCanonicalVariationNumber,
           session: candidateSession,
           selectedVariationNumber: candidateView.selectedVariationNumber,
           view: candidateView,
@@ -445,30 +479,35 @@
       }
 
       function acceptCanonicalState(candidateState, options = {}) {
+        const wasFollowingLatestVariation =
+          selectedVariationNumber === latestVariationNumber;
         const projection = buildProjection(
           candidateState,
           selectedVariationNumber,
         );
-        const newestRecordedVariationNumber =
-          projection.newestRecordedVariationNumber;
-        const shouldFollowNewVariation =
+        const activeBiddingVariationNumber =
+          projection.activeBiddingVariationNumber;
+        const currentCanonicalVariationNumber =
+          projection.currentCanonicalVariationNumber;
+        const canonicalVariationChanged =
+          currentCanonicalVariationNumber !== latestVariationNumber;
+        const shouldFollowVariation =
+          options.resetFollowBaseline === true ||
           (
-            options.resetFollowBaseline === true ||
-            options.followNewVariation === true
-          ) &&
-          newestRecordedVariationNumber !== null &&
-          (
-            options.resetFollowBaseline === true ||
-            followedVariationHighWaterMark === null ||
-            newestRecordedVariationNumber > followedVariationHighWaterMark
+            options.followNewVariation === true &&
+            canonicalVariationChanged &&
+            wasFollowingLatestVariation
           );
+        const variationToFollow = shouldFollowVariation
+          ? currentCanonicalVariationNumber
+          : null;
 
         if (
-          shouldFollowNewVariation &&
-          projection.selectedVariationNumber !== newestRecordedVariationNumber
+          variationToFollow !== null &&
+          projection.selectedVariationNumber !== variationToFollow
         ) {
           const selection = projection.session.selectVariation(
-            newestRecordedVariationNumber,
+            variationToFollow,
           );
 
           if (!selection.ok) {
@@ -480,23 +519,22 @@
 
           projection.selectedVariationNumber =
             selection.view.selectedVariationNumber;
-          projection.view = selection.view;
+          projection.view = decorateProjectionView(
+            selection.view,
+            activeBiddingVariationNumber,
+            currentCanonicalVariationNumber,
+          );
         }
 
         projectionSession = projection.session;
         selectedVariationNumber = projection.selectedVariationNumber;
         view = projection.view;
 
-        if (options.resetFollowBaseline === true) {
-          followedVariationHighWaterMark = newestRecordedVariationNumber;
-        } else if (options.followNewVariation === true) {
-          followedVariationHighWaterMark =
-            newestRecordedVariationNumber === null
-              ? followedVariationHighWaterMark
-              : Math.max(
-                  followedVariationHighWaterMark ?? 0,
-                  newestRecordedVariationNumber,
-                );
+        if (
+          options.resetFollowBaseline === true ||
+          options.followNewVariation === true
+        ) {
+          latestVariationNumber = currentCanonicalVariationNumber;
         }
       }
 
@@ -693,7 +731,11 @@
         }
 
         selectedVariationNumber = result.view.selectedVariationNumber;
-        view = result.view;
+        view = decorateProjectionView(
+          result.view,
+          view?.activeBiddingVariationNumber ?? null,
+          latestVariationNumber,
+        );
         publish();
         return createSnapshot();
       }
@@ -725,22 +767,6 @@
         return begin(() => performMutation(descriptor));
       }
 
-      function markSelectedUnpaid() {
-        requireReadyForMutation();
-
-        const command = Object.freeze({
-          streamId,
-          variationNumber: selectedVariationNumber,
-        });
-        const descriptor = {
-          scope: "save",
-          operation: OPERATIONS.MARK_UNPAID,
-          execute: () => client.markUnpaid({ ...command }),
-        };
-
-        return begin(() => performMutation(descriptor));
-      }
-
       function unmapSelectedVariation() {
         requireReadyForMutation();
 
@@ -752,22 +778,6 @@
           scope: "save",
           operation: OPERATIONS.UNMAP_VARIATION,
           execute: () => client.unmapVariation({ ...command }),
-        };
-
-        return begin(() => performMutation(descriptor));
-      }
-
-      function undoSelectedUnpaid() {
-        requireReadyForMutation();
-
-        const command = Object.freeze({
-          streamId,
-          variationNumber: selectedVariationNumber,
-        });
-        const descriptor = {
-          scope: "save",
-          operation: OPERATIONS.UNDO_MARK_UNPAID,
-          execute: () => client.undoMarkUnpaid({ ...command }),
         };
 
         return begin(() => performMutation(descriptor));
@@ -799,14 +809,12 @@
       return Object.freeze({
         getSnapshot: createSnapshot,
         mapSelectedSku,
-        markSelectedUnpaid,
         refresh,
         retry,
         selectVariation,
         start,
         subscribe,
         unmapSelectedVariation,
-        undoSelectedUnpaid,
       });
     }
 

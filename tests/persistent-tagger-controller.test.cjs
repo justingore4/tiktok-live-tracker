@@ -104,26 +104,10 @@ function createMemoryClient(initialState = null) {
       state = candidate;
       return { state: clone(state), result: clone(result) };
     },
-    async markUnpaid(options) {
-      calls.push({ method: "markUnpaid", options: clone(options) });
-      const candidate = reconciliation.hydrateReconciliationState(state);
-      const result = reconciliation.markUnpaid(candidate, options);
-
-      state = candidate;
-      return { state: clone(state), result: clone(result) };
-    },
     async unmapVariation(options) {
       calls.push({ method: "unmapVariation", options: clone(options) });
       const candidate = reconciliation.hydrateReconciliationState(state);
       const result = reconciliation.unmapVariation(candidate, options);
-
-      state = candidate;
-      return { state: clone(state), result: clone(result) };
-    },
-    async undoMarkUnpaid(options) {
-      calls.push({ method: "undoMarkUnpaid", options: clone(options) });
-      const candidate = reconciliation.hydrateReconciliationState(state);
-      const result = reconciliation.undoMarkUnpaid(candidate, options);
 
       state = candidate;
       return { state: clone(state), result: clone(result) };
@@ -157,7 +141,7 @@ function auctionFromSnapshot(snapshot) {
   return snapshot.view?.auction ?? null;
 }
 
-test("exports a pure saved-session controller without a payment-complete API", () => {
+test("exports a pure saved-session controller without payment or manual-unpaid APIs", () => {
   const { client } = createMemoryClient();
   const controller = createController(client);
   const source = fs.readFileSync(
@@ -174,18 +158,16 @@ test("exports a pure saved-session controller without a payment-complete API", (
   assert.deepEqual(Object.keys(controller).sort(), [
     "getSnapshot",
     "mapSelectedSku",
-    "markSelectedUnpaid",
     "refresh",
     "retry",
     "selectVariation",
     "start",
     "subscribe",
-    "undoSelectedUnpaid",
     "unmapSelectedVariation",
   ]);
   assert.doesNotMatch(
     source,
-    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment/,
+    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment|markSelectedUnpaid|undoSelectedUnpaid/,
   );
 });
 
@@ -311,44 +293,82 @@ test("resume fails closed instead of falling back to the active baseline", async
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
 });
 
-test("refresh selects the newest newly captured variation for immediate tagging", async () => {
+test("Sold Items fallback follows new captures only while the newest variation is selected", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
     streamId: STREAM_ID,
-    variationNumbers: [201, 202, 203],
+    variationNumbers: [201, 202, 252],
   });
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
 
-  await controller.start();
-  controller.selectVariation(202);
+  const loaded = await controller.start();
+
+  assert.equal(loaded.view.activeBiddingVariationNumber, null);
+  assert.equal(loaded.view.selectedVariationNumber, 252);
 
   const capturedState = memory.getState();
   reconciliation.observeVariations(capturedState, {
     streamId: STREAM_ID,
-    variationNumbers: [204, 205],
+    variationNumbers: [253],
   });
   memory.setState(capturedState);
 
-  const refreshed = await controller.refresh();
+  const followed = await controller.refresh();
 
-  assert.equal(refreshed.phase, "ready");
-  assert.equal(refreshed.operation, "refresh");
-  assert.equal(refreshed.view.selectedVariationNumber, 205);
-  assert.deepEqual(
-    refreshed.view.variations.map((variation) => variation.variationNumber),
-    [205, 204, 203, 202, 201, 200],
-  );
+  assert.equal(followed.phase, "ready");
+  assert.equal(followed.operation, "refresh");
+  assert.equal(followed.view.activeBiddingVariationNumber, null);
+  assert.equal(followed.view.selectedVariationNumber, 253);
+
   assert.equal(
-    refreshed.view.variations.find(
-      (variation) => variation.variationNumber === 205,
-    ).selected,
-    true,
+    controller.selectVariation(201).view.selectedVariationNumber,
+    201,
   );
+
+  const whileReviewingState = memory.getState();
+  reconciliation.observeVariations(whileReviewingState, {
+    streamId: STREAM_ID,
+    variationNumbers: [254],
+  });
+  memory.setState(whileReviewingState);
+
+  const preserved = await controller.refresh();
+
+  assert.equal(preserved.view.activeBiddingVariationNumber, null);
+  assert.equal(preserved.view.selectedVariationNumber, 201);
+  assert.ok(
+    preserved.view.variations.some(
+      (variation) => variation.variationNumber === 253,
+    ),
+  );
+  assert.ok(
+    preserved.view.variations.some(
+      (variation) => variation.variationNumber === 254,
+    ),
+  );
+
+  assert.equal(
+    controller.selectVariation(254).view.selectedVariationNumber,
+    254,
+  );
+
+  const resumedState = memory.getState();
+  reconciliation.observeVariations(resumedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [255],
+  });
+  memory.setState(resumedState);
+
+  const resumed = await controller.refresh();
+
+  assert.equal(resumed.view.activeBiddingVariationNumber, null);
+  assert.equal(resumed.view.selectedVariationNumber, 255);
+  assert.equal(resumed.view.auction.variationNumber, 255);
   assert.deepEqual(
     memory.calls.map((call) => call.method),
-    ["getState", "getState"],
+    ["getState", "getState", "getState", "getState"],
   );
 });
 
@@ -502,7 +522,7 @@ test("initial restore selects the newest recorded variation even when the protot
   );
 });
 
-test("serializes and coalesces refresh notifications behind a mutation", async () => {
+test("queued refreshes preserve a historical selection while adding new options", async () => {
   const initialState = createState();
   const memory = createMemoryClient(initialState);
   const deferred = createDeferred();
@@ -548,10 +568,10 @@ test("serializes and coalesces refresh notifications behind a mutation", async (
   assert.equal(saved.operation, "map_variation");
   assert.equal(refreshed.operation, "refresh");
   assert.deepEqual(duplicateRefresh, refreshed);
-  assert.equal(refreshed.view.selectedVariationNumber, 204);
-  assert.equal(refreshed.view.auction.variationNumber, 204);
-  assert.equal(refreshed.view.auction.status, "unmapped");
-  assert.equal(refreshed.view.auction.sku, null);
+  assert.equal(refreshed.view.selectedVariationNumber, 202);
+  assert.equal(refreshed.view.auction.variationNumber, 202);
+  assert.equal(refreshed.view.auction.status, "pending");
+  assert.equal(refreshed.view.auction.sku, "BLACK-TEE-L");
   assert.ok(
     refreshed.view.variations.some(
       (variation) => variation.variationNumber === 204,
@@ -781,7 +801,7 @@ test("fails closed when mounted before inventory initialization and stream pinni
   assert.equal(snapshot.view, null);
 });
 
-test("restores stored history without trying to initialize again", async () => {
+test("restores stored pending history without trying to initialize again", async () => {
   const state = createState();
 
   reconciliation.mapVariation(state, {
@@ -789,11 +809,6 @@ test("restores stored history without trying to initialize again", async () => {
     variationNumber: 202,
     sku: "GREY-HOODIE-XL",
   });
-  reconciliation.markUnpaid(state, {
-    streamId: STREAM_ID,
-    variationNumber: 202,
-  });
-
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
   const snapshot = await controller.start();
@@ -804,7 +819,7 @@ test("restores stored history without trying to initialize again", async () => {
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
   assert.equal(snapshot.phase, "ready");
   assert.equal(snapshot.view.selectedVariationNumber, 202);
-  assert.equal(restoredVariation.status, "marked_unpaid");
+  assert.equal(restoredVariation.status, "pending");
   assert.equal(restoredVariation.item, "Nike hoodie");
 });
 
@@ -1045,44 +1060,12 @@ test("retains a mapped historical view after unmap failure and retries the froze
   assert.deepEqual(unmapCalls[0].options, unmapCalls[1].options);
 });
 
-test("persists mark-unpaid and undo commands for the selected variation", async () => {
-  const state = createState();
-
-  reconciliation.mapVariation(state, {
-    streamId: STREAM_ID,
-    variationNumber: 200,
-    sku: "BLACK-TEE-L",
-  });
-  const memory = createMemoryClient(state);
-  const controller = createController(memory.client);
-
-  await controller.start();
-  controller.selectVariation(200);
-
-  const unpaid = await controller.markSelectedUnpaid();
-  const restored = await controller.undoSelectedUnpaid();
-
-  assert.equal(unpaid.view.auction.status, "marked_unpaid");
-  assert.equal(restored.view.auction.status, "mapped");
-  assert.deepEqual(memory.calls.slice(-2), [
-    {
-      method: "markUnpaid",
-      options: { streamId: STREAM_ID, variationNumber: 200 },
-    },
-    {
-      method: "undoMarkUnpaid",
-      options: { streamId: STREAM_ID, variationNumber: 200 },
-    },
-  ]);
-});
-
-test("a reopened controller restores the last durable mapping and unpaid state", async () => {
+test("a reopened controller restores the last durable pending mapping", async () => {
   const memory = createMemoryClient(createState());
   const firstController = createController(memory.client);
 
   await firstController.start();
   await firstController.mapSelectedSku("BLACK-TEE-L");
-  await firstController.markSelectedUnpaid();
 
   const reopenedController = createController(memory.client);
   const restored = await reopenedController.start();
@@ -1090,7 +1073,7 @@ test("a reopened controller restores the last durable mapping and unpaid state",
   assert.equal(restored.phase, "ready");
   assert.equal(restored.view.selectedVariationNumber, CURRENT_VARIATION);
   assert.equal(restored.view.auction.sku, "BLACK-TEE-L");
-  assert.equal(restored.view.auction.status, "marked_unpaid");
+  assert.equal(restored.view.auction.status, "pending");
   assert.equal(restored.view.auction.paymentStatus, "unknown");
   assert.equal(
     memory.calls.filter((call) => call.method === "initializeState").length,
@@ -1109,7 +1092,7 @@ test("requires the saved-session client to provide unmapping", () => {
 
   assert.throws(
     () => createController(client),
-    /mapping, unmapping, and unpaid methods/,
+    /mapping, and unmapping methods/,
   );
 });
 
@@ -1141,6 +1124,210 @@ test("a reopened controller restores a durable unmap", async () => {
   assert.equal(
     memory.calls.filter((call) => call.method === "getState").length,
     2,
+  );
+});
+
+test("initial load prefers the active bidding variation over Sold Items history", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const loaded = await controller.start();
+
+  assert.equal(loaded.view.activeBiddingVariationNumber, 252);
+  assert.equal(loaded.view.selectedVariationNumber, 252);
+  assert.equal(loaded.view.auction.variationNumber, 252);
+});
+
+test("clearing the active marker keeps the same current variation before fallback advances", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const loaded = await controller.start();
+  const loadedCurrent = loaded.view.variations.find(
+    (variation) => variation.variationNumber === 252,
+  );
+
+  assert.equal(loaded.view.currentVariationNumber, 252);
+  assert.equal(loaded.view.isReviewingHistory, false);
+  assert.equal(loadedCurrent.bidding, true);
+  assert.equal(loadedCurrent.current, true);
+  assert.equal(loadedCurrent.selected, true);
+
+  const paymentState = memory.getState();
+  reconciliation.observePaymentStatuses(paymentState, {
+    streamId: STREAM_ID,
+    statuses: [
+      {
+        variationNumber: 252,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  });
+  memory.setState(paymentState);
+  const markerCleared = await controller.refresh();
+  const fallbackCurrent = markerCleared.view.variations.find(
+    (variation) => variation.variationNumber === 252,
+  );
+
+  assert.equal(markerCleared.view.activeBiddingVariationNumber, null);
+  assert.equal(markerCleared.view.currentVariationNumber, 252);
+  assert.equal(markerCleared.view.selectedVariationNumber, 252);
+  assert.equal(markerCleared.view.isReviewingHistory, false);
+  assert.equal(fallbackCurrent.bidding, false);
+  assert.equal(fallbackCurrent.current, true);
+  assert.equal(fallbackCurrent.selected, true);
+
+  const nextState = memory.getState();
+  reconciliation.observeVariations(nextState, {
+    streamId: STREAM_ID,
+    variationNumbers: [253],
+  });
+  memory.setState(nextState);
+  const advanced = await controller.refresh();
+  const previousOption = advanced.view.variations.find(
+    (variation) => variation.variationNumber === 252,
+  );
+  const nextOption = advanced.view.variations.find(
+    (variation) => variation.variationNumber === 253,
+  );
+
+  assert.equal(advanced.view.activeBiddingVariationNumber, null);
+  assert.equal(advanced.view.currentVariationNumber, 253);
+  assert.equal(advanced.view.selectedVariationNumber, 253);
+  assert.equal(advanced.view.isReviewingHistory, false);
+  assert.equal(previousOption.current, false);
+  assert.equal(previousOption.selected, false);
+  assert.equal(nextOption.current, true);
+  assert.equal(nextOption.selected, true);
+});
+
+test("active bidding follows only while the employee is viewing the latest variation", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  const loaded = await controller.start();
+
+  assert.equal(loaded.view.activeBiddingVariationNumber, 252);
+  assert.equal(loaded.view.selectedVariationNumber, 252);
+
+  const nextState = memory.getState();
+  reconciliation.observeBiddingVariation(nextState, {
+    streamId: STREAM_ID,
+    variationNumber: 253,
+  });
+  memory.setState(nextState);
+  const followed = await controller.refresh();
+
+  assert.equal(followed.view.activeBiddingVariationNumber, 253);
+  assert.equal(followed.view.selectedVariationNumber, 253);
+  assert.equal(followed.view.auction.variationNumber, 253);
+
+  assert.equal(
+    controller.selectVariation(201).view.selectedVariationNumber,
+    201,
+  );
+
+  const whileReviewingState = memory.getState();
+  reconciliation.observeBiddingVariation(whileReviewingState, {
+    streamId: STREAM_ID,
+    variationNumber: 254,
+  });
+  memory.setState(whileReviewingState);
+  const preserved = await controller.refresh();
+
+  assert.equal(preserved.view.activeBiddingVariationNumber, 254);
+  assert.equal(preserved.view.selectedVariationNumber, 201);
+  assert.equal(preserved.view.auction.variationNumber, 201);
+  assert.ok(
+    preserved.view.variations.some(
+      (variation) => variation.variationNumber === 253,
+    ),
+  );
+  assert.ok(
+    preserved.view.variations.some(
+      (variation) => variation.variationNumber === 254,
+    ),
+  );
+
+  assert.equal(
+    controller.selectVariation(254).view.selectedVariationNumber,
+    254,
+  );
+
+  const resumedState = memory.getState();
+  reconciliation.observeBiddingVariation(resumedState, {
+    streamId: STREAM_ID,
+    variationNumber: 255,
+  });
+  memory.setState(resumedState);
+  const resumed = await controller.refresh();
+
+  assert.equal(resumed.view.activeBiddingVariationNumber, 255);
+  assert.equal(resumed.view.selectedVariationNumber, 255);
+  assert.equal(resumed.view.auction.variationNumber, 255);
+});
+
+test("same bidding marker refreshes retain an employee's historical selection", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  reconciliation.observeBiddingVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+
+  await controller.start();
+  controller.selectVariation(203);
+
+  const updatedState = memory.getState();
+  reconciliation.mapVariation(updatedState, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+  });
+  memory.setState(updatedState);
+  const refreshed = await controller.refresh();
+
+  assert.equal(refreshed.view.activeBiddingVariationNumber, 252);
+  assert.equal(refreshed.view.selectedVariationNumber, 203);
+  assert.equal(
+    refreshed.view.variations.find(
+      (variation) => variation.variationNumber === 252,
+    ).item,
+    "Stussy tee",
   );
 });
 

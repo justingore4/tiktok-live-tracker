@@ -8,6 +8,9 @@ const captureProtocol = require("../extension/shared/capture-protocol.js");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
+const streamReportProtocol = require(
+  "../extension/shared/stream-report-protocol.js"
+);
 
 const workerSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "service-worker.js"),
@@ -31,6 +34,7 @@ function createWorkerHarness(options = {}) {
   const captureDispatchCalls = [];
   const runtimeSendMessages = [];
   const inventoryImportCalls = [];
+  const reportCalls = [];
   const consoleErrors = [];
   const timerCalls = [];
   const timerReceiverMarker = {};
@@ -48,6 +52,7 @@ function createWorkerHarness(options = {}) {
   };
   const stateStore = {};
   const streamStateStore = {};
+  const reportStore = {};
   const extensionId = "test-extension-id";
   const activeStreamId =
     "local-stream:11111111-1111-4111-8111-111111111111";
@@ -79,6 +84,8 @@ function createWorkerHarness(options = {}) {
   };
   const sidePanelUrl =
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
+  const reportPageUrl =
+    `chrome-extension://${extensionId}/report/report.html`;
   let requestedPanelBehavior = null;
   let storeOptions = null;
   let coordinatorOptions = null;
@@ -87,6 +94,7 @@ function createWorkerHarness(options = {}) {
   let captureIntegrationOptions = null;
   let inventoryImportOptions = null;
   let remainingPinFailures = options.pinFailureCount ?? 0;
+  let remainingEndFailures = options.endStreamFailureCount ?? 0;
   let persistedActiveSession = options.initialActiveSession
     ? JSON.parse(JSON.stringify(options.initialActiveSession))
     : null;
@@ -133,6 +141,20 @@ function createWorkerHarness(options = {}) {
   }
 
   class FakeStreamCoordinatorError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamReportStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeStreamReportCoordinatorError extends Error {
     constructor(code, message) {
       super(message);
       this.code = code;
@@ -296,6 +318,8 @@ function createWorkerHarness(options = {}) {
       CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
       PIN_STREAM_TO_INVENTORY_BASELINE:
         "pin_stream_to_inventory_baseline",
+      OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
+      OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
       MAP_VARIATION: "map_variation",
@@ -342,6 +366,23 @@ function createWorkerHarness(options = {}) {
         await options.beforeStreamDispatch(command);
       }
 
+      if (
+        options.endStreamDispatchError &&
+        remainingEndFailures > 0 &&
+        [
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+        ].includes(command.type)
+      ) {
+        remainingEndFailures -= 1;
+        throw options.endStreamDispatchError === "known"
+          ? new FakeStreamStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save stream.",
+            )
+          : options.endStreamDispatchError;
+      }
+
       if (options.streamDispatchError === "known") {
         throw new FakeStreamStorageError(
           "STORAGE_WRITE_FAILED",
@@ -380,7 +421,10 @@ function createWorkerHarness(options = {}) {
       }
 
       if (
-        command.type === streamCoordinatorModule.COMMAND_TYPES.END_STREAM
+        [
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+        ].includes(command.type)
       ) {
         persistedActiveSession = null;
 
@@ -408,11 +452,151 @@ function createWorkerHarness(options = {}) {
       GET_STREAM_SESSION: "get_stream_session",
       START_STREAM: "start_stream",
       END_STREAM: "end_stream",
+      END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
     },
     StreamSessionCoordinatorError: FakeStreamCoordinatorError,
     createStreamSessionCoordinator(receivedOptions) {
       streamCoordinatorOptions = receivedOptions;
       return streamCoordinator;
+    },
+  };
+  const streamReport = {
+    hydrateStreamReport(candidate) {
+      return JSON.parse(JSON.stringify(candidate));
+    },
+  };
+  const reportStorageModule = {
+    LIFECYCLE_STATUSES: {
+      FINALIZED: "finalized",
+      PENDING_END: "pending_end",
+    },
+    MAX_ACTIVE_REPORTS: 5,
+    MAX_ARCHIVED_REPORTS: 25,
+    MAX_TOTAL_REPORTS: 30,
+    TARGET_ARCHIVE_BYTES: 4 * 1024 * 1024,
+    LEGACY_MIGRATION_HEADROOM_BYTES: 4 * 1024,
+    MAX_ARCHIVE_BYTES: (4 * 1024 * 1024) + (4 * 1024),
+    STORAGE_SCHEMA_VERSION: 2,
+    StreamReportStorageError: FakeStreamReportStorageError,
+    createStreamReportStore(receivedOptions) {
+      reportCalls.push({ type: "create_store", options: receivedOptions });
+      return reportStore;
+    },
+  };
+  let lastPreparedReport = null;
+  const reportCoordinator = {
+    async prepareReport(input) {
+      reportCalls.push({
+        type: "prepare",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+
+      if (options.beforeReportPrepare) {
+        await options.beforeReportPrepare(input);
+      }
+
+      if (options.reportPrepareError) {
+        throw options.reportPrepareError === "known"
+          ? new FakeStreamReportStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save the stream report.",
+            )
+          : options.reportPrepareError;
+      }
+
+      const uuid = input.streamId.slice("local-stream:".length);
+      lastPreparedReport = {
+        reportId: `stream-report:${uuid}`,
+        lifecycleStatus: "pending_end",
+        report: {
+          reportId: `stream-report:${uuid}`,
+          metadata: {
+            streamId: input.streamId,
+            startedAt: input.startedAt,
+            endedAt: "2026-08-10T12:00:00.000Z",
+          },
+        },
+      };
+      return JSON.parse(JSON.stringify(lastPreparedReport));
+    },
+    async finalizeReport(reportId) {
+      reportCalls.push({ type: "finalize", reportId });
+
+      if (options.reportFinalizeError) {
+        throw new FakeStreamReportStorageError(
+          "STORAGE_WRITE_FAILED",
+          "Could not finalize the stream report.",
+        );
+      }
+
+      return {
+        ...(lastPreparedReport ?? { reportId, report: null }),
+        reportId,
+        lifecycleStatus: "finalized",
+      };
+    },
+    async repairPendingReports(activeStreamId) {
+      reportCalls.push({ type: "repair", activeStreamId });
+
+      if (options.reportRepairError) {
+        throw new FakeStreamReportStorageError(
+          "STORAGE_WRITE_FAILED",
+          "Could not repair stream reports.",
+        );
+      }
+
+      return { repairedCount: 0 };
+    },
+    async getReportForStream(streamId) {
+      reportCalls.push({ type: "get_for_stream", streamId });
+      return options.existingReport ?? {
+        reportId: null,
+        lifecycleStatus: null,
+        report: null,
+      };
+    },
+    async discardPendingReportForStream(streamId) {
+      reportCalls.push({ type: "discard", streamId });
+      const discarded =
+        lastPreparedReport?.report.metadata.streamId === streamId &&
+        lastPreparedReport.lifecycleStatus === "pending_end";
+      const reportId = discarded ? lastPreparedReport.reportId : null;
+
+      if (discarded) {
+        lastPreparedReport = null;
+      }
+
+      return { discarded, reportId };
+    },
+    async dispatch(command) {
+      reportCalls.push({
+        type: "dispatch",
+        command: JSON.parse(JSON.stringify(command)),
+      });
+      return options.reportDispatchResult ?? (
+        [
+          streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
+          streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+        ].includes(command.type)
+          ? { reports: [] }
+          : [
+              streamReportProtocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+              streamReportProtocol.COMMAND_TYPES.RESTORE_REPORTS,
+              streamReportProtocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+            ].includes(command.type)
+            ? { reportIds: [...command.reportIds] }
+            : { reportId: null, lifecycleStatus: null, report: null }
+      );
+    },
+  };
+  const reportCoordinatorModule = {
+    StreamReportCoordinatorError: FakeStreamReportCoordinatorError,
+    createStreamReportCoordinator(receivedOptions) {
+      reportCalls.push({
+        type: "create_coordinator",
+        options: receivedOptions,
+      });
+      return reportCoordinator;
     },
   };
   const captureEventIntegration = {
@@ -526,6 +710,10 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerReconciliation: reconciliation,
     TikTokLiveTrackerReconciliationStorage: storageModule,
     TikTokLiveTrackerReconciliationCoordinator: coordinatorModule,
+    TikTokLiveTrackerStreamReport: streamReport,
+    TikTokLiveTrackerStreamReportProtocol: streamReportProtocol,
+    TikTokLiveTrackerStreamReportStorage: reportStorageModule,
+    TikTokLiveTrackerStreamReportCoordinator: reportCoordinatorModule,
     TikTokLiveTrackerStreamSession: streamSession,
     TikTokLiveTrackerStreamSessionStorage: streamStorageModule,
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
@@ -645,6 +833,13 @@ function createWorkerHarness(options = {}) {
     };
   }
 
+  function createReportMessage(command, overrides = {}) {
+    return {
+      ...streamReportProtocol.createStreamReportMessage(command),
+      ...overrides,
+    };
+  }
+
   function createCaptureSender(overrides = {}) {
     return createSender({
       url:
@@ -685,6 +880,7 @@ function createWorkerHarness(options = {}) {
     createCaptureMessage,
     createCaptureSender,
     createImportMessage,
+    createReportMessage,
     createMessage,
     createSender,
     dispatchCalls,
@@ -704,11 +900,15 @@ function createWorkerHarness(options = {}) {
     imports,
     inventoryImportCalls,
     inventoryImportProtocol,
+    reportCalls,
+    reportCoordinator,
+    reportPageUrl,
     listeners,
     reconciliation,
     runtimeSendMessages,
     send,
     sidePanelUrl,
+    streamReportProtocol,
     stateStore,
     streamCoordinator,
     streamCoordinatorModule,
@@ -726,6 +926,10 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/reconciliation.js",
     "shared/reconciliation-storage.js",
     "shared/reconciliation-coordinator.js",
+    "shared/stream-report.js",
+    "shared/stream-report-protocol.js",
+    "shared/stream-report-storage.js",
+    "shared/stream-report-coordinator.js",
     "shared/stream-session.js",
     "shared/stream-session-storage.js",
     "shared/stream-session-coordinator.js",
@@ -1617,6 +1821,49 @@ test("accepts sanitized payment-status changes through the capture boundary", as
   ]);
 });
 
+test("accepts sanitized Attributed GMV through the capture boundary", async () => {
+  const harness = createWorkerHarness();
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+    attributedGmvDisplay: "$4.64K",
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+});
+
+test("accepts a sanitized bidding variation through the capture boundary", async () => {
+  const harness = createWorkerHarness();
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+});
+
 test("keeps accepted capture responses independent of notification delivery", async () => {
   for (const options of [
     { runtimeSendMessageError: new Error("no receiver") },
@@ -1875,7 +2122,14 @@ test("orders capture and stream lifecycle messages through one worker FIFO", asy
   assert.equal(captureFirstHarness.streamDispatchCalls.length, 0);
   releaseCapture.resolve();
   await Promise.all([captureRequest.response, endRequest.response]);
-  assert.equal(captureFirstHarness.streamDispatchCalls.length, 1);
+  assert.deepEqual(
+    captureFirstHarness.streamDispatchCalls.map(({ type }) => type),
+    [
+      captureFirstHarness.streamCoordinatorModule.COMMAND_TYPES
+        .GET_STREAM_SESSION,
+      captureFirstHarness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+    ],
+  );
 
   const endStarted = createDeferred();
   const releaseEnd = createDeferred();
@@ -1904,6 +2158,292 @@ test("orders capture and stream lifecycle messages through one worker FIFO", asy
   releaseEnd.resolve();
   await Promise.all([firstEndRequest.response, laterCaptureRequest.response]);
   assert.equal(endFirstHarness.captureDispatchCalls.length, 1);
+});
+
+test("normal End saves and finalizes a report before clearing the active session", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const reportSaveStarted = createDeferred();
+  const releaseReportSave = createDeferred();
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    async beforeReportPrepare() {
+      reportSaveStarted.resolve();
+      await releaseReportSave.promise;
+    },
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  await reportSaveStarted.promise;
+  assert.deepEqual(
+    harness.streamDispatchCalls.map(({ type }) => type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+  releaseReportSave.resolve();
+  const response = await request.response;
+
+  assert.deepEqual(response, {
+    ok: true,
+    data: {
+      state: { version: 1, activeSession: null },
+      result: {
+        status: "ended",
+        reportId:
+          "stream-report:11111111-1111-4111-8111-111111111111",
+        reportLifecycleStatus: "finalized",
+      },
+    },
+  });
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "finalize"].includes(type))
+      .map(({ type }) => type),
+    ["prepare", "finalize"],
+  );
+  assert.equal(
+    harness.reportCalls.find(({ type }) => type === "prepare").input.startedAt,
+    activeSession.startedAt,
+  );
+});
+
+test("a report save failure leaves the stream active and exposes End without report", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    reportPrepareError: "known",
+  });
+  const failed = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.deepEqual(await failed.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not save the stream report.",
+    },
+  });
+  assert.deepEqual(
+    harness.streamDispatchCalls.map(({ type }) => type),
+    [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
+  );
+
+  const fallback = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES
+          .END_STREAM_WITHOUT_REPORT,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.deepEqual(await fallback.response, {
+    ok: true,
+    data: {
+      state: { version: 1, activeSession: null },
+      result: {
+        status: "ended_without_report",
+        reportId: null,
+        reportLifecycleStatus: null,
+      },
+    },
+  });
+});
+
+test("End without report removes a pending draft left by a failed session End", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    endStreamDispatchError: "known",
+    endStreamFailureCount: 1,
+  });
+  const normalEnd = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.equal((await normalEnd.response).ok, false);
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .map(({ type }) => type),
+    ["prepare"],
+  );
+
+  const fallback = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES
+          .END_STREAM_WITHOUT_REPORT,
+      streamId: activeSession.streamId,
+    }),
+  );
+  const response = await fallback.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.result.status, "ended_without_report");
+  assert.equal(response.data.result.reportId, null);
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .map(({ type }) => type),
+    ["prepare", "discard"],
+  );
+});
+
+test("a post-End finalization failure returns the saved pending report for restart repair", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    usePreparedState: true,
+    reportFinalizeError: true,
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
+      streamId: activeSession.streamId,
+    }),
+  );
+  const response = await request.response;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.state.activeSession, null);
+  assert.equal(response.data.result.reportLifecycleStatus, "pending_end");
+  assert.equal(harness.consoleErrors.length, 1);
+});
+
+test("report reads and archive mutations enforce exact extension senders", async () => {
+  const harness = createWorkerHarness();
+  const message = harness.createReportMessage({ type: "list_reports" });
+  const archivedListMessage = harness.createReportMessage({
+    type: "list_archived_reports",
+  });
+  const reportId =
+    "stream-report:11111111-1111-4111-8111-111111111111";
+  const sidePanelRead = harness.send(message);
+  const reportPageRead = harness.send(
+    archivedListMessage,
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=test`,
+    }),
+  );
+  const reportPageGet = harness.send(
+    harness.createReportMessage({ type: "get_report", reportId }),
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${encodeURIComponent(reportId)}`,
+    }),
+  );
+  const dashboardRead = harness.send(message, harness.createCaptureSender());
+
+  assert.deepEqual(await sidePanelRead.response, {
+    ok: true,
+    data: { reports: [] },
+  });
+  assert.deepEqual(await reportPageRead.response, {
+    ok: true,
+    data: { reports: [] },
+  });
+  assert.deepEqual(await reportPageGet.response, {
+    ok: true,
+    data: { reportId: null, lifecycleStatus: null, report: null },
+  });
+  assert.deepEqual(await dashboardRead.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
+
+  for (const type of [
+    "archive_reports",
+    "restore_reports",
+    "delete_archived_reports",
+  ]) {
+    const mutation = harness.createReportMessage({
+      type,
+      reportIds: [reportId],
+    });
+    const sidePanelMutation = harness.send(mutation);
+    const reportPageMutation = harness.send(
+      mutation,
+      harness.createSender({ url: `${harness.reportPageUrl}#saved` }),
+    );
+
+    assert.deepEqual(await sidePanelMutation.response, {
+      ok: true,
+      data: { reportIds: [reportId] },
+    });
+    assert.deepEqual(await reportPageMutation.response, {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message: "The packaged report page has read-only report access.",
+      },
+    });
+  }
+
+  const unrelatedExtensionPage = harness.send(
+    harness.createReportMessage({
+      type: "archive_reports",
+      reportIds: [reportId],
+    }),
+    harness.createSender({
+      url: `chrome-extension://${harness.extensionId}/other.html`,
+    }),
+  );
+  assert.deepEqual(await unrelatedExtensionPage.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
+  const dashboardMutation = harness.send(
+    harness.createReportMessage({
+      type: "delete_archived_reports",
+      reportIds: [reportId],
+    }),
+    harness.createCaptureSender(),
+  );
+  assert.deepEqual(await dashboardMutation.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
 });
 
 test("ignores unrelated runtime messages", async () => {
@@ -2008,6 +2548,23 @@ test("keeps capture-owned reconciliation commands disconnected from the side pan
         ],
       }),
     ),
+    harness.send(
+      harness.createMessage({
+        type:
+          harness.coordinatorModule.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV,
+        streamId: "stream-1",
+        attributedGmvDisplay: "$4.64K",
+      }),
+    ),
+    harness.send(
+      harness.createMessage({
+        type:
+          harness.coordinatorModule.COMMAND_TYPES
+            .OBSERVE_BIDDING_VARIATION,
+        streamId: "stream-1",
+        variationNumber: 2,
+      }),
+    ),
   ];
 
   for (const request of requests) {
@@ -2040,16 +2597,6 @@ test("pins and forwards employee mutations only for the active stream", async ()
       streamId: activeSession.streamId,
       variationNumber: 203,
     }),
-    (types) => ({
-      type: types.MARK_UNPAID,
-      streamId: activeSession.streamId,
-      variationNumber: 203,
-    }),
-    (types) => ({
-      type: types.UNDO_MARK_UNPAID,
-      streamId: activeSession.streamId,
-      variationNumber: 203,
-    }),
   ];
 
   for (const createCommand of commandFactories) {
@@ -2073,6 +2620,35 @@ test("pins and forwards employee mutations only for the active stream", async ()
         command,
       ],
     );
+  }
+});
+
+test("rejects manual unpaid commands because Live payment outcomes are automatic", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+
+  for (const typeName of ["MARK_UNPAID", "UNDO_MARK_UNPAID"]) {
+    const harness = createWorkerHarness({ initialActiveSession: activeSession });
+    const request = harness.send(
+      harness.createMessage({
+        type: harness.coordinatorModule.COMMAND_TYPES[typeName],
+        streamId: activeSession.streamId,
+        variationNumber: 203,
+      }),
+    );
+
+    assert.deepEqual(await request.response, {
+      ok: false,
+      error: {
+        code: "MANUAL_UNPAID_DISABLED",
+        message:
+          "Live payment failures and cancellations are tracked automatically from TikTok.",
+      },
+    });
+    assert.equal(harness.dispatchCalls.length, 0);
   }
 });
 

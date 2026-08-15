@@ -22,6 +22,8 @@
         "pin_stream_to_inventory_baseline",
       OBSERVE_VARIATIONS: "observe_variations",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
+      OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
+      OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
@@ -48,6 +50,16 @@
       ],
       [COMMAND_TYPES.OBSERVE_PAYMENT_STATUSES]: [
         "statuses",
+        "streamId",
+        "type",
+      ],
+      [COMMAND_TYPES.OBSERVE_BIDDING_VARIATION]: [
+        "streamId",
+        "type",
+        "variationNumber",
+      ],
+      [COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV]: [
+        "attributedGmvDisplay",
         "streamId",
         "type",
       ],
@@ -85,13 +97,13 @@
       "createInventoryBaseline",
       "hydrateReconciliationState",
       "mapVariation",
-      "markUnpaid",
       "observePaymentStatuses",
+      "observeBiddingVariation",
+      "observeAttributedGmv",
       "observeVariations",
       "recordPaymentComplete",
       "pinStreamToInventoryBaseline",
       "unmapVariation",
-      "undoMarkUnpaid",
     ];
     const OBSERVABLE_PAYMENT_STATUSES = new Set([
       "payment_processing",
@@ -101,6 +113,9 @@
       "payment_complete",
       "unrecognized",
     ]);
+    const MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH = 24;
+    const ATTRIBUTED_GMV_DISPLAY_PATTERN =
+      /^\$(?:(?:0|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}|(?:0|[1-9]\d*)(?:\.\d{1,2})?[KMB])$/;
 
     class ReconciliationCoordinatorError extends Error {
       constructor(code, message) {
@@ -268,6 +283,38 @@
           fail(
             "INVALID_COMMAND",
             "observe_payment_statuses requires a stream and 1 to 1000 unique observable payment statuses.",
+          );
+        }
+      }
+
+      if (command.type === COMMAND_TYPES.OBSERVE_BIDDING_VARIATION) {
+        if (
+          typeof command.streamId !== "string" ||
+          command.streamId.trim() === "" ||
+          !Number.isSafeInteger(command.variationNumber) ||
+          command.variationNumber < 1
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "observe_bidding_variation requires a stream and positive variation number.",
+          );
+        }
+      }
+
+      if (command.type === COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV) {
+        if (
+          typeof command.streamId !== "string" ||
+          command.streamId.trim() === "" ||
+          typeof command.attributedGmvDisplay !== "string" ||
+          command.attributedGmvDisplay.length >
+            MAX_ATTRIBUTED_GMV_DISPLAY_LENGTH ||
+          !ATTRIBUTED_GMV_DISPLAY_PATTERN.test(
+            command.attributedGmvDisplay,
+          )
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "observe_attributed_gmv requires a stream and canonical TikTok Attributed GMV display.",
           );
         }
       }
@@ -446,6 +493,20 @@
                 statuses: command.statuses,
               }),
             );
+          case COMMAND_TYPES.OBSERVE_BIDDING_VARIATION:
+            return mutateState((state) =>
+              reconciliation.observeBiddingVariation(state, {
+                streamId: command.streamId,
+                variationNumber: command.variationNumber,
+              }),
+            );
+          case COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV:
+            return mutateState((state) =>
+              reconciliation.observeAttributedGmv(state, {
+                streamId: command.streamId,
+                attributedGmvDisplay: command.attributedGmvDisplay,
+              }),
+            );
           case COMMAND_TYPES.MAP_VARIATION:
             return mutateState((state) =>
               reconciliation.mapVariation(state, {
@@ -470,18 +531,10 @@
               }),
             );
           case COMMAND_TYPES.MARK_UNPAID:
-            return mutateState((state) =>
-              reconciliation.markUnpaid(state, {
-                streamId: command.streamId,
-                variationNumber: command.variationNumber,
-              }),
-            );
           case COMMAND_TYPES.UNDO_MARK_UNPAID:
-            return mutateState((state) =>
-              reconciliation.undoMarkUnpaid(state, {
-                streamId: command.streamId,
-                variationNumber: command.variationNumber,
-              }),
+            fail(
+              "MANUAL_UNPAID_DISABLED",
+              "Manual unpaid controls are disabled; TikTok cancellation status is authoritative.",
             );
           default:
             fail("UNKNOWN_COMMAND", `State command ${commandType} is not supported.`);

@@ -248,6 +248,59 @@ test("binds sanitized payment-status batches to the worker-owned active stream",
   assert.equal("streamId" in statuses[0], false);
 });
 
+test("binds sanitized Attributed GMV to the worker-owned active stream", async () => {
+  const harness = createHarness();
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+      attributedGmvDisplay: "$4.64K",
+    }),
+    { status: "accepted" },
+  );
+  assert.deepEqual(harness.stateCalls, [
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: STREAM_ONE,
+    },
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES.OBSERVE_ATTRIBUTED_GMV,
+      streamId: STREAM_ONE,
+      attributedGmvDisplay: "$4.64K",
+    },
+  ]);
+});
+
+test("binds the live bidding variation to the worker-owned active stream", async () => {
+  const harness = createHarness();
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+      variationNumber: 252,
+    }),
+    { status: "accepted" },
+  );
+  assert.deepEqual(harness.stateCalls, [
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .PIN_STREAM_TO_INVENTORY_BASELINE,
+      streamId: STREAM_ONE,
+    },
+    {
+      type:
+        reconciliationCoordinator.COMMAND_TYPES
+          .OBSERVE_BIDDING_VARIATION,
+      streamId: STREAM_ONE,
+      variationNumber: 252,
+    },
+  ]);
+});
+
 test("fails closed without an active stream", async () => {
   const harness = createHarness({
     activeState: streamSession.createStreamSessionState(),

@@ -39,6 +39,60 @@ test("creates an exact detached batch-observation message", () => {
   assert.deepEqual(message.event.variationNumbers, [44, 43, 42]);
 });
 
+test("creates an exact sanitized Attributed GMV observation message", () => {
+  const message = createCaptureMessage({
+    type: EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+    attributedGmvDisplay: "$4.64K",
+  });
+
+  assert.deepEqual(message, {
+    channel: MESSAGE_CHANNEL,
+    version: MESSAGE_VERSION,
+    event: {
+      type: "observe_attributed_gmv",
+      attributedGmvDisplay: "$4.64K",
+    },
+  });
+});
+
+test("creates an exact bidding-variation observation message", () => {
+  const message = createCaptureMessage({
+    type: EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  });
+
+  assert.deepEqual(message, {
+    channel: MESSAGE_CHANNEL,
+    version: MESSAGE_VERSION,
+    event: {
+      type: "observe_bidding_variation",
+      variationNumber: 252,
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify(message.event),
+    /title|product|buyer|bidAmount|bidCount|element|selector|streamId/i,
+  );
+});
+
+test("rejects malformed or widened bidding-variation observations", () => {
+  for (const event of [
+    { type: "observe_bidding_variation", variationNumber: 0 },
+    { type: "observe_bidding_variation", variationNumber: 1.5 },
+    { type: "observe_bidding_variation", variationNumber: "252" },
+    {
+      type: "observe_bidding_variation",
+      variationNumber: 252,
+      title: "must not cross the capture boundary",
+    },
+  ]) {
+    assert.throws(
+      () => createCaptureMessage(event),
+      /invalid shape|positive safe integer/i,
+    );
+  }
+});
+
 test("creates an exact detached payment-complete message", () => {
   const message = createCaptureMessage({
     type: EVENT_TYPES.PAYMENT_COMPLETE,
@@ -113,6 +167,10 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
       },
     ],
   };
+  const baseAttributedGmv = {
+    type: EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+    attributedGmvDisplay: "$4.64K",
+  };
 
   for (const forbiddenField of [
     "streamId",
@@ -132,6 +190,54 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
     );
     assertErrorCode(
       () => createCaptureMessage({ ...baseStatuses, [forbiddenField]: "x" }),
+      "INVALID_CAPTURE_MESSAGE",
+    );
+    assertErrorCode(
+      () =>
+        createCaptureMessage({
+          ...baseAttributedGmv,
+          [forbiddenField]: "x",
+        }),
+      "INVALID_CAPTURE_MESSAGE",
+    );
+  }
+});
+
+test("accepts canonical exact and compact Attributed GMV displays only", () => {
+  for (const attributedGmvDisplay of [
+    "$0.00",
+    "$999.99",
+    "$4,087.01",
+    "$1K",
+    "$4.6M",
+    "$4.64K",
+    "$1B",
+  ]) {
+    assert.doesNotThrow(() =>
+      createCaptureMessage({
+        type: EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+        attributedGmvDisplay,
+      }),
+    );
+  }
+
+  for (const attributedGmvDisplay of [
+    "$1000.00",
+    "$4,87.01",
+    "$4.640K",
+    "$ 4.64K",
+    "-$4.64K",
+    "USD 4.64K",
+    "$4.64K shipping",
+    "",
+    null,
+  ]) {
+    assertErrorCode(
+      () =>
+        createCaptureMessage({
+          type: EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
+          attributedGmvDisplay,
+        }),
       "INVALID_CAPTURE_MESSAGE",
     );
   }

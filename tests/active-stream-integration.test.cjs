@@ -276,6 +276,9 @@ test("captured Sold Items observations survive worker restart under the active s
   assert.deepEqual(summary.totals, {
     auctionCount: 2,
     completedPaymentCount: 1,
+    canceledOrderCount: 1,
+    paymentFixingCount: 0,
+    totalSalesCount: 2,
     committedSalesCount: 0,
     unmappedCompletedCount: 1,
     pendingMappedCount: 0,
@@ -285,6 +288,7 @@ test("captured Sold Items observations survive worker restart under the active s
     committedRevenueCents: 0,
     costOfGoodsCents: 0,
     profitCents: 0,
+    attributedGmvDisplay: null,
   });
 });
 
@@ -365,6 +369,132 @@ test("variation 147 completion commits four left when the employee maps it after
       status: "committed",
     },
   );
+  assert.equal(summary.inventory[0].soldQuantity, 1);
+  assert.equal(summary.inventory[0].remainingQuantity, 4);
+  assert.equal(summary.inventory[0].reservedQuantity, 0);
+});
+
+test("a bidding variation can be mapped before its sale and completion decrements inventory once", async () => {
+  const storageArea = createStorageArea();
+  const stateCoordinator =
+    reconciliationCoordinator.createReconciliationCoordinator({
+      reconciliation,
+      stateStore: reconciliationStorage.createReconciliationStateStore({
+        storageArea,
+        reconciliation,
+      }),
+    });
+  const activeStreams = createStreamCoordinator(storageArea, [FIRST_ID]);
+  const capture = createCaptureBridge(activeStreams, stateCoordinator);
+
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.INITIALIZE_STATE,
+    inventory: [
+      {
+        sku: "STUSSY-TEE-BLACK-L",
+        name: "Stussy tee - black",
+        size: "L",
+        quantityReceived: 5,
+        unitCostCents: 1200,
+      },
+    ],
+  });
+  await activeStreams.dispatch({
+    type: streamSessionCoordinator.COMMAND_TYPES.START_STREAM,
+  });
+
+  await capture.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  });
+
+  let stored = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  let summary = reconciliation.calculateSummary(stored.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(summary.activeBiddingVariationNumber, 252);
+  assert.equal(summary.auctions[0].variationNumber, 252);
+  assert.equal(summary.auctions[0].sku, null);
+
+  await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
+    streamId: FIRST_ID,
+    variationNumber: 252,
+    sku: "STUSSY-TEE-BLACK-L",
+  });
+
+  stored = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  summary = reconciliation.calculateSummary(stored.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(summary.auctions[0].status, "pending");
+  assert.equal(summary.inventory[0].availableToTagQuantity, 4);
+  assert.equal(summary.inventory[0].reservedQuantity, 1);
+
+  for (const observedPaymentStatus of [
+    captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+    captureProtocol.OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+  ]) {
+    await capture.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+      statuses: [{ variationNumber: 252, observedPaymentStatus }],
+    });
+    stored = await stateCoordinator.dispatch({
+      type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+    });
+    summary = reconciliation.calculateSummary(stored.state, {
+      streamId: FIRST_ID,
+    });
+
+    assert.equal(
+      summary.auctions[0].observedPaymentStatus,
+      observedPaymentStatus,
+    );
+    assert.equal(summary.auctions[0].status, "pending");
+    assert.equal(summary.inventory[0].availableToTagQuantity, 4);
+    assert.equal(summary.inventory[0].reservedQuantity, 1);
+  }
+
+  await capture.dispatch({
+    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
+    variationNumber: 252,
+    soldPriceCents: 2400,
+  });
+  await capture.dispatch({
+    type: captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
+    variationNumber: 252,
+    soldPriceCents: 2400,
+  });
+
+  stored = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+  summary = reconciliation.calculateSummary(stored.state, {
+    streamId: FIRST_ID,
+  });
+
+  assert.equal(summary.activeBiddingVariationNumber, null);
+  assert.deepEqual(
+    {
+      sku: summary.auctions[0].sku,
+      status: summary.auctions[0].status,
+      soldPriceCents: summary.auctions[0].soldPriceCents,
+      paymentStatus: summary.auctions[0].paymentStatus,
+    },
+    {
+      sku: "STUSSY-TEE-BLACK-L",
+      status: "committed",
+      soldPriceCents: 2400,
+      paymentStatus: "payment_complete",
+    },
+  );
+  assert.equal(summary.totals.committedSalesCount, 1);
   assert.equal(summary.inventory[0].soldQuantity, 1);
   assert.equal(summary.inventory[0].remainingQuantity, 4);
   assert.equal(summary.inventory[0].reservedQuantity, 0);

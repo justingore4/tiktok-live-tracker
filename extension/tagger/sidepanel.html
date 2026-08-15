@@ -15,41 +15,19 @@
           <p class="eyebrow">Seller tool</p>
           <h1>TikTok Live Tracker</h1>
         </div>
-        <span class="prototype-badge">Prototype</span>
-      </header>
-
-      <section class="mode-panel" aria-labelledby="mode-title">
-        <div class="mode-heading">
-          <div>
-            <p class="eyebrow">Workspace</p>
-            <h2 id="mode-title">Choose where changes go</h2>
-          </div>
-          <div class="mode-controls" role="group" aria-label="Tracker mode">
-            <button
-              id="saved-session-mode"
-              class="mode-button"
-              type="button"
-              aria-pressed="true"
-              aria-describedby="mode-description"
-            >
-              Live session
-            </button>
-            <button
-              id="offline-demo-mode"
-              class="mode-button"
-              type="button"
-              aria-pressed="false"
-              aria-describedby="mode-description"
-            >
-              Offline demo
-            </button>
-          </div>
+        <div class="header-actions">
+          <button
+            id="offline-demo-mode"
+            class="header-demo-toggle"
+            type="button"
+            aria-pressed="false"
+            aria-label="Switch to offline demo mode"
+          >
+            Demo
+          </button>
+          <span class="prototype-badge">Prototype</span>
         </div>
-        <p id="mode-description" class="mode-description">
-          Start or resume a local tracker stream. Mappings and unpaid changes
-          are saved and restored when this panel reopens.
-        </p>
-      </section>
+      </header>
 
       <section
         id="inventory-import-panel"
@@ -285,7 +263,7 @@
             aria-describedby="stream-session-safety-note"
             hidden
           >
-            End stream
+            End Stream Tracking
           </button>
         </div>
 
@@ -296,14 +274,20 @@
           aria-labelledby="stream-session-end-title"
           hidden
         >
-          <h3 id="stream-session-end-title">End this tracker stream?</h3>
+          <h3 id="stream-session-end-title">End and create the stream report?</h3>
           <p>
-            Unresolved variations do not block End, including pending payments and
-            completed sales without an item. Captured order history will remain saved,
-            but ended streams cannot be reopened in this prototype.
-            Ending stops new capture for this local tracker stream and does not end
-            TikTok LIVE. Reload the TikTok dashboard before starting a tracker session
-            for another LIVE.
+            The tracker will freeze a local business report before ending. Unresolved
+            variations never block End; they appear in its attention list. Ending stops
+            new capture for this local tracker stream and does not end TikTok LIVE.
+          </p>
+          <p
+            id="end-report-readiness"
+            class="end-report-readiness"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            The saved stream will be checked when the report is created.
           </p>
           <div class="stream-session-confirm-actions">
             <button
@@ -318,7 +302,7 @@
               class="danger-action"
               type="button"
             >
-              End stream now
+              End and create report
             </button>
           </div>
         </div>
@@ -336,25 +320,24 @@
               The tracker could not check the saved stream. Nothing was changed.
             </p>
           </div>
-          <button
-            id="retry-stream-session"
-            class="secondary-action"
-            type="button"
-          >
-            Retry
-          </button>
+          <div class="stream-session-error-actions">
+            <button
+              id="retry-stream-session"
+              class="secondary-action"
+              type="button"
+            >
+              Retry
+            </button>
+            <button
+              id="end-stream-without-report"
+              class="danger-action"
+              type="button"
+              hidden
+            >
+              End without report
+            </button>
+          </div>
         </div>
-      </section>
-
-      <section
-        id="saved-session-status"
-        class="session-message session-status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        <span class="session-message-dot" aria-hidden="true"></span>
-        <span id="saved-session-status-text">Restoring live session data...</span>
       </section>
 
       <section
@@ -385,7 +368,7 @@
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="current-auction-label">
-            Waiting for a variation to appear in Sold Items
+            Waiting for a live auction variation
           </p>
           <div class="variation-picker">
             <h2 id="current-auction-title">Variation</h2>
@@ -470,11 +453,11 @@
 
         <p id="state-warning" class="state-warning" role="status" hidden></p>
 
-        <fieldset id="lifecycle-controls" class="lifecycle-controls">
-          <legend id="lifecycle-controls-legend">Saved order controls</legend>
+        <fieldset id="lifecycle-controls" class="lifecycle-controls" hidden>
+          <legend id="lifecycle-controls-legend">Offline test controls</legend>
           <p id="lifecycle-controls-note" class="demo-controls-note">
-            Mark unpaid only after TikTok's payment buffer has expired. These
-            employee changes are saved locally.
+            These controls simulate TikTok events in temporary memory and do
+            not act on TikTok.
           </p>
 
           <form id="complete-payment-form" novalidate>
@@ -536,7 +519,7 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">Inventory</p>
-            <h2 id="inventory-title">Waiting for a Sold Items variation</h2>
+            <h2 id="inventory-title">Waiting for a live auction variation</h2>
           </div>
           <p id="result-count" class="result-count" aria-live="polite"></p>
         </div>
@@ -558,11 +541,10 @@
           </button>
         </div>
 
-        <p class="selection-note">
-          Remaining inventory changes only after Payment complete. Pending appears
-          only while TikTok shows Payment processing or Payment fixing, and temporarily
-          reduces what is available to tag. Click the selected card again to remove
-          its item.
+        <p id="inventory-selection-note" class="selection-note">
+          Selecting an item reserves one unit until TikTok reports Payment
+          complete or Canceled. Temporary Payment failed remains pending.
+          Zero-stock items remain selectable and show how far they are oversold.
         </p>
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>
@@ -574,11 +556,291 @@
         </div>
       </section>
 
-      <footer class="app-footer">
+      <section
+        id="metrics-section"
+        class="metrics-section"
+        aria-labelledby="metrics-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Performance</p>
+            <h2 id="metrics-title">Metrics</h2>
+          </div>
+        </div>
+
+        <dl class="metrics-grid">
+          <div class="metric-card">
+            <dt>Gross Item Sales</dt>
+            <dd id="revenue-value">$0.00</dd>
+          </div>
+          <div class="metric-card">
+            <dt>AOV</dt>
+            <dd id="aov-value">$0.00</dd>
+          </div>
+          <div class="metric-card">
+            <dt>Total GMV</dt>
+            <dd id="total-gmv-value">&mdash;</dd>
+          </div>
+          <div class="metric-card metric-card-fees">
+            <dt>TikTok 6% Fees</dt>
+            <dd>
+              <span class="metric-fee-row">
+                <span id="fees-paid-label" class="metric-fee-label">Fees paid:</span>
+                <span
+                  id="fees-paid-value"
+                  class="metric-fee-value"
+                  aria-labelledby="fees-paid-label"
+                >&mdash;</span>
+              </span>
+              <span class="metric-fee-row">
+                <span id="gmv-after-fees-label" class="metric-fee-label">GMV after fees:</span>
+                <span
+                  id="gmv-after-fees-value"
+                  class="metric-fee-value"
+                  aria-labelledby="gmv-after-fees-label"
+                >&mdash;</span>
+              </span>
+            </dd>
+          </div>
+          <div class="metric-card">
+            <dt>Completed Sales/Total Sales</dt>
+            <dd id="completed-sales-value">0/0</dd>
+          </div>
+          <div class="metric-card metric-card-order-status">
+            <dt id="canceled-orders-label">Canceled Orders:</dt>
+            <dd
+              id="canceled-orders-value"
+              aria-labelledby="canceled-orders-label"
+            >0</dd>
+            <dt id="payment-fixing-label">Payment Fixing:</dt>
+            <dd
+              id="payment-fixing-value"
+              aria-labelledby="payment-fixing-label"
+            >0</dd>
+          </div>
+          <div class="metric-card metric-card-profit">
+            <dt>Gross Profits</dt>
+            <dd class="metric-profit-content">
+              <span
+                id="gross-profit-value"
+                aria-describedby="gross-profit-warning"
+              >$0.00</span>
+              <small
+                id="gross-profit-warning"
+                class="metric-warning"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                hidden
+              ></small>
+            </dd>
+          </div>
+        </dl>
+      </section>
+      </div>
+
+      <section
+        id="stream-reports-panel"
+        class="stream-reports-panel"
+        aria-labelledby="stream-reports-title"
+        aria-busy="true"
+        hidden
+      >
+        <div class="stream-reports-heading">
+          <div>
+            <p class="eyebrow">Business records</p>
+            <h2 id="stream-reports-title">Stream reports</h2>
+          </div>
+          <span id="stream-reports-count" class="stream-reports-count">0 saved</span>
+        </div>
+        <p class="stream-reports-description">
+          Open a saved report to print or save it as a PDF, copy the complete
+          updated Inventory table, or download its Google Sheets-ready CSV.
+          Limit of 5 reports on this dashboard, older reports will go to archived
+          once the limit is reached
+        </p>
+        <div
+          id="stream-reports-list"
+          class="stream-reports-list"
+          role="list"
+        ></div>
+        <div
+          id="stream-reports-error"
+          class="stream-reports-error"
+          role="alert"
+          tabindex="-1"
+          hidden
+        >
+          <p id="stream-reports-error-message">
+            Saved reports could not be loaded. Nothing was changed.
+          </p>
+          <button id="retry-stream-reports" class="secondary-action" type="button">
+            Retry reports
+          </button>
+        </div>
+        <div class="stream-reports-navigation">
+          <button
+            id="view-archived-reports"
+            class="secondary-action"
+            type="button"
+          >
+            View archived reports
+          </button>
+          <span id="archived-reports-short-count" class="archived-reports-short-count">
+            0 archived
+          </span>
+        </div>
+      </section>
+
+      <section
+        id="archived-reports-view"
+        class="archived-reports-view"
+        aria-labelledby="archived-reports-title"
+        aria-busy="false"
+        hidden
+      >
+        <button
+          id="back-to-business-records"
+          class="archive-back-button"
+          type="button"
+        >
+          <span aria-hidden="true">&#8592;</span>
+          Back to Business Records
+        </button>
+
+        <div class="archived-reports-heading">
+          <div>
+            <p class="eyebrow">Business records</p>
+            <h2 id="archived-reports-title">Archived stream reports</h2>
+          </div>
+          <span id="archived-reports-count" class="stream-reports-count">
+            0 archived
+          </span>
+        </div>
+        <p class="archived-reports-description">
+          Open any archived report, restore it to the dashboard, or permanently
+          delete reports you no longer need.
+        </p>
+
+        <div class="archived-reports-controls">
+          <button
+            id="toggle-archived-selection"
+            class="secondary-action compact-action"
+            type="button"
+            aria-pressed="false"
+          >
+            Select
+          </button>
+        </div>
+
+        <div
+          id="archived-selection-toolbar"
+          class="archived-selection-toolbar"
+          hidden
+        >
+          <p
+            id="archived-selection-summary"
+            class="archived-selection-summary"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            0 selected
+          </p>
+          <div class="archived-selection-utilities">
+            <button id="select-all-archived-reports" class="text-action" type="button">
+              Select all
+            </button>
+            <button id="clear-archived-selection" class="text-action" type="button">
+              Clear selection
+            </button>
+          </div>
+          <p id="archived-restore-guidance" class="archived-restore-guidance"></p>
+          <div class="archived-selection-actions">
+            <button
+              id="restore-selected-reports"
+              class="secondary-action"
+              type="button"
+            >
+              Restore selected
+            </button>
+            <button
+              id="delete-selected-reports"
+              class="danger-action"
+              type="button"
+            >
+              Delete selected
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="archived-reports-list"
+          class="stream-reports-list archived-reports-list"
+          role="list"
+        ></div>
+        <p id="archived-reports-empty" class="archived-reports-empty" role="status" hidden>
+          No archived reports yet.
+        </p>
+        <div
+          id="archived-reports-error"
+          class="stream-reports-error"
+          role="alert"
+          tabindex="-1"
+          hidden
+        >
+          <p id="archived-reports-error-message">
+            Archived reports could not be loaded. Nothing was changed.
+          </p>
+          <button id="retry-archived-reports" class="secondary-action" type="button">
+            Retry
+          </button>
+        </div>
+        <p
+          id="archived-reports-feedback"
+          class="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+      </section>
+
+      <dialog
+        id="report-action-confirmation"
+        class="report-action-confirmation"
+        aria-labelledby="report-action-confirmation-title"
+        aria-describedby="report-action-confirmation-message"
+      >
+        <form method="dialog">
+          <h2 id="report-action-confirmation-title">Delete report forever?</h2>
+          <p id="report-action-confirmation-message">
+            This permanently deletes the saved report from this Chrome profile and
+            cannot be undone. TikTok LIVE and Google Sheets will not be changed.
+          </p>
+          <div class="report-action-confirmation-actions">
+            <button
+              id="cancel-report-action"
+              class="secondary-action"
+              type="submit"
+              value="cancel"
+            >
+              Cancel
+            </button>
+            <button
+              id="confirm-report-action"
+              class="danger-action"
+              type="button"
+            >
+              Delete forever
+            </button>
+          </div>
+        </form>
+      </dialog>
+
+      <footer class="app-footer" role="status" aria-live="polite" aria-atomic="true" hidden>
         <span class="status-dot" aria-hidden="true"></span>
         <span id="session-footer-label">Saved locally</span>
       </footer>
-      </div>
 
       <p
         id="mapping-announcement"
@@ -624,14 +886,18 @@
     <script src="../shared/reconciliation-coordinator.js"></script>
     <script src="../shared/stream-session-coordinator.js"></script>
     <script src="../shared/inventory-import-protocol.js"></script>
+    <script src="../shared/stream-report-protocol.js"></script>
     <script src="reconciliation-client.js"></script>
     <script src="stream-session-client.js"></script>
     <script src="stream-session-controller.js"></script>
     <script src="inventory-import-client.js"></script>
     <script src="inventory-import-controller.js"></script>
+    <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>
+    <script src="../shared/stream-report.js"></script>
+    <script src="../report/stream-report-client.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>
