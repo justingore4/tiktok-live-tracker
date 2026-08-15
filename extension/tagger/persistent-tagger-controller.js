@@ -392,10 +392,15 @@
         candidateView,
         activeBiddingVariationNumber,
         currentVariationNumber,
+        activeAuctionMapping,
       ) {
         return {
           ...candidateView,
           activeBiddingVariationNumber,
+          activeAuctionMapping:
+            activeAuctionMapping === null
+              ? null
+              : { ...activeAuctionMapping },
           currentVariationNumber,
           isReviewingHistory:
             candidateView.selectedVariationNumber !== currentVariationNumber,
@@ -404,6 +409,39 @@
             current:
               variation.variationNumber === currentVariationNumber,
           })),
+        };
+      }
+
+      function getActiveAuctionMapping(
+        canonicalStream,
+        activeBiddingVariationNumber,
+        pinnedInventory,
+      ) {
+        if (activeBiddingVariationNumber === null || !canonicalStream) {
+          return null;
+        }
+
+        const activeAuction = canonicalStream.variations.find(
+          (auction) =>
+            auction.variationNumber === activeBiddingVariationNumber,
+        );
+
+        if (typeof activeAuction?.sku !== "string") {
+          return null;
+        }
+
+        const inventoryEntry = pinnedInventory.find(
+          (entry) => entry.sku === activeAuction.sku,
+        );
+
+        if (!inventoryEntry) {
+          return null;
+        }
+
+        return {
+          variationNumber: activeBiddingVariationNumber,
+          sku: inventoryEntry.sku,
+          unitCostCents: inventoryEntry.unitCostCents,
         };
       }
 
@@ -423,6 +461,11 @@
           ) ?? [];
         const activeBiddingVariationNumber =
           canonicalStream?.activeBiddingVariationNumber ?? null;
+        const activeAuctionMapping = getActiveAuctionMapping(
+          canonicalStream,
+          activeBiddingVariationNumber,
+          pinnedInventory,
+        );
         const newestRecordedVariationNumber =
           recordedVariationNumbers.length === 0
             ? null
@@ -467,9 +510,11 @@
           candidateView,
           activeBiddingVariationNumber,
           currentCanonicalVariationNumber,
+          activeAuctionMapping,
         );
 
         return {
+          activeAuctionMapping,
           activeBiddingVariationNumber,
           currentCanonicalVariationNumber,
           session: candidateSession,
@@ -523,6 +568,7 @@
             selection.view,
             activeBiddingVariationNumber,
             currentCanonicalVariationNumber,
+            projection.activeAuctionMapping,
           );
         }
 
@@ -735,6 +781,7 @@
           result.view,
           view?.activeBiddingVariationNumber ?? null,
           latestVariationNumber,
+          view?.activeAuctionMapping ?? null,
         );
         publish();
         return createSnapshot();

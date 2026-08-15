@@ -90,6 +90,7 @@ function createUuidFactory() {
 
 function createRealWorkerHarness(options = {}) {
   const storage = options.storage ?? {};
+  const sessionStorage = options.sessionStorage ?? {};
   const payloads = options.payloads ?? [createGridPayload()];
   const authCalls = [];
   const fetchCalls = [];
@@ -123,6 +124,24 @@ function createRealWorkerHarness(options = {}) {
     },
     async set(values) {
       Object.assign(storage, clone(values));
+    },
+    async setAccessLevel() {},
+  };
+  const sessionStorageArea = {
+    async get(key) {
+      const response = Object.prototype.hasOwnProperty.call(
+        sessionStorage,
+        key,
+      )
+        ? { [key]: clone(sessionStorage[key]) }
+        : {};
+      return cloneIntoWorker(response);
+    },
+    async set(values) {
+      Object.assign(sessionStorage, clone(values));
+    },
+    async remove(key) {
+      delete sessionStorage[key];
     },
     async setAccessLevel() {},
   };
@@ -194,7 +213,7 @@ function createRealWorkerHarness(options = {}) {
     sidePanel: {
       async setPanelBehavior() {},
     },
-    storage: { local: storageArea },
+    storage: { local: storageArea, session: sessionStorageArea },
   };
   sandbox.importScripts = (...relativePaths) => {
     relativePaths.forEach((relativePath) => {

@@ -56,6 +56,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeStreamReportProtocolError extends Error {}
   class FakeStreamReportStorageError extends Error {}
   class FakeStreamReportCoordinatorError extends Error {}
+  class FakeLiveBidProtocolError extends Error {}
+  class FakeLiveBidStorageError extends Error {}
+  class FakeLiveBidCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -109,6 +112,32 @@ test("service worker opens the side panel from the toolbar action", () => {
       CaptureIntegrationError: FakeCaptureIntegrationError,
       createCaptureIntegration() {
         return { dispatch: () => Promise.resolve({ status: "accepted" }) };
+      },
+    },
+    TikTokLiveTrackerLiveBidProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.live-bid",
+      LiveBidProtocolError: FakeLiveBidProtocolError,
+      createLiveBidChangedNotification() {
+        return {
+          channel: "tiktok-live-tracker.live-bid",
+          version: 1,
+          event: { type: "live_bid_changed" },
+        };
+      },
+      isLiveBidChangedNotification() {
+        return false;
+      },
+    },
+    TikTokLiveTrackerLiveBidStorage: {
+      LiveBidStorageError: FakeLiveBidStorageError,
+      createLiveBidStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerLiveBidCoordinator: {
+      LiveBidCoordinatorError: FakeLiveBidCoordinatorError,
+      createLiveBidCoordinator() {
+        return { dispatch: () => Promise.resolve({ liveAuction: null }) };
       },
     },
     TikTokLiveTrackerInventorySheetImport: {},
@@ -173,6 +202,11 @@ test("service worker opens the side panel from the toolbar action", () => {
             return Promise.resolve();
           },
         },
+        session: {
+          setAccessLevel() {
+            return Promise.resolve();
+          },
+        },
       },
       runtime: {
         id: "extension-id",
@@ -215,13 +249,16 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/stream-session-coordinator.js",
     "../shared/inventory-import-protocol.js",
     "../shared/stream-report-protocol.js",
+    "../shared/live-bid-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
     "inventory-import-client.js",
     "inventory-import-controller.js",
+    "live-bid-client.js",
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
+    "live-auction-view-model.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
     "../shared/stream-report.js",

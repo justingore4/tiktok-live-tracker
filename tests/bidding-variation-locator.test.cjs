@@ -112,6 +112,7 @@ function element(options) {
 }
 
 function createAuctionCard({
+  bidPrice = null,
   className = "auction-pin-card flex rounded-8",
   title = "#237 ITEMS SHOWN ON SCREEN/ ALL SALES FINAL/ 8-9",
 } = {}) {
@@ -119,11 +120,17 @@ function createAuctionCard({
   const image = element();
   const details = element();
   const titleElement = element({ ownText: title });
+  const bidPriceElement =
+    bidPrice === null ? null : element({ ownText: bidPrice });
   const bids = element({ ownText: "6 bids" });
 
-  details.append(titleElement, bids);
+  details.append(
+    titleElement,
+    ...(bidPriceElement ? [bidPriceElement] : []),
+    bids,
+  );
   root.append(image, details);
-  return { bids, root, titleElement };
+  return { bidPriceElement, bids, root, titleElement };
 }
 
 test("locates the visible semantic auction card and returns only its variation number", () => {
@@ -244,4 +251,86 @@ test("reads only own text and does not depend on TikTok generated classes", () =
     locator.locateUniqueVisibleBiddingVariation(body).variationNumber,
     237,
   );
+});
+
+test("locates one exact direct-own-text bid price inside the identified card", () => {
+  const body = element();
+  const auction = createAuctionCard({ bidPrice: "Bids: $1,234.50" });
+  body.append(auction.root);
+
+  const result = locator.locateUniqueVisibleBiddingAuction(body);
+
+  assert.deepEqual(
+    {
+      bidPriceCents: result.bidPriceCents,
+      bidPriceStatus: result.bidPriceStatus,
+      status: result.status,
+      variationNumber: result.variationNumber,
+    },
+    {
+      bidPriceCents: 123450,
+      bidPriceStatus: "found",
+      status: "found",
+      variationNumber: 237,
+    },
+  );
+  assert.deepEqual(Object.keys(result).sort(), [
+    "bidPriceCents",
+    "bidPriceStatus",
+    "root",
+    "status",
+    "variationNumber",
+  ]);
+});
+
+test("keeps variation identity when a bid price is missing or ambiguous", () => {
+  const missingBody = element();
+  const missing = createAuctionCard();
+  missingBody.append(missing.root);
+  const missingResult = locator.locateUniqueVisibleBiddingAuction(missingBody);
+
+  assert.equal(missingResult.status, "found");
+  assert.equal(missingResult.variationNumber, 237);
+  assert.equal(missingResult.bidPriceStatus, "not_found");
+  assert.equal(missingResult.bidPriceCents, null);
+
+  const ambiguousBody = element();
+  const ambiguous = createAuctionCard({ bidPrice: "Bids: $28.00" });
+  ambiguous.root.append(element({ ownText: "Bids: $29.00" }));
+  ambiguousBody.append(ambiguous.root);
+  const ambiguousResult =
+    locator.locateUniqueVisibleBiddingAuction(ambiguousBody);
+
+  assert.equal(ambiguousResult.status, "found");
+  assert.equal(ambiguousResult.variationNumber, 237);
+  assert.equal(ambiguousResult.bidPriceStatus, "ambiguous");
+  assert.equal(ambiguousResult.bidPriceCents, null);
+});
+
+test("accepts only canonical positive USD bid displays", () => {
+  for (const [value, expected] of [
+    ["Bids: $0.01", 1],
+    ["Bids: $28", 2800],
+    ["Bids: $28.5", 2850],
+    ["Bids: $28.50", 2850],
+    ["Bids: $1,234.56", 123456],
+  ]) {
+    assert.equal(locator.parseBidPriceCents(value), expected);
+  }
+
+  for (const value of [
+    "Bids: $0.00",
+    "Bids:$28.00",
+    "Bid: $28.00",
+    "Bids: $1000.00",
+    "Bids: $1,23.00",
+    "Bids: -$28.00",
+    "Bids: $28.000",
+    "Bids: $28.00 6 bids",
+    "$28.00",
+    "",
+    null,
+  ]) {
+    assert.equal(locator.parseBidPriceCents(value), null);
+  }
 });

@@ -1154,6 +1154,7 @@ test("initial load prefers the active bidding variation over Sold Items history"
   const loaded = await controller.start();
 
   assert.equal(loaded.view.activeBiddingVariationNumber, 252);
+  assert.equal(loaded.view.activeAuctionMapping, null);
   assert.equal(loaded.view.selectedVariationNumber, 252);
   assert.equal(loaded.view.auction.variationNumber, 252);
 });
@@ -1346,12 +1347,37 @@ test("same bidding marker refreshes retain an employee's historical selection", 
 
   assert.equal(refreshed.view.activeBiddingVariationNumber, 252);
   assert.equal(refreshed.view.selectedVariationNumber, 203);
+  assert.deepEqual(refreshed.view.activeAuctionMapping, {
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+    unitCostCents: 1200,
+  });
   assert.equal(
     refreshed.view.variations.find(
       (variation) => variation.variationNumber === 252,
     ).item,
     "Stussy tee",
   );
+
+  const anotherHistoricalSelection = controller.selectVariation(202);
+
+  assert.equal(anotherHistoricalSelection.view.selectedVariationNumber, 202);
+  assert.deepEqual(anotherHistoricalSelection.view.activeAuctionMapping, {
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+    unitCostCents: 1200,
+  });
+
+  const unmappedState = memory.getState();
+  reconciliation.unmapVariation(unmappedState, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  memory.setState(unmappedState);
+  const unmapped = await controller.refresh();
+
+  assert.equal(unmapped.view.selectedVariationNumber, 202);
+  assert.equal(unmapped.view.activeAuctionMapping, null);
 });
 
 test("coalesces duplicate starts and rejects mutations while busy", async () => {

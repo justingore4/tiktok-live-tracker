@@ -74,11 +74,17 @@
     globalThis.TikTokLiveTrackerInventoryImportController;
   const streamReportProtocol =
     globalThis.TikTokLiveTrackerStreamReportProtocol;
+  const liveBidProtocol =
+    globalThis.TikTokLiveTrackerLiveBidProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
   const streamReportClientModule =
     globalThis.TikTokLiveTrackerStreamReportClient;
+  const liveBidClientModule =
+    globalThis.TikTokLiveTrackerLiveBidClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
+  const liveAuctionViewModel =
+    globalThis.TikTokLiveTrackerLiveAuctionViewModel;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
   const appShell = document.querySelector(".app-shell");
@@ -305,6 +311,16 @@
   const variationContext = document.querySelector("#variation-context");
   const variationSelector = document.querySelector("#variation-selector");
   const returnToCurrentButton = document.querySelector("#return-to-current");
+  const liveAuctionPanel = document.querySelector("#live-auction");
+  const liveAuctionTitle = document.querySelector("#live-auction-title");
+  const liveBidValue = document.querySelector("#live-bid-value");
+  const liveUnitCostValue = document.querySelector(
+    "#live-unit-cost-value",
+  );
+  const liveGrossProfitValue = document.querySelector(
+    "#live-gross-profit-value",
+  );
+  const liveAuctionNote = document.querySelector("#live-auction-note");
   const inventoryTitle = document.querySelector("#inventory-title");
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
@@ -411,6 +427,10 @@
     !inventoryImportControllerModule ||
     !streamReportProtocol ||
     !streamReportClientModule ||
+    !liveBidProtocol ||
+    !liveBidClientModule ||
+    !liveAuctionViewModel ||
+    typeof liveAuctionViewModel.createDisplay !== "function" ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule ||
     typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
@@ -453,6 +473,10 @@
       runtime: chrome.runtime,
       protocol: streamReportProtocol,
     });
+  const liveBidClient = liveBidClientModule.createLiveBidClient({
+    runtime: chrome.runtime,
+    protocol: liveBidProtocol,
+  });
   let activeMode = "saved_session";
   let demoSession = null;
   let persistentController = null;
@@ -477,6 +501,11 @@
   let captureRefreshDirty = false;
   let captureRefreshFocusSku = null;
   let captureRefreshHadVariationFocus = false;
+  let liveAuctionSnapshot = { liveAuction: null };
+  let liveBidRefreshGeneration = 0;
+  let liveBidRefreshDirty = false;
+  let liveBidRefreshScheduled = false;
+  let liveBidRefreshInFlight = false;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
@@ -519,6 +548,18 @@
       message.version === CAPTURE_STATE_NOTIFICATION_VERSION &&
       hasExactKeys(message.event, ["type"]) &&
       message.event.type === CAPTURE_STATE_NOTIFICATION_TYPE &&
+      sender?.id === chrome.runtime.id &&
+      sender.tab === undefined
+    );
+  }
+
+  function isLiveBidChangedNotification(message, sender) {
+    return (
+      hasExactKeys(message, ["channel", "version", "event"]) &&
+      message.channel === liveBidProtocol.MESSAGE_CHANNEL &&
+      message.version === liveBidProtocol.MESSAGE_VERSION &&
+      hasExactKeys(message.event, ["type"]) &&
+      message.event.type === "live_bid_changed" &&
       sender?.id === chrome.runtime.id &&
       sender.tab === undefined
     );
@@ -741,7 +782,96 @@
     armCaptureRefresh();
   }
 
+  function canRefreshLiveBid() {
+    return (
+      activeMode === "saved_session" &&
+      streamSnapshot.resumed &&
+      streamSnapshot.activeSession !== null &&
+      persistentController !== null &&
+      mountedStreamId !== null
+    );
+  }
+
+  function armLiveBidRefresh() {
+    if (
+      liveBidRefreshScheduled ||
+      liveBidRefreshInFlight ||
+      !liveBidRefreshDirty
+    ) {
+      return;
+    }
+
+    liveBidRefreshScheduled = true;
+    Promise.resolve().then(async () => {
+      liveBidRefreshScheduled = false;
+
+      if (liveBidRefreshInFlight || !liveBidRefreshDirty) {
+        return;
+      }
+
+      if (!canRefreshLiveBid()) {
+        liveBidRefreshDirty = false;
+        return;
+      }
+
+      liveBidRefreshDirty = false;
+      liveBidRefreshInFlight = true;
+      const requestGeneration = liveBidRefreshGeneration;
+      const requestStreamId = mountedStreamId;
+
+      try {
+        const response = await liveBidClient.getLiveBid();
+
+        if (
+          requestGeneration === liveBidRefreshGeneration &&
+          requestStreamId === mountedStreamId &&
+          canRefreshLiveBid()
+        ) {
+          if (
+            isRecord(response) &&
+            hasExactKeys(response, ["liveAuction"])
+          ) {
+            liveAuctionSnapshot = response;
+          }
+          renderLiveAuction(getActiveView());
+        }
+      } catch (error) {
+        if (
+          requestGeneration === liveBidRefreshGeneration &&
+          requestStreamId === mountedStreamId
+        ) {
+          renderLiveAuction(getActiveView());
+        }
+        console.error(
+          "[TikTok Live Tracker] Live bid could not be refreshed.",
+          error,
+        );
+      } finally {
+        liveBidRefreshInFlight = false;
+        armLiveBidRefresh();
+      }
+    });
+  }
+
+  function scheduleLiveBidRefresh() {
+    liveBidRefreshGeneration += 1;
+    liveBidRefreshDirty = true;
+    armLiveBidRefresh();
+  }
+
+  function resetLiveBidTracking() {
+    liveBidRefreshGeneration += 1;
+    liveBidRefreshDirty = false;
+    liveAuctionSnapshot = { liveAuction: null };
+    renderLiveAuction(null);
+  }
+
   function handleCaptureStateChanged(message, sender) {
+    if (isLiveBidChangedNotification(message, sender)) {
+      scheduleLiveBidRefresh();
+      return false;
+    }
+
     if (!isCaptureStateChangedNotification(message, sender)) {
       return false;
     }
@@ -865,6 +995,7 @@
 
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
+    resetLiveBidTracking();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -910,6 +1041,7 @@
           error,
         );
       });
+    scheduleLiveBidRefresh();
   }
 
   function setWorkspaceBusy(busy) {
@@ -1774,6 +1906,42 @@
     return `#${option.variationNumber} - ${status} - ${item}`;
   }
 
+  function renderLiveAuction(view) {
+    const display = liveAuctionViewModel.createDisplay({
+      activeMode,
+      view,
+      liveAuction: liveAuctionSnapshot.liveAuction,
+      formatUsdCents: viewModel.formatUsdCents,
+    });
+
+    liveAuctionPanel.hidden = display.hidden;
+    liveAuctionPanel.dataset.state = display.state;
+
+    if (liveAuctionTitle.textContent !== display.variationLabel) {
+      liveAuctionTitle.textContent = display.variationLabel;
+    }
+
+    if (liveBidValue.textContent !== display.currentBid) {
+      liveBidValue.textContent = display.currentBid;
+    }
+
+    if (liveUnitCostValue.textContent !== display.unitCost) {
+      liveUnitCostValue.textContent = display.unitCost;
+    }
+
+    if (liveGrossProfitValue.textContent !== display.grossProfit) {
+      liveGrossProfitValue.textContent = display.grossProfit;
+    }
+
+    if (liveGrossProfitValue.dataset.tone !== display.profitTone) {
+      liveGrossProfitValue.dataset.tone = display.profitTone;
+    }
+
+    if (liveAuctionNote.textContent !== display.note) {
+      liveAuctionNote.textContent = display.note;
+    }
+  }
+
   function renderVariationNavigation(view) {
     const fragment = document.createDocumentFragment();
     const variations = activeMode === "saved_session"
@@ -2232,6 +2400,7 @@
     }
 
     renderVariationNavigation(view);
+    renderLiveAuction(view);
     renderAuction(view);
     renderInventory(view, options.focusSku ?? null);
     renderMetrics(view);
@@ -2966,6 +3135,7 @@
     updateModeControls();
 
     if (activeMode === "offline_demo") {
+      resetLiveBidTracking();
       savedSessionError.hidden = true;
       setTrackerWorkspaceVisible(true);
       setWorkspaceBusy(false);
@@ -2978,6 +3148,7 @@
     }
 
     armCaptureRefresh();
+    scheduleLiveBidRefresh();
     hasFocusedSavedError = false;
     hasFocusedStreamError = false;
     renderStreamSnapshot(streamSessionController.getSnapshot());
@@ -3710,6 +3881,7 @@
     "pagehide",
     () => {
       clearCaptureRefreshTimer();
+      resetLiveBidTracking();
       chrome.runtime.onMessage.removeListener(handleCaptureStateChanged);
     },
     { once: true },

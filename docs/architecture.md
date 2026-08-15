@@ -280,9 +280,12 @@ one.
 ### Confirmed current-auction, completed-sale, and aggregate sources
 
 The bottom card over the video is the current-bidding source. The strict locator uses
-the exact `auction-pin-card` class token as a boundary and releases only the positive
-variation number from one visible direct-own-text value beginning with `#N`. It does not
-use the card's item title, bid amount, bidder, image, or other text as canonical data.
+the exact `auction-pin-card` class token as a boundary and releases the positive variation
+number from exactly one visible direct-own-text value beginning with `#N`. Within that same
+unique card, the live-bid locator separately accepts exactly one visible direct-own-text
+value matching `Bids: $...` and converts it directly to positive integer cents. Neither
+path releases raw text, item title, bidder, image, or other card content. The bid is a
+temporary display estimate, never payment status or final-sale truth.
 
 The current completed-sale source is the left-side **LIVE auctions → Sold items**
 panel. The right-side Chat panel mixes unrelated chat, join, and bid activity and is not
@@ -315,8 +318,8 @@ Consequently, the right-side Chat, analytics, and video card are outside the
 **individual-sale/payment** boundary. Sold Items rows can contain incidental buyer
 and product text, but capture never selects those values as fields, logs the raw row,
 transmits them, or persists them. Separate narrow locators read only the on-video current
-variation number and the validated aggregate USD display; neither reads Sold Items rows
-or supplies payment/final-price truth.
+variation number and sanitized current-bid cents plus the validated aggregate USD display;
+none reads Sold Items rows or supplies payment/final-price truth.
 
 Within that root, capture:
 
@@ -343,9 +346,14 @@ The current-bidding path is independently fail-closed. It requires exactly one v
 element with the `auction-pin-card` class token and exactly one visible descendant whose
 direct own text begins with a positive `#N`. Missing or ambiguous cards and variation
 values are ignored rather than guessed. It performs an immediate scan, observes only
-that card, and rebinds through the same route/body lifecycle when TikTok replaces it.
-Its acknowledgement-based, same-body outbox retains only the newest undelivered
-variation number, so a retry for an older auction cannot overwrite a newer current one.
+that card, and rebinds through the same route/body lifecycle when TikTok replaces it. Bid
+capture additionally requires exactly one visible descendant whose direct own text is a
+canonical `Bids: $...` value; missing or ambiguous bid text does not suppress the valid
+variation-identity observation. Auction-card mutations are coalesced with a 75 ms quiet
+delay and a non-resetting 250 ms maximum wait. Its acknowledgement-based, same-body
+outboxes retain only the newest undelivered variation identity and newest complete
+`(variationNumber, bidPriceCents)` pair. Identity is queued before price, and a retry for
+an older price cannot overwrite a newer bid or auction.
 
 The Attributed GMV path is independently fail-closed. It requires exactly one visible
 `#guide-Step-2` root (plus the explicitly allowlisted previously observed lowercase
@@ -363,11 +371,12 @@ the metric root, and retries transient failures with capped backoff. All three s
 capture paths discard their page-scoped outboxes when the route is exited or
 `document.body` is replaced; each independently backfills a newly discovered root.
 
-The page-to-worker protocol has exactly five event shapes:
+The page-to-worker protocol has exactly six event shapes:
 
 ```text
 { type: "observe_variations", variationNumbers: [37, 38, ...] }
 { type: "observe_bidding_variation", variationNumber: 39 }
+{ type: "observe_bidding_price", variationNumber: 39, bidPriceCents: 2800 }
 { type: "observe_payment_statuses", statuses: [
     { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
 ] }
@@ -376,10 +385,10 @@ The page-to-worker protocol has exactly five event shapes:
 ```
 
 The content script does not send a stream ID, raw badge or auction-card text, buyer data,
-product text, bid amount,
-observation timestamp, source HTML, or any other DOM content. The bidding event contains
-only the current variation number; the aggregate event contains only the allowlisted
-display, never the label, card text, detail row, or DOM.
+product text, observation timestamp, source HTML, or any other DOM content. The bidding
+identity event contains only the current variation number; the price event contains only
+that positive number and a sanitized positive integer-cent bid. The aggregate event
+contains only the allowlisted display, never the label, card text, detail row, or DOM.
 The content script also cannot read extension storage.
 The service worker accepts these messages only from the extension's top frame on the
 exact product-dashboard URL. It resolves the active `local-stream:<uuid>` itself, then
@@ -403,6 +412,17 @@ single active bidding marker, and leaves payment and inventory accounting unchan
 mapping made during bidding is the same durable `(streamId, variationNumber)` mapping
 later used by Sold Items. The first payment-status or priced-completion truth for that
 variation clears the bidding marker without removing its mapping.
+
+An accepted bidding-price observation follows a deliberately separate lightweight path.
+The worker resolves the active local stream and validates the pair against a cached active
+bidding marker. It then replaces one stream-scoped display record in
+`chrome.storage.session`; there is no reconciliation clone/save, bid history, or
+`chrome.storage.local` report data on each price change. Canonical marker changes create a
+new placeholder immediately, before its first price, while marker clearing retains the
+last display record until another auction begins. Stale pairs for a different active
+marker are ignored. Repeating the same pair is a no-op, and the most recent accepted pair
+wins even if a later bid is lower. The active marker remains the canonical identity
+boundary, while Sold Items remains the only authoritative final-price source.
 
 Capture remains read-only with respect to TikTok. It does not click controls, alter the
 page, infer payment failure, or contact Google Sheets.
@@ -429,13 +449,15 @@ and automatic page-to-session association remain later identity work.
 | Dashboard fact | Current action | Status |
 | --- | --- | --- |
 | One `#N` value appears in the unique visible on-video `auction-pin-card` | Create/activate that bidding variation under the worker-resolved stream and select it in the open tagger | Implemented; sends only the number; selecting inventory for it immediately creates a reservation |
+| One canonical `Bids: $...` value appears in that same uniquely identified card | Replace the single stream-scoped transient bid and targeted-update the live panel | Implemented; sends integer cents paired with the variation; never becomes final price or report data |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
 | Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
 | Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
 | Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | Exact `Attributed GMV` metric appears under the unique analytics boundary | Persist only its sanitized exact/compact USD display under the worker-resolved active stream | Implemented; independent of Sold Items and no aggregate-to-cents conversion |
-| A bidding, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding supplies identity only, not sale truth |
+| A bidding-identity, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding identity is not sale truth |
+| A validated live bid changes | Send a separate data-free notice, read the single transient record, and update only the live panel | Implemented; no reconciliation/report write or full inventory rerender |
 | Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
 | Any payment observation follows canonical `Canceled` | Ignore the stale contradiction | Implemented; cancellation is terminal |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
@@ -934,7 +956,9 @@ Worker messages use strict versioned envelopes and return plain success or error
 Only the exact extension side-panel page is authorized to issue employee/read and
 inventory-import commands; it is explicitly forbidden from issuing variation,
 current-bidding, payment-status, payment-complete, Attributed-GMV truth, a baseline pin,
-or direct baseline creation.
+or direct baseline creation. A separate strict live-bid read command lets that same
+side-panel page request only the currently validated transient live-auction display
+record.
 The separate capture envelope is accepted only from the extension content script in the
 top frame of the exact TikTok product-dashboard URL. The worker, not the page, supplies
 the active local stream ID. A shared outer FIFO orders stream lifecycle, capture, and
@@ -950,9 +974,32 @@ worker, coalesces bursts, and issues a fresh canonical-state GET. The notificati
 refetch signal, never a second source of truth; failure to deliver it cannot turn an
 already-successful capture write into a failure.
 
+Live bid changes do not use that durable-state invalidation. The worker instead emits a
+dedicated, data-free `live_bid_changed` notice. The panel validates its worker sender,
+performs one lightweight transient read, rejects any stream/variation mismatch, and
+updates only the compact bid/cost/profit panel. Active mapping, remapping, or unmapping
+comes from the normal canonical view immediately and is also synchronized into the one
+transient record so its cost/profit survives panel reopening after bidding ends. Reviewing
+history never rebinds the panel to the selected historical record.
+The panel stays mounted during an active local tracker stream. Before any detected auction
+it shows `Variation # -` and dashes. A new canonical marker immediately replaces the prior
+heading with `Variation #N` and clears its values until the first valid bid arrives. When
+that marker clears, the panel keeps the last variation, bid, mapped unit cost, and derived
+profit with a muted indicator until the next marker arrives. It never labels the retained
+display as a previous auction, and reviewing history never rebinds it to the selected
+historical record.
+
 Local storage is restricted to trusted extension contexts so the dashboard content
 script cannot read or write the canonical snapshot directly. State changes must pass
 through the worker's validated command boundary.
+
+Live-auction display storage is intentionally noncanonical: `chrome.storage.session`
+contains at most one record pairing the stream and variation with nullable bid and mapped
+unit-cost cents. It is synchronized from canonical mapping/marker state without storing bid
+history, survives service-worker suspension and side-panel reopening, and is naturally
+cleared by a browser restart before the content script reacquires the visible auction. It
+is never copied into reconciliation history, inventory accounting, aggregate metrics, or
+an end-of-stream report.
 
 The side panel first uses dedicated import and stream-session client/controllers. With no
 active session it offers Sheets import and keeps Start unavailable until the worker
@@ -1251,6 +1298,9 @@ answer these questions; offline fixtures alone cannot complete the validation:
   `Payment complete` resolves it?
 - Does the observed `m4b_space` Sold Items identity remain unique across different
   accounts, streams, modes, scrolling states, and TikTok deployments?
+- Do the exact visible `auction-pin-card` boundary, direct-own-text `#N` identity, and
+  direct-own-text `Bids: $...` value remain unique and stable across accounts, modes,
+  bid speeds, streams, and TikTok deployments?
 - Is the Sold Items list virtualized or replaced as it grows, and can every earlier row
   be recovered by the initial/backfill scan?
 - Does any relevant content live inside an iframe or shadow root?

@@ -5,7 +5,7 @@ completed sale and final price, an employee identifies the physical item, and th
 tracker combines those facts to calculate inventory and gross profit.
 
 > **Project status:** early browser prototype. The tracker now reads the current
-> bidding variation number from the on-video auction card and observes the live
+> bidding variation number and bid price from the on-video auction card and observes the live
 > **Sold items** panel for sale and payment truth under the active local tracker
 > stream. It persists sanitized payment-status changes plus exact green
 > `Payment complete` prices through the service worker.
@@ -70,6 +70,15 @@ auctioned again, the employee maps its new variation number.
   the next auction is selected automatically. A manually selected historical variation
   stays selected while newer auctions continue updating the selector. Inventory cards
   show remaining stock separately from pending reservations.
+- A compact **Live auction** panel that stays visible throughout an active local tracker
+  stream, including while an employee reviews an older variation. A newly detected
+  on-video auction immediately changes its heading to `Variation #N` and clears the prior
+  values until its first valid bid arrives. Once mapped, it also shows the pinned unit cost
+  and pre-fee live gross profit (`current bid - unit cost`), with negative, break-even, and
+  positive results styled distinctly. When bidding ends, the panel retains that auction's
+  last variation, bid, cost, and profit until the next auction begins; before any auction
+  has been detected it shows `Variation # -` and dashes. This temporary display never
+  changes final sale, inventory, metric, or report accounting.
 - A bottom **Metrics** section showing **Gross Item Sales** as the current-stream sum of
   sold prices from every priced `Payment complete` order, including completed orders
   that still need an item. **AOV** is that exact Gross Item Sales total divided by the
@@ -163,9 +172,9 @@ auctioned again, the employee maps its new variation number.
 - SPA lifecycle recovery that responds to route and page-resume signals, uses a 250 ms
   fallback check, and cleans up or restarts the observer and scheduler when the route or
   any scoped root changes. Sanitized, same-body delivery outboxes keep already parsed
-  Sold Items facts, the newest bidding variation, and the newest Attributed GMV display
-  draining across root replacement; leaving the route or replacing the body discards
-  those page-scoped queues.
+  Sold Items facts, the newest bidding variation/bid pair, and the newest Attributed GMV
+  display draining across root replacement; leaving the route or replacing the body
+  discards those page-scoped queues.
 - A live-validated Sold Items boundary that requires exactly one visible
   `[data-tid="m4b_space"]` root. Capture stops and retries when that selector is missing
   or ambiguous, and individual-sale parsing never scans the video, Chat, analytics, or
@@ -174,18 +183,21 @@ auctioned again, the employee maps its new variation number.
   fallback), one exact `Attributed GMV` label, and that label's primary value region.
 - A separate fail-closed current-auction locator that requires exactly one visible
   `auction-pin-card` class-token boundary and one visible direct-own-text value beginning
-  with `#N`. It releases only the positive variation number; it does not treat the video
-  card's item title, bid amount, bidder, or other text as sale or payment truth.
+  with `#N`. Within that same unique card, live-bid capture separately requires exactly
+  one visible direct-own-text value matching `Bids: $...`. It releases only the positive
+  variation number and sanitized positive integer cents; it never releases raw card text,
+  item title, bidder, image, or other content, and the bid is never sale/payment truth.
 - Strict row-local matching for exact `Variation: #N` labels and exact
   `[data-tid="m4b_tag"]` badges. The allowlist recognizes `Payment processing`,
   `Payment fixing`, `Payment failed`, `Canceled`, and `Payment complete`; any other nonempty badge is
   stored only as `unrecognized`, never as raw page text. Generic tag counts and generated
   CSS classes are not capture inputs. Incidental buyer and product text in the same row
   is never selected as a field, logged raw, transmitted, or saved.
-- A strict five-event capture protocol and runtime client that send only observed
+- A strict six-event capture protocol and runtime client that send only observed
   Sold Items variation numbers, the current bidding variation number, sanitized
-  payment-status codes, a completed variation's integer-cent price, or one canonical
-  exact/compact USD Attributed GMV display. The page sends no
+  payment-status codes, a completed variation's integer-cent price, a current
+  `(variation number, bid-price cents)` pair, or one canonical exact/compact USD
+  Attributed GMV display. The page sends no
   stream ID, buyer data, raw badge, auction-card, or analytics text, source HTML, or other
   DOM content.
 - A worker-owned capture integration that authorizes only the top-level product
@@ -195,6 +207,9 @@ auctioned again, the employee maps its new variation number.
   capture update. An open Live session side panel validates and coalesces those notices,
   then refetches canonical state so new variations and payment changes appear live
   without trusting page-supplied state.
+- A separate data-free live-bid invalidation after the worker accepts a transient bid.
+  The panel responds with one lightweight live-bid read and updates only the compact live
+  values; rapid bids do not trigger a full reconciliation refetch or inventory rerender.
 - Ack-based delivery with retry and bounded backoff. Repeated DOM scans, page reloads,
   and service-worker restarts remain idempotent for the same local stream.
 - A pure capture-event registry that keeps diagnostic page-load and verified-stream
@@ -527,6 +542,21 @@ prototype data. There is no silent reset.
     button must disappear after returning, must not change any mapping, inventory, payment,
     or persisted auction data, and automatic switching must resume for the following
     auction. Do not refresh TikTok, close the panel, or choose Resume again.
+    Before TikTok exposes any live variation, confirm the compact **Live auction** panel is
+    present with `Variation # -` and dashes. During fast bidding, confirm it reaches the
+    latest bid without visibly stepping through stale intermediate prices. A new variation
+    must immediately show `Variation #N` with dashes until its first valid `Bids: $...`
+    value rather than reusing the prior auction's data. With no item mapped, current bid
+    remains visible while unit cost and live gross profit show dashes. Map, remap, and unmap
+    the active auction and confirm those two values update immediately. Verify `bid - unit
+    cost` is red and negative below cost, neutral at zero, and green with a plus sign above
+    cost. Select an older variation and confirm the panel remains tied to the active auction
+    and continues updating. When the bidding marker clears, the panel must retain the last
+    variation number, bid, cost, and profit with a muted indicator and no `Previous auction`
+    label until the next auction starts. The eventual Sold Items final price remains
+    authoritative. Reopen the panel and allow the service worker to suspend/restart during
+    an auction; confirm the stream-paired latest display is recovered without showing data
+    from another variation or stream.
 20. In **LIVE auctions → Sold items**, confirm completed and payment-state variations
     remain in the same selector. When the active bidding variation reaches Sold Items,
     its existing mapping must remain attached while the `bidding` marker clears and its
@@ -680,9 +710,12 @@ extension, and no service-account private key belongs in a browser bundle.
 Never commit `.env` files, access tokens, private keys, or client inventory. Capture
 runtime messages contain only variation numbers (including the one currently bidding),
 allowlisted payment-status codes, the sanitized Attributed GMV display, and, for
-completed payments, the final price in integer cents. They contain no page-supplied
-stream ID, raw badge or auction-card text, buyer information, product text, bid amount,
+completed payments, the final price in integer cents. The live-bid event adds only the
+current variation number and sanitized positive integer-cent bid. Messages contain no
+page-supplied stream ID, raw badge or auction-card text, buyer information, product text,
 or DOM content. The trusted worker binds those facts to the active local tracker stream.
+Only one stream-scoped live-bid record is kept in `chrome.storage.session`; it is not
+reconciliation history and is excluded from reports and permanent accounting.
 TikTok sale and report data is not sent to Google Sheets, and the live tracker does not
 depend on Google after the baseline is confirmed locally. The report's copy and CSV
 actions prepare a local clipboard payload or file only after the employee chooses them;

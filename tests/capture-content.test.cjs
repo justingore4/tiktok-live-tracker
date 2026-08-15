@@ -262,7 +262,7 @@ function createAttributedGmvMetric(display = "$4.64K", id = "guide-Step-2") {
   return { card, detail, label, root, value, valueRegion };
 }
 
-function createBiddingAuctionCard(variationNumber = 237) {
+function createBiddingAuctionCard(variationNumber = 237, bidPrice = null) {
   const root = new FakeElement({
     className: "auction-pin-card flex rounded-8",
     name: "bidding-auction-card",
@@ -272,14 +272,24 @@ function createBiddingAuctionCard(variationNumber = 237) {
   const titleText = new FakeText(
     `#${variationNumber} ITEMS SHOWN ON SCREEN/ ALL SALES FINAL`,
   );
+  const bidPriceElement = new FakeElement({ name: "bidding-price" });
+  const bidPriceText = new FakeText(bidPrice ?? "");
   const bids = new FakeElement({ name: "bidding-count" });
 
   title.append(titleText);
+  bidPriceElement.append(bidPriceText);
   bids.append(new FakeText("6 bids"));
-  details.append(title, bids);
+  details.append(title, bidPriceElement, bids);
   root.append(new FakeElement({ name: "auction-image" }), details);
 
-  return { bids, root, title, titleText };
+  return {
+    bidPriceElement,
+    bidPriceText,
+    bids,
+    root,
+    title,
+    titleText,
+  };
 }
 
 function setSaleSummary(sale, text) {
@@ -2070,6 +2080,249 @@ test("captures the current bidding variation independently of Sold Items", async
   assert.doesNotMatch(
     JSON.stringify(harness.captureMessages[0].event),
     /title|product|buyer|bidAmount|bidCount|element|selector|streamId|observedAt/i,
+  );
+});
+
+test("captures the live bid only after its active variation is accepted", async () => {
+  const body = createBody("live-bid-body");
+  const auction = createBiddingAuctionCard(252, "Bids: $28.00");
+  body.append(auction.root);
+  const harness = createHarness({ body, rootCount: 0 });
+
+  await flushAsync(12);
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event),
+    [
+      { type: "observe_bidding_variation", variationNumber: 252 },
+      {
+        type: "observe_bidding_price",
+        variationNumber: 252,
+        bidPriceCents: 2800,
+      },
+    ],
+  );
+  assert.equal(harness.schedulerSessions.length, 1);
+  assert.equal(harness.schedulerSessions[0].options.quietDelayMs, 75);
+  assert.equal(harness.schedulerSessions[0].options.maxWaitMs, 250);
+  assert.doesNotMatch(
+    JSON.stringify(harness.captureMessages),
+    /ITEMS SHOWN|buyer|bidCount|element|selector|streamId|observedAt/i,
+  );
+});
+
+test("never sends a paired bid before a failed variation identity retry succeeds", async () => {
+  const body = createBody("live-bid-identity-retry-body");
+  const auction = createBiddingAuctionCard(252, "Bids: $28.00");
+  body.append(auction.root);
+  let rejectedIdentity = false;
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_bidding_variation" &&
+        !rejectedIdentity
+      ) {
+        rejectedIdentity = true;
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "Start a tracker stream.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync(12);
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.type),
+    ["observe_bidding_variation"],
+  );
+
+  harness.tickTimeouts();
+  await flushAsync(16);
+
+  assert.deepEqual(
+    harness.captureMessages.map(({ event }) => event.type),
+    [
+      "observe_bidding_variation",
+      "observe_bidding_variation",
+      "observe_bidding_price",
+    ],
+  );
+  assert.equal(harness.captureMessages.at(-1).event.bidPriceCents, 2800);
+});
+
+test("retains a valid bid through temporary absence and pairs the same price with a new variation", async () => {
+  const body = createBody("live-bid-pairing-body");
+  const auction = createBiddingAuctionCard(251, "Bids: $28.00");
+  body.append(auction.root);
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+  });
+
+  await flushAsync(12);
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  auction.bidPriceText.textContent = "Updating bid";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync();
+
+  auction.bidPriceText.textContent = "Bids: $28.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync();
+
+  assert.equal(
+    harness.captureMessages.filter(
+      ({ event }) => event.type === "observe_bidding_price",
+    ).length,
+    1,
+  );
+
+  auction.titleText.textContent = "#252 next auction";
+  auction.bidPriceText.textContent = "Waiting for bids";
+  observer.trigger([
+    { type: "characterData", target: auction.titleText },
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync(12);
+
+  assert.equal(harness.captureMessages.at(-1).event.type, "observe_bidding_variation");
+  assert.equal(harness.captureMessages.at(-1).event.variationNumber, 252);
+
+  auction.bidPriceText.textContent = "Bids: $28.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync(12);
+
+  assert.deepEqual(
+    harness.captureMessages.slice(-2).map(({ event }) => event),
+    [
+      { type: "observe_bidding_variation", variationNumber: 252 },
+      {
+        type: "observe_bidding_price",
+        variationNumber: 252,
+        bidPriceCents: 2800,
+      },
+    ],
+  );
+});
+
+test("coalesces rapid bid changes to the newest price and preserves reversions", async () => {
+  const body = createBody("live-bid-coalescing-body");
+  const auction = createBiddingAuctionCard(251, "Bids: $28.00");
+  body.append(auction.root);
+  let releaseIntermediate;
+  const intermediateGate = new Promise((resolve) => {
+    releaseIntermediate = resolve;
+  });
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_bidding_price" &&
+        message.event.bidPriceCents === 2900
+      ) {
+        await intermediateGate;
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync(12);
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  auction.bidPriceText.textContent = "Bids: $29.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync();
+
+  auction.bidPriceText.textContent = "Bids: $30.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  auction.bidPriceText.textContent = "Bids: $28.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  releaseIntermediate();
+  await flushAsync(16);
+
+  assert.deepEqual(
+    harness.captureMessages
+      .filter(({ event }) => event.type === "observe_bidding_price")
+      .map(({ event }) => event.bidPriceCents),
+    [2800, 2900, 2800],
+  );
+});
+
+test("a failed bid delivery retries only the newest sampled price", async () => {
+  const body = createBody("live-bid-retry-body");
+  const auction = createBiddingAuctionCard(251, "Bids: $28.00");
+  body.append(auction.root);
+  let rejected = false;
+  const harness = createHarness({
+    body,
+    rootCount: 0,
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (message.event.type === "observe_bidding_price" && !rejected) {
+        rejected = true;
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "Start a tracker stream.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync(12);
+  const observer = harness.observerInstances.find(
+    (candidate) => candidate.target === auction.root,
+  );
+
+  auction.bidPriceText.textContent = "Bids: $29.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  auction.bidPriceText.textContent = "Bids: $30.00";
+  observer.trigger([
+    { type: "characterData", target: auction.bidPriceText },
+  ]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync(16);
+
+  assert.deepEqual(
+    harness.captureMessages
+      .filter(({ event }) => event.type === "observe_bidding_price")
+      .map(({ event }) => event.bidPriceCents),
+    [2800, 3000],
   );
 });
 

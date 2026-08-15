@@ -75,6 +75,60 @@ test("creates an exact bidding-variation observation message", () => {
   );
 });
 
+test("creates an exact sanitized bidding-price observation message", () => {
+  const message = createCaptureMessage({
+    type: EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  });
+
+  assert.deepEqual(message, {
+    channel: MESSAGE_CHANNEL,
+    version: MESSAGE_VERSION,
+    event: {
+      type: "observe_bidding_price",
+      variationNumber: 252,
+      bidPriceCents: 2800,
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify(message.event),
+    /title|product|buyer|bidCount|element|selector|streamId|raw/i,
+  );
+});
+
+test("rejects malformed or widened bidding-price observations", () => {
+  for (const event of [
+    { type: "observe_bidding_price", variationNumber: 0, bidPriceCents: 1 },
+    {
+      type: "observe_bidding_price",
+      variationNumber: 252,
+      bidPriceCents: 0,
+    },
+    {
+      type: "observe_bidding_price",
+      variationNumber: 252,
+      bidPriceCents: 28.5,
+    },
+    {
+      type: "observe_bidding_price",
+      variationNumber: 252,
+      bidPriceCents: "2800",
+    },
+    {
+      type: "observe_bidding_price",
+      variationNumber: 252,
+      bidPriceCents: 2800,
+      buyer: "must not cross the capture boundary",
+    },
+  ]) {
+    assert.throws(
+      () => createCaptureMessage(event),
+      /invalid shape|positive safe integer/i,
+    );
+  }
+});
+
 test("rejects malformed or widened bidding-variation observations", () => {
   for (const event of [
     { type: "observe_bidding_variation", variationNumber: 0 },
@@ -171,6 +225,11 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
     type: EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV,
     attributedGmvDisplay: "$4.64K",
   };
+  const baseBiddingPrice = {
+    type: EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  };
 
   for (const forbiddenField of [
     "streamId",
@@ -196,6 +255,14 @@ test("rejects stream identity, buyer, title, DOM, and time fields", () => {
       () =>
         createCaptureMessage({
           ...baseAttributedGmv,
+          [forbiddenField]: "x",
+        }),
+      "INVALID_CAPTURE_MESSAGE",
+    );
+    assertErrorCode(
+      () =>
+        createCaptureMessage({
+          ...baseBiddingPrice,
           [forbiddenField]: "x",
         }),
       "INVALID_CAPTURE_MESSAGE",

@@ -389,6 +389,41 @@
       </section>
 
       <section
+        id="live-auction"
+        class="live-auction"
+        aria-labelledby="live-auction-title"
+      >
+        <div class="live-auction-heading">
+          <div>
+            <p class="eyebrow">Live auction</p>
+            <h2 id="live-auction-title">Variation # -</h2>
+          </div>
+          <span class="live-auction-indicator" aria-hidden="true"></span>
+        </div>
+        <dl class="live-auction-values">
+          <div>
+            <dt>Current bid</dt>
+            <dd id="live-bid-value">&mdash;</dd>
+          </div>
+          <div>
+            <dt>Unit cost</dt>
+            <dd id="live-unit-cost-value">&mdash;</dd>
+          </div>
+          <div>
+            <dt>Live gross profit</dt>
+            <dd id="live-gross-profit-value" data-tone="neutral">&mdash;</dd>
+          </div>
+        </dl>
+        <p
+          id="live-auction-note"
+          class="live-auction-note"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+      </section>
+
+      <section
         id="pending-mapping"
         class="pending-mapping"
         aria-labelledby="pending-mapping-title"
@@ -903,13 +938,16 @@
     <script src="../shared/stream-session-coordinator.js"></script>
     <script src="../shared/inventory-import-protocol.js"></script>
     <script src="../shared/stream-report-protocol.js"></script>
+    <script src="../shared/live-bid-protocol.js"></script>
     <script src="reconciliation-client.js"></script>
     <script src="stream-session-client.js"></script>
     <script src="stream-session-controller.js"></script>
     <script src="inventory-import-client.js"></script>
     <script src="inventory-import-controller.js"></script>
+    <script src="live-bid-client.js"></script>
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
+    <script src="live-auction-view-model.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>
     <script src="../shared/stream-report.js"></script>

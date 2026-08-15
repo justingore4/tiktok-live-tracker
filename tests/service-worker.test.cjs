@@ -8,6 +8,7 @@ const captureProtocol = require("../extension/shared/capture-protocol.js");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
+const liveBidProtocol = require("../extension/shared/live-bid-protocol.js");
 const streamReportProtocol = require(
   "../extension/shared/stream-report-protocol.js"
 );
@@ -35,6 +36,7 @@ function createWorkerHarness(options = {}) {
   const runtimeSendMessages = [];
   const inventoryImportCalls = [];
   const reportCalls = [];
+  const liveBidSyncCalls = [];
   const consoleErrors = [];
   const timerCalls = [];
   const timerReceiverMarker = {};
@@ -162,6 +164,27 @@ function createWorkerHarness(options = {}) {
   }
 
   class FakeCaptureIntegrationError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeLiveBidProtocolError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeLiveBidStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeLiveBidCoordinatorError extends Error {
     constructor(code, message) {
       super(message);
       this.code = code;
@@ -600,6 +623,9 @@ function createWorkerHarness(options = {}) {
     },
   };
   const captureEventIntegration = {
+    consumeLiveBidChanged() {
+      return options.liveBidChanged === true;
+    },
     async dispatch(event) {
       captureDispatchCalls.push(JSON.parse(JSON.stringify(event)));
 
@@ -626,6 +652,51 @@ function createWorkerHarness(options = {}) {
     createCaptureIntegration(receivedOptions) {
       captureIntegrationOptions = receivedOptions;
       return captureEventIntegration;
+    },
+  };
+  const liveBidProtocolModule = {
+    MESSAGE_CHANNEL: "tiktok-live-tracker.live-bid",
+    MESSAGE_VERSION: 1,
+    COMMAND_TYPES: { GET_LIVE_BID: "get_live_bid" },
+    LiveBidProtocolError: FakeLiveBidProtocolError,
+    createLiveBidChangedNotification() {
+      return {
+        channel: "tiktok-live-tracker.live-bid",
+        version: 1,
+        event: { type: "live_bid_changed" },
+      };
+    },
+    isLiveBidChangedNotification(message) {
+      return message?.event?.type === "live_bid_changed";
+    },
+    validateLiveBidMessage(message) {
+      return message.command;
+    },
+  };
+  const liveBidStorageModule = {
+    LiveBidStorageError: FakeLiveBidStorageError,
+    createLiveBidStore() {
+      return {};
+    },
+  };
+  const liveBidCoordinator = {
+    async dispatch() {
+      return options.liveBidDispatchResult ?? { liveAuction: null };
+    },
+    async synchronize(value) {
+      liveBidSyncCalls.push(JSON.parse(JSON.stringify(value)));
+
+      if (options.liveBidSyncError) {
+        throw options.liveBidSyncError;
+      }
+
+      return options.liveBidSyncResult ?? { status: "unchanged" };
+    },
+  };
+  const liveBidCoordinatorModule = {
+    LiveBidCoordinatorError: FakeLiveBidCoordinatorError,
+    createLiveBidCoordinator() {
+      return liveBidCoordinator;
     },
   };
   const googleSheetsInventoryImportModule = {
@@ -719,6 +790,9 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
     TikTokLiveTrackerCaptureProtocol: captureProtocol,
     TikTokLiveTrackerCaptureIntegration: captureIntegrationModule,
+    TikTokLiveTrackerLiveBidProtocol: liveBidProtocolModule,
+    TikTokLiveTrackerLiveBidStorage: liveBidStorageModule,
+    TikTokLiveTrackerLiveBidCoordinator: liveBidCoordinatorModule,
     TikTokLiveTrackerInventorySheetImport: {},
     TikTokLiveTrackerInventoryImportProtocol: inventoryImportProtocol,
     TikTokLiveTrackerGoogleSheetsInventoryImport:
@@ -737,7 +811,7 @@ function createWorkerHarness(options = {}) {
       },
     },
     chrome: {
-      storage: { local: storageArea },
+      storage: { local: storageArea, session: storageArea },
       runtime: {
         id: extensionId,
         getManifest() {
@@ -904,6 +978,7 @@ function createWorkerHarness(options = {}) {
     reportCoordinator,
     reportPageUrl,
     listeners,
+    liveBidSyncCalls,
     reconciliation,
     runtimeSendMessages,
     send,
@@ -933,6 +1008,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/stream-session.js",
     "shared/stream-session-storage.js",
     "shared/stream-session-coordinator.js",
+    "shared/live-bid-protocol.js",
+    "shared/live-bid-storage.js",
+    "shared/live-bid-coordinator.js",
     "shared/capture-protocol.js",
     "shared/capture-integration.js",
     "shared/inventory-sheet-import.js",
@@ -1864,6 +1942,107 @@ test("accepts a sanitized bidding variation through the capture boundary", async
   assert.deepEqual(harness.captureDispatchCalls, [event]);
 });
 
+test("a new bidding variation emits canonical and retained-auction invalidations", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: true });
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 253,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
+
+test("live bid prices emit only their lightweight data-free invalidation", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: true });
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
+
+test("silently ignored stale live bid prices do not invalidate either UI path", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: false });
+  const request = harness.send(
+    harness.createCaptureMessage({
+      type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+      variationNumber: 251,
+      bidPriceCents: 2800,
+    }),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.equal(harness.runtimeSendMessages.length, 0);
+});
+
+test("only the exact side panel can read the transient live bid", async () => {
+  const expected = {
+    liveAuction: {
+      variationNumber: 252,
+      bidPriceCents: 2800,
+      unitCostCents: 1200,
+    },
+  };
+  const harness = createWorkerHarness({ liveBidDispatchResult: expected });
+  const message = liveBidProtocol.createLiveBidMessage();
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+
+  assert.deepEqual(
+    await harness.send(message, harness.createCaptureSender()).response,
+    {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message: "This extension context cannot issue live-bid commands.",
+      },
+    },
+  );
+});
+
 test("keeps accepted capture responses independent of notification delivery", async () => {
   for (const options of [
     { runtimeSendMessageError: new Error("no receiver") },
@@ -2621,6 +2800,63 @@ test("pins and forwards employee mutations only for the active stream", async ()
       ],
     );
   }
+});
+
+test("employee mapping refreshes retained cost with a lightweight invalidation", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    liveBidSyncResult: { status: "accepted" },
+  });
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.MAP_VARIATION,
+    streamId: activeSession.streamId,
+    variationNumber: 203,
+    sku: "TEST-SKU",
+  };
+
+  assert.deepEqual(
+    await harness.send(harness.createMessage(command)).response,
+    { ok: true, data: { state: null, result: null } },
+  );
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    { streamId: activeSession.streamId, state: null },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
+
+test("retained-cost storage failure cannot reject a saved employee mapping", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    liveBidSyncError: new Error("session storage unavailable"),
+  });
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.UNMAP_VARIATION,
+    streamId: activeSession.streamId,
+    variationNumber: 203,
+  };
+
+  assert.deepEqual(
+    await harness.send(harness.createMessage(command)).response,
+    { ok: true, data: { state: null, result: null } },
+  );
+  assert.equal(harness.liveBidSyncCalls.length, 1);
+  assert.equal(harness.runtimeSendMessages.length, 0);
 });
 
 test("rejects manual unpaid commands because Live payment outcomes are automatic", async () => {

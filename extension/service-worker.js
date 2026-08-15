@@ -11,6 +11,9 @@ importScripts(
   "shared/stream-session.js",
   "shared/stream-session-storage.js",
   "shared/stream-session-coordinator.js",
+  "shared/live-bid-protocol.js",
+  "shared/live-bid-storage.js",
+  "shared/live-bid-coordinator.js",
   "shared/capture-protocol.js",
   "shared/capture-integration.js",
   "shared/inventory-sheet-import.js",
@@ -35,6 +38,10 @@ const streamSessionStorage =
   globalThis.TikTokLiveTrackerStreamSessionStorage;
 const streamSessionCoordinator =
   globalThis.TikTokLiveTrackerStreamSessionCoordinator;
+const liveBidProtocol = globalThis.TikTokLiveTrackerLiveBidProtocol;
+const liveBidStorage = globalThis.TikTokLiveTrackerLiveBidStorage;
+const liveBidCoordinatorModule =
+  globalThis.TikTokLiveTrackerLiveBidCoordinator;
 const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
 const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
 const inventorySheetImport =
@@ -44,8 +51,10 @@ const inventoryImportProtocol =
 const googleSheetsInventoryImport =
   globalThis.TikTokLiveTrackerGoogleSheetsInventoryImport;
 let storageAccessError = null;
-const storageAccessReady = chrome.storage.local
-  .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+const storageAccessReady = Promise.all([
+  chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }),
+  chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }),
+])
   .catch((error) => {
     storageAccessError = error;
     console.error(
@@ -87,10 +96,24 @@ const activeStreamCoordinator =
     createId: () => `local-stream:${globalThis.crypto.randomUUID()}`,
     now: () => new Date().toISOString(),
   });
+const liveBidStore = liveBidStorage.createLiveBidStore({
+  storageArea: chrome.storage.session,
+});
+const liveBidCoordinator =
+  liveBidCoordinatorModule.createLiveBidCoordinator({
+    activeStreamCoordinator,
+    liveBidStore,
+    reconciliation,
+    reconciliationCoordinator,
+    stateCoordinator,
+    streamSession,
+    streamSessionCoordinator,
+  });
 const captureEventIntegration =
   captureIntegration.createCaptureIntegration({
     activeStreamCoordinator,
     captureProtocol,
+    liveBidCoordinator,
     reconciliationCoordinator,
     stateCoordinator,
     streamSession,
@@ -131,6 +154,9 @@ const captureStateChangedNotification = Object.freeze({
   version: 1,
   event: Object.freeze({ type: "capture_state_changed" }),
 });
+const liveBidChangedNotification = Object.freeze(
+  liveBidProtocol.createLiveBidChangedNotification(),
+);
 let messageTail = Promise.resolve();
 
 chrome.sidePanel
@@ -154,6 +180,8 @@ function failBoundary(protocol, code, message) {
     BoundaryError = streamReportProtocol.StreamReportProtocolError;
   } else if (protocol === inventoryImportProtocol) {
     BoundaryError = inventoryImportProtocol.InventoryImportProtocolError;
+  } else if (protocol === liveBidProtocol) {
+    BoundaryError = liveBidCoordinatorModule.LiveBidCoordinatorError;
   }
 
   throw new BoundaryError(code, message);
@@ -200,6 +228,18 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === liveBidProtocol.MESSAGE_CHANNEL) {
+    if (liveBidProtocol.isLiveBidChangedNotification(message)) {
+      return null;
+    }
+
+    return {
+      coordinator: liveBidCoordinator,
+      label: "live-bid",
+      protocol: liveBidProtocol,
+    };
+  }
+
   if (message.channel === inventoryImportProtocol.MESSAGE_CHANNEL) {
     return {
       coordinator: inventoryImportService,
@@ -216,6 +256,10 @@ function validateMessage(message, boundary) {
 
   if (protocol === captureProtocol) {
     return captureProtocol.validateCaptureMessage(message);
+  }
+
+  if (protocol === liveBidProtocol) {
+    return liveBidProtocol.validateLiveBidMessage(message);
   }
 
   if (protocol === inventoryImportProtocol) {
@@ -774,7 +818,25 @@ async function dispatchReconciliationCommand(command) {
     await pinStreamToPreparedInventory(state.activeSession.streamId);
   }
 
-  return stateCoordinator.dispatch(command);
+  const response = await stateCoordinator.dispatch(command);
+
+  if (mutatesEmployeeStream(command)) {
+    try {
+      const synchronization = await liveBidCoordinator.synchronize({
+        streamId: command.streamId,
+        state: response?.state ?? null,
+      });
+
+      if (synchronization?.status === "accepted") {
+        notifyLiveBidChanged();
+      }
+    } catch (_error) {
+      // The canonical mapping was saved successfully. Retained live-auction
+      // display state is best-effort and must not turn that save into a failure.
+    }
+  }
+
+  return response;
 }
 
 function dispatchBoundaryCommand(boundary, command) {
@@ -831,6 +893,9 @@ function serializeError(error, boundary) {
     error instanceof streamReportCoordinator.StreamReportCoordinatorError ||
     error instanceof captureProtocol.CaptureProtocolError ||
     error instanceof captureIntegration.CaptureIntegrationError ||
+    error instanceof liveBidProtocol.LiveBidProtocolError ||
+    error instanceof liveBidStorage.LiveBidStorageError ||
+    error instanceof liveBidCoordinatorModule.LiveBidCoordinatorError ||
     error instanceof inventoryImportProtocol.InventoryImportProtocolError ||
     error instanceof
       googleSheetsInventoryImport.GoogleSheetsInventoryImportError;
@@ -861,6 +926,18 @@ function notifyCaptureStateChanged() {
     }
   } catch {
     // Persistence already succeeded; notification delivery is best-effort.
+  }
+}
+
+function notifyLiveBidChanged() {
+  try {
+    const delivery = chrome.runtime.sendMessage(liveBidChangedNotification);
+
+    if (delivery && typeof delivery.catch === "function") {
+      delivery.catch(() => undefined);
+    }
+  } catch {
+    // Transient persistence already succeeded; delivery is best-effort.
   }
 }
 
@@ -897,7 +974,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isRecord(data) &&
         data.status === "accepted"
       ) {
-        notifyCaptureStateChanged();
+        const liveAuctionChanged =
+          captureEventIntegration.consumeLiveBidChanged();
+
+        if (
+          message.event?.type ===
+          captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE
+        ) {
+          if (liveAuctionChanged) {
+            notifyLiveBidChanged();
+          }
+        } else {
+          notifyCaptureStateChanged();
+
+          if (liveAuctionChanged) {
+            notifyLiveBidChanged();
+          }
+        }
       }
 
       sendResponse({ ok: true, data });

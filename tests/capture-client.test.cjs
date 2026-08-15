@@ -90,6 +90,26 @@ test("sends only the live bidding variation number", async () => {
   );
 });
 
+test("sends only the live bidding variation and integer price", async () => {
+  const runtime = createRuntime();
+  const client = createCaptureClient({ protocol, runtime });
+
+  await client.observeBiddingPrice({
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  });
+
+  assert.deepEqual(runtime.calls[0].event, {
+    type: "observe_bidding_price",
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(runtime.calls[0].event),
+    /title|product|buyer|bidCount|element|selector|streamId|raw/i,
+  );
+});
+
 test("sends only variation and price for a completed payment", async () => {
   const runtime = createRuntime();
   const client = createCaptureClient({ protocol, runtime });
