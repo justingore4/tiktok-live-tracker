@@ -764,7 +764,13 @@
       }
 
       function selectVariation(value) {
-        if (phase !== PHASES.READY || !projectionSession) {
+        const canSelectDuringRefresh =
+          phase === PHASES.LOADING && operation === OPERATIONS.REFRESH;
+
+        if (
+          (phase !== PHASES.READY && !canSelectDuringRefresh) ||
+          !projectionSession
+        ) {
           return createSnapshot();
         }
 

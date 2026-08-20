@@ -62,6 +62,8 @@
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const liveAuctionViewModel =
     globalThis.TikTokLiveTrackerLiveAuctionViewModel;
+  const variationSelectorLockModule =
+    globalThis.TikTokLiveTrackerVariationSelectorLock;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
   const appShell = document.querySelector(".app-shell");
@@ -381,6 +383,9 @@
     !liveBidClientModule ||
     !liveAuctionViewModel ||
     typeof liveAuctionViewModel.createDisplay !== "function" ||
+    !variationSelectorLockModule ||
+    typeof variationSelectorLockModule.createVariationSelectorLock !==
+      "function" ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule ||
     typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
@@ -427,6 +432,10 @@
     runtime: chrome.runtime,
     protocol: liveBidProtocol,
   });
+  const variationSelectorLock =
+    variationSelectorLockModule.createVariationSelectorLock({
+      apply: renderVariationSelectorOptions,
+    });
   let persistentController = null;
   let unsubscribePersistentController = null;
   let mountedStreamId = null;
@@ -577,7 +586,7 @@
     }
 
     if (variation?.status === "canceled") {
-      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and the unit returned to available inventory.`;
+      return `Variation #${variation.variationNumber} was canceled. Any inventory reservation was released. You can still select a reference item without changing inventory or metrics.`;
     }
 
     if (variation?.observedPaymentStatus === "payment_complete") {
@@ -917,6 +926,7 @@
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
     resetLiveBidTracking();
+    variationSelectorLock.reset();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -970,13 +980,30 @@
       !streamSnapshot.resumed || streamSnapshot.activeSession === null;
     const shouldBeBusy =
       Boolean(busy) || streamSnapshot.busy || streamUnavailable;
+    const keepVariationSelectorInteractive =
+      variationSelectorLock.isLocked() &&
+      snapshotIsBackgroundRefresh(savedSnapshot) &&
+      !streamSnapshot.busy &&
+      !streamUnavailable &&
+      !endConfirmationOpen;
     const shouldBeInert =
-      shouldBeBusy ||
+      (shouldBeBusy && !keepVariationSelectorInteractive) ||
       savedSnapshot?.phase === "error" ||
       endConfirmationOpen;
 
     trackerWorkspace.setAttribute("aria-busy", String(shouldBeBusy));
     trackerWorkspace.toggleAttribute("inert", shouldBeInert);
+  }
+
+  function snapshotIsBackgroundRefresh(snapshot) {
+    return (
+      snapshot?.phase === "loading" && snapshot.operation === "refresh"
+    );
+  }
+
+  function releaseVariationSelector() {
+    variationSelectorLock.release();
+    setWorkspaceBusy(savedSnapshot?.busy === true);
   }
 
   function isSavedWorkspaceUnavailable() {
@@ -1654,7 +1681,6 @@
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
     button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
-    button.dataset.lockedReason = canceled ? "canceled" : "";
     button.setAttribute("aria-pressed", String(selected));
 
     if (!canTagSelectedVariation) {
@@ -1665,7 +1691,7 @@
     } else if (selected && canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, was selected for canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation was released and this history is read-only.`,
+        `${itemName}, size ${entry.size}, is the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
       );
     } else if (selected) {
       button.setAttribute(
@@ -1675,7 +1701,9 @@
     } else if (canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Canceled variation ${variationNumber} is read-only.`,
+        auction?.sku
+          ? `Change canceled variation ${variationNumber} to reference ${itemName}, size ${entry.size}, ${stockAriaLabel}. No inventory will be changed.`
+          : `Select ${itemName}, size ${entry.size}, as the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -1787,7 +1815,7 @@
     }
   }
 
-  function renderVariationNavigation(view) {
+  function renderVariationSelectorOptions(view) {
     const fragment = document.createDocumentFragment();
     const variations = getRecordedVariations(view);
 
@@ -1813,11 +1841,20 @@
     variationSelector.replaceChildren(fragment);
     variationSelector.disabled = variations.length === 0;
 
+    if (variations.length > 0) {
+      variationSelector.value = String(view.selectedVariationNumber);
+    }
+  }
+
+  function renderVariationNavigation(view) {
+    const variations = getRecordedVariations(view);
+
+    variationSelectorLock.requestRender(view);
+
     const reviewingRecordedHistory =
       variations.length > 0 && view.isReviewingHistory;
 
     if (variations.length > 0) {
-      variationSelector.value = String(view.selectedVariationNumber);
       variationContext.textContent = "Live auction variations";
       inventoryTitle.textContent =
         `Review or tag variation #${view.selectedVariationNumber}`;
@@ -1849,7 +1886,7 @@
     inventoryGrid.replaceChildren(fragment);
     inventoryGrid.dataset.orderState = canceled ? "canceled" : "editable";
     inventorySelectionNote.textContent = canceled
-      ? "This order was canceled. Its previous item is shown as read-only history, its reservation was released, and inventory cannot be changed."
+      ? "This order was canceled. Select an item only to record what was auctioned; mapping, changing, or clearing it will not affect inventory or metrics."
       : "Selecting an item reserves one unit until TikTok reports Payment complete or Canceled. Temporary Payment failed remains pending. Zero-stock items remain selectable and show how far they are oversold.";
     inventoryGrid.hidden = filteredInventory.length === 0;
     emptyState.hidden = filteredInventory.length !== 0;
@@ -2102,8 +2139,8 @@
 
     if (auction.paymentStatus === "canceled") {
       return auction.sku
-        ? "Canceled item · reservation released · stock restored"
-        : "Canceled · no inventory item assigned";
+        ? "Canceled · reference item selected · no inventory change"
+        : "Canceled · no reference item selected";
     }
 
     if (!auction.sku) {
@@ -2638,13 +2675,18 @@
   function announceSavedAction(action, view) {
     const variationNumber =
       action.variationNumber ?? view.selectedVariationNumber;
+    const canceled = view.auction?.paymentStatus === "canceled";
 
     if (action.type === "map_variation") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} mapping saved locally.`;
+        canceled
+          ? `Canceled variation ${variationNumber} reference item saved locally. Inventory and metrics were not changed.`
+          : `Variation ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
+        canceled
+          ? `Canceled variation ${variationNumber} reference item cleared locally. Inventory and metrics were not changed.`
+          : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     }
   }
 
@@ -2834,17 +2876,51 @@
     });
   }
 
-  variationSelector.addEventListener("change", () => {
-    if (!persistentController || variationSelector.value === "") {
-      mappingAnnouncement.textContent =
-        "Waiting for a live auction variation.";
-      return;
+  variationSelector.addEventListener("pointerdown", (event) => {
+    if (event.button === 0) {
+      variationSelectorLock.lock();
     }
+  });
+
+  variationSelector.addEventListener("keydown", (event) => {
+    const opensPicker =
+      event.key === " " ||
+      event.key === "Spacebar" ||
+      event.key === "Enter" ||
+      event.key === "F4" ||
+      event.key === "ArrowDown" ||
+      event.key === "ArrowUp" ||
+      event.key === "Home" ||
+      event.key === "End" ||
+      event.key === "PageDown" ||
+      event.key === "PageUp";
+
+    if (opensPicker) {
+      variationSelectorLock.lock();
+    } else if (event.key === "Escape") {
+      releaseVariationSelector();
+    }
+  });
+
+  variationSelector.addEventListener("blur", () => {
+    releaseVariationSelector();
+  });
+
+  variationSelector.addEventListener("change", () => {
+    const selectedValue = variationSelector.value;
+    const selectedVariationNumber = Number(selectedValue);
 
     try {
+      if (!persistentController || selectedValue === "") {
+        mappingAnnouncement.textContent =
+          "Waiting for a live auction variation.";
+        return;
+      }
+
       searchInput.value = "";
+
       const snapshot = persistentController.selectVariation(
-        Number(variationSelector.value),
+        selectedVariationNumber,
       );
       const view = snapshot.view;
 
@@ -2854,6 +2930,8 @@
     } catch (error) {
       mappingAnnouncement.textContent =
         error?.message ?? "That variation could not be selected.";
+    } finally {
+      releaseVariationSelector();
     }
   });
 
@@ -2907,12 +2985,6 @@
     if (!hasSelectedRecordedVariation(view)) {
       mappingAnnouncement.textContent =
         "Wait for a captured live auction variation before selecting inventory.";
-      return;
-    }
-
-    if (view.auction?.paymentStatus === "canceled") {
-      mappingAnnouncement.textContent =
-        `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
       return;
     }
 

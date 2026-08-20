@@ -257,6 +257,44 @@ test("corrects an unsold SKU for this report export without changing metrics", (
   );
 });
 
+test("unit-cost correction preserves canceled-order reference mappings", () => {
+  const state = reconciliation.createReconciliationState([
+    inventoryEntry("A-SHIRT-S", "Shirt", "red", "S", 5, 500),
+  ]);
+  mapAndComplete(state, 1, "A-SHIRT-S", 1500);
+  reconciliation.mapVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 2,
+    sku: "A-SHIRT-S",
+  });
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ID,
+    statuses: [{
+      variationNumber: 2,
+      observedPaymentStatus:
+        reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+    }],
+  });
+  const original = streamReport.createStreamReport({
+    reconciliation,
+    reconciliationState: state,
+    streamId: STREAM_ID,
+    startedAt: STARTED_AT,
+    endedAt: ENDED_AT,
+    generatedAt: GENERATED_AT,
+  });
+
+  const corrected = streamReport.correctReportUnitCost(original, {
+    sku: "A-SHIRT-S",
+    unitCostCents: 700,
+  });
+
+  assert.deepEqual(corrected.canceledOrders, original.canceledOrders);
+  assert.equal(corrected.totals.canceledOrderCount, 1);
+  assert.equal(corrected.inventory[0].replacementQuantity, 4);
+  assert.equal(corrected.sheetRows[0].quantity_on_hand_at_import, 4);
+});
+
 test("accepts a zero-dollar cost and remains idempotent for a repeated correction", () => {
   const original = buildPerformanceReport();
   const zeroCost = streamReport.correctReportUnitCost(original, {
@@ -349,4 +387,3 @@ test("strictly rejects malformed, unknown, and arithmetically unsafe corrections
   );
   assert.deepEqual(original, before);
 });
-

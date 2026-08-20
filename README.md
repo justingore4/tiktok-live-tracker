@@ -51,9 +51,10 @@ badge.
 An exact TikTok **Canceled** badge is canonical and terminal for inventory allocation. It
 keeps the variation linked to its selected item for history, releases that reservation,
 restores the unit to availability, and never counts the cancellation as a sale, revenue,
-or profit. Canceled variations retain that item as read-only history: every inventory
-card is disabled while the employee reviews one. Live mode has no manual mark-unpaid or
-undo-unpaid control; TikTok's exact payment lifecycle is authoritative. If the item is
+or profit. While reviewing a canceled variation, the employee can map, correct, or clear
+its item as a reference showing what was auctioned. Those reference-only changes never
+reserve or subtract stock and never change any metric. Live mode has no manual mark-unpaid
+or undo-unpaid control; TikTok's exact payment lifecycle is authoritative. If the item is
 auctioned again, the employee maps its new variation number.
 
 ## Current implementation
@@ -68,8 +69,10 @@ auctioned again, the employee maps its new variation number.
   variation selector. The active on-video auction is labeled `bidding` and can be mapped
   before the sale reaches Sold Items. While the employee is viewing the current auction,
   the next auction is selected automatically. A manually selected historical variation
-  stays selected while newer auctions continue updating the selector. Inventory cards
-  show remaining stock separately from pending reservations.
+  stays selected while newer auctions continue being captured. To protect an open native
+  selector from closing during a live update, visible option changes pause only while its
+  menu is open and catch up to the newest saved state when the employee selects or dismisses
+  it. Inventory cards show remaining stock separately from pending reservations.
 - A compact **Live auction** panel that stays visible throughout an active local tracker
   stream, including while an employee reviews an older variation. A newly detected
   on-video auction immediately changes its heading to `Variation #N` and clears the prior
@@ -161,7 +164,11 @@ auctioned again, the employee maps its new variation number.
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
   After Fees**, mapped COGS and gross profit, completed-sale rows, exact-SKU performance,
   combined item-and-style product performance across sizes, and all ties for top sold and
-  top profitable entries.
+  top profitable entries. A collapsed **Canceled Orders** table preserves each captured
+  canceled variation and its mapped or unmapped reference item without feeding inventory,
+  sales, cost, profit, or product analytics. Reports saved before this row-level snapshot
+  was introduced keep their canceled count and explain when individual details are
+  unavailable.
   The baseline-wide inventory handoff retains
   opening, sold, pending, calculated, oversold, and recount details for every SKU.
 - Restoration of mappings, reservations, and prior variation records after the side
@@ -228,9 +235,11 @@ auctioned again, the employee maps its new variation number.
     separately from completed sales;
   - treats exact `Canceled` as a terminal inventory-allocation result that preserves the
     item link, releases its reservation, and contributes no sale or money;
-  - treats cancellation as terminal and rejects later payment or mapping mutations;
-  - supports mapping corrections and click-again unmapping for every non-canceled order;
-    payment results rely exclusively on captured TikTok truth;
+  - treats cancellation as terminal for payment while allowing later mapping, correction,
+    or click-again unmapping only as a reference to the auctioned item;
+  - guarantees canceled reference mappings never reserve or subtract inventory and never
+    contribute sales, revenue, COGS, profit, AOV, or product-performance metrics;
+  - keeps payment results exclusively dependent on captured TikTok truth;
   - applies completed historical corrections atomically by restoring the old SKU,
     decrementing the new SKU, and recalculating its cost snapshot and gross profit;
   - keeps zero-stock inventory selectable and surfaces `Oversold by N` instead of
@@ -327,6 +336,13 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   largest loss. Positive values are green, losses are red, and zero is neutral; pending,
   canceled, unmapped, and unsold entries are excluded. It starts collapsed on screen and
   expands for print/PDF output.
+- The report's native **Canceled Orders** disclosure lists the variation and reference
+  SKU, item, style, and size for every canceled order captured in that report stream.
+  Unmapped cancellations remain visible as `Unmapped`; these rows are historical context
+  only and never affect inventory or any metric. This report section is display-only;
+  reference mapping changes are made from the active stream history before End. Older
+  compatible reports retain their aggregate canceled count even when row-level details
+  were not saved.
 - **Gross margin** is SKU gross profit divided by SKU mapped revenue. **Sell-through** is
   the current stream's mapped completed units for that SKU divided by its opening
   quantity in the pinned baseline.
@@ -394,10 +410,12 @@ before updating the Sheet.
       active bidding variation before it sells while the employee is already viewing the
       current auction, and display its later observed TikTok payment status independently
       of inventory mapping. Reviewing history pauses automatic switching without pausing
-      selector updates and exposes a compact **Return to live item** action. That action
-      targets the active bidding variation when one exists, otherwise the newest captured
-      variation, and resumes automatic follow without changing any auction or inventory
-      data. A prioritized queue, visible capture status, verified TikTok
+      capture and exposes a compact **Return to live item** action. Visible option changes
+      are deferred only while the native selector menu is open, then applied from the newest
+      saved view when it closes. The return action targets the active bidding variation when
+      one exists, otherwise the newest captured variation, and resumes automatic follow
+      without changing any auction or inventory data. A prioritized queue, visible capture
+      status, verified TikTok
       stream identity, and broader live validation remain next.
 5. Connect Google Sheets inventory in three focused stages:
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
@@ -528,9 +546,12 @@ misconfigured build fail before requesting Google authorization.
     confirm the same option keeps `bidding` but replaces `No item selected` with the item,
     style, and size. The selector eyebrow should read **Live auction variations**. When
     TikTok starts the next auction, its number must become current without opening the
-    menu. Then manually select a previous variation and let another auction begin: its
-    option must appear and update in the same menu without replacing the historical
-    selection. Confirm a compact **Return to live item** button appears below the selector;
+    menu. Then open and scroll the selector without choosing an option while another
+    variation or payment-status update arrives. The native menu must remain open at the
+    same scroll position while capture continues; close it or choose an option, then reopen
+    it and confirm all deferred option text and new variations appear. Manually select a
+    previous variation and confirm later updates do not replace that historical selection.
+    Confirm a compact **Return to live item** button appears below the selector;
     select it and verify the active bidding variation becomes selected. If there is no
     active bidding marker, verify it instead selects the newest captured variation. The
     button must disappear after returning, must not change any mapping, inventory, payment,
@@ -560,9 +581,11 @@ misconfigured build fail before requesting Google authorization.
     variation selected. Mapping during bidding must immediately show one pending unit and
     reduce the displayed available count by one. Processing, fixing, temporary failed,
     unrecognized, not-yet-observed, and unpriced `Payment complete` observations must keep
-    that reservation. Exact `Canceled` must keep the item link as read-only history,
-    release the reservation, restore availability, and leave money unchanged. All cards
-    must be greyed out and noninteractive while that canceled variation is selected. For
+    that reservation. Exact `Canceled` must keep the item link as reference history,
+    release the reservation, restore availability, and leave money unchanged. While that
+    canceled variation is selected, inventory cards must remain enabled so its reference
+    item can be mapped, corrected, or cleared. Confirm each reference-only change updates
+    the dropdown item label without changing inventory or any live metric. For
     priced `Payment complete`, confirm the pending label disappears, the captured final
     price appears, and the sale permanently consumes the selected unit.
     Use the video auction card only to validate the current variation number; do not use
@@ -607,11 +630,12 @@ misconfigured build fail before requesting Google authorization.
     confirm pending disappears while one unit remains consumed. On a different test
     variation, wait for exact `Canceled` and confirm its pending unit is restored
     automatically with no employee action.
-17. On any non-canceled variation, select a SKU already showing `0 left`. Confirm the
-    card stays enabled, never says **Sold out**, and reports `Oversold by 1`. Assign that
-    SKU again and confirm the warning increments. Canceling one pending order must reduce
-    or remove its oversold amount. Only reviewing a canceled variation disables all
-    inventory cards.
+17. On any inventory-affecting variation, select a SKU already showing `0 left`. Confirm
+    the card stays enabled, never says **Sold out**, and reports `Oversold by 1`. Assign
+    that SKU again and confirm the warning increments. Canceling one pending order must
+    reduce or remove its oversold amount. Review that canceled variation and select the
+    same SKU as its reference item; confirm the card stays interactive while its displayed
+    stock, oversold warning, and every metric remain unchanged.
 18. Use TikTok's own navigation to leave the dashboard and return without reloading the
     tab; confirm capture becomes active again. Put the tab in the background, return to
     it, and confirm a later Sold Items change is still captured.
@@ -628,9 +652,13 @@ misconfigured build fail before requesting Google authorization.
     unmapped completed sale, conflict, or oversold/recount condition must show no
     attention notice. Verify the completed-sale table includes mapped and unmapped
     completions, the SKU and combined product rankings retain ties, and the inventory
-    table contains every SKU from the pinned baseline. Use **Print / Save as PDF**, choose
-    Chrome's **Save as PDF** destination, and save a copy outside the extension if the
-    report must be retained.
+    table contains every SKU from the pinned baseline. Expand **Canceled Orders** and
+    confirm its count and variation/SKU/item/style/size references match the stream,
+    including `Unmapped` when no reference was selected. Confirm those rows are
+    display-only and that their mappings did not affect any report metric or inventory
+    quantity.
+    Use **Print / Save as PDF**, choose Chrome's **Save as PDF** destination, and save a
+    copy outside the extension if the report must be retained.
     For a newest test report containing one `Payment fixing` or temporary
     `Payment failed` order, verify **Finish unresolved payments** appears. Cancel one
     confirmation and verify nothing changes. Mark a mapped test order complete only after

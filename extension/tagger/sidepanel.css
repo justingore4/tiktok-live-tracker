@@ -2168,19 +2168,6 @@ button {
   color: #ffd88a;
 }
 
-.inventory-card[data-locked-reason="canceled"] {
-  border-style: dashed;
-  border-color: #3a414c;
-  background: #11151c;
-  box-shadow: none;
-  opacity: 0.62;
-}
-
-.inventory-card[data-locked-reason="canceled"] .stock-indicator {
-  background: var(--danger-muted);
-  box-shadow: none;
-}
-
 .empty-state {
   margin-top: 17px;
   padding: 30px 18px;

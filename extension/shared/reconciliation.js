@@ -1662,13 +1662,6 @@
 
       let auction = findAuction(state, key.streamId, key.variationNumber);
 
-      if (auction?.paymentStatus === "canceled") {
-        fail(
-          "CANCELED_VARIATION_IMMUTABLE",
-          "A canceled variation's inventory mapping cannot be changed.",
-        );
-      }
-
       if (auction?.sku === sku) {
         return createAuctionView(state, auction);
       }
@@ -1679,6 +1672,8 @@
         key.variationNumber,
       );
 
+      // A canceled variation may keep an SKU as reference-only history. Its
+      // terminal payment status keeps this mapping out of inventory and sales.
       auction.sku = sku;
       auction.mappingStatus = "mapped";
 
@@ -1930,13 +1925,6 @@
 
       if (!auction) {
         fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
-      }
-
-      if (auction.paymentStatus === "canceled") {
-        fail(
-          "CANCELED_VARIATION_IMMUTABLE",
-          "A canceled variation's inventory mapping cannot be changed.",
-        );
       }
 
       if (auction.sku === null) {

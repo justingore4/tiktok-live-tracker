@@ -258,6 +258,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "live-auction-view-model.js",
+    "variation-selector-lock.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
     "../shared/stream-report.js",
@@ -595,6 +596,11 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     "utf8",
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
+  const inventoryClickHandler = panelSource.match(
+    /inventoryGrid\.addEventListener\("click",[\s\S]*?searchInput\.addEventListener\("input"/,
+  )?.[0];
+
+  assert.ok(inventoryClickHandler);
   assert.match(
     panelSource,
     /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
@@ -660,6 +666,10 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.match(panelSource, /persistentController\.mapSelectedSku/);
   assert.match(panelSource, /persistentController\.unmapSelectedVariation/);
   assert.match(panelSource, /type: selected \? "unmap_variation" : "map_variation"/);
+  assert.doesNotMatch(
+    inventoryClickHandler,
+    /paymentStatus === "canceled"|is read-only/,
+  );
   assert.match(workflowSource, /reconciliation\.unmapVariation\(state, auctionKey\(\)\)/);
   assert.doesNotMatch(panelSource, /persistentController\.markSelectedUnpaid/);
   assert.doesNotMatch(panelSource, /persistentController\.undoSelectedUnpaid/);
@@ -779,14 +789,8 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(panelSource, /persistentController\.[^(]*Payment/);
   assert.match(workflowSource, /action = "completed_sale_mapped"/);
   assert.match(workflowSource, /canceled: "Canceled"/);
-  assert.match(
-    workflowSource,
-    /const canceled = auction\?\.paymentStatus === "canceled"[\s\S]+const selectionAllowed = !canceled/,
-  );
-  assert.match(
-    workflowSource,
-    /if \(previousAuction\?\.paymentStatus === "canceled"\)[\s\S]+"CANCELED_VARIATION_IMMUTABLE"/,
-  );
+  assert.match(workflowSource, /selectionAllowed: true/);
+  assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
   assert.doesNotMatch(workflowSource, /"SOLD_OUT"|"NO_STOCK_AVAILABLE"/);
   assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
   assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
@@ -827,17 +831,40 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     /TikTok shows Payment complete, but the final price is still syncing\./,
   );
   assert.match(panelSource, /remains reserved and pending/);
-  assert.match(panelSource, /"Canceled item · reservation released · stock restored"/);
+  assert.match(
+    panelSource,
+    /"Canceled · reference item selected · no inventory change"/,
+  );
+  assert.match(panelSource, /"Canceled · no reference item selected"/);
   assert.match(panelSource, /selectedLabel\.textContent = "Canceled item"/);
-  assert.match(panelSource, /this history is read-only/);
-  assert.match(panelSource, /button\.dataset\.lockedReason = canceled \? "canceled" : ""/);
-  assert.match(styleSource, /data-locked-reason="canceled"/);
+  assert.match(panelSource, /Click to unselect this reference item/);
+  assert.match(
+    panelSource,
+    /Select an item only to record what was auctioned; mapping, changing, or clearing it will not affect inventory or metrics/,
+  );
+  assert.match(
+    panelSource,
+    /You can still select a reference item without changing inventory or metrics/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
+  );
+  assert.doesNotMatch(panelSource, /dataset\.lockedReason/);
+  assert.doesNotMatch(styleSource, /data-locked-reason="canceled"/);
   assert.match(
     panelSource,
     /const canceled = view\.auction\?\.paymentStatus === "canceled"/,
   );
   assert.doesNotMatch(panelSource, /payment_completed_after_canceled/);
-  assert.match(panelSource, /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/);
+  assert.doesNotMatch(
+    panelSource,
+    /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/,
+  );
   assert.match(
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
@@ -857,6 +884,55 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(
     mappingSource,
     /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
+  );
+});
+
+test("canceled variation cards stay selectable for reference-only item changes", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const workflowSource = fs.readFileSync(
+    path.join(taggerDirectory, "mapping-workflow.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const cardSource = panelSource.match(
+    /function createInventoryCard\(entry, view\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const clickSource = panelSource.match(
+    /inventoryGrid\.addEventListener\("click",[\s\S]*?searchInput\.addEventListener\("input"/,
+  )?.[0];
+
+  assert.ok(cardSource);
+  assert.ok(clickSource);
+  assert.match(workflowSource, /selectionAllowed: true/);
+  assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
+  assert.match(
+    cardSource,
+    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+  );
+  assert.match(cardSource, /Click to unselect this reference item/);
+  assert.match(cardSource, /No inventory (?:is|will be) changed/);
+  assert.doesNotMatch(cardSource, /lockedReason|read-only/);
+  assert.doesNotMatch(styleSource, /data-locked-reason="canceled"/);
+  assert.doesNotMatch(
+    clickSource,
+    /paymentStatus === "canceled"|is read-only/,
+  );
+  assert.match(clickSource, /persistentController\.mapSelectedSku/);
+  assert.match(clickSource, /persistentController\.unmapSelectedVariation/);
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
   );
 });
 

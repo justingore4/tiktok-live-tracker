@@ -436,7 +436,7 @@ test("live capture and persistent tagging reconcile six inventory entries withou
   );
 });
 
-test("a live failed payment stays reserved until terminal cancellation restores and locks inventory", async () => {
+test("a live failed payment stays reserved until terminal cancellation restores inventory and permits reference edits", async () => {
   const storageArea = createStorageArea();
   const stateCoordinator = createStateCoordinator(storageArea);
   const activeStreamCoordinator = createActiveStreamCoordinator(storageArea);
@@ -570,29 +570,58 @@ test("a live failed payment stays reserved until terminal cancellation restores 
   ).state;
 
   assert.deepEqual(afterIgnoredCompletion, beforeIgnoredCompletion);
-  await assert.rejects(
-    stateCoordinator.dispatch({
-      type: reconciliationCoordinator.COMMAND_TYPES.MAP_VARIATION,
-      streamId: STREAM_ID,
-      variationNumber: COMPLETED_VARIATION,
-      sku: NIKE_XL_SKU,
-    }),
-    (error) => error?.code === "CANCELED_VARIATION_IMMUTABLE",
-  );
-  await assert.rejects(
-    stateCoordinator.dispatch({
-      type: reconciliationCoordinator.COMMAND_TYPES.UNMAP_VARIATION,
-      streamId: STREAM_ID,
-      variationNumber: COMPLETED_VARIATION,
-    }),
-    (error) => error?.code === "CANCELED_VARIATION_IMMUTABLE",
-  );
+  const totalsBeforeReferenceEdits = clone(snapshot.view.totals);
 
-  const afterRejectedCorrections = (
+  snapshot = await controller.mapSelectedSku(NIKE_XL_SKU);
+  assert.equal(snapshot.phase, "ready");
+  assert.equal(snapshot.operation, "map_variation");
+  assert.equal(snapshot.view.auction.status, "canceled");
+  assert.equal(snapshot.view.auction.sku, NIKE_XL_SKU);
+  assert.equal(snapshot.view.auction.committedUnitCostCents, null);
+  assert.deepEqual(snapshot.view.totals, totalsBeforeReferenceEdits);
+  assert.deepEqual(inventoryQuantities(snapshot, STUSSY_L_SKU), {
+    availableToTagQuantity: 5,
+    remainingQuantity: 5,
+    reservedQuantity: 0,
+    soldQuantity: 0,
+  });
+  assert.deepEqual(inventoryQuantities(snapshot, NIKE_XL_SKU), {
+    availableToTagQuantity: 3,
+    remainingQuantity: 3,
+    reservedQuantity: 0,
+    soldQuantity: 0,
+  });
+
+  snapshot = await controller.unmapSelectedVariation();
+  assert.equal(snapshot.phase, "ready");
+  assert.equal(snapshot.operation, "unmap_variation");
+  assert.equal(snapshot.view.auction.status, "canceled");
+  assert.equal(snapshot.view.auction.sku, null);
+  assert.equal(snapshot.view.mapping, null);
+  assert.deepEqual(snapshot.view.totals, totalsBeforeReferenceEdits);
+
+  snapshot = await controller.mapSelectedSku(STUSSY_L_SKU);
+  assert.equal(snapshot.view.auction.status, "canceled");
+  assert.equal(snapshot.view.auction.sku, STUSSY_L_SKU);
+  assert.deepEqual(snapshot.view.totals, totalsBeforeReferenceEdits);
+
+  const afterReferenceCorrections = (
     await stateCoordinator.dispatch({ type: "get_state" })
   ).state;
 
-  assert.deepEqual(afterRejectedCorrections, beforeIgnoredCompletion);
+  assert.equal(
+    reconciliation.getAuction(afterReferenceCorrections, {
+      streamId: STREAM_ID,
+      variationNumber: COMPLETED_VARIATION,
+    }).sku,
+    STUSSY_L_SKU,
+  );
+  assert.deepEqual(
+    reconciliation.hydrateReconciliationState(
+      clone(afterReferenceCorrections),
+    ),
+    afterReferenceCorrections,
+  );
 });
 
 test("two persistent taggers may oversell the Nike hoodie last unit with visible shortage state", async () => {

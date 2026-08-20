@@ -282,23 +282,16 @@
           summary.inventory.map((entry) => [entry.sku, entry]),
         );
         const auction = reconciliation.getAuction(state, auctionKey());
-        const canceled = auction?.paymentStatus === "canceled";
-
         return inventory.map((displayEntry) => {
           const canonicalEntry = summaryBySku.get(displayEntry.sku);
           const selected = auction?.sku === displayEntry.sku;
-          const selectionAllowed = !canceled;
-          const selectionReason = canceled
-            ? "canceled"
-            : selected
-              ? "selected"
-              : "available";
+          const selectionReason = selected ? "selected" : "available";
 
           return {
             ...displayEntry,
             ...canonicalEntry,
             selected,
-            selectionAllowed,
+            selectionAllowed: true,
             selectionReason,
           };
         });
@@ -394,13 +387,6 @@
 
         const previousAuction = reconciliation.getAuction(state, auctionKey());
         const sameSku = previousAuction?.sku === sku;
-
-        if (previousAuction?.paymentStatus === "canceled") {
-          return createRejectedResult(
-            "CANCELED_VARIATION_IMMUTABLE",
-            "Canceled variations keep their previous item as read-only history and cannot change inventory.",
-          );
-        }
 
         if (sameSku) {
           reconciliation.unmapVariation(state, auctionKey());

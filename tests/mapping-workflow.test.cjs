@@ -69,7 +69,7 @@ test("uses friendly labels for every observed TikTok payment status", () => {
   );
 });
 
-test("keeps temporary payment failed reserved and locks canonical canceled orders", () => {
+test("keeps temporary payment failed reserved and permits canceled reference mapping", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -95,8 +95,8 @@ test("keeps temporary payment failed reserved and locks canonical canceled order
     variationNumbers: [202, 201],
   });
 
-  const locked = session.selectSku("STUSSY-TEE-BLACK-L");
-  const view = session.getViewState();
+  const mapped = session.selectSku("STUSSY-TEE-BLACK-L");
+  const view = mapped.view;
   const canceledOption = view.variations.find(
     (variation) => variation.variationNumber === 202,
   );
@@ -105,22 +105,41 @@ test("keeps temporary payment failed reserved and locks canonical canceled order
   );
 
   assert.equal(view.selectedVariationNumber, 202);
-  assert.equal(locked.ok, false);
-  assert.equal(locked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.equal(mapped.ok, true);
+  assert.equal(mapped.action, "mapped");
   assert.equal(view.auction.observedPaymentStatus, "canceled");
   assert.equal(view.auction.observedPaymentStatusLabel, "Canceled");
   assert.equal(view.auction.paymentStatus, "canceled");
   assert.equal(view.auction.status, "canceled");
   assert.equal(view.auction.statusLabel, "Canceled");
-  assert.equal(view.auction.mappingStatus, "unmapped");
-  assert.equal(view.mapping, null);
-  assert.ok(view.inventory.every((entry) => !entry.selectionAllowed));
+  assert.equal(view.auction.mappingStatus, "mapped");
+  assert.equal(view.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.ok(view.inventory.every((entry) => entry.selectionAllowed));
   assert.ok(
-    view.inventory.every((entry) => entry.selectionReason === "canceled"),
+    view.inventory.every(
+      (entry) =>
+        entry.selectionReason ===
+          (entry.sku === "STUSSY-TEE-BLACK-L" ? "selected" : "available"),
+    ),
   );
   assert.equal(canceledOption.observedPaymentStatusLabel, "Canceled");
   assert.equal(canceledOption.status, "canceled");
   assert.equal(canceledOption.statusLabel, "Canceled");
+  const canceledReferenceItem = TEST_INVENTORY.find(
+    (entry) => entry.sku === "STUSSY-TEE-BLACK-L",
+  );
+  assert.deepEqual(
+    {
+      item: canceledOption.item,
+      style: canceledOption.style,
+      size: canceledOption.size,
+    },
+    {
+      item: canceledReferenceItem.item,
+      style: canceledReferenceItem.style,
+      size: canceledReferenceItem.size,
+    },
+  );
   assert.equal(failedOption.observedPaymentStatusLabel, "Payment failed");
   assert.equal(failedOption.status, "unmapped");
   assert.equal(
@@ -203,7 +222,7 @@ test("reserves not-observed and unrecognized selections until a terminal status"
   assert.equal(inventory.oversoldQuantity, 1);
 });
 
-test("keeps a canceled order's prior SKU as immutable read-only history", () => {
+test("maps, remaps, and clears canceled reference history without affecting metrics", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -234,21 +253,46 @@ test("keeps a canceled order's prior SKU as immutable read-only history", () => 
   const canceledView = session.getViewState();
   const selected = inventoryEntry(canceledView, "STUSSY-TEE-BLACK-L");
   const relinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
-  const unlinked = session.selectSku("STUSSY-TEE-BLACK-L");
+  const unlinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const restored = session.selectSku("STUSSY-TEE-BLACK-L");
 
   assert.equal(canceledView.auction.status, "canceled");
   assert.equal(canceledView.mapping.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(selected.selected, true);
-  assert.equal(selected.selectionAllowed, false);
-  assert.equal(selected.selectionReason, "canceled");
+  assert.equal(selected.selectionAllowed, true);
+  assert.equal(selected.selectionReason, "selected");
   assert.equal(selected.reservedQuantity, 0);
   assert.equal(selected.remainingQuantity, 5);
-  assert.ok(canceledView.inventory.every((entry) => !entry.selectionAllowed));
-  assert.equal(relinked.code, "CANCELED_VARIATION_IMMUTABLE");
-  assert.equal(unlinked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.ok(canceledView.inventory.every((entry) => entry.selectionAllowed));
+  assert.equal(relinked.ok, true);
+  assert.equal(relinked.action, "remapped");
+  assert.equal(relinked.mapping.sku, "DENIM-SHORTS-WASHED-BLUE-32");
+  assert.equal(relinked.mapping.status, "canceled");
+  assert.equal(unlinked.ok, true);
+  assert.equal(unlinked.action, "unmapped");
+  assert.equal(unlinked.mapping, null);
+  assert.equal(unlinked.view.auction.status, "canceled");
+  assert.equal(restored.ok, true);
+  assert.equal(restored.action, "mapped");
+  assert.equal(restored.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(restored.mapping.status, "canceled");
   assert.equal(session.getViewState().mapping.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(canceledView.totals.committedSalesCount, 0);
   assert.equal(canceledView.totals.profitCents, 0);
+  assert.deepEqual(relinked.view.totals, canceledView.totals);
+  assert.deepEqual(unlinked.view.totals, canceledView.totals);
+  assert.deepEqual(restored.view.totals, canceledView.totals);
+  for (const view of [relinked.view, unlinked.view, restored.view]) {
+    const stussy = inventoryEntry(view, "STUSSY-TEE-BLACK-L");
+    const denim = inventoryEntry(view, "DENIM-SHORTS-WASHED-BLUE-32");
+
+    assert.equal(stussy.reservedQuantity, 0);
+    assert.equal(stussy.soldQuantity, 0);
+    assert.equal(stussy.remainingQuantity, 5);
+    assert.equal(denim.reservedQuantity, 0);
+    assert.equal(denim.soldQuantity, 0);
+    assert.equal(denim.remainingQuantity, 0);
+  }
 });
 
 test("keeps cancellation terminal when a stale completion arrives later", () => {

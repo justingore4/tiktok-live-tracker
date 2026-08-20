@@ -415,6 +415,131 @@ test("refresh retains selection when canonical state has no newly captured varia
   );
 });
 
+test("selecting history during an in-flight refresh survives newer capture data", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const snapshots = [];
+
+  controller.subscribe((snapshot) => snapshots.push(snapshot));
+  await controller.start();
+
+  const refreshRead = createDeferred();
+  const refreshedState = memory.getState();
+
+  reconciliation.observeVariations(refreshedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [204],
+  });
+  reconciliation.recordPaymentComplete(refreshedState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    soldPriceCents: 2800,
+  });
+  memory.client.getState = () => refreshRead.promise;
+
+  const refresh = controller.refresh();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(controller.getSnapshot().phase, "loading");
+  assert.equal(controller.getSnapshot().operation, "refresh");
+
+  const selectedDuringRefresh = controller.selectVariation(201);
+
+  assert.equal(selectedDuringRefresh.phase, "loading");
+  assert.equal(selectedDuringRefresh.operation, "refresh");
+  assert.equal(selectedDuringRefresh.view.selectedVariationNumber, 201);
+  assert.equal(snapshots.at(-1).view.selectedVariationNumber, 201);
+
+  refreshRead.resolve({ state: clone(refreshedState), result: null });
+  const refreshed = await refresh;
+  const completedVariation = refreshed.view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+
+  assert.equal(refreshed.phase, "ready");
+  assert.equal(refreshed.operation, "refresh");
+  assert.equal(refreshed.view.selectedVariationNumber, 201);
+  assert.equal(refreshed.view.currentVariationNumber, 204);
+  assert.equal(refreshed.view.isReviewingHistory, true);
+  assert.ok(
+    refreshed.view.variations.some(
+      (variation) => variation.variationNumber === 204,
+    ),
+  );
+  assert.equal(completedVariation.status, "unmapped_completed");
+  assert.equal(completedVariation.observedPaymentStatus, "payment_complete");
+  assert.equal(completedVariation.soldPriceCents, 2800);
+});
+
+test("variation selection remains blocked during initial load and saved mutations", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  const loadRead = createDeferred();
+  const loadingMemory = createMemoryClient(state);
+
+  loadingMemory.client.getState = () => loadRead.promise;
+  const loadingController = createController(loadingMemory.client);
+  const load = loadingController.start();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const blockedDuringLoad = loadingController.selectVariation(201);
+
+  assert.equal(blockedDuringLoad.phase, "loading");
+  assert.equal(blockedDuringLoad.operation, "load");
+  assert.equal(blockedDuringLoad.view, null);
+
+  loadRead.resolve({ state: clone(state), result: null });
+  const loaded = await load;
+
+  assert.equal(loaded.view.selectedVariationNumber, 203);
+
+  const savingMemory = createMemoryClient(state);
+  const saveWrite = createDeferred();
+
+  savingMemory.client.mapVariation = () => saveWrite.promise;
+  const savingController = createController(savingMemory.client);
+
+  await savingController.start();
+  savingController.selectVariation(202);
+  const save = savingController.mapSelectedSku("BLACK-TEE-L");
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const blockedDuringSave = savingController.selectVariation(201);
+
+  assert.equal(blockedDuringSave.phase, "saving");
+  assert.equal(blockedDuringSave.operation, "map_variation");
+  assert.equal(blockedDuringSave.view.selectedVariationNumber, 202);
+
+  const savedState = reconciliation.hydrateReconciliationState(state);
+  const result = reconciliation.mapVariation(savedState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    sku: "BLACK-TEE-L",
+  });
+
+  saveWrite.resolve({ state: clone(savedState), result });
+  const saved = await save;
+
+  assert.equal(saved.phase, "ready");
+  assert.equal(saved.view.selectedVariationNumber, 202);
+});
+
 test("older backfill and later payment updates do not steal the live selection", async () => {
   const state = createState();
 

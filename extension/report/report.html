@@ -296,6 +296,54 @@
           </details>
         </section>
 
+        <section class="report-section" aria-labelledby="canceled-orders-title">
+          <details id="canceled-orders-disclosure">
+            <summary
+              id="canceled-orders-toggle"
+              class="canceled-orders-toggle"
+              aria-controls="canceled-orders-content"
+            >
+              <h2 id="canceled-orders-title" class="canceled-orders-summary-heading">
+                <span class="canceled-orders-title-copy">
+                  <span class="eyebrow">Canceled order references</span>
+                  <span class="canceled-orders-title">Canceled Orders</span>
+                </span>
+                <span id="canceled-orders-count" class="section-count">0 canceled orders</span>
+              </h2>
+            </summary>
+            <div id="canceled-orders-content" class="canceled-orders-content">
+              <p class="section-intro">
+                Item mappings in this section are reference-only. They record what was auctioned and do not affect inventory or metrics.
+              </p>
+              <div
+                id="canceled-orders-table"
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="canceled-orders-title"
+              >
+                <table class="data-table canceled-orders-table">
+                  <caption>
+                    Canceled variations and their reference-only inventory mappings. These rows do not affect inventory or report metrics.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Variation</th>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Item</th>
+                      <th scope="col">Style</th>
+                      <th scope="col">Size</th>
+                    </tr>
+                  </thead>
+                  <tbody id="canceled-orders-rows"></tbody>
+                </table>
+              </div>
+              <p id="canceled-orders-empty" class="empty-copy" hidden>
+                No canceled orders were captured for this stream.
+              </p>
+            </div>
+          </details>
+        </section>
+
         <section class="report-section" aria-labelledby="performance-table-title">
           <div class="section-heading table-heading">
             <div>

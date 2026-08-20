@@ -720,6 +720,55 @@ test("persists an unmap command and returns the canonical unselected state", asy
   assert.equal(memoryStore.calls.save.length, 1);
 });
 
+test("persists canceled reference mapping edits without changing inventory or metrics", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+
+  reconciliation.observePaymentStatuses(storedState, {
+    streamId: "stream-1",
+    statuses: [{
+      variationNumber: 7,
+      observedPaymentStatus: "canceled",
+    }],
+  });
+  const summaryBefore = reconciliation.calculateSummary(storedState, {
+    streamId: "stream-1",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const mapped = await coordinator.dispatch(mapCommand(7));
+  const repeatedMap = await coordinator.dispatch(mapCommand(7));
+  const remapped = await coordinator.dispatch(
+    mapCommand(7, "GREY-HOODIE-L"),
+  );
+  const unmapped = await coordinator.dispatch(unmapCommand(7));
+  const repeatedUnmap = await coordinator.dispatch(unmapCommand(7));
+  const persistedState = memoryStore.getPersistedState();
+  const summaryAfter = reconciliation.calculateSummary(persistedState, {
+    streamId: "stream-1",
+  });
+
+  assert.equal(mapped.result.status, "canceled");
+  assert.equal(mapped.result.sku, "BLACK-TEE-M");
+  assert.equal(mapped.result.committedUnitCostCents, null);
+  assert.equal(repeatedMap.result.status, "canceled");
+  assert.equal(remapped.result.status, "canceled");
+  assert.equal(remapped.result.sku, "GREY-HOODIE-L");
+  assert.equal(remapped.result.committedUnitCostCents, null);
+  assert.equal(unmapped.result.status, "canceled");
+  assert.equal(unmapped.result.sku, null);
+  assert.equal(unmapped.result.mappingStatus, "unmapped");
+  assert.equal(repeatedUnmap.result.status, "canceled");
+  assert.equal(memoryStore.calls.save.length, 3);
+  assert.deepEqual(summaryAfter.totals, summaryBefore.totals);
+  assert.deepEqual(summaryAfter.inventory, summaryBefore.inventory);
+  assert.deepEqual(summaryAfter.itemPerformance, summaryBefore.itemPerformance);
+  assert.deepEqual(
+    reconciliation.hydrateReconciliationState(clone(persistedState)),
+    persistedState,
+  );
+});
+
 test("serializes concurrent writes without losing an update", async () => {
   const storedState = reconciliation.createReconciliationState(INVENTORY);
   const memoryStore = createMemoryStateStore(storedState);

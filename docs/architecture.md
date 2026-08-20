@@ -122,8 +122,9 @@ Consequences:
    payment observations cannot reverse it.
 7. Clicking an already-selected inventory item removes only the mapping. Any pending
    reservation is released; a completed auction keeps its final price and contribution to Gross Item Sales
-   but becomes `unmapped_completed` until it is tagged again. A canceled variation cannot
-   be mapped, unmapped, or remapped.
+   but becomes `unmapped_completed` until it is tagged again. A canceled variation can be
+   mapped, unmapped, or remapped only as reference attribution; those changes have no
+   inventory or metric effect.
 
 ### Permanent payment failure and re-auction
 
@@ -133,7 +134,8 @@ buffer expires:
 1. The record becomes canonically `canceled` without employee action.
 2. Any selected SKU remains linked for history, while its pending reservation is
    released. Remaining inventory, completed sales, revenue, cost, and profit stay
-   unchanged.
+   unchanged. The employee may later map, correct, or clear that reference SKU without
+   changing those values.
 3. If the same physical item is auctioned again, TikTok assigns a new variation number.
 4. The employee maps that new variation as a separate auction.
 
@@ -185,8 +187,9 @@ Implemented behavior includes:
   until completion or cancellation.
 - Recording a real completed sale even if inventory becomes negative, while surfacing an
   oversold warning.
-- Allowing non-canceled auctions to select an exhausted SKU and reporting the shortage as
-  `Oversold by N` instead of disabling or rejecting the mapping.
+- Allowing inventory-affecting auctions to select an exhausted SKU and reporting the
+  shortage as `Oversold by N` instead of disabling or rejecting the mapping. Canceled
+  auctions can reference any SKU without creating or changing a shortage.
 - Separating Gross Item Sales from mapped revenue and gross profit.
 - Storing the latest sanitized TikTok Attributed GMV display on its stream without
   converting a rounded compact value into invented exact cents.
@@ -215,11 +218,11 @@ oversoldQuantity = max(0, -availableToTagQuantity)
 Every mapped canonical-unknown record contributes one pending reservation but does not
 count as sold. Cards present the nonnegative available count after reservations, for
 example `4 left` stacked above `1 pending` from an opening quantity of five. Exact
-cancellation releases the reservation while retaining the item link as read-only
-history; priced completion converts the reservation into a completed sale without
-double-counting it. A zero-stock card remains selectable for every non-canceled order,
-never says **Sold out**, and reports `Oversold by N` for allocations beyond the imported
-quantity.
+cancellation releases the reservation while retaining the item link as reference
+history; later mapping, correction, or clearing changes only that reference. Priced
+completion converts the reservation into a completed sale without double-counting it. A
+zero-stock card remains selectable, never says **Sold out**, and reports `Oversold by N`
+only for inventory-affecting allocations beyond the imported quantity.
 
 ### Baseline and summary scope
 
@@ -527,7 +530,12 @@ The report retains these deliberately different measures:
 - `costOfGoodsCents` and `grossProfitCents` only for mapped completed sales, where gross
   profit is mapped revenue minus the unit costs saved in that report; and
 - completed-sale detail rows that retain unmapped completions with unavailable item/cost
-  fields instead of hiding them.
+  fields instead of hiding them;
+- canceled-order detail rows that retain every canceled variation and its nullable
+  reference SKU/item/style/size without contributing to inventory or any metric. The
+  report projection is display-only; reference mappings are changed in active stream
+  history. Older compatible reports without this row-level snapshot retain their
+  aggregate canceled count and explicitly report that individual details are unavailable.
 
 Exact-SKU performance groups mapped completions by SKU. Combined product performance
 groups those same SKU totals by exact employee-facing `item + style` across sizes. Both
@@ -640,9 +648,9 @@ Shared tagger behavior includes:
 - A separate visible **TikTok payment** row for processing, fixing, failed, canceled,
   complete, unrecognized, or not-yet-observed state, independent of the **Inventory tag**
   row.
-- A canceled result that keeps the historical item link visible, reports that its
-  reservation was released and stock stayed unchanged, greys out every inventory card,
-  and rejects map/unmap/remap commands.
+- A canceled result that keeps its item reference visible, reports that its reservation
+  was released and stock stayed unchanged, and keeps every inventory card interactive so
+  the employee can map, correct, or clear that reference without affecting accounting.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
 - A captured final price as soon as payment completes, even while unmapped; unit cost,
@@ -698,11 +706,10 @@ Shared tagger behavior includes:
 - Mapping correction after completion, applied atomically by restoring the old SKU,
   decrementing the new SKU, and recalculating committed cost and profit.
 - An inventory warning when a truthful historical correction produces negative stock.
-- Every inventory entry remains selectable for bidding, pending, and completed
-  non-canceled orders, including at zero availability. A correction or new reservation
-  that exceeds stock produces an `Oversold by N` warning. Only selecting a canonically
-  canceled variation disables the inventory grid; its historical attribution is
-  read-only.
+- Every inventory entry remains selectable for bidding, pending, completed, and canceled
+  orders, including at zero availability. A correction or new inventory allocation that
+  exceeds stock produces an `Oversold by N` warning; a canceled reference mapping cannot
+  create or change that warning.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
 The Live session requires a persistent local tracker stream and an imported inventory
@@ -844,7 +851,7 @@ TikTok tracking and any mapped reservation resume without the removed manual Und
 Versions 3 through 6 could also contain the former
 `payment_completed_after_canceled` conflict. Migration repairs that contradiction to
 canonical terminal cancellation, clears its stale completed price and cost allocation,
-and retains any SKU only as canceled read-only history. Canonical version 7 rejects that
+and retains any SKU only as canceled reference history. Canonical version 7 rejects that
 legacy conflict. Dangling bidding markers,
 baseline, SKU, and committed-cost
 relationships, malformed legacy data, and future versions all fail closed. The next real

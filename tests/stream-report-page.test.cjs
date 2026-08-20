@@ -58,6 +58,11 @@ class FakeElement {
 
 const REPORT_SELECTORS = [
   "#action-feedback",
+  "#canceled-orders-count",
+  "#canceled-orders-disclosure",
+  "#canceled-orders-empty",
+  "#canceled-orders-rows",
+  "#canceled-orders-table",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
   "#sku-profit-count",
@@ -211,6 +216,16 @@ function createReport(overrides = {}) {
         conflicts: [],
       },
     ],
+    canceledOrders: [
+      {
+        variationNumber: 14,
+        mapped: true,
+        sku: "SKU-A",
+        item: malicious,
+        style: "black",
+        size: "L",
+      },
+    ],
     inventory: [
       {
         sku: "SKU-A",
@@ -285,6 +300,11 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Download Updated Inventory CSV/);
   assert.match(html, /Finish unresolved payments/);
   assert.match(html, /Correct SKU Unit Cost/);
+  assert.match(html, /Canceled order references/);
+  assert.match(
+    html,
+    /reference-only[\s\S]*do not affect inventory or metrics/,
+  );
   assert.match(
     html,
     /Correct a cost in this saved report[\s\S]*live tracker, other reports, and future streams are unaffected/,
@@ -387,6 +407,36 @@ test("completed orders use one collapsed native disclosure that always prints in
   );
 });
 
+test("canceled orders use a collapsed reference-only disclosure that always prints in full", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const detailsTag = html.match(
+    /<details\s+id="canceled-orders-disclosure"[^>]*>/,
+  )?.[0];
+  const summary = html.match(
+    /<summary[\s\S]*?id="canceled-orders-toggle"[\s\S]*?<\/summary>/,
+  )?.[0];
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(detailsTag);
+  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
+  assert.ok(summary);
+  assert.match(summary, /aria-controls="canceled-orders-content"/);
+  assert.match(summary, /Canceled Orders/);
+  assert.match(html, /<table class="data-table canceled-orders-table">/);
+  assert.match(html, /id="canceled-orders-rows"/);
+  assert.match(css, /\.canceled-orders-toggle:focus-visible/);
+  assert.match(
+    printCss,
+    /#canceled-orders-disclosure:not\(\[open\]\)\s*>\s*#canceled-orders-content\s*\{\s*display:\s*block\s*!important;/,
+  );
+  assert.match(
+    printCss,
+    /#canceled-orders-toggle::after\s*\{\s*display:\s*none\s*!important;/,
+  );
+});
+
 test("all report tables use a white background and black text on screen and in print", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -395,8 +445,9 @@ test("all report tables use a white background and black text on screen and in p
   const screenCss = css.slice(0, printIndex);
   const printCss = css.slice(printIndex);
 
-  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 4);
+  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 5);
   assert.match(html, /<table class="data-table sales-table">/);
+  assert.match(html, /<table class="data-table canceled-orders-table">/);
   assert.match(html, /<table class="data-table sku-profit-table">/);
   assert.match(html, /<table class="data-table performance-table">/);
   assert.match(html, /<table class="data-table inventory-table">/);
@@ -528,38 +579,46 @@ test("definitions use a collapsed native disclosure without changing their conte
 test("print disclosures open together and restore their independent prior states", () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
+  const canceledOrders = document.querySelector("#canceled-orders-disclosure");
   const skuProfit = document.querySelector("#sku-profit-disclosure");
   const definitions = document.querySelector("#definitions-disclosure");
   const controller = reportPage.createPrintDisclosureController(document);
 
   completedSales.open = false;
+  canceledOrders.open = false;
   skuProfit.open = true;
   definitions.open = false;
   controller.prepare();
   assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, true);
   assert.equal(skuProfit.open, true);
   assert.equal(definitions.open, true);
   controller.prepare();
   controller.restore();
   assert.equal(completedSales.open, false);
+  assert.equal(canceledOrders.open, false);
   assert.equal(skuProfit.open, true);
   assert.equal(definitions.open, false);
 
   completedSales.open = true;
+  canceledOrders.open = true;
   skuProfit.open = false;
   definitions.open = false;
   controller.prepare();
   controller.restore();
   assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, true);
   assert.equal(skuProfit.open, false);
   assert.equal(definitions.open, false);
 
   completedSales.open = false;
+  canceledOrders.open = true;
   skuProfit.open = false;
   definitions.open = true;
   controller.prepare();
   controller.restore();
   assert.equal(completedSales.open, false);
+  assert.equal(canceledOrders.open, true);
   assert.equal(skuProfit.open, false);
   assert.equal(definitions.open, true);
 });
@@ -567,12 +626,14 @@ test("print disclosures open together and restore their independent prior states
 test("app Print and browser print events expand definitions and restore screen state", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
+  const canceledOrders = document.querySelector("#canceled-orders-disclosure");
   const skuProfit = document.querySelector("#sku-profit-disclosure");
   const definitions = document.querySelector("#definitions-disclosure");
   const windowListeners = new Map();
   const printedStates = [];
 
   completedSales.open = false;
+  canceledOrders.open = false;
   skuProfit.open = false;
   definitions.open = false;
   reportPage.mountStreamReportPage({
@@ -605,6 +666,7 @@ test("app Print and browser print events expand definitions and restore screen s
     print() {
       printedStates.push({
         completedSales: completedSales.open,
+        canceledOrders: canceledOrders.open,
         skuProfit: skuProfit.open,
         definitions: definitions.open,
       });
@@ -614,22 +676,31 @@ test("app Print and browser print events expand definitions and restore screen s
   await new Promise((resolve) => setImmediate(resolve));
   document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [
-    { completedSales: true, skuProfit: true, definitions: true },
+    {
+      completedSales: true,
+      canceledOrders: true,
+      skuProfit: true,
+      definitions: true,
+    },
   ]);
   windowListeners.get("afterprint")();
   assert.equal(completedSales.open, false);
+  assert.equal(canceledOrders.open, false);
   assert.equal(skuProfit.open, false);
   assert.equal(definitions.open, false);
 
   completedSales.open = true;
+  canceledOrders.open = false;
   skuProfit.open = false;
   definitions.open = false;
   windowListeners.get("beforeprint")();
   assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, true);
   assert.equal(skuProfit.open, true);
   assert.equal(definitions.open, true);
   windowListeners.get("afterprint")();
   assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, false);
   assert.equal(skuProfit.open, false);
   assert.equal(definitions.open, false);
 });
@@ -649,6 +720,7 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#most-sold-products-card").hidden, false);
   assert.equal(document.querySelector("#most-profitable-products-card").hidden, true);
   assert.equal(document.querySelector("#completed-sales-rows").children.length, 2);
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 1);
   assert.equal(document.querySelector("#sku-profit-rows").children.length, 1);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
@@ -676,6 +748,62 @@ test("report rendering preserves text, renders SKU and product ties, and never c
     allText(document.querySelector("#completed-sales-rows")),
     /<img src=x onerror="stealOAuthToken\(\)">/,
   );
+  assert.match(
+    allText(document.querySelector("#canceled-orders-rows")),
+    /#14[\s\S]*SKU-A[\s\S]*<img src=x onerror="stealOAuthToken\(\)">/,
+  );
+});
+
+test("canceled-order rendering shows mapped and unmapped references without financial fields", () => {
+  const document = new FakeDocument();
+  const report = createReport({
+    totals: {
+      ...createReport().totals,
+      canceledOrderCount: 2,
+    },
+    canceledOrders: [
+      {
+        variationNumber: 14,
+        mapped: true,
+        sku: "SKU-A",
+        item: "Example tee",
+        style: "black",
+        size: "L",
+      },
+      {
+        variationNumber: 15,
+        mapped: false,
+        sku: null,
+        item: null,
+        style: null,
+        size: null,
+      },
+    ],
+  });
+
+  reportPage.renderCanceledOrders(document, report);
+
+  const rows = document.querySelector("#canceled-orders-rows").children;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.children.length), [5, 5]);
+  assert.match(allText(rows[0]), /#14[\s\S]*SKU-A[\s\S]*Example tee[\s\S]*black[\s\S]*L/);
+  assert.match(allText(rows[1]), /#15[\s\S]*Unmapped[\s\S]*Not selected/);
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "2 canceled orders");
+  assert.equal(document.querySelector("#canceled-orders-table").hidden, false);
+  assert.equal(document.querySelector("#canceled-orders-empty").hidden, true);
+
+  reportPage.renderCanceledOrders(document, {
+    totals: { canceledOrderCount: 3 },
+    canceledOrders: null,
+  });
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+  assert.equal(document.querySelector("#canceled-orders-table").hidden, true);
+  assert.equal(document.querySelector("#canceled-orders-empty").hidden, false);
+  assert.match(
+    document.querySelector("#canceled-orders-empty").textContent,
+    /details are unavailable[\s\S]*total is still retained/,
+  );
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "3 canceled orders");
 });
 
 test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed color-coded values", () => {
@@ -1379,6 +1507,17 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
       canceledOrderCount: originalReport.totals.canceledOrderCount + 1,
       paymentFixingCount: 0,
     },
+    canceledOrders: [
+      ...originalReport.canceledOrders,
+      {
+        variationNumber: 220,
+        mapped: true,
+        sku: "SKU-A",
+        item: "Example tee",
+        style: "black",
+        size: "L",
+      },
+    ],
     inventory: originalReport.inventory.map((entry) => ({
       ...entry,
       pendingQuantity: 0,
@@ -1453,6 +1592,14 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
   assert.match(
     document.querySelector("#action-feedback").textContent,
     /marked canceled[\s\S]*Report totals and inventory were updated/,
+  );
+  assert.equal(
+    document.querySelector("#canceled-orders-count").textContent,
+    "2 canceled orders",
+  );
+  assert.match(
+    allText(document.querySelector("#canceled-orders-rows")),
+    /#220[\s\S]*SKU-A[\s\S]*Example tee/,
   );
 });
 

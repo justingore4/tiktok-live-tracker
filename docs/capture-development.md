@@ -58,7 +58,9 @@ nonterminal observations. Mapping the bidding variation immediately creates a pe
 inventory reservation. That reservation remains through processing, fixing, temporary
 failure, an unrecognized badge, not-yet-observed state, or a price-less completion.
 Exact `Canceled` is a canonical terminal allocation result that releases the reservation,
-keeps any item link as read-only history, and counts no sale, revenue, cost, or profit.
+keeps any item link as reference history, and counts no sale, revenue, cost, or profit.
+The employee may later map, correct, or clear that reference item without reserving or
+subtracting inventory and without changing any metric.
 The implemented dashboard reads outside Sold Items are only the sanitized current
 bidding variation number, its sanitized transient bid-price cents, and the isolated
 aggregate Attributed GMV display.
@@ -159,8 +161,10 @@ item carries forward into reconciliation.
 
 Observed processing, fixing, failed, or unrecognized status does not count a sale or
 change profit. Every mapped unresolved order remains pending regardless of which of those
-observations is latest. Exact cancellation preserves the item link as read-only history,
-releases its pending allocation, and contributes no sales, revenue, cost, or profit. A completed payment contributes to Gross Item
+observations is latest. Exact cancellation preserves the item link as reference history,
+releases its pending allocation, and contributes no sales, revenue, cost, or profit.
+Mapping, correcting, or clearing the canceled reference after that point changes only the
+recorded item attribution. A completed payment contributes to Gross Item
 Sales, but inventory and gross profit commit only after the employee maps the variation to
 an inventory item. A complete badge whose price is temporarily unavailable remains a
 provisional displayed observation and keeps any existing reservation; later status
@@ -238,6 +242,13 @@ only mapped SKUs with completed sales in this report stream, and sorts from high
 profit to largest loss. Positive values are green, losses are red, and zero is neutral.
 Pending, canceled, unmapped, and unsold entries are excluded. It starts collapsed on
 screen and expands for print/PDF output.
+The native **Canceled Orders** disclosure starts collapsed and lists each captured
+canceled variation with its mapped or unmapped reference SKU, item, style, and size.
+These reference rows never enter inventory, sales, COGS, profit, AOV, or product
+performance. The report table is display-only; reference mapping changes happen in the
+active stream history before End. Compatible reports created before row-level canceled
+details were saved retain their aggregate count and display that individual details are
+unavailable.
 The report's **AOV** uses the same current-stream formula and nearest-cent rounding as the
 live card, and displays `$0.00` when no eligible completion exists.
 The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
@@ -432,7 +443,13 @@ screen test-user run does not complete those release reviews.
 7. Wait for TikTok to show a new auction. Confirm its variation becomes selected without
    opening the menu. Then confirm the prior auction remains in history when Sold Items
    supplies its payment truth, its item mapping persists, and `bidding` is replaced by
-   the observed payment wording. Select a historical variation and confirm the compact
+   the observed payment wording. Open and scroll the selector without choosing an option,
+   then let another variation or payment-status update arrive. The native menu must remain
+   open at the same scroll position while the worker continues saving capture data, and its
+   visible options must remain unchanged until the employee closes it or makes a selection.
+   Reopen it and confirm the newest variation and every deferred status or mapping label
+   appear together. Repeat once with pointer input and once with the keyboard. Select a
+   historical variation and confirm the compact
    **Return to live item** button appears below the selector. It must select the active
    bidding variation, or the newest captured variation when there is no active marker,
    then disappear and resume automatic follow. Confirm this navigation does not alter any
@@ -505,13 +522,16 @@ screen test-user run does not complete those release reviews.
     failed, unrecognized, or price-less completion, confirm the item and pending count
     remain unchanged.
 11. When that row becomes exact `Canceled`, confirm the item link remains visible as
-    read-only history, its reservation is released, availability is restored, and sale
-    count, revenue, cost, and profit do not change. Confirm every inventory card is greyed
-    out and cannot map, unmap, or remap that canceled variation. A canceled variation must
-    not require resolution before End.
-12. On a non-canceled variation, select an entry at zero availability. Confirm the card
-    remains enabled, never says **Sold out**, and shows `Oversold by N`; assigning or
-    canceling further pending orders must update N without double-counting completion.
+    reference history, its reservation is released, availability is restored, and sale
+    count, revenue, cost, and profit do not change. Confirm every inventory card remains
+    enabled. Map the canceled variation to another item, click that selected item again to
+    clear it, then map it once more; each change must update its reference label in the
+    variation dropdown without changing inventory or any metric. A canceled variation
+    must not require resolution before End.
+12. On an inventory-affecting variation, select an entry at zero availability. Confirm
+    the card remains enabled, never says **Sold out**, and shows `Oversold by N`;
+    assigning or canceling further pending orders must update N without double-counting
+    completion.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
     Repeat these checks across later tracker streams and imported baselines.
@@ -526,17 +546,20 @@ screen test-user run does not complete those release reviews.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Items sold this stream**, **Profit/Loss by SKU**, and **Definitions and
-    limitations** start collapsed and expand on activation; the completed-sales count
-    remains visible in both order-table states. Confirm the SKU profit/loss rows contain
-    only mapped SKUs sold in this report stream, sort from highest profit to largest loss,
-    and render positive, negative, and zero values in green, red, and neutral styles.
-    Pending, canceled, unmapped, and unsold entries must not appear.
+    Confirm **Items sold this stream**, **Canceled Orders**, **Profit/Loss by SKU**, and
+    **Definitions and limitations** start collapsed and expand on activation; the
+    completed-sales and canceled-order counts remain visible in both table states. Confirm
+    the canceled table contains every canceled variation and its reference SKU, item,
+    style, and size, uses `Unmapped` when no reference was selected, and is display-only.
+    Confirm the SKU profit/loss rows contain only mapped SKUs sold in this report stream,
+    sort from highest profit to largest loss, and render positive, negative, and zero
+    values in green, red, and neutral styles. Pending, canceled, unmapped, and unsold
+    entries must not appear in that profit/loss section.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension. Verify the PDF includes every completed-order row, every eligible SKU
-    profit/loss row, and every definition even when those sections were collapsed on
-    screen.
+    extension. Verify the PDF includes every completed-order row, canceled-order reference
+    row, eligible SKU profit/loss row, and definition even when those sections were
+    collapsed on screen.
     End a test stream with one mapped `Payment failed` or `Payment fixing` order. In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing
     changes. Then mark it complete with an invalid price and confirm validation fails;
@@ -593,11 +616,14 @@ screen test-user run does not complete those release reviews.
 Only the persisted `activeBiddingVariationNumber` from the strict on-video card is called
 the current bidding auction. A changed marker is selected automatically only while the
 employee is viewing the previously current auction. While the employee reviews a
-historical variation, new markers and status changes continue updating the selector but
-do not change its selection. A compact **Return to live item** action is visible only in
-that historical-review state. It targets the active bidding variation when available and
-otherwise the newest captured variation; selecting it resumes automatic follow without a
-mapping, inventory, payment, or persistence mutation.
+historical variation, new markers and status changes continue being captured but do not
+change its selection. Visible selector-option mutations are deferred while its native menu
+is open so a background refresh cannot close the menu or reset its scroll position. The
+newest saved option state is applied when the employee selects or dismisses the menu. A
+compact **Return to live item** action is visible only in that historical-review state. It
+targets the active bidding variation when available and otherwise the newest captured
+variation; selecting it resumes automatic follow without a mapping, inventory, payment,
+or persistence mutation.
 A richer prioritized queue across the persisted auction history remains future work.
 
 ### Read-only root diagnostic
@@ -791,8 +817,10 @@ any live Google dependency remain intentionally absent.
 - The local stream ID is tracker-owned, not TikTok-verified.
 - The open tagger treats only the strict on-video marker as current bidding. It
   auto-displays the next changed marker while the current auction is selected, but keeps
-  a manually selected historical variation in view while newer options continue updating.
-  The same mapping remains attached when Sold Items payment truth arrives.
+  a manually selected historical variation in view while newer data continues being
+  captured. An open native variation menu temporarily freezes its visible options and
+  applies the newest saved option state after selection or dismissal. The same mapping
+  remains attached when Sold Items payment truth arrives.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - The retained live-auction display is temporary session state rather than reconciliation

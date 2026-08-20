@@ -98,7 +98,7 @@ test("builds a frozen final report with exact totals, completed rows, and top ti
 
   const report = buildReport(state);
 
-  assert.equal(report.version, 1);
+  assert.equal(report.version, 2);
   assert.equal(
     report.reportId,
     "stream-report:11111111-1111-4111-8111-111111111111",
@@ -174,6 +174,81 @@ test("builds a frozen final report with exact totals, completed rows, and top ti
   assert.ok(Object.isFrozen(report));
   assert.ok(Object.isFrozen(report.completedSales));
   assert.ok(Object.isFrozen(report.completedSales[0]));
+});
+
+test("snapshots mapped and unmapped canceled-order references without changing inventory or metrics", () => {
+  const state = createState();
+
+  mapAndComplete(state, STREAM_ONE, 1, "TEE-BLACK-L", 2000);
+  reconciliation.mapVariation(
+    state,
+    auction(STREAM_ONE, 2, { sku: "HOODIE-GREY-M" }),
+  );
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 2,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+      {
+        variationNumber: 3,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+
+  const report = buildReport(state);
+
+  assert.deepEqual(report.canceledOrders, [
+    {
+      variationNumber: 2,
+      mapped: true,
+      sku: "HOODIE-GREY-M",
+      item: "Hoodie",
+      style: "grey",
+      size: "M",
+    },
+    {
+      variationNumber: 3,
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+  ]);
+  assert.deepEqual(
+    {
+      completedPaymentCount: report.totals.completedPaymentCount,
+      canceledOrderCount: report.totals.canceledOrderCount,
+      completedGmvCents: report.totals.completedGmvCents,
+      committedRevenueCents: report.totals.committedRevenueCents,
+      costOfGoodsCents: report.totals.costOfGoodsCents,
+      grossProfitCents: report.totals.grossProfitCents,
+    },
+    {
+      completedPaymentCount: 1,
+      canceledOrderCount: 2,
+      completedGmvCents: 2000,
+      committedRevenueCents: 2000,
+      costOfGoodsCents: 1000,
+      grossProfitCents: 1000,
+    },
+  );
+  const canceledSku = report.inventory.find(
+    (row) => row.sku === "HOODIE-GREY-M",
+  );
+  assert.equal(canceledSku.streamSoldQuantity, 0);
+  assert.equal(canceledSku.pendingQuantity, 0);
+  assert.equal(canceledSku.replacementQuantity, 4);
+  assert.equal(report.sheetRows.find(
+    (row) => row.sku === "HOODIE-GREY-M",
+  ).quantity_on_hand_at_import, 4);
+  assert.ok(Object.isFrozen(report.canceledOrders));
+  assert.ok(Object.isFrozen(report.canceledOrders[0]));
 });
 
 test("marks unresolved, pending, fixing, unmatched, conflicting, and oversold reports provisional", () => {
@@ -409,6 +484,31 @@ test("strict hydration returns a detached deep-frozen report", () => {
   assert.equal(hydrated.inventory[0].replacementQuantity, frozenQuantity);
 });
 
+test("hydrates legacy reports without canceled-order details while retaining their canceled total", () => {
+  const state = createState();
+
+  reconciliation.observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [
+      {
+        variationNumber: 3,
+        observedPaymentStatus:
+          reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+      },
+    ],
+  });
+  const legacy = clone(buildReport(state));
+  legacy.version = 1;
+  delete legacy.canceledOrders;
+
+  const hydrated = streamReport.hydrateStreamReport(legacy);
+
+  assert.equal(hydrated.version, 2);
+  assert.equal(hydrated.totals.canceledOrderCount, 1);
+  assert.equal(hydrated.canceledOrders, null);
+  assert.ok(Object.isFrozen(hydrated));
+});
+
 test("strict hydration rejects unsupported versions, extra fields, timestamp order, and inconsistent exports", () => {
   const state = createState();
 
@@ -416,7 +516,7 @@ test("strict hydration rejects unsupported versions, extra fields, timestamp ord
   const valid = clone(buildReport(state));
 
   const future = clone(valid);
-  future.version = 2;
+  future.version = 3;
   assertReportError(
     () => streamReport.hydrateStreamReport(future),
     "UNSUPPORTED_REPORT_VERSION",
@@ -451,6 +551,32 @@ test("strict hydration rejects unsupported versions, extra fields, timestamp ord
   wrongSaleIdentity.completedSales[0].item = "Wrong item";
   assertReportError(() =>
     streamReport.hydrateStreamReport(wrongSaleIdentity),
+  );
+
+  const wrongCanceledCount = clone(valid);
+  wrongCanceledCount.canceledOrders = [];
+  wrongCanceledCount.totals.canceledOrderCount = 1;
+  assertReportError(() =>
+    streamReport.hydrateStreamReport(wrongCanceledCount),
+  );
+
+  const canceledState = createState();
+  reconciliation.mapVariation(
+    canceledState,
+    auction(STREAM_ONE, 2, { sku: "HOODIE-GREY-M" }),
+  );
+  reconciliation.observePaymentStatuses(canceledState, {
+    streamId: STREAM_ONE,
+    statuses: [{
+      variationNumber: 2,
+      observedPaymentStatus:
+        reconciliation.OBSERVED_PAYMENT_STATUSES.CANCELED,
+    }],
+  });
+  const wrongCanceledIdentity = clone(buildReport(canceledState));
+  wrongCanceledIdentity.canceledOrders[0].item = "Wrong item";
+  assertReportError(() =>
+    streamReport.hydrateStreamReport(wrongCanceledIdentity),
   );
 });
 

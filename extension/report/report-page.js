@@ -742,6 +742,45 @@
       count.textContent = `${rows.length} completed sale${rows.length === 1 ? "" : "s"}`;
     }
 
+    function renderCanceledOrders(document, report) {
+      const body = document.querySelector("#canceled-orders-rows");
+      const table = document.querySelector("#canceled-orders-table");
+      const empty = document.querySelector("#canceled-orders-empty");
+      const count = document.querySelector("#canceled-orders-count");
+      const detailsAvailable = Array.isArray(report?.canceledOrders);
+      const orders = detailsAvailable ? report.canceledOrders : [];
+      const total = Number.isSafeInteger(report?.totals?.canceledOrderCount)
+        ? report.totals.canceledOrderCount
+        : orders.length;
+      const rows = orders.map((order) => {
+        const row = document.createElement("tr");
+        const mapped = order?.mapped === true &&
+          typeof order?.sku === "string" && order.sku !== "";
+        row.append(
+          createTableCell(document, `#${safeInteger(order?.variationNumber)}`),
+          createTableCell(document, mapped ? order.sku : "Unmapped", {
+            className: mapped ? "sku-cell" : "warning-cell",
+          }),
+          createTableCell(document, mapped ? order?.item : "Not selected"),
+          createTableCell(document, mapped ? order?.style : "—", {
+            className: mapped ? "" : "muted-cell",
+          }),
+          createTableCell(document, mapped ? order?.size : "—", {
+            className: mapped ? "" : "muted-cell",
+          }),
+        );
+        return row;
+      });
+
+      replaceChildren(body, rows);
+      table.hidden = rows.length === 0;
+      empty.hidden = rows.length !== 0;
+      empty.textContent = !detailsAvailable && total > 0
+        ? "Individual canceled-order details are unavailable for this older saved report. Its canceled-order total is still retained."
+        : "No canceled orders were captured for this stream.";
+      count.textContent = `${total} canceled order${total === 1 ? "" : "s"}`;
+    }
+
     function renderSkuProfitLoss(document, report) {
       const body = document.querySelector("#sku-profit-rows");
       const empty = document.querySelector("#sku-profit-empty");
@@ -1092,6 +1131,7 @@
       );
       renderSkuProfitLoss(document, report);
       renderCompletedSales(document, report);
+      renderCanceledOrders(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
       renderDefinitions(document);
@@ -1167,6 +1207,7 @@
     function createPrintDisclosureController(document) {
       const disclosures = [
         document?.querySelector?.("#completed-sales-disclosure"),
+        document?.querySelector?.("#canceled-orders-disclosure"),
         document?.querySelector?.("#sku-profit-disclosure"),
         document?.querySelector?.("#definitions-disclosure"),
       ].filter(Boolean);
@@ -1776,6 +1817,7 @@
       parseNonnegativeUsdCents,
       parsePositiveUsdCents,
       renderPaymentFixingOrders,
+      renderCanceledOrders,
       renderReport,
       renderUnitCostCorrection,
       serializeInventoryCsv,
