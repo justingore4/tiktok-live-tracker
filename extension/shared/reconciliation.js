@@ -53,6 +53,10 @@
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
       OBSERVED_PAYMENT_STATUSES.CANCELED,
     ]);
+    const PAYMENT_FIXING_OBSERVED_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    ]);
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -1993,6 +1997,145 @@
       return createAuctionView(state, auction);
     }
 
+    function listPaymentFixingOrders(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A payment-fixing order query is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const stream = findStream(state, streamId);
+
+      if (!stream) {
+        fail("UNKNOWN_STREAM", "The requested stream does not exist.");
+      }
+
+      const baseline = getInventoryBaselineForStream(state, streamId);
+      const inventoryBySku = new Map(
+        baseline.inventory.map((item) => [item.sku, item]),
+      );
+
+      return stream.variations
+        .filter(
+          (auction) =>
+            auction.paymentStatus === "unknown" &&
+            PAYMENT_FIXING_OBSERVED_STATUSES.has(
+              auction.observedPaymentStatus,
+            ),
+        )
+        .map((auction) => {
+          const inventoryItem = auction.sku === null
+            ? null
+            : inventoryBySku.get(auction.sku) ?? null;
+
+          return {
+            variationNumber: auction.variationNumber,
+            observedPaymentStatus: auction.observedPaymentStatus,
+            mapped: inventoryItem !== null,
+            sku: inventoryItem?.sku ?? null,
+            item: inventoryItem?.item ?? null,
+            style: inventoryItem?.style ?? null,
+            size: inventoryItem?.size ?? null,
+          };
+        })
+        .sort((left, right) => left.variationNumber - right.variationNumber);
+    }
+
+    function resolvePaymentFixingOrder(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A payment-fixing resolution is required.");
+      }
+
+      const key = validateAuctionKey(input);
+      const resolution = input.resolution;
+
+      if (!["payment_complete", "canceled"].includes(resolution)) {
+        fail(
+          "INVALID_ARGUMENT",
+          "resolution must be payment_complete or canceled.",
+        );
+      }
+
+      const soldPriceCents = resolution === "payment_complete"
+        ? requireSafeInteger(input.soldPriceCents, "soldPriceCents", 1)
+        : input.soldPriceCents;
+
+      if (resolution === "canceled" && soldPriceCents !== null) {
+        fail(
+          "INVALID_ARGUMENT",
+          "soldPriceCents must be null for a canceled payment.",
+        );
+      }
+
+      const auction = findAuction(
+        state,
+        key.streamId,
+        key.variationNumber,
+      );
+
+      if (!auction) {
+        fail(
+          "PAYMENT_ORDER_NOT_RESOLVABLE",
+          "The payment-fixing variation does not exist.",
+        );
+      }
+
+      if (auction.paymentStatus === resolution) {
+        if (
+          resolution === "payment_complete" &&
+          auction.soldPriceCents !== soldPriceCents
+        ) {
+          fail(
+            "PAYMENT_RESOLUTION_CONFLICT",
+            "The completed payment already has a different final sold price.",
+          );
+        }
+
+        return createAuctionView(state, auction);
+      }
+
+      if (auction.paymentStatus !== "unknown") {
+        fail(
+          "PAYMENT_RESOLUTION_CONFLICT",
+          "The payment order already has a different terminal status.",
+        );
+      }
+
+      if (
+        !PAYMENT_FIXING_OBSERVED_STATUSES.has(
+          auction.observedPaymentStatus,
+        )
+      ) {
+        fail(
+          "PAYMENT_ORDER_NOT_RESOLVABLE",
+          "Only payment-fixing orders can be resolved after tracking ends.",
+        );
+      }
+
+      if (resolution === "payment_complete") {
+        return recordPaymentComplete(state, {
+          ...key,
+          soldPriceCents,
+        });
+      }
+
+      auction.paymentStatus = "canceled";
+      auction.observedPaymentStatus = OBSERVED_PAYMENT_STATUSES.CANCELED;
+      auction.soldPriceCents = null;
+      auction.committedUnitCostCents = null;
+
+      const stream = findStream(state, key.streamId);
+
+      if (stream?.activeBiddingVariationNumber === key.variationNumber) {
+        stream.activeBiddingVariationNumber = null;
+      }
+
+      return createAuctionView(state, auction);
+    }
+
     function observeAttributedGmv(state, input) {
       requireState(state);
 
@@ -2227,6 +2370,8 @@
       mapVariation,
       unmapVariation,
       recordPaymentComplete,
+      listPaymentFixingOrders,
+      resolvePaymentFixingOrder,
       observeAttributedGmv,
       getAuction,
       calculateSummary,

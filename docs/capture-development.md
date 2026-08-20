@@ -228,17 +228,22 @@ included, while anything TikTok did not render or the extension did not durably 
 cannot be reconstructed by the report.
 
 The report keeps mapped and unmapped completions in its sale detail. Exact-SKU analytics
-sum mapped completed units, revenue, pinned cost, and gross profit by SKU. Combined
+sum mapped completed units, revenue, saved unit cost, and gross profit by SKU. Combined
 product analytics sum those same values by exact `item + style` across sizes. Top sold is
 ranked by units and top profitable by gross profit, with all ties preserved. SKU gross
 margin is gross profit divided by mapped revenue; sell-through is that stream's mapped
 completed units divided by the baseline opening quantity.
+The native **Profit/Loss by SKU** disclosure uses those same exact-SKU totals, includes
+only mapped SKUs with completed sales in this report stream, and sorts from highest gross
+profit to largest loss. Positive values are green, losses are red, and zero is neutral.
+Pending, canceled, unmapped, and unsold entries are excluded. It starts collapsed on
+screen and expands for print/PDF output.
 The report's **AOV** uses the same current-stream formula and nearest-cent rounding as the
 live card, and displays `$0.00` when no eligible completion exists.
 The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
 same 6%/94%, approximate-sign, whole-dollar, compact/exact, and missing-value rules as the
 live card. It does not recalculate the fee estimate from Gross Item Sales.
-The report derives **Est. Profit After Fees** from that same frozen display and the frozen
+The report derives **Est. Profit After Fees** from that same frozen display and the saved
 mapped completed COGS total, without adding a serialized field or migration. It retains
 the live card's rounding, signed-loss, missing-GMV, and incomplete-count behavior.
 
@@ -249,16 +254,25 @@ available-after-reservations, oversold amount, and a recount flag. The Google Sh
 replacement count is `max(0, opening - all baseline completed sales)`. Pending remains a
 separate warning and does not permanently reduce that replacement count. A negative raw
 result is retained as an oversold/recount notice while the copy/CSV value is clamped to
-zero.
+zero. A report-only cost correction changes that report handoff's `unit_cost` column but
+never changes any quantity column or the canonical baseline.
 
 The strict saved record retains internal completeness status and reason codes. An active
 bidding variation, unresolved order, pending reservation, payment-fixing order, unmapped
 completed sale, conflict, or oversold/recount condition adds a specific attention notice
 but never blocks End. The employee UI does not show Final/Provisional state wording. The
-report is frozen after End; ended streams cannot be reopened for later corrections in the
-tagger.
+report does not reopen its ended stream in the tagger. The newest safely eligible report
+can instead resolve canonical-unresolved `Payment fixing` or temporary `Payment failed`
+orders after End. Payment completion requires the seller-verified final sold price;
+cancellation releases the reservation. Separately, every finalized current or archived
+report exposes a collapsed unit-cost control listing every SKU saved in that report,
+including unsold ones. It accepts nonnegative integer-cent values and requires
+confirmation. A cost correction reprices only that report's mapped completed rows and
+regenerates its dependent metrics and handoff. Canonical reconciliation, the inventory
+baseline, other reports, live tracking, and future streams remain unchanged.
 
-These captured facts hydrate into reconciliation state version 7. Each stream record has
+These captured facts hydrate into reconciliation state version 7. Report-only unit-cost
+correction never enters that state and adds no persisted shape or migration. Each stream record has
 an immutable inventory-baseline pin plus nullable `attributedGmvDisplay` and
 `activeBiddingVariationNumber`, and capture
 verifies or repairs the active stream's pin before applying a variation, payment, or
@@ -343,7 +357,7 @@ fails closed until that public placeholder is replaced.
    selected ID and fixed whole-sheet `'Inventory'` range.
 6. Verify the full normalized table, row count, opening-unit total, and opening-cost
    total. Select **Confirm inventory baseline**. Confirmation re-reads the Sheet before
-   atomically saving a new immutable local baseline; Start becomes available only after
+   atomically saving a new durable local baseline; Start becomes available only after
    that succeeds. The importer accepts at most 1,000 inventory rows beyond the header;
    an oversized Sheet is rejected without a partial preview or import.
 
@@ -368,14 +382,16 @@ Run these fail-closed checks before relying on the importer:
   worker import commands are rejected until End.
 - Inspect the side-panel and service-worker Console. Sheet rows, sharing links, Google
   access tokens, API error bodies, and credentials must not be logged. Only normalized
-  confirmed inventory and its non-secret fingerprint are persisted locally.
+  confirmed inventory and its non-secret source fingerprint are persisted locally.
 
 After Start, inventory, reservations, payment reconciliation, and basic profit use the
 local pinned baseline. The extension makes no live Google request and has no Sheets write
 scope. After End, its local report can copy or download an exact six-column replacement
 table for an employee to paste/import manually. A new physical recount is another
-pre-stream import after End; it cannot alter the baseline pinned to an active or
-historical stream.
+pre-stream import after End; it cannot alter the opening quantity, SKU identity, or pin
+of an active or historical stream. A saved report's separate cost control edits only that
+report and its copy/CSV handoff, even when the report is older or archived or another
+stream is active.
 
 For distribution, the OAuth client must use the final Chrome Web Store item ID rather
 than a temporary unpacked ID. The Store listing also needs accurate privacy disclosures
@@ -510,13 +526,42 @@ screen test-user run does not complete those release reviews.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Items sold this stream** and **Definitions and limitations** start
-    collapsed and expand on activation; the completed-sales count remains visible in
-    both order-table states.
+    Confirm **Items sold this stream**, **Profit/Loss by SKU**, and **Definitions and
+    limitations** start collapsed and expand on activation; the completed-sales count
+    remains visible in both order-table states. Confirm the SKU profit/loss rows contain
+    only mapped SKUs sold in this report stream, sort from highest profit to largest loss,
+    and render positive, negative, and zero values in green, red, and neutral styles.
+    Pending, canceled, unmapped, and unsold entries must not appear.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension. Verify the PDF includes every completed-order row and every definition
-    even when both sections were collapsed on screen.
+    extension. Verify the PDF includes every completed-order row, every eligible SKU
+    profit/loss row, and every definition even when those sections were collapsed on
+    screen.
+    End a test stream with one mapped `Payment failed` or `Payment fixing` order. In
+    **Finish unresolved payments**, cancel the confirmation once and verify nothing
+    changes. Then mark it complete with an invalid price and confirm validation fails;
+    enter the seller-verified final price, confirm, and verify pending/fixing clears while
+    completed sales, inventory, COGS, profit, warnings, and CSV all recalculate. In a
+    separate run, mark the order canceled and verify the reservation is released, Canceled
+    Orders increases, and the order never enters completed sales. Confirm processing and
+    other statuses never appear. Also confirm controls disappear for older reports, an
+    older inventory baseline, a later End-without-report stream, or while a tracker is
+    active.
+    Fail report replacement after the canonical correction saves, then reload the report;
+    confirm the read-time repair regenerates the report and does not ask for a second
+    payment decision.
+    Expand **Correct SKU Unit Cost** and verify every report inventory SKU appears, including one
+    with no completed sale in this stream. Cancel a correction and confirm nothing changes.
+    Correct a sold SKU and verify the same report recalculates completed-order unit cost
+    and profit, COGS, gross profit/margin, Est. Profit After Fees, top-profit rankings,
+    Profit/Loss by SKU, SKU/product performance, and the copy/CSV `unit_cost`. Prices,
+    statuses, quantities, GMV, Gross Item Sales, AOV, and fees must not change. Correct an
+    unsold SKU and verify current-stream financial totals remain unchanged while that
+    report's handoff uses the new cost. Reload after the correction and confirm the same
+    report retains the corrected value. Verify the unit-cost control remains available on
+    older and archived finalized reports, after a newer stream exists, and while tracking
+    is active. Confirm canonical inventory, other reports, and future streams retain the
+    original cost. The payment-resolution section retains its stricter eligibility guards.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
     backup. In the report select **Copy Updated Inventory**, return to the original
     `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
@@ -720,7 +765,7 @@ The next capture stage should validate and implement:
 - real-stream validation of root replacement, tab suspension, refresh, and a second LIVE.
 
 Google Sheets OAuth, fixed-range reading, detached preview, explicit confirmation,
-immutable baseline creation, and stream pinning are now implemented before Start. This
+immutable baseline creation and stream pinning are now implemented before Start. This
 inventory-only boundary does not expand capture authority: the content script still must
 not read Sheet data, buyer identity, inventory mappings, or credentials, and it cannot
 contact Google. Only the worker performs the selected pre-stream read. The report's local
@@ -757,6 +802,12 @@ any live Google dependency remain intentionally absent.
 - A report is limited to facts durably captured before End. It cannot recover a Sold
   Items row TikTok did not render. Internal completeness metadata does not independently
   verify TikTok's full stream totals and is not shown as a customer-facing state label.
+- The narrow canonical report correction can resolve fixing/temporary-failed payments
+  only on the newest safe ended stream. Unit cost can be corrected in any finalized
+  current or archived report, but only that report and its handoff change. Neither path
+  reopens capture or edits mappings, and the report-only cost path never changes canonical
+  inventory, other reports, or future streams. The employee must enter a seller-verified
+  price for payment completion and explicitly confirm a nonnegative cost.
 - Reports are stored locally as five Business Records plus as many as 25 archived records
   under a combined cap of approximately 4 MiB. Capacity never silently deletes an
   existing report; archive deletion is employee-selected and explicitly confirmed.

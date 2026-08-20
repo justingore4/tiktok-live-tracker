@@ -146,6 +146,14 @@ const reportReadCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
   streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
   streamReportProtocol.COMMAND_TYPES.GET_REPORT,
+  streamReportProtocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
+  streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
+]);
+const reportPageOnlyCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
+  streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
+  streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
+  streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
 ]);
 const captureDashboardUrlPattern =
   /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
@@ -345,8 +353,23 @@ function validateSender(sender, command, boundary) {
     }
 
     if (
+      fromSidePanel &&
+      reportPageOnlyCommandTypes.has(command.type)
+    ) {
+      failBoundary(
+        boundary.protocol,
+        "UNAUTHORIZED_MESSAGE_SENDER",
+        "Only the packaged report page can correct ended-stream report data.",
+      );
+    }
+
+    if (
       fromReportPage &&
-      !reportReadCommandTypes.has(command.type)
+      !reportReadCommandTypes.has(command.type) &&
+      ![
+        streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
+        streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+      ].includes(command.type)
     ) {
       failBoundary(
         boundary.protocol,
@@ -824,6 +847,231 @@ async function dispatchReconciliationCommand(command) {
   return response;
 }
 
+async function requireFinalizedReport(reportId) {
+  const record = await reportCoordinator.getReport(reportId);
+
+  if (record.reportId === null || record.report === null) {
+    failBoundary(
+      streamReportProtocol,
+      "REPORT_NOT_FOUND",
+      "The stream report does not exist.",
+    );
+  }
+
+  if (
+    record.lifecycleStatus !==
+      streamReportStorage.LIFECYCLE_STATUSES.FINALIZED
+  ) {
+    failBoundary(
+      streamReportProtocol,
+      "REPORT_NOT_FINALIZED",
+      "Only a finalized stream report can correct ended-stream data.",
+    );
+  }
+
+  return record;
+}
+
+async function getCanonicalReconciliationState() {
+  const response = await stateCoordinator.dispatch({
+    type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+  });
+
+  return hydrateReconciliationResponse(response);
+}
+
+function getReportCorrectionGuard(reportRecord, reconciliationState) {
+  const report = reportRecord.report;
+  const lastStream = reconciliationState.streams.at(-1) ?? null;
+
+  if (
+    report.metadata.inventoryBaselineId !==
+      reconciliationState.activeInventoryBaselineId
+  ) {
+    return {
+      code: "REPORT_INVENTORY_BASELINE_STALE",
+      message:
+        "This report uses an older inventory import and can no longer be corrected safely.",
+    };
+  }
+
+  if (lastStream?.streamId !== report.metadata.streamId) {
+    return {
+      code: "REPORT_NOT_LATEST_STREAM",
+      message:
+        "A newer tracker stream exists, so this report can no longer be corrected safely.",
+    };
+  }
+
+  return null;
+}
+
+async function getReportWithPaymentRepair(command, sessionState) {
+  const reportRecord = await reportCoordinator.getReport(command.reportId);
+
+  if (
+    reportRecord.reportId === null ||
+    reportRecord.report === null ||
+    reportRecord.lifecycleStatus !==
+      streamReportStorage.LIFECYCLE_STATUSES.FINALIZED ||
+    sessionState.activeSession !== null
+  ) {
+    return reportRecord;
+  }
+
+  const savedPaymentFixingCount =
+    reportRecord.report?.totals?.paymentFixingCount;
+
+  if (savedPaymentFixingCount === 0) {
+    return reportRecord;
+  }
+
+  const latest = await reportCoordinator.getLatestFinalizedReport();
+
+  if (latest.reportId !== command.reportId) {
+    return reportRecord;
+  }
+
+  let reconciliationState;
+  let orders;
+
+  try {
+    reconciliationState = await getCanonicalReconciliationState();
+
+    if (getReportCorrectionGuard(reportRecord, reconciliationState)) {
+      return reportRecord;
+    }
+
+    orders = reconciliation.listPaymentFixingOrders(
+      reconciliationState,
+      { streamId: reportRecord.report.metadata.streamId },
+    );
+  } catch (_error) {
+    // A valid saved report remains readable when its separate canonical
+    // reconciliation state is unavailable. Payment corrections stay disabled.
+    return reportRecord;
+  }
+
+  const needsPaymentRepair =
+    Number.isSafeInteger(savedPaymentFixingCount) &&
+    savedPaymentFixingCount !== orders.length;
+
+  if (!needsPaymentRepair) {
+    return reportRecord;
+  }
+
+  return reportCoordinator.replaceFinalizedReport({
+    reportId: command.reportId,
+    reconciliationState,
+  });
+}
+
+async function listPaymentFixingOrdersForReport(command, sessionState) {
+  const reportRecord = await requireFinalizedReport(command.reportId);
+  const latest = await reportCoordinator.getLatestFinalizedReport();
+
+  if (
+    sessionState.activeSession !== null ||
+    latest.reportId !== command.reportId
+  ) {
+    return { reportId: command.reportId, orders: [] };
+  }
+
+  const reconciliationState = await getCanonicalReconciliationState();
+
+  if (getReportCorrectionGuard(reportRecord, reconciliationState)) {
+    return { reportId: command.reportId, orders: [] };
+  }
+
+  const orders = reconciliation.listPaymentFixingOrders(
+    reconciliationState,
+    { streamId: reportRecord.report.metadata.streamId },
+  );
+
+  return {
+    reportId: command.reportId,
+    orders,
+  };
+}
+
+async function resolvePaymentFixingOrderForReport(command, sessionState) {
+  if (sessionState.activeSession !== null) {
+    failBoundary(
+      streamReportProtocol,
+      "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before correcting a saved report.",
+    );
+  }
+
+  const reportRecord = await requireFinalizedReport(command.reportId);
+  const latest = await reportCoordinator.getLatestFinalizedReport();
+
+  if (latest.reportId !== command.reportId) {
+    failBoundary(
+      streamReportProtocol,
+      "REPORT_NOT_LATEST",
+      "Only the newest ended-stream report can correct payment-fixing orders.",
+    );
+  }
+
+  const reconciliationState = await getCanonicalReconciliationState();
+  const correctionGuard = getReportCorrectionGuard(
+    reportRecord,
+    reconciliationState,
+  );
+
+  if (correctionGuard) {
+    failBoundary(
+      streamReportProtocol,
+      correctionGuard.code,
+      correctionGuard.message,
+    );
+  }
+
+  const reconciliationResponse =
+    await stateCoordinator.resolvePaymentFixingOrder({
+      streamId: reportRecord.report.metadata.streamId,
+      variationNumber: command.variationNumber,
+      resolution: command.resolution,
+      soldPriceCents: command.soldPriceCents,
+    });
+
+  return reportCoordinator.replaceFinalizedReport({
+    reportId: command.reportId,
+    reconciliationState: reconciliationResponse?.state,
+  });
+}
+
+async function listUnitCostsForReport(command) {
+  const reportRecord = await requireFinalizedReport(command.reportId);
+  const completedSaleCounts = new Map(
+    reportRecord.report.itemPerformance.map((item) => [
+      item.sku,
+      item.soldQuantity,
+    ]),
+  );
+
+  return {
+    reportId: command.reportId,
+    skus: reportRecord.report.inventory.map((item) => ({
+      sku: item.sku,
+      item: item.item,
+      style: item.style,
+      size: item.size,
+      unitCostCents: item.unitCostCents,
+      completedSaleCount: completedSaleCounts.get(item.sku) ?? 0,
+    })),
+  };
+}
+
+async function updateUnitCostForReport(command) {
+  return reportCoordinator.correctFinalizedReportUnitCost({
+    reportId: command.reportId,
+    sku: command.sku,
+    unitCostCents: command.unitCostCents,
+  });
+}
+
 function dispatchBoundaryCommand(boundary, command) {
   if (boundary.protocol === streamSessionCoordinator) {
     return dispatchStreamSessionCommand(command);
@@ -832,6 +1080,41 @@ function dispatchBoundaryCommand(boundary, command) {
   if (boundary.protocol === streamReportProtocol) {
     return getStreamSessionResponse().then(async ({ state }) => {
       await repairPendingReportsForSession(state, { required: true });
+
+      if (
+        command.type === streamReportProtocol.COMMAND_TYPES.GET_REPORT
+      ) {
+        return getReportWithPaymentRepair(command, state);
+      }
+
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS
+      ) {
+        return listPaymentFixingOrdersForReport(command, state);
+      }
+
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER
+      ) {
+        return resolvePaymentFixingOrderForReport(command, state);
+      }
+
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS
+      ) {
+        return listUnitCostsForReport(command);
+      }
+
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST
+      ) {
+        return updateUnitCostForReport(command);
+      }
+
       return reportCoordinator.dispatch(command);
     });
   }

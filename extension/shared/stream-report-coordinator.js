@@ -134,10 +134,11 @@
       if (
         !streamReport ||
         typeof streamReport.createStreamReport !== "function" ||
+        typeof streamReport.correctReportUnitCost !== "function" ||
         typeof streamReport.hydrateStreamReport !== "function"
       ) {
         throw new TypeError(
-          "streamReport must provide createStreamReport and hydrateStreamReport.",
+          "streamReport must provide createStreamReport, correctReportUnitCost, and hydrateStreamReport.",
         );
       }
 
@@ -326,6 +327,10 @@
 
       function findByReportId(reportId) {
         return records.find((record) => record.reportId === reportId) ?? null;
+      }
+
+      function getFinalizedRecords(candidateRecords = records) {
+        return candidateRecords.filter(isFinalized);
       }
 
       function createSummary(record) {
@@ -522,6 +527,158 @@
         return createPublicRecord(record);
       }
 
+      async function getLatestFinalizedReport() {
+        await ensureLoaded();
+        const record = [...getFinalizedRecords()].sort(sortNewestFirst)[0] ?? null;
+
+        return createPublicRecord(record);
+      }
+
+      async function replaceFinalizedReport(input) {
+        if (
+          !isPlainRecord(input) ||
+          Object.keys(input).sort().join(",") !==
+            "reconciliationState,reportId"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            "Finalized report replacement requires reconciliationState and reportId.",
+          );
+        }
+
+        await ensureLoaded();
+        protocol.validateCommand({
+          type: protocol.COMMAND_TYPES.GET_REPORT,
+          reportId: input.reportId,
+        });
+        const existing = findByReportId(input.reportId);
+
+        if (!existing) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        if (!isFinalized(existing)) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "Only a finalized stream report can be corrected.",
+          );
+        }
+
+        const previous = existing.report;
+        let replacement;
+
+        try {
+          replacement = streamReport.createStreamReport({
+            reconciliation,
+            reconciliationState: input.reconciliationState,
+            streamId: previous.metadata.streamId,
+            startedAt: previous.metadata.startedAt,
+            endedAt: previous.metadata.endedAt,
+            generatedAt: createTimestamp(),
+          });
+          replacement = streamReport.hydrateStreamReport(replacement);
+        } catch (error) {
+          fail(
+            "REPORT_GENERATION_FAILED",
+            "Could not regenerate the stream report from corrected tracker data.",
+            error,
+          );
+        }
+
+        if (
+          replacement.reportId !== existing.reportId ||
+          replacement.metadata.streamId !== previous.metadata.streamId ||
+          replacement.metadata.startedAt !== previous.metadata.startedAt ||
+          replacement.metadata.endedAt !== previous.metadata.endedAt ||
+          replacement.metadata.inventoryBaselineId !==
+            previous.metadata.inventoryBaselineId
+        ) {
+          fail(
+            "REPORT_GENERATION_FAILED",
+            "The corrected report does not preserve the saved stream identity.",
+          );
+        }
+
+        await persist(
+          records.map((record) =>
+            record.reportId === existing.reportId
+              ? { ...record, report: cloneSerializable(replacement) }
+              : record,
+          ),
+        );
+
+        return createPublicRecord(findByReportId(existing.reportId));
+      }
+
+      async function correctFinalizedReportUnitCost(input) {
+        if (
+          !isPlainRecord(input) ||
+          Object.keys(input).sort().join(",") !==
+            "reportId,sku,unitCostCents"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            "Report unit-cost correction requires reportId, sku, and unitCostCents.",
+          );
+        }
+
+        await ensureLoaded();
+        protocol.validateCommand({
+          type: protocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+          ...input,
+        });
+        const existing = findByReportId(input.reportId);
+
+        if (!existing) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        if (!isFinalized(existing)) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "Only a finalized stream report can be corrected.",
+          );
+        }
+
+        let correctedReport;
+
+        try {
+          correctedReport = streamReport.correctReportUnitCost(
+            existing.report,
+            {
+              sku: input.sku,
+              unitCostCents: input.unitCostCents,
+            },
+          );
+        } catch (error) {
+          fail(
+            typeof error?.code === "string"
+              ? error.code
+              : "REPORT_CORRECTION_FAILED",
+            typeof error?.message === "string"
+              ? error.message
+              : "Could not correct the saved stream report.",
+            error,
+          );
+        }
+
+        if (
+          JSON.stringify(correctedReport) === JSON.stringify(existing.report)
+        ) {
+          return createPublicRecord(existing);
+        }
+
+        await persist(
+          records.map((record) =>
+            record.reportId === existing.reportId
+              ? { ...record, report: cloneSerializable(correctedReport) }
+              : record,
+          ),
+        );
+
+        return createPublicRecord(findByReportId(existing.reportId));
+      }
+
       function requireReportsById(reportIds) {
         const selected = reportIds.map((reportId) => findByReportId(reportId));
 
@@ -704,6 +861,17 @@
 
           return enqueue(() => deleteArchivedReports(command.reportIds));
         },
+        correctFinalizedReportUnitCost(input) {
+          let snapshot;
+
+          try {
+            snapshot = cloneSerializable(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => correctFinalizedReportUnitCost(snapshot));
+        },
         discardPendingReportForStream(streamId) {
           return enqueue(() => discardPendingReportForStream(streamId));
         },
@@ -715,6 +883,9 @@
         },
         getReportForStream(streamId) {
           return enqueue(() => getReportForStream(streamId));
+        },
+        getLatestFinalizedReport() {
+          return enqueue(getLatestFinalizedReport);
         },
         listReports() {
           return enqueue(listReports);
@@ -735,6 +906,17 @@
         },
         repairPendingReports(activeStreamId) {
           return enqueue(() => repairPendingReports(activeStreamId));
+        },
+        replaceFinalizedReport(input) {
+          let snapshot;
+
+          try {
+            snapshot = cloneSerializable(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => replaceFinalizedReport(snapshot));
         },
         restoreReports(reportIds) {
           let command;

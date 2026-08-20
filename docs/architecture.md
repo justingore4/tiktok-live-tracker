@@ -44,7 +44,8 @@ The employee-facing interface displays item, style, and size. The hidden `sku` o
 ensures that the correct inventory row is updated. Each tracker stream is permanently
 pinned to one immutable baseline. A later recount appends a different baseline for
 future streams; it never rewrites the opening count or cost used by an active or
-historical stream.
+historical stream. A report-only cost correction changes one saved report without
+mutating that canonical baseline.
 
 ## 2. Payment and mapping are independent
 
@@ -265,8 +266,9 @@ Inventory accounting follows the selected stream's pinned baseline:
 Mapping, unmapping, late payment completion, and historical corrections always resolve
 the SKU and committed unit-cost snapshot through the auction stream's original pin. A
 later baseline may reuse the same SKU with a different opening quantity or unit cost, but
-it cannot change historical inventory or profit. A stream also cannot map a SKU that
-exists only in a newer baseline.
+it cannot change historical inventory or profit. A report-only unit-cost correction does
+not enter reconciliation state. A stream also cannot map a SKU that exists only in a
+newer baseline.
 
 The current state stores the latest mapping and status. A full event-by-event employee
 audit log can be added as a separate persistent event-log feature if the client requires
@@ -461,9 +463,9 @@ and automatic page-to-session association remain later identity work.
 
 ### End-of-stream report snapshot — implemented
 
-The current report does not perform a new privileged TikTok scrape at End. It freezes a
-strict, immutable projection of the already durable reconciliation state after all
-worker commands ordered ahead of End have completed. The snapshot receives a
+The current report does not perform a new privileged TikTok scrape at End. It creates a
+strict projection of the already durable reconciliation state after all worker commands
+ordered ahead of End have completed. The snapshot receives a
 deterministic `stream-report:<uuid>` identity derived from its exact
 `local-stream:<uuid>`, UTC start/end/generated timestamps, the pinned baseline ID, and
 the last active-bidding marker. No buyer, Sheet ID, sharing link, token, or raw DOM text
@@ -523,7 +525,7 @@ The report retains these deliberately different measures:
   excluding the active bidding marker and nonterminal processing/fixing states;
 - terminal canceled and still-fixing counts;
 - `costOfGoodsCents` and `grossProfitCents` only for mapped completed sales, where gross
-  profit is mapped revenue minus the pinned unit-cost snapshots; and
+  profit is mapped revenue minus the unit costs saved in that report; and
 - completed-sale detail rows that retain unmapped completions with unavailable item/cost
   fields instead of hiding them.
 
@@ -533,6 +535,12 @@ retain sold quantity, revenue, COGS, and gross profit; top-sold and top-profitab
 retain every tie. The report page derives SKU gross margin as gross profit divided by
 mapped revenue and sell-through as current-stream mapped completed units divided by that
 SKU's opening quantity.
+
+The report page also projects those exact-SKU totals into a native **Profit/Loss by SKU**
+disclosure. It includes only mapped SKUs with completed sales in that report stream and
+sorts them from highest gross profit to largest loss. Positive, negative, and zero values
+use distinct green, red, and neutral presentation. Pending, canceled, unmapped, and unsold
+entries are excluded.
 
 The baseline-wide inventory handoff contains every pinned-baseline SKU with opening
 quantity, current-stream sold quantity, all completed sales under the shared baseline,
@@ -552,11 +560,27 @@ replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clip
 serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet
 values.
 
-The extension-owned report page loads only the local immutable record. It supports native
+The extension-owned report page loads only the local saved record. It supports native
 Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
-full-table clipboard copy for pasting at A1. The completed-orders and definitions
-disclosures start collapsed on screen, but print styling always includes the entire sales
-table with repeated column headers and every definition. These are employee-initiated
+full-table clipboard copy for pasting at A1. The two screen-only correction disclosures
+have different authority boundaries.
+**Finish unresolved payments** exposes only canonical-unresolved `payment_fixing` or
+temporary `payment_failed` orders. Cancellation needs no price and releases the
+reservation; completion requires a seller-verified positive final price and commits the
+mapped unit. This canonical payment correction remains limited to the newest eligible
+report while no tracker stream is active and its baseline/stream are still current.
+**Correct SKU Unit Cost** is available on every finalized current or archived report. It
+lists every SKU saved in that report's inventory, including unsold SKUs, accepts exact
+nonnegative integer-cent costs, and requires confirmation. The worker replaces only that
+same saved report while preserving its report/stream identity, timestamps, baseline
+reference, lifecycle, and archive tier. Cost correction updates
+completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
+top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
+change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
+other reports, the live tracker, or future streams. The completed-orders,
+Profit/Loss by SKU, and definitions disclosures start collapsed on screen, but print
+styling always includes the entire sales table, every SKU profit/loss row, repeated
+column headers, and every definition. These are employee-initiated
 local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
@@ -707,10 +731,12 @@ are retained as attention notices rather than blockers. If report persistence it
 fails, the normal action preserves the active stream and offers an explicit **End
 without report** fallback.
 
-Ended streams cannot yet be reopened in the tagger, so the archived report is a frozen
-record rather than a post-End editing workspace. Employees should finish corrections and
-wait for expected capture retries when practical. Report links appear after End and open
-the local printable page; no automatic Google Sheet write occurs.
+Ended streams cannot be reopened in the tagger. The guarded payment-buffer correction is
+limited to the newest safe report; report-only SKU-cost correction is available on any
+finalized current or archived report.
+Employees should finish mapping corrections and wait for expected capture retries when
+practical. Report links appear after End and open the local printable page; no automatic
+Google Sheet write occurs.
 
 The live selector lists only persisted variations for the active local stream and keeps
 mapping unavailable until at least one such record exists. If the controller still holds
@@ -794,8 +820,9 @@ hydrates and validates every read, returns `null` only when the key is truly abs
 reports malformed, unsupported, or failed reads and writes as typed errors. It never
 silently clears or replaces corrupt or future-version data.
 
-Reconciliation state is version 7. The outer storage envelope deliberately remains
-schema version 1. Version 4 replaced the mutable top-level inventory array with an
+Reconciliation state is version 7. Report-only unit-cost correction does not alter this
+state and requires neither a state-version migration nor a report-version migration. The
+outer storage envelope deliberately remains schema version 1. Version 4 replaced the mutable top-level inventory array with an
 append-only `inventoryBaselines` collection, an active-baseline pointer for future
 streams, and an immutable `inventoryBaselineId` pin on every stream. Version 5 adds the
 nullable, sanitized `attributedGmvDisplay` field to each stream. Version 6 adds the
@@ -863,6 +890,16 @@ The store hydrates and validates the complete nested report, verifies that wrapp
 report identities agree, detaches every read/write, and never replaces malformed or
 future data. Version-1 records migrate strictly to version 2 as non-archived records;
 unknown future versions still fail closed.
+
+Finalized reports remain immutable through the general report coordinator API. Narrow
+internal replacement paths support post-End payment-buffer resolution and report-only
+SKU unit-cost correction. Payment resolution retains its newest-report, inactive-tracker,
+current-baseline, and last-canonical-stream guards because it mutates reconciliation
+state. Unit-cost correction instead accepts any finalized current or archived report,
+validates and reprices only the selected report's self-contained rows, and never consults
+or mutates reconciliation state. Identical retries are idempotent; contradictory payment
+outcomes fail closed. Replacement preserves whether the report is in Business Records or
+Archived Reports.
 
 The finalized library has two tiers under a combined cap of approximately 4 MiB: no more
 than five non-archived **Business Records** and no more than 25 archived records, with 30
@@ -1022,7 +1059,7 @@ rather than reversing a `payment_complete` record.
 
 Google Sheets is implemented as the pre-stream inventory import source. The employee
 authorizes a Google account through Chrome, supplies one spreadsheet ID, reviews the
-normalized `Inventory` preview, and explicitly confirms it as a new immutable local
+normalized `Inventory` preview, and explicitly confirms it as a new durable local
 baseline. The service worker owns authorization, network access, preview state, baseline
 creation, and all active-stream checks; neither the dashboard content script nor the side
 panel receives an access token.
@@ -1098,8 +1135,12 @@ stream is active.
 `unit_cost` is the per-unit cost snapshot used for basic gross-profit calculations. The
 adapter converts it exactly to the engine's integer `unitCostCents` value (`12.00`
 becomes `1200`) and rejects values that cannot be represented as nonnegative safe integer
-cents. Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are
-outside this first contract.
+cents. If this imported value was wrong for a completed stream's analytics, any finalized
+saved or archived report can explicitly correct its own copy. That report's dependent
+financial rows and six-column handoff are rebuilt, while the immutable imported baseline,
+canonical sales, other reports, and future streams retain the original cost.
+Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are outside
+this first contract.
 
 ### Atomic validation boundary
 
@@ -1113,7 +1154,9 @@ The normalized preview is detached data. Merely opening or previewing a Sheet mu
 start a stream, activate a baseline, alter reconciliation state, or persist a partial
 baseline. A separate explicit employee confirmation creates a fresh baseline identity,
 appends the complete baseline, and activates it only for future streams; existing
-baselines and stream pins remain immutable.
+baseline identity, entries, quantities, costs, and stream pins remain immutable. The
+later report-only unit-cost correction is a separate saved-report operation, not an
+import mutation.
 
 For a valid two-dimensional `Inventory` value array, the pure parser returns a frozen,
 detached preview with:
@@ -1128,9 +1171,11 @@ detached preview with:
 Invalid input produces one typed import error containing ordered row- and column-specific
 issues for independently validated fields. Diagnostics that depend on an already-invalid
 value may be omitted. The parser does not return a partial inventory array. Fingerprints
-identify equivalent normalized previews; they are not credentials, authorization proofs,
-or baseline identities. Two separately confirmed recounts may therefore use different
-baseline IDs even when their fingerprints are equal.
+identify equivalent normalized previews at confirmation time; they are not credentials,
+authorization proofs, baseline identities, or live inventory hashes. A report-only cost
+correction changes neither the normalized baseline nor its saved source fingerprint. Two
+separately confirmed recounts may therefore use different baseline IDs even when their
+fingerprints are equal.
 
 ### Connected import boundary
 
@@ -1316,10 +1361,11 @@ Browser support beyond Chrome is a later decision.
    1. **Completed:** exact template, pure validation, detached preview, and opening
       baseline contract;
    2. **Completed:** immutable versioned inventory baselines, permanent tracker-stream
-      pins, baseline-scoped inventory/cost accounting, and strict legacy migration; and
+      pins, baseline-scoped inventory/cost accounting, report-only cost correction, and
+      strict legacy migration; and
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
-8. **Completed:** immutable end-of-stream projection, report-aware End/recovery,
+8. **Completed:** strict end-of-stream projection, report-aware End/recovery,
    two-tier local Business Records/archive library, printable/Save-as-PDF business page,
    exact SKU and combined
    product analytics, and six-column clipboard/CSV inventory handoff.

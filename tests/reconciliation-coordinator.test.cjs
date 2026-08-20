@@ -1155,6 +1155,72 @@ test("failed first initialization remains uninitialized and can be retried", asy
   assert.equal(memoryStore.calls.save.length, 2);
 });
 
+test("persists report-scoped payment fixing resolution and keeps retries idempotent", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+
+  await coordinator.dispatch(initializeCommand());
+  await coordinator.dispatch(mapCommand(91));
+  await coordinator.dispatch(observePaymentStatusesCommand([{
+    variationNumber: 91,
+    observedPaymentStatus: "payment_failed",
+  }]));
+  const saveCountBeforeResolution = memoryStore.calls.save.length;
+  const input = {
+    streamId: "stream-1",
+    variationNumber: 91,
+    resolution: "payment_complete",
+    soldPriceCents: 3300,
+  };
+  const resolved = await coordinator.resolvePaymentFixingOrder(input);
+
+  assert.equal(resolved.result.status, "committed");
+  assert.equal(resolved.result.soldPriceCents, 3300);
+  assert.equal(resolved.result.committedUnitCostCents, 1200);
+  assert.equal(memoryStore.calls.save.length, saveCountBeforeResolution + 1);
+
+  const retried = await coordinator.resolvePaymentFixingOrder(input);
+
+  assert.deepEqual(retried, resolved);
+  assert.equal(memoryStore.calls.save.length, saveCountBeforeResolution + 1);
+});
+
+test("a failed payment fixing resolution save leaves canonical state unresolved", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+
+  await coordinator.dispatch(initializeCommand());
+  await coordinator.dispatch(mapCommand(92));
+  await coordinator.dispatch(observePaymentStatusesCommand([{
+    variationNumber: 92,
+    observedPaymentStatus: "payment_fixing",
+  }]));
+  memoryStore.failNextSave(new ReconciliationStorageError(
+    "STORAGE_WRITE_FAILED",
+    "write failed",
+  ));
+
+  await assertErrorCode(
+    () => coordinator.resolvePaymentFixingOrder({
+      streamId: "stream-1",
+      variationNumber: 92,
+      resolution: "canceled",
+      soldPriceCents: null,
+    }),
+    "STORAGE_WRITE_FAILED",
+    ReconciliationStorageError,
+  );
+
+  const state = (await coordinator.dispatch(getStateCommand())).state;
+  const auction = reconciliation.getAuction(state, {
+    streamId: "stream-1",
+    variationNumber: 92,
+  });
+
+  assert.equal(auction.paymentStatus, "unknown");
+  assert.equal(auction.observedPaymentStatus, "payment_fixing");
+});
+
 test("validates coordinator dependencies immediately", () => {
   assert.throws(() => createReconciliationCoordinator(), TypeError);
   assert.throws(

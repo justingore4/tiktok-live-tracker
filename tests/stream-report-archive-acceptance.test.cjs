@@ -68,6 +68,9 @@ function createReport(options) {
 
 const streamReport = {
   createStreamReport: createReport,
+  correctReportUnitCost(candidate) {
+    return clone(candidate);
+  },
   hydrateStreamReport(candidate) {
     if (
       !candidate ||

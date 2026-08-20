@@ -12,7 +12,7 @@ tracker combines those facts to calculate inventory and gross profit.
 > An open Live session side panel refetches saved state as those records change, without
 > requiring a TikTok-page refresh or panel reopen. Before Start, an employee can now
 > authorize read-only Google Sheets access, preview and confirm the exact `Inventory`
-> tab, and save it as a new immutable local baseline. The tracker also mirrors TikTok's
+> tab, and save it as an immutable local inventory baseline. The tracker also mirrors TikTok's
 > isolated **Attributed GMV** display under the active stream. Ending tracking now freezes
 > a local business report, opens a printable/Save-as-PDF page, and provides a complete
 > six-column Inventory table plus a Google Sheets-ready CSV. A dedicated employee work
@@ -122,9 +122,9 @@ auctioned again, the employee maps its new variation number.
   worker-made local stream ID
   survives side-panel, browser, and service-worker restarts, while End keeps
   reconciliation history and does not act on TikTok LIVE.
-- A report-aware **End Stream Tracking** flow. Confirmation freezes the current durable
-  stream and baseline into one immutable local report before the active-session pointer
-  is cleared, then opens its extension-owned report page. Unresolved payment states,
+- A report-aware **End Stream Tracking** flow. Confirmation projects the current durable
+  stream and baseline into one strict local report before the active-session pointer is
+  cleared, then opens its extension-owned report page. Unresolved payment states,
   pending reservations, unmapped completed sales, capture conflicts, an active bidding
   marker, or oversold inventory never block End; they appear as explicit attention
   notices and counts in the report.
@@ -139,13 +139,23 @@ auctioned again, the employee maps its new variation number.
   space and retry, or deliberately use **End without report**.
 - Current and archived reports open the same local report page, where they can be printed
   or saved as a PDF and can copy/download the formula-injection-safe Google Sheets
-  inventory handoff. Current reports can be archived manually when space permits.
+  inventory handoff. Every finalized current or archived report also includes a collapsed
+  **Correct SKU Unit Cost** control for every SKU in that report's inventory baseline,
+  including unsold SKUs. After confirmation, the worker updates only that saved report,
+  recalculates its dependent metrics, and refreshes its Sheet handoff. Canonical inventory,
+  other saved reports, the live tracker, and future streams remain unchanged. The newest
+  safely correctable report also lists orders that ended in
+  TikTok's `Payment fixing` or temporary `Payment failed` buffer: after tracking has ended,
+  the employee can confirm terminal cancellation or enter the seller-verified final price
+  and mark the order complete. The worker updates canonical inventory/payment state and
+  regenerates the same report rather than editing display text alone. Current reports can
+  be archived manually when space permits.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
-  failed request changes nothing. The completed-orders table and **Definitions and
-  limitations** section are collapsed by default for screen browsing and always expanded
-  in printed/PDF output.
+  failed request changes nothing. The completed-orders table, **Profit/Loss by SKU**, and
+  **Definitions and limitations** sections are collapsed by default for screen browsing
+  and always expanded in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
@@ -264,8 +274,13 @@ auctioned again, the employee maps its new variation number.
 
 ### End-of-stream report definitions
 
-The saved report is a frozen snapshot of the durable data captured when the employee
-confirms **End and create report**. Its figures are deliberately separate:
+The saved report is generated from the durable data captured when the employee confirms
+**End and create report**. The newest safe report can resolve an unfinished
+fixing/failed-buffer payment from canonical state. Separately, any finalized current or
+archived report can receive a report-only SKU unit-cost correction. Both operations
+preserve the same report identity and archive tier, but a cost correction changes only
+the selected saved report and its handoff; it does not change canonical inventory, other
+reports, the live tracker, or future streams. Its figures are deliberately separate:
 
 - **TikTok Attributed GMV** is the last exact or compact display captured from TikTok.
   It may be rounded and, per the product requirement, can include buyer-paid shipping.
@@ -281,8 +296,9 @@ confirms **End and create report**. Its figures are deliberately separate:
 - **Est. Profit After Fees** is `(Total GMV * 94%) - mapped completed COGS`, with
   the 94% amount kept unrounded until after exact cent-based COGS is subtracted. The final
   result is prefixed with `≈` and rounded to the nearest whole dollar; losses remain
-  negative, and missing Total GMV displays an em dash. Only pinned costs for mapped
-  completed sales are subtracted. Unmapped completed sales produce an **Incomplete**
+  negative, and missing Total GMV displays an em dash. Only unit costs saved in this
+  report for mapped completed sales are subtracted. Unmapped completed sales produce an
+  **Incomplete**
   warning with their count, while bidding, processing, fixing/temporary-failed, and
   canceled orders contribute no COGS. This is an operational estimate, not true net
   profit: it does not model refunds, discounts, taxes, shipping expenses, ads, labor,
@@ -297,7 +313,8 @@ confirms **End and create report**. Its figures are deliberately separate:
 - **Completed / Total sales** is uniquely priced completed orders over unique variations
   whose latest captured outcome is complete, temporary failed, or canceled. The active
   bidding item, processing, fixing, not-observed, and unrecognized states are excluded.
-- **COGS** is the sum of pinned seller unit costs for mapped completed sales. **Gross
+- **COGS** is the sum of the seller unit costs saved for mapped completed sales, including
+  any report-only unit-cost correction applied to this report. **Gross
   profit** is their sold-price revenue minus COGS; it is not net profit and excludes
   platform fees, shipping labels, refunds, ads, taxes, and other expenses. Unmapped
   completed sales remain in Gross Item Sales and completed-sale rows but cannot contribute COGS or
@@ -305,6 +322,11 @@ confirms **End and create report**. Its figures are deliberately separate:
 - **Exact-SKU performance** groups mapped completed sales by SKU. **Product performance**
   groups those same sales by `item + style` across all sizes/SKUs. Most-sold ranks use
   completed units; most-profitable ranks use gross profit; every tie is retained.
+- The report's native **Profit/Loss by SKU** disclosure lists only mapped SKUs with at
+  least one completed sale in that report stream, sorted from highest gross profit to
+  largest loss. Positive values are green, losses are red, and zero is neutral; pending,
+  canceled, unmapped, and unsold entries are excluded. It starts collapsed on screen and
+  expands for print/PDF output.
 - **Gross margin** is SKU gross profit divided by SKU mapped revenue. **Sell-through** is
   the current stream's mapped completed units for that SKU divided by its opening
   quantity in the pinned baseline.
@@ -337,8 +359,11 @@ before updating the Sheet.
   stream with the correct real TikTok LIVE.
 - Automatic Google Sheets writes. The Google connection remains pre-stream and
   read-only; the report instead provides a local six-column copy/CSV handoff.
-- Post-End editing or reopening an ended stream in the tagger. A report is an immutable
-  snapshot, not a live correction workspace.
+- General Post-End editing or reopening an ended stream in the tagger. The report page can
+  resolve fixing/temporary-failed payments only on the newest safe report. Any finalized
+  saved or archived report can correct its own SKU unit costs, but it cannot edit mappings,
+  captured prices for existing completions, quantities, SKU identity, canonical inventory,
+  other reports, or future streams.
 - Broader real-stream validation of report completeness when TikTok virtualizes or stops
   rendering earlier Sold Items rows.
 
@@ -378,12 +403,12 @@ before updating the Sheet.
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
       opening-baseline semantics, and a Google Sheets-compatible CSV template;
    2. **Completed:** version immutable inventory baselines, pin each tracker stream to
-      one baseline, and scope stock, reservations, costs, and corrections to that pin;
-      and
+      one baseline, and scope stock, reservations, and costs to that pin; and
    3. **Completed:** authorize read-only access, preview and confirm the selected Sheet,
       and initialize a new immutable inventory baseline.
-6. **Completed:** freeze an immutable end-of-stream business report, retain five Business
-   Records plus a managed 25-report archive, render SKU and product analytics, and
+6. **Completed:** freeze an end-of-stream business report with narrowly guarded payment
+   and unit-cost correction, retain five Business Records plus a managed 25-report
+   archive, render SKU and product analytics, and
    provide printable/PDF plus exact six-column copy/CSV inventory handoffs.
 7. Optionally add automatic Google Sheets writes after the local report remains the
    durable source of truth.
@@ -606,6 +631,25 @@ misconfigured build fail before requesting Google authorization.
     table contains every SKU from the pinned baseline. Use **Print / Save as PDF**, choose
     Chrome's **Save as PDF** destination, and save a copy outside the extension if the
     report must be retained.
+    For a newest test report containing one `Payment fixing` or temporary
+    `Payment failed` order, verify **Finish unresolved payments** appears. Cancel one
+    confirmation and verify nothing changes. Mark a mapped test order complete only after
+    entering its seller-verified final price, then confirm completed totals, inventory,
+    COGS, profit, warnings, and exports regenerate together. In a separate run, mark the
+    order canceled and verify its reservation returns to availability. Processing orders,
+    older reports/baselines, reports followed by another tracker stream, and reports viewed
+    while tracking is active must never expose these controls.
+    In current and archived finalized reports, expand **Correct SKU Unit Cost**. Verify its
+    selector includes every report inventory SKU, including unsold SKUs. Correct a sold
+    SKU and confirm the
+    same report recalculates completed-order cost/profit, COGS, gross profit, margin,
+    Est. Profit After Fees, top-profit rankings, Profit/Loss by SKU, and the Sheet handoff
+    without changing prices, status counts, quantities, Gross Item Sales, AOV, or fees.
+    Correct an unsold SKU and confirm this report's financial metrics stay unchanged while
+    its handoff cost changes. Cancel one confirmation and verify nothing changes. Confirm
+    the same control remains available on older and archived finalized reports, after a
+    newer stream exists, and while another stream is active. Verify canonical inventory,
+    other reports, and future streams keep their original cost.
 21. To replace the Sheet counts, first duplicate the Google Sheets **Inventory** tab as a
     backup. In the report select **Copy Updated Inventory**, return to the original
     **Inventory** tab, click cell **A1** (the first cell in the upper-left corner), and
@@ -691,10 +735,12 @@ physical quantity on hand at import, and unit cost. It intentionally excludes bu
 variation, payment, stream, and credential data. The quantity is a confirmed opening
 stock baseline; it is not a running value to edit after each sale. The importer validates
 every row and shows a detached preview before one explicit confirmation appends and
-activates the entire baseline. It never mutates an existing baseline. Preview tokens and
+activates the entire immutable baseline. Imports never overwrite an existing baseline.
+Preview tokens and
 normalized preview rows live only in worker/panel memory; a worker restart, expiration,
 authorization loss, or changed Sheet requires a fresh preview. Only the confirmed
-normalized baseline and its non-secret fingerprint are saved locally.
+normalized baseline and its non-secret source fingerprint are saved locally. A later
+report-only unit-cost correction updates neither that baseline nor its fingerprint.
 
 End-of-stream reports are also stored only in `chrome.storage.local`. A report contains
 the local stream reference and timestamps, inventory SKUs/item/style/size, unit costs and

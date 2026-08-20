@@ -90,6 +90,7 @@
       "observeAttributedGmv",
       "observeVariations",
       "recordPaymentComplete",
+      "resolvePaymentFixingOrder",
       "pinStreamToInventoryBaseline",
       "unmapVariation",
     ];
@@ -540,7 +541,32 @@
         return execution;
       }
 
-      return Object.freeze({ dispatch });
+      function snapshotInternalInput(input) {
+        return cloneSerializable(input);
+      }
+
+      return Object.freeze({
+        dispatch,
+        resolvePaymentFixingOrder(input) {
+          let snapshot;
+
+          try {
+            snapshot = snapshotInternalInput(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          const execution = commandTail.then(async () => {
+            await ensureLoaded();
+            return mutateState((state) =>
+              reconciliation.resolvePaymentFixingOrder(state, snapshot),
+            );
+          });
+
+          commandTail = execution.catch(() => undefined);
+          return execution;
+        },
+      });
     }
 
     return {

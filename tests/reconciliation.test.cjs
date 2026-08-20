@@ -11,12 +11,14 @@ const {
   getAuction,
   getInventoryAvailability,
   hydrateReconciliationState,
+  listPaymentFixingOrders,
   mapVariation,
   observeAttributedGmv,
   observeBiddingVariation,
   observePaymentStatuses,
   observeVariations,
   recordPaymentComplete,
+  resolvePaymentFixingOrder,
   unmapVariation,
 } = require("../extension/shared/reconciliation.js");
 
@@ -996,6 +998,178 @@ test("cancellation preserves its mapping and releases the pending reservation", 
     "CANCELED_VARIATION_IMMUTABLE",
   );
   assert.deepEqual(state, stateAfterCancellation);
+});
+
+test("lists only unresolved payment-fixing orders with deterministic inventory identity", () => {
+  const state = createState();
+
+  for (const [variationNumber, observedPaymentStatus] of [
+    [9, OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED],
+    [7, OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING],
+    [8, OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
+    [10, OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED],
+  ]) {
+    observePendingPayment(state, variationNumber, observedPaymentStatus);
+  }
+
+  mapVariation(state, auctionInput(9, { sku: "BLACK-TEE-M" }));
+  recordPaymentComplete(state, auctionInput(11, { soldPriceCents: 2500 }));
+  observePaymentStatuses(state, {
+    streamId: STREAM_ONE,
+    statuses: [{
+      variationNumber: 12,
+      observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
+    }],
+  });
+
+  assert.deepEqual(listPaymentFixingOrders(state, { streamId: STREAM_ONE }), [
+    {
+      variationNumber: 7,
+      observedPaymentStatus: "payment_fixing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+    {
+      variationNumber: 9,
+      observedPaymentStatus: "payment_failed",
+      mapped: true,
+      sku: "BLACK-TEE-M",
+      item: "Black Tee",
+      style: "",
+      size: "M",
+    },
+  ]);
+});
+
+test("manual payment completion commits its reservation and is retry-idempotent", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(70, { sku: "BLACK-TEE-M" }));
+  observePendingPayment(
+    state,
+    70,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+  );
+
+  const completed = resolvePaymentFixingOrder(state, {
+    ...auctionInput(70),
+    resolution: "payment_complete",
+    soldPriceCents: 3900,
+  });
+  const persisted = JSON.parse(JSON.stringify(state));
+  const retry = resolvePaymentFixingOrder(state, {
+    ...auctionInput(70),
+    resolution: "payment_complete",
+    soldPriceCents: 3900,
+  });
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(completed.status, "committed");
+  assert.equal(completed.observedPaymentStatus, "payment_complete");
+  assert.equal(completed.committedUnitCostCents, 1200);
+  assert.equal(completed.profitCents, 2700);
+  assert.deepEqual(retry, completed);
+  assert.deepEqual(state, persisted);
+  assert.equal(summary.totals.completedPaymentCount, 1);
+  assert.equal(summary.totals.paymentFixingCount, 0);
+  assert.equal(summary.totals.pendingMappedCount, 0);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-M").remainingQuantity, 1);
+
+  assertErrorCode(
+    () => resolvePaymentFixingOrder(state, {
+      ...auctionInput(70),
+      resolution: "payment_complete",
+      soldPriceCents: 4000,
+    }),
+    "PAYMENT_RESOLUTION_CONFLICT",
+  );
+  assertErrorCode(
+    () => resolvePaymentFixingOrder(state, {
+      ...auctionInput(70),
+      resolution: "canceled",
+      soldPriceCents: null,
+    }),
+    "PAYMENT_RESOLUTION_CONFLICT",
+  );
+});
+
+test("manual cancellation releases inventory, retains history, and becomes immutable", () => {
+  const state = createState();
+
+  mapVariation(state, auctionInput(71, { sku: "BLACK-TEE-L" }));
+  observePendingPayment(
+    state,
+    71,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+  );
+
+  const canceled = resolvePaymentFixingOrder(state, {
+    ...auctionInput(71),
+    resolution: "canceled",
+    soldPriceCents: null,
+  });
+  const persisted = JSON.parse(JSON.stringify(state));
+  const retry = resolvePaymentFixingOrder(state, {
+    ...auctionInput(71),
+    resolution: "canceled",
+    soldPriceCents: null,
+  });
+  const summary = calculateSummary(state, { streamId: STREAM_ONE });
+
+  assert.equal(canceled.status, "canceled");
+  assert.equal(canceled.sku, "BLACK-TEE-L");
+  assert.equal(canceled.mappingStatus, "mapped");
+  assert.deepEqual(retry, canceled);
+  assert.deepEqual(state, persisted);
+  assert.equal(summary.totals.canceledOrderCount, 1);
+  assert.equal(summary.totals.paymentFixingCount, 0);
+  assert.equal(summary.totals.pendingMappedCount, 0);
+  assert.equal(inventoryItem(summary, "BLACK-TEE-L").remainingQuantity, 1);
+  assertErrorCode(
+    () => mapVariation(state, auctionInput(71, { sku: "BLACK-TEE-M" })),
+    "CANCELED_VARIATION_IMMUTABLE",
+  );
+});
+
+test("manual payment resolution excludes processing and validates its outcome", () => {
+  const state = createState();
+
+  observePendingPayment(
+    state,
+    72,
+    OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+  );
+
+  for (const input of [
+    {
+      ...auctionInput(72),
+      resolution: "payment_complete",
+      soldPriceCents: 1000,
+    },
+    {
+      ...auctionInput(999),
+      resolution: "canceled",
+      soldPriceCents: null,
+    },
+  ]) {
+    assertErrorCode(
+      () => resolvePaymentFixingOrder(state, input),
+      "PAYMENT_ORDER_NOT_RESOLVABLE",
+    );
+  }
+
+  assertErrorCode(
+    () => resolvePaymentFixingOrder(state, {
+      ...auctionInput(72),
+      resolution: "canceled",
+      soldPriceCents: 1,
+    }),
+    "INVALID_ARGUMENT",
+  );
+  assert.equal(getAuction(state, auctionInput(72)).paymentStatus, "unknown");
 });
 
 test("canonical cancellation ignores later priced completion and remains immutable", () => {

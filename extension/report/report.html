@@ -96,6 +96,87 @@
           <ul id="report-warnings" class="warning-list"></ul>
         </section>
 
+        <section
+          id="payment-resolution-section"
+          class="report-section payment-resolution-section screen-only"
+          aria-labelledby="payment-resolution-title"
+          aria-busy="false"
+          hidden
+        >
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Post-stream correction</p>
+              <h2 id="payment-resolution-title">Finish unresolved payments</h2>
+            </div>
+            <p id="payment-resolution-count" class="section-count"></p>
+          </div>
+          <p class="section-intro">
+            TikTok cleared these orders before their final result could be captured. Confirm the seller-observed outcome to update this saved report, inventory, and metrics before starting another tracker stream.
+          </p>
+          <div id="payment-resolution-orders" class="payment-resolution-orders"></div>
+          <p
+            id="payment-resolution-feedback"
+            class="resolution-feedback"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          ></p>
+        </section>
+
+        <section
+          id="unit-cost-correction-section"
+          class="report-section unit-cost-correction-section screen-only"
+          aria-labelledby="unit-cost-correction-title"
+          aria-busy="false"
+          hidden
+        >
+          <details id="unit-cost-correction-disclosure">
+            <summary
+              id="unit-cost-correction-toggle"
+              class="unit-cost-correction-toggle"
+              aria-controls="unit-cost-correction-content"
+            >
+              <h2 id="unit-cost-correction-title" class="unit-cost-correction-heading">
+                <span class="eyebrow">Post-stream correction</span>
+                <span class="unit-cost-correction-title">Correct SKU Unit Cost</span>
+              </h2>
+            </summary>
+            <div id="unit-cost-correction-content" class="unit-cost-correction-content">
+              <p class="section-intro">
+                Correct a cost in this saved report and its Google Sheets handoff. Every inventory SKU is available, including SKUs not sold during this stream. The live tracker, other reports, and future streams are unaffected.
+              </p>
+              <div class="unit-cost-correction-form">
+                <label class="unit-cost-field" for="unit-cost-sku">
+                  <span>Inventory SKU</span>
+                  <select id="unit-cost-sku" autocomplete="off"></select>
+                </label>
+                <label class="unit-cost-field" for="unit-cost-value">
+                  <span>Correct unit cost (USD)</span>
+                  <input
+                    id="unit-cost-value"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="0.00"
+                    aria-describedby="unit-cost-preview unit-cost-feedback"
+                  >
+                </label>
+                <button id="update-unit-cost" class="primary-action" type="button">
+                  Update Unit Cost
+                </button>
+              </div>
+              <p id="unit-cost-preview" class="unit-cost-preview"></p>
+              <p
+                id="unit-cost-feedback"
+                class="unit-cost-feedback"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              ></p>
+            </div>
+          </details>
+        </section>
+
         <section class="report-section" aria-labelledby="performers-title">
           <div class="section-heading">
             <div>
@@ -125,6 +206,49 @@
               <ul id="most-profitable-products" class="performer-list"></ul>
             </section>
           </div>
+        </section>
+
+        <section class="report-section" aria-labelledby="sku-profit-title">
+          <details id="sku-profit-disclosure">
+            <summary
+              id="sku-profit-toggle"
+              class="sku-profit-toggle"
+              aria-controls="sku-profit-content"
+            >
+              <h2 id="sku-profit-title" class="sku-profit-summary-heading">
+                <span class="sku-profit-title-copy">
+                  <span class="eyebrow">Completed sales by SKU</span>
+                  <span class="sku-profit-title">Profit/Loss by SKU</span>
+                </span>
+                <span id="sku-profit-count" class="section-count">0 sold SKUs</span>
+              </h2>
+            </summary>
+            <div id="sku-profit-content" class="sku-profit-content">
+              <div
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="sku-profit-title"
+              >
+                <table class="data-table sku-profit-table">
+                  <caption>
+                    Gross profit or loss for mapped SKUs with completed sales during this stream, sorted from highest profit to largest loss.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Product</th>
+                      <th scope="col" class="number-cell">Units sold</th>
+                      <th scope="col" class="number-cell">Gross profit/loss</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sku-profit-rows"></tbody>
+                </table>
+              </div>
+              <p id="sku-profit-empty" class="empty-copy" hidden>
+                No mapped completed sales are available for SKU profit/loss.
+              </p>
+            </div>
+          </details>
         </section>
 
         <section class="report-section" aria-labelledby="sales-title">
