@@ -528,14 +528,19 @@ The report retains these deliberately different measures:
   excluding the active bidding marker and nonterminal processing/fixing states;
 - terminal canceled and still-fixing counts;
 - `costOfGoodsCents` and `grossProfitCents` only for mapped completed sales, where gross
-  profit is mapped revenue minus the unit costs saved in that report; and
+  profit is mapped revenue minus the unit costs saved in that report;
 - completed-sale detail rows that retain unmapped completions with unavailable item/cost
-  fields instead of hiding them;
-- canceled-order detail rows that retain every canceled variation and its nullable
-  reference SKU/item/style/size without contributing to inventory or any metric. The
-  report projection is display-only; reference mappings are changed in active stream
-  history. Older compatible reports without this row-level snapshot retain their
-  aggregate canceled count and explicitly report that individual details are unavailable.
+  fields instead of hiding them; and
+- an optional canceled-order detail collection retaining each canceled variation's mapped
+  or unmapped reference SKU/item/style/size. Compatible legacy reports retain their
+  aggregate canceled count but may not contain these row details.
+
+The report page combines the completed-sale rows and available canceled-order references
+in one collapsed **Item variations this stream** disclosure under the **Stream variations**
+eyebrow. Its count is completed plus canceled variations, including legacy aggregate
+cancellations whose row details are unavailable, and a **Status** column distinguishes the
+two outcomes. Canceled rows expose reference identity only: sold price, unit cost, and
+gross profit are unavailable, and the rows do not contribute to inventory or any metric.
 
 Exact-SKU performance groups mapped completions by SKU. Combined product performance
 groups those same SKU totals by exact employee-facing `item + style` across sizes. Both
@@ -585,10 +590,10 @@ reference, lifecycle, and archive tier. Cost correction updates
 completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
 top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
 change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
-other reports, the live tracker, or future streams. The completed-orders,
-Profit/Loss by SKU, and definitions disclosures start collapsed on screen, but print
-styling always includes the entire sales table, every SKU profit/loss row, repeated
-column headers, and every definition. These are employee-initiated
+other reports, the live tracker, or future streams. The stream-variations, Profit/Loss by
+SKU, and definitions disclosures start collapsed on screen, but print styling always
+includes every available completed/canceled variation row, every SKU profit/loss row,
+repeated column headers, and every definition. These are employee-initiated
 local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader

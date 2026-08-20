@@ -226,29 +226,28 @@ mapping corrections and remaps recalculate both. This basic figure excludes ship
 platform fees, taxes, discounts, refunds, and other expenses.
 
 At **End and create report**, the worker snapshots these durable stream totals together
-with every completed-sale row and every inventory row in the pinned baseline. It does not
-perform a last unbounded DOM scan; capture deliveries already ordered ahead of End are
-included, while anything TikTok did not render or the extension did not durably receive
-cannot be reconstructed by the report.
+with every completed-sale row, each canceled variation's mapped or unmapped reference
+item, and every inventory row in the pinned baseline. It does not perform a last unbounded
+DOM scan; capture deliveries already ordered ahead of End are included, while anything
+TikTok did not render or the extension did not durably receive cannot be reconstructed by
+the report. Compatible legacy reports retain the aggregate canceled count but may not have
+canceled row details.
 
-The report keeps mapped and unmapped completions in its sale detail. Exact-SKU analytics
-sum mapped completed units, revenue, saved unit cost, and gross profit by SKU. Combined
-product analytics sum those same values by exact `item + style` across sizes. Top sold is
-ranked by units and top profitable by gross profit, with all ties preserved. SKU gross
-margin is gross profit divided by mapped revenue; sell-through is that stream's mapped
-completed units divided by the baseline opening quantity.
+The collapsed **Item variations this stream** disclosure, under the **Stream variations**
+eyebrow, combines completed and canceled rows in variation-number order and shows their
+combined count. Its **Status** column identifies the outcome. Completed rows keep mapped
+and unmapped sale detail; canceled rows keep only mapped or unmapped reference identity,
+show no price, unit cost, or gross profit, and never affect inventory or any metric.
+Exact-SKU analytics sum mapped completed units, revenue, saved unit cost, and gross profit
+by SKU. Combined product analytics sum those same values by exact `item + style` across
+sizes. Top sold is ranked by units and top profitable by gross profit, with all ties
+preserved. SKU gross margin is gross profit divided by mapped revenue; sell-through is
+that stream's mapped completed units divided by the baseline opening quantity.
 The native **Profit/Loss by SKU** disclosure uses those same exact-SKU totals, includes
 only mapped SKUs with completed sales in this report stream, and sorts from highest gross
 profit to largest loss. Positive values are green, losses are red, and zero is neutral.
 Pending, canceled, unmapped, and unsold entries are excluded. It starts collapsed on
 screen and expands for print/PDF output.
-The native **Canceled Orders** disclosure starts collapsed and lists each captured
-canceled variation with its mapped or unmapped reference SKU, item, style, and size.
-These reference rows never enter inventory, sales, COGS, profit, AOV, or product
-performance. The report table is display-only; reference mapping changes happen in the
-active stream history before End. Compatible reports created before row-level canceled
-details were saved retain their aggregate count and display that individual details are
-unavailable.
 The report's **AOV** uses the same current-stream formula and nearest-cent rounding as the
 live card, and displays `$0.00` when no eligible completion exists.
 The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
@@ -546,20 +545,22 @@ screen test-user run does not complete those release reviews.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Items sold this stream**, **Canceled Orders**, **Profit/Loss by SKU**, and
-    **Definitions and limitations** start collapsed and expand on activation; the
-    completed-sales and canceled-order counts remain visible in both table states. Confirm
-    the canceled table contains every canceled variation and its reference SKU, item,
-    style, and size, uses `Unmapped` when no reference was selected, and is display-only.
+    Confirm **Item variations this stream**, **Profit/Loss by SKU**, and **Definitions and
+    limitations** start collapsed and expand on activation. The stream-variation count must
+    remain visible in both table states and equal completed plus canceled totals. Confirm
+    the **Status** column distinguishes completed and canceled rows; canceled rows retain
+    their mapped or unmapped reference identity but have no sale price, unit cost, gross
+    profit, inventory, or metric effect. A compatible older report may retain its canceled
+    total while lacking canceled row details.
     Confirm the SKU profit/loss rows contain only mapped SKUs sold in this report stream,
     sort from highest profit to largest loss, and render positive, negative, and zero
     values in green, red, and neutral styles. Pending, canceled, unmapped, and unsold
     entries must not appear in that profit/loss section.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension. Verify the PDF includes every completed-order row, canceled-order reference
-    row, eligible SKU profit/loss row, and definition even when those sections were
-    collapsed on screen.
+    extension. Verify the PDF includes every available completed/canceled variation row,
+    eligible SKU profit/loss row, and definition even when those sections were collapsed
+    on screen.
     End a test stream with one mapped `Payment failed` or `Payment fixing` order. In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing
     changes. Then mark it complete with an invalid price and confirm validation fails;

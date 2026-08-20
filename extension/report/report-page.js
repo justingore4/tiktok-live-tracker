@@ -703,61 +703,36 @@
       return controls;
     }
 
-    function renderCompletedSales(document, report) {
+    function renderItemVariations(document, report) {
       const body = document.querySelector("#completed-sales-rows");
       const empty = document.querySelector("#sales-empty");
       const count = document.querySelector("#sales-count");
+      const detailsNote = document.querySelector("#variation-details-note");
       const sales = Array.isArray(report?.completedSales)
         ? report.completedSales
         : [];
-      const rows = sales.map((sale) => {
+      const canceledDetailsAvailable = Array.isArray(report?.canceledOrders);
+      const canceledOrders = canceledDetailsAvailable
+        ? report.canceledOrders
+        : [];
+      const canceledCount = Number.isSafeInteger(report?.totals?.canceledOrderCount)
+        ? safeInteger(report.totals.canceledOrderCount)
+        : canceledOrders.length;
+      const variations = [
+        ...sales.map((order) => ({ order, status: "Completed" })),
+        ...canceledOrders.map((order) => ({ order, status: "Canceled" })),
+      ].sort(
+        (left, right) =>
+          safeInteger(left.order?.variationNumber) -
+          safeInteger(right.order?.variationNumber),
+      );
+      const rows = variations.map(({ order, status }) => {
         const row = document.createElement("tr");
-        const mapped = typeof sale?.sku === "string" && sale.sku !== "";
-        row.append(
-          createTableCell(document, `#${safeInteger(sale?.variationNumber)}`),
-          createTableCell(document, mapped ? sale.sku : "Unmapped", {
-            className: mapped ? "sku-cell" : "warning-cell",
-          }),
-          createTableCell(document, mapped ? sale?.item : "Not selected"),
-          createTableCell(document, mapped ? sale?.style : "—", {
-            className: mapped ? "" : "muted-cell",
-          }),
-          createTableCell(document, mapped ? sale?.size : "—", {
-            className: mapped ? "" : "muted-cell",
-          }),
-          createTableCell(document, formatUsdCents(sale?.soldPriceCents), {
-            className: "number-cell",
-          }),
-          createTableCell(document, formatUsdCents(getSaleCostCents(sale), "—"), {
-            className: "number-cell",
-          }),
-          createTableCell(document, formatUsdCents(getSaleProfitCents(sale), "—"), {
-            className: "number-cell",
-          }),
-        );
-        return row;
-      });
-      replaceChildren(body, rows);
-      empty.hidden = rows.length !== 0;
-      count.textContent = `${rows.length} completed sale${rows.length === 1 ? "" : "s"}`;
-    }
-
-    function renderCanceledOrders(document, report) {
-      const body = document.querySelector("#canceled-orders-rows");
-      const table = document.querySelector("#canceled-orders-table");
-      const empty = document.querySelector("#canceled-orders-empty");
-      const count = document.querySelector("#canceled-orders-count");
-      const detailsAvailable = Array.isArray(report?.canceledOrders);
-      const orders = detailsAvailable ? report.canceledOrders : [];
-      const total = Number.isSafeInteger(report?.totals?.canceledOrderCount)
-        ? report.totals.canceledOrderCount
-        : orders.length;
-      const rows = orders.map((order) => {
-        const row = document.createElement("tr");
-        const mapped = order?.mapped === true &&
-          typeof order?.sku === "string" && order.sku !== "";
+        const canceled = status === "Canceled";
+        const mapped = typeof order?.sku === "string" && order.sku !== "";
         row.append(
           createTableCell(document, `#${safeInteger(order?.variationNumber)}`),
+          createTableCell(document, status),
           createTableCell(document, mapped ? order.sku : "Unmapped", {
             className: mapped ? "sku-cell" : "warning-cell",
           }),
@@ -768,17 +743,35 @@
           createTableCell(document, mapped ? order?.size : "—", {
             className: mapped ? "" : "muted-cell",
           }),
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(order?.soldPriceCents), {
+            className: "number-cell",
+          }),
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(getSaleCostCents(order), "—"), {
+            className: "number-cell",
+          }),
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(getSaleProfitCents(order), "—"), {
+            className: "number-cell",
+          }),
         );
         return row;
       });
-
       replaceChildren(body, rows);
-      table.hidden = rows.length === 0;
-      empty.hidden = rows.length !== 0;
-      empty.textContent = !detailsAvailable && total > 0
-        ? "Individual canceled-order details are unavailable for this older saved report. Its canceled-order total is still retained."
-        : "No canceled orders were captured for this stream.";
-      count.textContent = `${total} canceled order${total === 1 ? "" : "s"}`;
+      const combinedTotal = sales.length + canceledCount;
+      empty.hidden = combinedTotal !== 0;
+      empty.textContent = "No completed or canceled item variations were captured for this stream.";
+      count.textContent = `${combinedTotal} variation${combinedTotal === 1 ? "" : "s"}`;
+
+      const unavailableCanceledCount = canceledDetailsAvailable ? 0 : canceledCount;
+      detailsNote.hidden = unavailableCanceledCount === 0;
+      detailsNote.textContent = unavailableCanceledCount === 0
+        ? ""
+        : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
     function renderSkuProfitLoss(document, report) {
@@ -1130,8 +1123,7 @@
         "#most-profitable-products-card",
       );
       renderSkuProfitLoss(document, report);
-      renderCompletedSales(document, report);
-      renderCanceledOrders(document, report);
+      renderItemVariations(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
       renderDefinitions(document);
@@ -1207,7 +1199,6 @@
     function createPrintDisclosureController(document) {
       const disclosures = [
         document?.querySelector?.("#completed-sales-disclosure"),
-        document?.querySelector?.("#canceled-orders-disclosure"),
         document?.querySelector?.("#sku-profit-disclosure"),
         document?.querySelector?.("#definitions-disclosure"),
       ].filter(Boolean);
@@ -1816,8 +1807,8 @@
       mountStreamReportPage,
       parseNonnegativeUsdCents,
       parsePositiveUsdCents,
+      renderItemVariations,
       renderPaymentFixingOrders,
-      renderCanceledOrders,
       renderReport,
       renderUnitCostCorrection,
       serializeInventoryCsv,

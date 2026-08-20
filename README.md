@@ -156,20 +156,16 @@ auctioned again, the employee maps its new variation number.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
-  failed request changes nothing. The completed-orders table, **Profit/Loss by SKU**, and
-  **Definitions and limitations** sections are collapsed by default for screen browsing
-  and always expanded in printed/PDF output.
+  failed request changes nothing. The **Item variations this stream**, **Profit/Loss by
+  SKU**, and **Definitions and limitations** sections are collapsed by default for screen
+  browsing and always expanded in printed/PDF output.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
-  After Fees**, mapped COGS and gross profit, completed-sale rows, exact-SKU performance,
-  combined item-and-style product performance across sizes, and all ties for top sold and
-  top profitable entries. A collapsed **Canceled Orders** table preserves each captured
-  canceled variation and its mapped or unmapped reference item without feeding inventory,
-  sales, cost, profit, or product analytics. Reports saved before this row-level snapshot
-  was introduced keep their canceled count and explain when individual details are
-  unavailable.
-  The baseline-wide inventory handoff retains
+  After Fees**, mapped COGS and gross profit, combined completed/canceled stream-variation
+  rows, exact-SKU performance, combined item-and-style product performance across sizes,
+  and all ties for top sold and top profitable entries. The baseline-wide inventory
+  handoff retains
   opening, sold, pending, calculated, oversold, and recount details for every SKU.
 - Restoration of mappings, reservations, and prior variation records after the side
   panel or browser is reopened. Older saved manual-unpaid records are normalized back
@@ -326,8 +322,15 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   any report-only unit-cost correction applied to this report. **Gross
   profit** is their sold-price revenue minus COGS; it is not net profit and excludes
   platform fees, shipping labels, refunds, ads, taxes, and other expenses. Unmapped
-  completed sales remain in Gross Item Sales and completed-sale rows but cannot contribute COGS or
-  gross profit.
+  completed sales remain in Gross Item Sales and the stream-variations table but cannot
+  contribute COGS or gross profit.
+- The collapsed **Item variations this stream** disclosure, labeled **Stream variations**,
+  combines completed and canceled variations in variation-number order. Its count is the
+  combined number of completed and canceled variations, and its **Status** column
+  identifies each row. Completed rows retain their captured sale and mapped cost/profit detail.
+  Canceled rows show the mapped or unmapped reference item but use no sale price, unit
+  cost, or gross profit and never affect inventory or any metric. Compatible older reports
+  retain their aggregate canceled count even when canceled row details are unavailable.
 - **Exact-SKU performance** groups mapped completed sales by SKU. **Product performance**
   groups those same sales by `item + style` across all sizes/SKUs. Most-sold ranks use
   completed units; most-profitable ranks use gross profit; every tie is retained.
@@ -336,13 +339,6 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   largest loss. Positive values are green, losses are red, and zero is neutral; pending,
   canceled, unmapped, and unsold entries are excluded. It starts collapsed on screen and
   expands for print/PDF output.
-- The report's native **Canceled Orders** disclosure lists the variation and reference
-  SKU, item, style, and size for every canceled order captured in that report stream.
-  Unmapped cancellations remain visible as `Unmapped`; these rows are historical context
-  only and never affect inventory or any metric. This report section is display-only;
-  reference mapping changes are made from the active stream history before End. Older
-  compatible reports retain their aggregate canceled count even when row-level details
-  were not saved.
 - **Gross margin** is SKU gross profit divided by SKU mapped revenue. **Sell-through** is
   the current stream's mapped completed units for that SKU divided by its opening
   quantity in the pinned baseline.
@@ -650,13 +646,14 @@ misconfigured build fail before requesting Google authorization.
 20. In the report, verify its attention notices match the unresolved conditions. A clean
     stream with no active bidding marker, unresolved/fixing order, pending reservation,
     unmapped completed sale, conflict, or oversold/recount condition must show no
-    attention notice. Verify the completed-sale table includes mapped and unmapped
-    completions, the SKU and combined product rankings retain ties, and the inventory
-    table contains every SKU from the pinned baseline. Expand **Canceled Orders** and
-    confirm its count and variation/SKU/item/style/size references match the stream,
-    including `Unmapped` when no reference was selected. Confirm those rows are
-    display-only and that their mappings did not affect any report metric or inventory
-    quantity.
+    attention notice. Expand **Item variations this stream** and verify its combined count
+    equals the report's completed plus canceled totals. Confirm its **Status** column
+    distinguishes the completed and canceled rows, mapped and unmapped completions remain
+    present, and canceled rows retain their reference item without a sale price, unit cost,
+    gross profit, inventory, or metric effect. A compatible older report may retain its
+    canceled total without having canceled row details. Verify the SKU and combined product
+    rankings retain ties and the inventory table contains every SKU from the pinned
+    baseline.
     Use **Print / Save as PDF**, choose Chrome's **Save as PDF** destination, and save a
     copy outside the extension if the report must be retained.
     For a newest test report containing one `Payment fixing` or temporary
