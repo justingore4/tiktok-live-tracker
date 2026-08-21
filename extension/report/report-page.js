@@ -919,6 +919,9 @@
           createTableCell(document, entry?.item ?? ""),
           createTableCell(document, entry?.style ?? ""),
           createTableCell(document, entry?.size ?? ""),
+          createTableCell(document, formatUsdCents(entry?.unitCostCents), {
+            className: "number-cell",
+          }),
           createTableCell(document, getOpeningQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getCompletedQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getPendingQuantity(entry), { className: "number-cell" }),

@@ -344,12 +344,15 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   quantity in the pinned baseline.
 
 The inventory handoff covers every row in the pinned baseline, not only SKUs sold during
-the stream. Its calculated remaining count is opening quantity minus all completed
-mapped sales across every stream pinned to that baseline. Pending reservations are shown
-separately and reduce only the displayed available-after-reservations amount. The Sheet
-replacement count is `max(0, calculated remaining)`. If the raw calculated amount is
-negative, the report preserves that negative result as an oversold/recount warning while
-exporting zero so Google Sheets never receives a negative quantity.
+the stream. The report table displays every SKU's saved unit cost (including `$0.00`),
+and its compact **Sold** column means completed mapped sales since the inventory baseline,
+not only sales from the report's stream. Its calculated remaining count is opening
+quantity minus all completed mapped sales across every stream pinned to that baseline.
+Pending reservations are shown separately and reduce only the displayed
+available-after-reservations amount. The Sheet replacement count is `max(0, calculated
+remaining)`. If the raw calculated amount is negative, the report preserves that negative
+result as an oversold/recount warning while exporting zero so Google Sheets never receives
+a negative quantity. The copy and CSV actions remain the exact six-column Sheet handoff.
 
 The report retains strict completeness metadata and reason codes internally, but the
 employee UI does not display a Final/Provisional state label. Instead, it lists the

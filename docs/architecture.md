@@ -567,11 +567,14 @@ replacementQuantity = max(0, calculatedRemainingQuantity)
 
 Pending is intentionally separate and does not permanently reduce the replacement
 value. When calculated inventory is negative, the report preserves that raw value and
-oversold/recount warning while exporting zero. The retained inventory handoff is a
-complete six-column table with the original `sku,item,style,size,unit_cost` plus the
-replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
-serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet
-values.
+oversold/recount warning while exporting zero. The on-screen/printed inventory table also
+shows the saved unit cost for every SKU. Its short visible `Sold` header has the accessible
+meaning "Sold since inventory baseline" and represents baseline-wide completed mapped
+sales. Narrow screens keep the full table in a horizontal scroll region; print removes
+that screen minimum width so all columns can fit the page. The retained Sheet handoff is
+still a complete six-column table with the original `sku,item,style,size,unit_cost` plus
+the replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
+serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet values.
 
 The extension-owned report page loads only the local saved record. It supports native
 Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching

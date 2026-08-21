@@ -440,6 +440,100 @@ test("all report tables use a white background and black text on screen and in p
   );
 });
 
+test("updated inventory shows every SKU unit cost with a compact accessible Sold header", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const tableStart = html.indexOf('<table class="data-table inventory-table">');
+  const tableEnd = html.indexOf("</table>", tableStart);
+  const inventoryTable = html.slice(tableStart, tableEnd);
+  const headerLabels = [...inventoryTable.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)]
+    .map((match) => match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.deepEqual(headerLabels, [
+    "SKU",
+    "Item",
+    "Style",
+    "Size",
+    "Unit cost",
+    "Opening",
+    "Sold",
+    "Pending",
+    "Updated count",
+    "Oversold",
+  ]);
+  assert.match(
+    inventoryTable,
+    /<th[\s\S]*?aria-label="Sold since inventory baseline"[\s\S]*?title="Sold since inventory baseline"[\s\S]*?>Sold<\/th>/,
+  );
+  assert.match(
+    inventoryTable,
+    /<caption>[\s\S]*?completed mapped sales since the inventory baseline[\s\S]*?every SKU[\s\S]*?<\/caption>/,
+  );
+  assert.match(css, /\.table-scroll\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(css, /\.inventory-table\s*\{\s*min-width:\s*800px;/);
+  assert.match(
+    printCss,
+    /\.screen-scroll\s*\{[\s\S]*?overflow:\s*visible;/,
+  );
+  assert.match(printCss, /\.inventory-table\s*\{\s*min-width:\s*0;/);
+  assert.match(
+    printCss,
+    /\.data-table thead\s*\{\s*display:\s*table-header-group;/,
+  );
+
+  const base = createReport();
+  const inventory = [
+    base.inventory[0],
+    {
+      sku: "SKU-ZERO-COST-WITH-A-LONG-IDENTIFIER",
+      item: "Long inventory item name retained in the narrow scrollable table",
+      style: "limited-edition-long-style-name",
+      size: "ONE-SIZE",
+      unitCostCents: 0,
+      openingQuantity: 20,
+      streamSoldQuantity: 0,
+      baselineSoldQuantity: 3,
+      pendingQuantity: 0,
+      replacementQuantity: 17,
+      oversoldQuantity: 0,
+    },
+  ];
+  const document = new FakeDocument();
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport({ inventory }),
+  });
+
+  const rows = document.querySelector("#inventory-rows").children;
+  assert.equal(rows.length, inventory.length);
+  assert.deepEqual(rows.map((row) => row.children.length), [10, 10]);
+  assert.deepEqual(
+    rows.map((row) => row.children[4].textContent),
+    ["$6.00", "$0.00"],
+  );
+  assert.deepEqual(
+    rows[1].children.map((cell) => cell.textContent),
+    [
+      "SKU-ZERO-COST-WITH-A-LONG-IDENTIFIER",
+      "Long inventory item name retained in the narrow scrollable table",
+      "limited-edition-long-style-name",
+      "ONE-SIZE",
+      "$0.00",
+      "20",
+      "3",
+      "0",
+      "17",
+      "0",
+    ],
+  );
+  assert.equal(rows[0].children[4].className, "number-cell");
+  assert.equal(rows[1].children[4].className, "number-cell");
+});
+
 test("SKU profit and loss uses a collapsed stream-scoped disclosure that prints in full", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -1281,6 +1375,10 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
     document.querySelector("#inventory-rows").children[0].children[0].textContent,
     "SKU-A",
   );
+  assert.equal(
+    document.querySelector("#inventory-rows").children[0].children[4].textContent,
+    "$8.00",
+  );
   assert.match(
     document.querySelector("#unit-cost-feedback").textContent,
     /this report[\s\S]*metrics and Google Sheets handoff were updated[\s\S]*other reports and future streams were not changed/,
@@ -1599,7 +1697,7 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
   );
   assert.equal(document.querySelector("#payment-resolution-section").hidden, true);
   assert.equal(
-    document.querySelector("#inventory-rows").children[0].children[6].textContent,
+    document.querySelector("#inventory-rows").children[0].children[7].textContent,
     "0",
   );
   assert.match(
@@ -1892,6 +1990,24 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
     "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost";
 
   assert.equal(tsv.split("\n")[0], expectedHeader);
+  assert.equal(reportPage.SHEET_HEADERS.length, 6);
+  assert.deepEqual(reportPage.SHEET_HEADERS, [
+    "sku",
+    "item",
+    "style",
+    "size",
+    "quantity_on_hand_at_import",
+    "unit_cost",
+  ]);
+  assert.ok(tsv.split("\n").every((row) => row.split("\t").length === 6));
+  assert.ok(
+    csv
+      .split("\r\n")
+      .every(
+        (row) =>
+          row.match(/(?:^|,)(?:"(?:[^"]|"")*"|[^,]*)/g).length === 6,
+      ),
+  );
   assert.match(tsv, /SKU-A[^\n]*\t0\t6\.00/);
   assert.match(csv, /quantity_on_hand_at_import/);
 
@@ -1941,7 +2057,13 @@ test("long inventory renders every row in the updated inventory table", () => {
     report,
   });
 
-  assert.equal(document.querySelector("#inventory-rows").children.length, 1000);
+  const rows = document.querySelector("#inventory-rows").children;
+  assert.equal(rows.length, 1000);
+  assert.ok(
+    rows.every(
+      (row) => row.children.length === 10 && row.children[4].textContent === "$1.00",
+    ),
+  );
 });
 
 test("CSV download uses a local Blob URL, stable filename, and revokes the URL", () => {

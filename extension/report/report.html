@@ -359,7 +359,7 @@
           <div class="table-scroll screen-scroll" tabindex="0">
             <table class="data-table inventory-table">
               <caption>
-                Opening inventory, completed mapped sales, pending reservations, and the updated quantity_on_hand_at_import for every SKU.
+                Unit cost, opening inventory, completed mapped sales since the inventory baseline, pending reservations, and the updated quantity_on_hand_at_import for every SKU.
               </caption>
               <thead>
                 <tr>
@@ -367,8 +367,14 @@
                   <th scope="col">Item</th>
                   <th scope="col">Style</th>
                   <th scope="col">Size</th>
+                  <th scope="col" class="number-cell">Unit cost</th>
                   <th scope="col" class="number-cell">Opening</th>
-                  <th scope="col" class="number-cell">Sold since baseline</th>
+                  <th
+                    scope="col"
+                    class="number-cell"
+                    aria-label="Sold since inventory baseline"
+                    title="Sold since inventory baseline"
+                  >Sold</th>
                   <th scope="col" class="number-cell">Pending</th>
                   <th scope="col" class="number-cell">Updated count</th>
                   <th scope="col" class="number-cell">Oversold</th>

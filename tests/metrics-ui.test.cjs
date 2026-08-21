@@ -98,7 +98,10 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
   assert.match(metricsSection, />\s*Canceled Orders:\s*</);
   assert.match(metricsSection, />\s*Payment Fixing:\s*</);
-  assert.match(metricsSection, />\s*Gross Profits\s*</);
+  assert.match(
+    metricsSection,
+    /class="metric-title-with-description"[\s\S]*?>\s*Gross Profits\s*<[\s\S]*?class="metric-description">Mapped completed revenue - unit costs<\//,
+  );
   assert.match(
     metricsSection,
     /class="metric-title-with-description"[\s\S]*?>\s*Est\. Profit After Fees\s*<[\s\S]*?class="metric-description">GMV post 6% fee - COGS<\//,

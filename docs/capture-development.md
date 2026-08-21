@@ -589,12 +589,16 @@ screen test-user run does not complete those release reviews.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
     backup. In the report select **Copy Updated Inventory**, return to the original
     `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
-    macOS. Verify the exact six headers and all rows. **Copy Updated Inventory** provides
-    the complete six-column A1 paste table. Alternatively, download the matching CSV and
-    use **File -> Import -> Upload -> Replace current sheet** only after making the backup.
-    If a row is oversold, the exported count is zero but its raw shortage/recount warning
-    remains; physically recount it. Review every attention notice before using the
-    replacement counts.
+    macOS. Before copying, verify the report table shows the saved unit cost for every SKU,
+    including `$0.00`; its visible **Sold** header means completed mapped sales since the
+    inventory baseline. On a narrow window, verify the table scrolls horizontally, and in
+    print preview verify all columns remain visible with repeating headers. Then verify the
+    copied/downloaded handoff still has the exact six headers and all rows. **Copy Updated
+    Inventory** provides the complete six-column A1 paste table. Alternatively, download
+    the matching CSV and use **File -> Import -> Upload -> Replace current sheet** only
+    after making the backup. If a row is oversold, the exported count is zero but its raw
+    shortage/recount warning remains; physically recount it. Review every attention notice
+    before using the replacement counts.
 17. Reopen the side panel and confirm **Business Records** lists the new report with its
     date, completed/total count, and Gross Item Sales. Open it, retry a simulated list failure, and
     restart Chrome/the worker to verify local recovery. Create six isolated test reports:
