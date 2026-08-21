@@ -53,6 +53,10 @@
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
       OBSERVED_PAYMENT_STATUSES.CANCELED,
     ]);
+    const PAYMENT_FIXING_OBSERVED_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    ]);
 
     class ReconciliationError extends Error {
       constructor(code, message) {
@@ -1448,10 +1452,6 @@
         return "canceled";
       }
 
-      if (auction.mappingStatus === "marked_unpaid") {
-        return "marked_unpaid";
-      }
-
       if (hasPendingReservation(auction)) {
         return "pending";
       }
@@ -1662,13 +1662,6 @@
 
       let auction = findAuction(state, key.streamId, key.variationNumber);
 
-      if (auction?.paymentStatus === "canceled") {
-        fail(
-          "CANCELED_VARIATION_IMMUTABLE",
-          "A canceled variation's inventory mapping cannot be changed.",
-        );
-      }
-
       if (auction?.sku === sku) {
         return createAuctionView(state, auction);
       }
@@ -1679,11 +1672,10 @@
         key.variationNumber,
       );
 
+      // A canceled variation may keep an SKU as reference-only history. Its
+      // terminal payment status keeps this mapping out of inventory and sales.
       auction.sku = sku;
-
-      if (auction.mappingStatus !== "marked_unpaid") {
-        auction.mappingStatus = "mapped";
-      }
+      auction.mappingStatus = "mapped";
 
       if (auction.paymentStatus === "payment_complete") {
         auction.committedUnitCostCents = inventoryItem.unitCostCents;
@@ -1935,23 +1927,13 @@
         fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
       }
 
-      if (auction.paymentStatus === "canceled") {
-        fail(
-          "CANCELED_VARIATION_IMMUTABLE",
-          "A canceled variation's inventory mapping cannot be changed.",
-        );
-      }
-
       if (auction.sku === null) {
         return createAuctionView(state, auction);
       }
 
       auction.sku = null;
       auction.committedUnitCostCents = null;
-
-      if (auction.mappingStatus !== "marked_unpaid") {
-        auction.mappingStatus = "unmapped";
-      }
+      auction.mappingStatus = "unmapped";
 
       return createAuctionView(state, auction);
     }
@@ -1994,17 +1976,150 @@
         return createAuctionView(state, auction);
       }
 
-      if (auction.mappingStatus === "marked_unpaid") {
-        addConflict(auction, {
-          code: "payment_completed_after_marked_unpaid",
-        });
-      }
-
       auction.paymentStatus = "payment_complete";
       auction.observedPaymentStatus =
         OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE;
       auction.soldPriceCents = soldPriceCents;
       snapshotCommittedCost(state, auction);
+
+      return createAuctionView(state, auction);
+    }
+
+    function listPaymentFixingOrders(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A payment-fixing order query is required.");
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const stream = findStream(state, streamId);
+
+      if (!stream) {
+        fail("UNKNOWN_STREAM", "The requested stream does not exist.");
+      }
+
+      const baseline = getInventoryBaselineForStream(state, streamId);
+      const inventoryBySku = new Map(
+        baseline.inventory.map((item) => [item.sku, item]),
+      );
+
+      return stream.variations
+        .filter(
+          (auction) =>
+            auction.paymentStatus === "unknown" &&
+            PAYMENT_FIXING_OBSERVED_STATUSES.has(
+              auction.observedPaymentStatus,
+            ),
+        )
+        .map((auction) => {
+          const inventoryItem = auction.sku === null
+            ? null
+            : inventoryBySku.get(auction.sku) ?? null;
+
+          return {
+            variationNumber: auction.variationNumber,
+            observedPaymentStatus: auction.observedPaymentStatus,
+            mapped: inventoryItem !== null,
+            sku: inventoryItem?.sku ?? null,
+            item: inventoryItem?.item ?? null,
+            style: inventoryItem?.style ?? null,
+            size: inventoryItem?.size ?? null,
+          };
+        })
+        .sort((left, right) => left.variationNumber - right.variationNumber);
+    }
+
+    function resolvePaymentFixingOrder(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A payment-fixing resolution is required.");
+      }
+
+      const key = validateAuctionKey(input);
+      const resolution = input.resolution;
+
+      if (!["payment_complete", "canceled"].includes(resolution)) {
+        fail(
+          "INVALID_ARGUMENT",
+          "resolution must be payment_complete or canceled.",
+        );
+      }
+
+      const soldPriceCents = resolution === "payment_complete"
+        ? requireSafeInteger(input.soldPriceCents, "soldPriceCents", 1)
+        : input.soldPriceCents;
+
+      if (resolution === "canceled" && soldPriceCents !== null) {
+        fail(
+          "INVALID_ARGUMENT",
+          "soldPriceCents must be null for a canceled payment.",
+        );
+      }
+
+      const auction = findAuction(
+        state,
+        key.streamId,
+        key.variationNumber,
+      );
+
+      if (!auction) {
+        fail(
+          "PAYMENT_ORDER_NOT_RESOLVABLE",
+          "The payment-fixing variation does not exist.",
+        );
+      }
+
+      if (auction.paymentStatus === resolution) {
+        if (
+          resolution === "payment_complete" &&
+          auction.soldPriceCents !== soldPriceCents
+        ) {
+          fail(
+            "PAYMENT_RESOLUTION_CONFLICT",
+            "The completed payment already has a different final sold price.",
+          );
+        }
+
+        return createAuctionView(state, auction);
+      }
+
+      if (auction.paymentStatus !== "unknown") {
+        fail(
+          "PAYMENT_RESOLUTION_CONFLICT",
+          "The payment order already has a different terminal status.",
+        );
+      }
+
+      if (
+        !PAYMENT_FIXING_OBSERVED_STATUSES.has(
+          auction.observedPaymentStatus,
+        )
+      ) {
+        fail(
+          "PAYMENT_ORDER_NOT_RESOLVABLE",
+          "Only payment-fixing orders can be resolved after tracking ends.",
+        );
+      }
+
+      if (resolution === "payment_complete") {
+        return recordPaymentComplete(state, {
+          ...key,
+          soldPriceCents,
+        });
+      }
+
+      auction.paymentStatus = "canceled";
+      auction.observedPaymentStatus = OBSERVED_PAYMENT_STATUSES.CANCELED;
+      auction.soldPriceCents = null;
+      auction.committedUnitCostCents = null;
+
+      const stream = findStream(state, key.streamId);
+
+      if (stream?.activeBiddingVariationNumber === key.variationNumber) {
+        stream.activeBiddingVariationNumber = null;
+      }
 
       return createAuctionView(state, auction);
     }
@@ -2036,58 +2151,6 @@
         status: "observed",
         attributedGmvDisplay,
       };
-    }
-
-    function markUnpaid(state, input) {
-      requireState(state);
-      const key = validateAuctionKey(input);
-      const auction = findAuction(state, key.streamId, key.variationNumber);
-
-      if (!auction || !auction.sku) {
-        fail(
-          "VARIATION_NOT_MAPPED",
-          "A variation must be mapped to an inventory SKU before it can be marked unpaid.",
-        );
-      }
-
-      if (
-        auction.paymentStatus === "payment_complete" ||
-        auction.observedPaymentStatus ===
-          OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
-      ) {
-        fail(
-          "PAYMENT_ALREADY_COMPLETE",
-          "A completed TikTok payment cannot be marked unpaid locally.",
-        );
-      }
-
-      if (auction.paymentStatus === "canceled") {
-        fail(
-          "PAYMENT_ALREADY_CANCELED",
-          "A canceled TikTok payment cannot be marked unpaid locally.",
-        );
-      }
-
-      // The caller confirms that TikTok's payment buffer has expired. This
-      // engine records that decision but does not control when the UI exposes it.
-      auction.mappingStatus = "marked_unpaid";
-      return createAuctionView(state, auction);
-    }
-
-    function undoMarkUnpaid(state, input) {
-      requireState(state);
-      const key = validateAuctionKey(input);
-      const auction = findAuction(state, key.streamId, key.variationNumber);
-
-      if (!auction) {
-        fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
-      }
-
-      if (auction.mappingStatus === "marked_unpaid") {
-        auction.mappingStatus = auction.sku ? "mapped" : "unmapped";
-      }
-
-      return createAuctionView(state, auction);
     }
 
     function getAuction(state, input) {
@@ -2166,7 +2229,6 @@
         committedSalesCount: 0,
         unmappedCompletedCount: 0,
         pendingMappedCount: 0,
-        markedUnpaidCount: 0,
         conflictCount: 0,
         completedGmvCents: 0,
         committedRevenueCents: 0,
@@ -2217,10 +2279,6 @@
 
         if (auction.status === "pending") {
           totals.pendingMappedCount += 1;
-        }
-
-        if (auction.status === "marked_unpaid") {
-          totals.markedUnpaidCount += 1;
         }
 
         auction.conflicts.forEach((conflict) => {
@@ -2300,9 +2358,9 @@
       mapVariation,
       unmapVariation,
       recordPaymentComplete,
+      listPaymentFixingOrders,
+      resolvePaymentFixingOrder,
       observeAttributedGmv,
-      markUnpaid,
-      undoMarkUnpaid,
       getAuction,
       calculateSummary,
     };

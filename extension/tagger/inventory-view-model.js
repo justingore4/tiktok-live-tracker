@@ -11,7 +11,7 @@
   function createInventoryViewModel() {
     "use strict";
 
-    const MOCK_INVENTORY = Object.freeze([
+    const LEGACY_RECOVERY_INVENTORY = Object.freeze([
       Object.freeze({
         sku: "STUSSY-TEE-BLACK-L",
         item: "Stussy tee",
@@ -239,7 +239,7 @@
     }
 
     return {
-      MOCK_INVENTORY,
+      LEGACY_RECOVERY_INVENTORY,
       calculateAverageOrderValueCents,
       filterInventoryEntries,
       formatUsdCents,

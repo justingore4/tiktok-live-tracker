@@ -1,30 +1,8 @@
 (function initializeTaggerLifecycle() {
   "use strict";
 
-  const DEMO_STREAM_ID = "demo-stream";
-  const DEMO_CURRENT_VARIATION_NUMBER = 203;
-  const DEFAULT_DEMO_SOLD_PRICE = "48.00";
-  const DEMO_VARIATION_SEEDS = Object.freeze([
-    Object.freeze({
-      variationNumber: 202,
-      sku: "STUSSY-TEE-BLACK-M",
-      status: "committed",
-      soldPriceCents: 2000,
-    }),
-    Object.freeze({
-      variationNumber: 201,
-      status: "unmapped",
-    }),
-    Object.freeze({
-      variationNumber: 200,
-      sku: "CARHARTT-JACKET-BROWN-M",
-      status: "marked_unpaid",
-    }),
-  ]);
-  const DEMO_VARIATION_NUMBERS = Object.freeze([
-    DEMO_CURRENT_VARIATION_NUMBER,
-    ...DEMO_VARIATION_SEEDS.map((seed) => seed.variationNumber),
-  ]);
+  const FALLBACK_CURRENT_VARIATION_NUMBER = 203;
+  const FALLBACK_VARIATION_NUMBERS = Object.freeze([203, 202, 201, 200]);
   const CAPTURE_STATE_NOTIFICATION_CHANNEL =
     "tiktok-live-tracker.capture-state";
   const CAPTURE_STATE_NOTIFICATION_VERSION = 1;
@@ -51,7 +29,6 @@
     "GOOGLE_AUTH_SCOPE_MISSING",
     "GOOGLE_SCOPE_NOT_GRANTED",
   ]);
-  const saleParser = globalThis.TikTokLiveTrackerSaleParser;
   const viewModel = globalThis.TikTokLiveTrackerInventoryViewModel;
   const tiktokFeeCalculator =
     globalThis.TikTokLiveTrackerTikTokFeeCalculator;
@@ -74,16 +51,25 @@
     globalThis.TikTokLiveTrackerInventoryImportController;
   const streamReportProtocol =
     globalThis.TikTokLiveTrackerStreamReportProtocol;
+  const liveBidProtocol =
+    globalThis.TikTokLiveTrackerLiveBidProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
   const streamReportClientModule =
     globalThis.TikTokLiveTrackerStreamReportClient;
+  const liveBidClientModule =
+    globalThis.TikTokLiveTrackerLiveBidClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
+  const liveAuctionViewModel =
+    globalThis.TikTokLiveTrackerLiveAuctionViewModel;
+  const variationSelectorViewModel =
+    globalThis.TikTokLiveTrackerVariationSelectorViewModel;
+  const variationSelectorLockModule =
+    globalThis.TikTokLiveTrackerVariationSelectorLock;
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
   const appShell = document.querySelector(".app-shell");
   const appFooter = document.querySelector(".app-footer");
-  const demoModeButton = document.querySelector("#offline-demo-mode");
   const savedSessionError = document.querySelector("#saved-session-error");
   const savedSessionErrorTitle = document.querySelector(
     "#saved-session-error-title",
@@ -301,10 +287,26 @@
     "#confirm-report-action",
   );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
-  const dataModeBadge = document.querySelector("#data-mode-badge");
   const variationContext = document.querySelector("#variation-context");
+  const variationSelectShell = document.querySelector(
+    ".variation-select-shell",
+  );
   const variationSelector = document.querySelector("#variation-selector");
+  const variationSelectorValue = document.querySelector(
+    "#variation-selector-value",
+  );
+  const variationListbox = document.querySelector("#variation-listbox");
   const returnToCurrentButton = document.querySelector("#return-to-current");
+  const liveAuctionPanel = document.querySelector("#live-auction");
+  const liveAuctionTitle = document.querySelector("#live-auction-title");
+  const liveBidValue = document.querySelector("#live-bid-value");
+  const liveUnitCostValue = document.querySelector(
+    "#live-unit-cost-value",
+  );
+  const liveGrossProfitValue = document.querySelector(
+    "#live-gross-profit-value",
+  );
+  const liveAuctionNote = document.querySelector("#live-auction-note");
   const inventoryTitle = document.querySelector("#inventory-title");
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
@@ -336,12 +338,17 @@
   const grossProfitWarning = document.querySelector(
     "#gross-profit-warning",
   );
+  const estimatedProfitAfterFeesValue = document.querySelector(
+    "#estimated-profit-after-fees-value",
+  );
+  const estimatedProfitAfterFeesWarning = document.querySelector(
+    "#estimated-profit-after-fees-warning",
+  );
   const pendingMapping = document.querySelector("#pending-mapping");
   const mappedVariation = document.querySelector(
     '[data-field="mapped-variation"]',
   );
   const mappedItem = document.querySelector("#mapped-item");
-  const auctionEyebrow = document.querySelector("#auction-eyebrow");
   const auctionStatus = document.querySelector("#auction-status");
   const tiktokPaymentStatus = document.querySelector(
     "#tiktok-payment-status",
@@ -360,38 +367,16 @@
   const remainingInventoryResult = document.querySelector(
     '[data-field="remaining-inventory"]',
   );
-  const undoPaymentNote = document.querySelector("#undo-payment-note");
-  const undoSimulatedPaymentButton = document.querySelector(
-    "#undo-simulated-payment",
-  );
   const stateWarning = document.querySelector("#state-warning");
-  const lifecycleControls = document.querySelector("#lifecycle-controls");
-  const lifecycleControlsLegend = document.querySelector(
-    "#lifecycle-controls-legend",
-  );
-  const lifecycleControlsNote = document.querySelector(
-    "#lifecycle-controls-note",
-  );
-  const completePaymentForm = document.querySelector(
-    "#complete-payment-form",
-  );
-  const soldPriceInput = document.querySelector("#sold-price");
-  const soldPriceError = document.querySelector("#sold-price-error");
-  const simulateBufferButton = document.querySelector(
-    "#simulate-buffer-expiry",
-  );
-  const bufferExpiredNote = document.querySelector("#buffer-expired-note");
-  const markUnpaidButton = document.querySelector("#mark-unpaid");
-  const unpaidNote = document.querySelector("#unpaid-note");
-  const undoUnpaidButton = document.querySelector("#undo-unpaid");
   const mappingAnnouncement = document.querySelector("#mapping-announcement");
   const sessionFooterLabel = document.querySelector("#session-footer-label");
 
   if (
-    !saleParser ||
     !viewModel ||
     !tiktokFeeCalculator ||
     typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
+    typeof tiktokFeeCalculator.calculateEstimatedProfitAfterFees !==
+      "function" ||
     !reconciliation ||
     !reconciliationProtocol ||
     !reconciliationClientModule ||
@@ -403,6 +388,15 @@
     !inventoryImportControllerModule ||
     !streamReportProtocol ||
     !streamReportClientModule ||
+    !liveBidProtocol ||
+    !liveBidClientModule ||
+    !liveAuctionViewModel ||
+    typeof liveAuctionViewModel.createDisplay !== "function" ||
+    !variationSelectorViewModel ||
+    typeof variationSelectorViewModel.createOptionDisplay !== "function" ||
+    !variationSelectorLockModule ||
+    typeof variationSelectorLockModule.createVariationSelectorLock !==
+      "function" ||
     !mappingWorkflow ||
     !persistentTaggerControllerModule ||
     typeof persistentTaggerControllerModule.ensureInventoryInitialized !==
@@ -445,8 +439,16 @@
       runtime: chrome.runtime,
       protocol: streamReportProtocol,
     });
-  let activeMode = "saved_session";
-  let demoSession = null;
+  const liveBidClient = liveBidClientModule.createLiveBidClient({
+    runtime: chrome.runtime,
+    protocol: liveBidProtocol,
+  });
+  const variationSelectorLock =
+    variationSelectorLockModule.createVariationSelectorLock({
+      apply: renderVariationSelectorOptions,
+    });
+  let variationSelectorOpen = false;
+  let activeVariationNumber = null;
   let persistentController = null;
   let unsubscribePersistentController = null;
   let mountedStreamId = null;
@@ -469,6 +471,11 @@
   let captureRefreshDirty = false;
   let captureRefreshFocusSku = null;
   let captureRefreshHadVariationFocus = false;
+  let liveAuctionSnapshot = { liveAuction: null };
+  let liveBidRefreshGeneration = 0;
+  let liveBidRefreshDirty = false;
+  let liveBidRefreshScheduled = false;
+  let liveBidRefreshInFlight = false;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
@@ -511,6 +518,18 @@
       message.version === CAPTURE_STATE_NOTIFICATION_VERSION &&
       hasExactKeys(message.event, ["type"]) &&
       message.event.type === CAPTURE_STATE_NOTIFICATION_TYPE &&
+      sender?.id === chrome.runtime.id &&
+      sender.tab === undefined
+    );
+  }
+
+  function isLiveBidChangedNotification(message, sender) {
+    return (
+      hasExactKeys(message, ["channel", "version", "event"]) &&
+      message.channel === liveBidProtocol.MESSAGE_CHANNEL &&
+      message.version === liveBidProtocol.MESSAGE_VERSION &&
+      hasExactKeys(message.event, ["type"]) &&
+      message.event.type === "live_bid_changed" &&
       sender?.id === chrome.runtime.id &&
       sender.tab === undefined
     );
@@ -580,7 +599,7 @@
     }
 
     if (variation?.status === "canceled") {
-      return `Variation #${variation.variationNumber} was canceled. Its inventory reservation was released and the unit returned to available inventory.`;
+      return `Variation #${variation.variationNumber} was canceled. Any inventory reservation was released. You can still select a reference item without changing inventory or metrics.`;
     }
 
     if (variation?.observedPaymentStatus === "payment_complete") {
@@ -676,7 +695,6 @@
     if (
       !captureRefreshDirty ||
       captureRefreshTimerId !== null ||
-      activeMode !== "saved_session" ||
       !streamSnapshot.resumed ||
       streamSnapshot.activeSession === null ||
       persistentController === null
@@ -693,7 +711,6 @@
       if (
         scheduledController !== persistentController ||
         scheduledStreamId !== mountedStreamId ||
-        activeMode !== "saved_session" ||
         !streamSnapshot.resumed
       ) {
         return;
@@ -733,7 +750,95 @@
     armCaptureRefresh();
   }
 
+  function canRefreshLiveBid() {
+    return (
+      streamSnapshot.resumed &&
+      streamSnapshot.activeSession !== null &&
+      persistentController !== null &&
+      mountedStreamId !== null
+    );
+  }
+
+  function armLiveBidRefresh() {
+    if (
+      liveBidRefreshScheduled ||
+      liveBidRefreshInFlight ||
+      !liveBidRefreshDirty
+    ) {
+      return;
+    }
+
+    liveBidRefreshScheduled = true;
+    Promise.resolve().then(async () => {
+      liveBidRefreshScheduled = false;
+
+      if (liveBidRefreshInFlight || !liveBidRefreshDirty) {
+        return;
+      }
+
+      if (!canRefreshLiveBid()) {
+        liveBidRefreshDirty = false;
+        return;
+      }
+
+      liveBidRefreshDirty = false;
+      liveBidRefreshInFlight = true;
+      const requestGeneration = liveBidRefreshGeneration;
+      const requestStreamId = mountedStreamId;
+
+      try {
+        const response = await liveBidClient.getLiveBid();
+
+        if (
+          requestGeneration === liveBidRefreshGeneration &&
+          requestStreamId === mountedStreamId &&
+          canRefreshLiveBid()
+        ) {
+          if (
+            isRecord(response) &&
+            hasExactKeys(response, ["liveAuction"])
+          ) {
+            liveAuctionSnapshot = response;
+          }
+          renderLiveAuction(getActiveView());
+        }
+      } catch (error) {
+        if (
+          requestGeneration === liveBidRefreshGeneration &&
+          requestStreamId === mountedStreamId
+        ) {
+          renderLiveAuction(getActiveView());
+        }
+        console.error(
+          "[TikTok Live Tracker] Live bid could not be refreshed.",
+          error,
+        );
+      } finally {
+        liveBidRefreshInFlight = false;
+        armLiveBidRefresh();
+      }
+    });
+  }
+
+  function scheduleLiveBidRefresh() {
+    liveBidRefreshGeneration += 1;
+    liveBidRefreshDirty = true;
+    armLiveBidRefresh();
+  }
+
+  function resetLiveBidTracking() {
+    liveBidRefreshGeneration += 1;
+    liveBidRefreshDirty = false;
+    liveAuctionSnapshot = { liveAuction: null };
+    renderLiveAuction(null);
+  }
+
   function handleCaptureStateChanged(message, sender) {
+    if (isLiveBidChangedNotification(message, sender)) {
+      scheduleLiveBidRefresh();
+      return false;
+    }
+
     if (!isCaptureStateChangedNotification(message, sender)) {
       return false;
     }
@@ -742,32 +847,8 @@
     return false;
   }
 
-  function createDemoSession() {
-    const nextSession = mappingWorkflow.createMappingSession({
-      inventory: viewModel.MOCK_INVENTORY,
-      reconciliation,
-      streamId: DEMO_STREAM_ID,
-      variationNumber: DEMO_CURRENT_VARIATION_NUMBER,
-      variationNumbers: DEMO_VARIATION_NUMBERS,
-      offlineSimulation: true,
-    });
-
-    seedDemoVariationHistory(nextSession);
-    return nextSession;
-  }
-
-  function getDemoSession() {
-    if (demoSession === null) {
-      demoSession = createDemoSession();
-    }
-
-    return demoSession;
-  }
-
   function getActiveView() {
-    return activeMode === "offline_demo"
-      ? getDemoSession().getViewState()
-      : savedSnapshot?.view ?? null;
+    return savedSnapshot?.view ?? null;
   }
 
   function createEmptySavedSnapshot() {
@@ -857,6 +938,8 @@
 
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
+    resetLiveBidTracking();
+    resetVariationSelector();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -886,8 +969,8 @@
         reconciliation,
         mappingWorkflow,
         streamId: activeSession.streamId,
-        currentVariationNumber: DEMO_CURRENT_VARIATION_NUMBER,
-        variationNumbers: DEMO_VARIATION_NUMBERS,
+        currentVariationNumber: FALLBACK_CURRENT_VARIATION_NUMBER,
+        variationNumbers: FALLBACK_VARIATION_NUMBERS,
       });
     const mountedController = persistentController;
 
@@ -902,23 +985,79 @@
           error,
         );
       });
+    scheduleLiveBidRefresh();
   }
 
   function setWorkspaceBusy(busy) {
     const streamUnavailable =
-      activeMode === "saved_session" &&
-      (!streamSnapshot.resumed || streamSnapshot.activeSession === null);
+      !streamSnapshot.resumed || streamSnapshot.activeSession === null;
     const shouldBeBusy =
-      Boolean(busy) ||
-      (activeMode === "saved_session" && streamSnapshot.busy) ||
-      streamUnavailable;
+      Boolean(busy) || streamSnapshot.busy || streamUnavailable;
+    const keepVariationSelectorInteractive =
+      variationSelectorLock.isLocked() &&
+      snapshotIsBackgroundRefresh(savedSnapshot) &&
+      !streamSnapshot.busy &&
+      !streamUnavailable &&
+      !endConfirmationOpen;
     const shouldBeInert =
-      shouldBeBusy ||
-      (activeMode === "saved_session" &&
-        (savedSnapshot?.phase === "error" || endConfirmationOpen));
+      (shouldBeBusy && !keepVariationSelectorInteractive) ||
+      savedSnapshot?.phase === "error" ||
+      endConfirmationOpen;
 
     trackerWorkspace.setAttribute("aria-busy", String(shouldBeBusy));
     trackerWorkspace.toggleAttribute("inert", shouldBeInert);
+  }
+
+  function snapshotIsBackgroundRefresh(snapshot) {
+    return (
+      snapshot?.phase === "loading" && snapshot.operation === "refresh"
+    );
+  }
+
+  function hideVariationListbox() {
+    try {
+      if (
+        typeof variationListbox.hidePopover === "function" &&
+        variationListbox.matches(":popover-open")
+      ) {
+        variationListbox.hidePopover();
+      }
+    } catch (error) {
+      console.error(
+        "[TikTok Live Tracker] Variation listbox could not be hidden.",
+        error,
+      );
+    }
+
+    variationListbox.hidden = true;
+    variationListbox.removeAttribute("data-fallback-open");
+  }
+
+  function clearOpenVariationSelector() {
+    restoreCurrentVariationHighlight();
+    variationSelectorOpen = false;
+    activeVariationNumber = null;
+    variationSelectShell.dataset.open = "false";
+    variationSelector.setAttribute("aria-expanded", "false");
+    variationSelector.removeAttribute("aria-activedescendant");
+    hideVariationListbox();
+  }
+
+  function resetVariationSelector() {
+    clearOpenVariationSelector();
+    variationSelectorLock.reset();
+  }
+
+  function releaseVariationSelector(options = {}) {
+    const { restoreFocus = false } = options;
+
+    clearOpenVariationSelector();
+    variationSelectorLock.release();
+    setWorkspaceBusy(savedSnapshot?.busy === true);
+
+    if (restoreFocus && variationSelector.tabIndex >= 0) {
+      variationSelector.focus();
+    }
   }
 
   function isSavedWorkspaceUnavailable() {
@@ -927,29 +1066,14 @@
     );
   }
 
-  function updateModeControls() {
-    const savedMode = activeMode === "saved_session";
-
-    demoModeButton.textContent = "Demo";
-    demoModeButton.setAttribute("aria-pressed", String(!savedMode));
-    const demoToggleLabel = savedMode
-      ? "Switch to offline demo mode"
-      : "Return to live session";
-    demoModeButton.setAttribute("aria-label", demoToggleLabel);
-    demoModeButton.title = demoToggleLabel;
-    demoModeButton.disabled = savedMode && savedSnapshot?.phase === "saving";
-    streamSessionPanel.hidden = !savedMode;
+  function updateSessionControls() {
     inventoryImportPanel.hidden =
-      !savedMode ||
       streamSnapshot.activeSession !== null ||
       shouldPrepareInventoryForStreamRetry(streamSnapshot);
-    dataModeBadge.textContent = savedMode ? "Live session" : "Demo data";
-    const footerText = !savedMode
-      ? "Offline demo - not saved"
-      : !streamSnapshot.activeSession
-        ? "No active tracker stream"
-        : !streamSnapshot.resumed
-          ? "Tracker stream ready to resume"
+    const footerText = !streamSnapshot.activeSession
+      ? "No active tracker stream"
+      : !streamSnapshot.resumed
+        ? "Tracker stream ready to resume"
       : {
           idle: "Restoring live session data",
           loading: "Restoring live session data",
@@ -957,13 +1081,11 @@
           error: "Live session data needs attention",
           ready: "Saved locally",
         }[savedSnapshot?.phase] ?? "Live session";
-    const footerPhase = !savedMode
-      ? "demo"
-      : !streamSnapshot.activeSession
-        ? "inactive"
-        : !streamSnapshot.resumed
-          ? "resume"
-          : savedSnapshot?.phase ?? "idle";
+    const footerPhase = !streamSnapshot.activeSession
+      ? "inactive"
+      : !streamSnapshot.resumed
+        ? "resume"
+        : savedSnapshot?.phase ?? "idle";
 
     setFooterStatus(footerText, footerPhase);
     renderStreamReportsPanel();
@@ -1358,15 +1480,13 @@
   }
 
   function renderArchivedReportsView() {
-    const savedMode = activeMode === "saved_session";
     const inactive = streamSnapshot.activeSession === null;
-    const canOpen = savedMode && inactive;
     const hasError = typeof archivedReportsLoadError === "string";
     const archivedIds = new Set(
       archivedReportSummaries.map((summary) => summary.reportId),
     );
 
-    if (!canOpen) {
+    if (!inactive) {
       archivedReportsViewOpen = false;
     }
 
@@ -1411,7 +1531,6 @@
   }
 
   function renderStreamReportsPanel() {
-    const savedMode = activeMode === "saved_session";
     const inactive = streamSnapshot.activeSession === null;
     const hasReports = streamReportSummaries.length > 0;
     const hasArchivedReports = archivedReportSummaries.length > 0;
@@ -1419,7 +1538,6 @@
 
     closeReportActionsMenu();
     streamReportsPanel.hidden =
-      !savedMode ||
       !inactive ||
       (!hasReports && !hasArchivedReports && !hasError);
     streamReportsPanel.setAttribute(
@@ -1446,10 +1564,7 @@
   }
 
   function openArchivedReportsDashboard() {
-    if (
-      activeMode !== "saved_session" ||
-      streamSnapshot.activeSession !== null
-    ) {
+    if (streamSnapshot.activeSession !== null) {
       return;
     }
 
@@ -1599,51 +1714,6 @@
     }
   }
 
-  function requireDemoSeedResult(result, action) {
-    if (!result.ok) {
-      throw new Error(`Could not ${action}: ${result.message}`);
-    }
-
-    return result;
-  }
-
-  function seedDemoVariationHistory(session) {
-    DEMO_VARIATION_SEEDS.forEach((seed) => {
-      requireDemoSeedResult(
-        session.selectVariation(seed.variationNumber),
-        `select demo variation ${seed.variationNumber}`,
-      );
-
-      if (seed.sku) {
-        requireDemoSeedResult(
-          session.selectSku(seed.sku),
-          `map demo variation ${seed.variationNumber}`,
-        );
-      }
-
-      if (seed.status === "committed") {
-        requireDemoSeedResult(
-          session.completePayment(seed.soldPriceCents),
-          `complete demo variation ${seed.variationNumber}`,
-        );
-      } else if (seed.status === "marked_unpaid") {
-        requireDemoSeedResult(
-          session.simulatePaymentBufferExpired(),
-          `expire demo variation ${seed.variationNumber}`,
-        );
-        requireDemoSeedResult(
-          session.markUnpaid(),
-          `mark demo variation ${seed.variationNumber} unpaid`,
-        );
-      }
-    });
-
-    requireDemoSeedResult(
-      session.selectVariation(DEMO_CURRENT_VARIATION_NUMBER),
-      "return to the current demo variation",
-    );
-  }
-
   function formatItemName(entry) {
     return entry.style ? `${entry.item} - ${entry.style}` : entry.item;
   }
@@ -1659,14 +1729,12 @@
     const stockAriaLabel = stock.ariaLabel ?? stock.label;
     const selected = entry.selected;
     const itemName = formatItemName(entry);
-    const canTagSelectedVariation =
-      activeMode !== "saved_session" || hasSelectedRecordedVariation(view);
+    const canTagSelectedVariation = hasSelectedRecordedVariation(view);
 
     button.dataset.sku = entry.sku;
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
     button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
-    button.dataset.lockedReason = canceled ? "canceled" : "";
     button.setAttribute("aria-pressed", String(selected));
 
     if (!canTagSelectedVariation) {
@@ -1677,7 +1745,7 @@
     } else if (selected && canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, was selected for canceled variation ${variationNumber}, ${stockAriaLabel}. Its reservation was released and this history is read-only.`,
+        `${itemName}, size ${entry.size}, is the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
       );
     } else if (selected) {
       button.setAttribute(
@@ -1687,7 +1755,9 @@
     } else if (canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Canceled variation ${variationNumber} is read-only.`,
+        auction?.sku
+          ? `Change canceled variation ${variationNumber} to reference ${itemName}, size ${entry.size}, ${stockAriaLabel}. No inventory will be changed.`
+          : `Select ${itemName}, size ${entry.size}, as the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -1726,8 +1796,6 @@
       selectedLabel.textContent = "Sold";
     } else if (canceled && selected) {
       selectedLabel.textContent = "Canceled item";
-    } else if (auction?.status === "marked_unpaid" && selected) {
-      selectedLabel.textContent = "Unpaid";
     } else {
       selectedLabel.textContent = "Selected";
     }
@@ -1755,71 +1823,322 @@
     }
   }
 
-  function formatVariationOption(option) {
-    const item = option.item
-      ? `${formatItemName(option)}, size ${option.size}`
-      : "No item selected";
-    const status = option.bidding
-      ? "bidding"
-      : option.observedPaymentStatusLabel;
-
-    return `#${option.variationNumber} - ${status} - ${item}`;
+  function getVariationOptionDisplay(option) {
+    return variationSelectorViewModel.createOptionDisplay(option, {
+      formatItemName,
+    });
   }
 
-  function renderVariationNavigation(view) {
-    const fragment = document.createDocumentFragment();
-    const variations = activeMode === "saved_session"
-      ? getRecordedVariations(view)
-      : view.variations;
+  function createVariationOptionContent(display) {
+    const content = document.createElement("span");
+    const variationNumber = document.createElement("span");
+    const firstSeparator = document.createElement("span");
+    const paymentStatus = document.createElement("span");
+    const secondSeparator = document.createElement("span");
+    const itemStatus = document.createElement("span");
 
-    if (variations.length === 0) {
-      const option = document.createElement("option");
+    content.className = "variation-option-content";
+    variationNumber.className = "variation-option-number";
+    variationNumber.textContent = display.variationLabel;
+    firstSeparator.className = "variation-option-separator";
+    firstSeparator.textContent = " - ";
+    paymentStatus.className = "variation-option-status";
+    paymentStatus.dataset.tone = display.paymentTone;
+    paymentStatus.textContent = display.paymentLabel;
+    secondSeparator.className = "variation-option-separator";
+    secondSeparator.textContent = " - ";
+    itemStatus.className = "variation-option-item";
+    itemStatus.dataset.tone = display.itemTone;
+    itemStatus.textContent = display.itemLabel;
+    content.append(
+      variationNumber,
+      firstSeparator,
+      paymentStatus,
+      secondSeparator,
+      itemStatus,
+    );
 
-      option.value = "";
-      option.textContent = "Waiting for live auction variations";
-      option.disabled = true;
-      option.selected = true;
-      fragment.append(option);
-    } else {
-      variations.forEach((variation) => {
-        const option = document.createElement("option");
+    return content;
+  }
 
-        option.value = String(variation.variationNumber);
-        option.textContent = formatVariationOption(variation);
-        option.selected = variation.selected;
-        fragment.append(option);
-      });
+  function getVariationOptionRows() {
+    return [...variationListbox.querySelectorAll('[role="option"]')];
+  }
+
+  function restoreCurrentVariationHighlight() {
+    getVariationOptionRows().forEach((row) => {
+      const current = row.dataset.current === "true";
+
+      row.dataset.active = "false";
+      row.setAttribute("aria-selected", String(current));
+    });
+  }
+
+  function setActiveVariation(variationNumber, options = {}) {
+    const { scroll = true } = options;
+    const rows = getVariationOptionRows();
+    const nextRow = rows.find(
+      (row) => Number(row.dataset.variationNumber) === variationNumber,
+    ) ?? rows[0] ?? null;
+
+    if (!nextRow) {
+      activeVariationNumber = null;
+      variationSelector.removeAttribute("aria-activedescendant");
+      return false;
     }
 
-    variationSelector.replaceChildren(fragment);
-    variationSelector.disabled = variations.length === 0;
+    rows.forEach((row) => {
+      const active = row === nextRow;
 
-    if (activeMode === "saved_session") {
-      if (variations.length > 0) {
-        variationSelector.value = String(view.selectedVariationNumber);
-        variationContext.textContent = "Live auction variations";
-        inventoryTitle.textContent =
-          `Review or tag variation #${view.selectedVariationNumber}`;
-      } else {
-        variationContext.textContent =
-          "Waiting for a live auction variation";
-        inventoryTitle.textContent = "Waiting for a live auction variation";
-      }
+      row.dataset.active = String(active);
+    });
+    activeVariationNumber = Number(nextRow.dataset.variationNumber);
+    variationSelector.setAttribute("aria-activedescendant", nextRow.id);
 
-      returnToCurrentButton.hidden = true;
+    if (scroll && typeof nextRow.scrollIntoView === "function") {
+      nextRow.scrollIntoView({ block: "nearest" });
+    }
+
+    return true;
+  }
+
+  function moveActiveVariation(offset) {
+    const rows = getVariationOptionRows();
+
+    if (rows.length === 0) {
       return;
     }
 
-    variationSelector.value = String(view.selectedVariationNumber);
-    variationContext.textContent = view.isReviewingHistory
-      ? "Reviewing previous variation"
-      : "On screen now";
-    returnToCurrentButton.hidden = !view.isReviewingHistory;
-    returnToCurrentButton.textContent =
-      `Return to on-screen variation #${view.currentVariationNumber}`;
-    inventoryTitle.textContent = view.isReviewingHistory
-      ? `Review or correct variation #${view.selectedVariationNumber}`
-      : `Find the item for variation #${view.currentVariationNumber}`;
+    const currentIndex = rows.findIndex(
+      (row) => Number(row.dataset.variationNumber) === activeVariationNumber,
+    );
+    const nextIndex = Math.min(
+      rows.length - 1,
+      Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + offset),
+    );
+
+    setActiveVariation(Number(rows[nextIndex].dataset.variationNumber));
+  }
+
+  function moveActiveVariationToBoundary(boundary) {
+    const rows = getVariationOptionRows();
+    const row = boundary === "end" ? rows.at(-1) : rows[0];
+
+    if (row) {
+      setActiveVariation(Number(row.dataset.variationNumber));
+    }
+  }
+
+  function positionVariationListbox() {
+    if (!variationSelectorOpen) {
+      return;
+    }
+
+    const triggerRect = variationSelector.getBoundingClientRect();
+    const viewportWidth = Math.max(
+      document.documentElement?.clientWidth ?? 0,
+      window.innerWidth ?? 0,
+    );
+    const viewportHeight = Math.max(
+      document.documentElement?.clientHeight ?? 0,
+      window.innerHeight ?? 0,
+    );
+    const viewportMargin = 8;
+    const popupGap = 4;
+    const popupWidth = Math.max(
+      0,
+      Math.min(triggerRect.width, viewportWidth - viewportMargin * 2),
+    );
+    const popupLeft = Math.min(
+      Math.max(viewportMargin, triggerRect.left),
+      Math.max(viewportMargin, viewportWidth - viewportMargin - popupWidth),
+    );
+    const spaceBelow = Math.max(
+      0,
+      viewportHeight - triggerRect.bottom - popupGap - viewportMargin,
+    );
+    const spaceAbove = Math.max(
+      0,
+      triggerRect.top - popupGap - viewportMargin,
+    );
+    const heightCap = Math.min(480, Math.floor(viewportHeight * 0.55));
+    const openAbove =
+      spaceBelow < Math.min(160, heightCap) && spaceAbove > spaceBelow;
+    const availableHeight = openAbove ? spaceAbove : spaceBelow;
+
+    variationListbox.style.width = `${popupWidth}px`;
+    variationListbox.style.left = `${popupLeft}px`;
+    variationListbox.style.maxHeight = `${Math.max(
+      1,
+      Math.min(heightCap, availableHeight),
+    )}px`;
+
+    if (openAbove) {
+      variationListbox.style.top = "auto";
+      variationListbox.style.bottom = `${
+        viewportHeight - triggerRect.top + popupGap
+      }px`;
+    } else {
+      variationListbox.style.top = `${triggerRect.bottom + popupGap}px`;
+      variationListbox.style.bottom = "auto";
+    }
+  }
+
+  function showVariationListbox() {
+    variationListbox.hidden = false;
+    positionVariationListbox();
+
+    try {
+      if (typeof variationListbox.showPopover === "function") {
+        variationListbox.showPopover();
+      } else {
+        variationListbox.dataset.fallbackOpen = "true";
+      }
+    } catch (error) {
+      variationListbox.dataset.fallbackOpen = "true";
+      console.error(
+        "[TikTok Live Tracker] Variation listbox could not enter the top layer.",
+        error,
+      );
+    }
+  }
+
+  function openVariationSelector(options = {}) {
+    const { boundary = null } = options;
+
+    if (
+      variationSelectorOpen ||
+      variationSelector.getAttribute("aria-disabled") === "true"
+    ) {
+      return false;
+    }
+
+    const rows = getVariationOptionRows();
+
+    if (rows.length === 0) {
+      return false;
+    }
+
+    variationSelectorLock.lock();
+    variationSelectorOpen = true;
+    variationSelectShell.dataset.open = "true";
+    variationSelector.setAttribute("aria-expanded", "true");
+    showVariationListbox();
+
+    if (boundary === "start" || boundary === "end") {
+      moveActiveVariationToBoundary(boundary);
+    } else {
+      const selectedVariationNumber = Number(
+        variationSelector.dataset.variationNumber,
+      );
+
+      setActiveVariation(selectedVariationNumber);
+    }
+
+    return true;
+  }
+
+  function renderLiveAuction(view) {
+    const display = liveAuctionViewModel.createDisplay({
+      view,
+      liveAuction: liveAuctionSnapshot.liveAuction,
+      formatUsdCents: viewModel.formatUsdCents,
+    });
+
+    liveAuctionPanel.hidden = display.hidden;
+    liveAuctionPanel.dataset.state = display.state;
+
+    if (liveAuctionTitle.textContent !== display.variationLabel) {
+      liveAuctionTitle.textContent = display.variationLabel;
+    }
+
+    if (liveBidValue.textContent !== display.currentBid) {
+      liveBidValue.textContent = display.currentBid;
+    }
+
+    if (liveUnitCostValue.textContent !== display.unitCost) {
+      liveUnitCostValue.textContent = display.unitCost;
+    }
+
+    if (liveGrossProfitValue.textContent !== display.grossProfit) {
+      liveGrossProfitValue.textContent = display.grossProfit;
+    }
+
+    if (liveGrossProfitValue.dataset.tone !== display.profitTone) {
+      liveGrossProfitValue.dataset.tone = display.profitTone;
+    }
+
+    if (liveAuctionNote.textContent !== display.note) {
+      liveAuctionNote.textContent = display.note;
+    }
+  }
+
+  function renderVariationSelectorOptions(view) {
+    const fragment = document.createDocumentFragment();
+    const variations = getRecordedVariations(view);
+
+    if (variations.length === 0) {
+      variationSelectorValue.textContent =
+        "Waiting for live auction variations";
+      variationSelector.removeAttribute("data-variation-number");
+      variationSelector.setAttribute("aria-disabled", "true");
+      variationSelector.tabIndex = -1;
+    } else {
+      variations.forEach((variation) => {
+        const display = getVariationOptionDisplay(variation);
+        const option = document.createElement("div");
+
+        option.id = `variation-option-${variation.variationNumber}`;
+        option.className = "variation-option";
+        option.dataset.variationNumber = String(variation.variationNumber);
+        option.dataset.current = String(variation.selected);
+        option.dataset.active = "false";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-label", display.fullLabel);
+        option.setAttribute("aria-selected", String(variation.selected));
+        option.append(createVariationOptionContent(display));
+        fragment.append(option);
+      });
+
+      const selectedVariation = variations.find(
+        (variation) => variation.selected,
+      ) ?? variations[0];
+      const selectedDisplay = getVariationOptionDisplay(selectedVariation);
+
+      variationSelectorValue.replaceChildren(
+        createVariationOptionContent(selectedDisplay),
+      );
+      variationSelector.dataset.variationNumber = String(
+        selectedVariation.variationNumber,
+      );
+      variationSelector.setAttribute("aria-disabled", "false");
+      variationSelector.tabIndex = 0;
+    }
+
+    variationListbox.replaceChildren(fragment);
+  }
+
+  function renderVariationNavigation(view) {
+    const variations = getRecordedVariations(view);
+
+    variationSelectorLock.requestRender(view);
+
+    const reviewingRecordedHistory =
+      variations.length > 0 && view.isReviewingHistory;
+
+    if (variations.length > 0) {
+      variationContext.textContent = "Live auction variations";
+      inventoryTitle.textContent =
+        `Review or tag variation #${view.selectedVariationNumber}`;
+    } else {
+      variationContext.textContent =
+        "Waiting for a live auction variation";
+      inventoryTitle.textContent = "Waiting for a live auction variation";
+    }
+
+    returnToCurrentButton.classList.add("return-to-current-live");
+    returnToCurrentButton.hidden = !reviewingRecordedHistory;
+    returnToCurrentButton.textContent = "Return to live item";
   }
 
   function renderInventory(view, focusSku = null) {
@@ -1839,7 +2158,7 @@
     inventoryGrid.replaceChildren(fragment);
     inventoryGrid.dataset.orderState = canceled ? "canceled" : "editable";
     inventorySelectionNote.textContent = canceled
-      ? "This order was canceled. Its previous item is shown as read-only history, its reservation was released, and inventory cannot be changed."
+      ? "This order was canceled. Select an item only to record what was auctioned; mapping, changing, or clearing it will not affect inventory or metrics."
       : "Selecting an item reserves one unit until TikTok reports Payment complete or Canceled. Temporary Payment failed remains pending. Zero-stock items remain selectable and show how far they are oversold.";
     inventoryGrid.hidden = filteredInventory.length === 0;
     emptyState.hidden = filteredInventory.length !== 0;
@@ -1876,6 +2195,11 @@
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
     const tiktokFeeMetrics =
       tiktokFeeCalculator.calculateSixPercentGmvFees(attributedGmvDisplay);
+    const estimatedProfitAfterFees =
+      tiktokFeeCalculator.calculateEstimatedProfitAfterFees(
+        attributedGmvDisplay,
+        view.totals.costOfGoodsCents,
+      );
     const unmatchedCompletedCount = view.totals.unmappedCompletedCount;
     const completedPaymentCount = view.totals.completedPaymentCount;
     const totalSalesCount = view.totals.totalSalesCount;
@@ -1897,6 +2221,8 @@
     const formattedFeesPaid = tiktokFeeMetrics?.feesPaidDisplay ?? "—";
     const formattedGmvAfterFees =
       tiktokFeeMetrics?.gmvAfterFeesDisplay ?? "—";
+    const formattedEstimatedProfitAfterFees =
+      estimatedProfitAfterFees ?? "—";
 
     if (grossItemSalesValue.textContent !== formattedGrossItemSales) {
       grossItemSalesValue.textContent = formattedGrossItemSales;
@@ -1916,6 +2242,14 @@
 
     if (gmvAfterFeesValue.textContent !== formattedGmvAfterFees) {
       gmvAfterFeesValue.textContent = formattedGmvAfterFees;
+    }
+
+    if (
+      estimatedProfitAfterFeesValue.textContent !==
+      formattedEstimatedProfitAfterFees
+    ) {
+      estimatedProfitAfterFeesValue.textContent =
+        formattedEstimatedProfitAfterFees;
     }
 
     if (completedSalesValue.textContent !== completedSalesRatio) {
@@ -1946,10 +2280,16 @@
       if (grossProfitWarning.textContent !== warning) {
         grossProfitWarning.textContent = warning;
       }
+      if (estimatedProfitAfterFeesWarning.textContent !== warning) {
+        estimatedProfitAfterFeesWarning.textContent = warning;
+      }
       grossProfitWarning.hidden = false;
+      estimatedProfitAfterFeesWarning.hidden = false;
     } else {
       grossProfitWarning.hidden = true;
       grossProfitWarning.textContent = "";
+      estimatedProfitAfterFeesWarning.hidden = true;
+      estimatedProfitAfterFeesWarning.textContent = "";
     }
   }
 
@@ -1962,10 +2302,6 @@
 
     if (conflict?.code === "payment_completed_after_marked_unpaid") {
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
-    }
-
-    if (view.auction?.status === "unmapped_completed") {
-      return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
     if (isObservedCompletionAwaitingPrice(view.auction)) {
@@ -2071,12 +2407,8 @@
 
     if (auction.paymentStatus === "canceled") {
       return auction.sku
-        ? "Canceled item · reservation released · stock restored"
-        : "Canceled · no inventory item assigned";
-    }
-
-    if (auction.mappingStatus === "marked_unpaid") {
-      return "Marked unpaid locally";
+        ? "Canceled · reference item selected · no inventory change"
+        : "Canceled · no reference item selected";
     }
 
     if (!auction.sku) {
@@ -2119,51 +2451,6 @@
     mappingStatus.textContent = getInventoryTagLabel(auction);
   }
 
-  function renderLifecycleControls(view) {
-    const committed = view.auction?.status === "committed";
-    const canceled = view.auction?.status === "canceled";
-    const markedUnpaid = view.auction?.status === "marked_unpaid";
-    const completionAwaitingPrice = isObservedCompletionAwaitingPrice(
-      view.auction,
-    );
-    const offlineDemo = activeMode === "offline_demo";
-    const canUndoSimulatedPayment =
-      offlineDemo && view.controls.canUndoSimulatedPayment;
-    const canUndoUnpaid = offlineDemo && view.controls.canUndoUnpaid;
-
-    lifecycleControlsLegend.textContent = "Offline test controls";
-    lifecycleControlsNote.textContent =
-      "These controls simulate TikTok events in temporary memory and do not act on TikTok.";
-    undoPaymentNote.textContent = view.mapping
-      ? "Offline demo only. Remove the simulated payment, keep the item selected, and do not change TikTok."
-      : "Offline demo only. Remove the simulated payment with no item selected, and do not change TikTok.";
-
-    lifecycleControls.hidden =
-      !offlineDemo ||
-      canceled ||
-      completionAwaitingPrice ||
-      (!view.mapping && !canUndoSimulatedPayment && !canUndoUnpaid) ||
-      (committed && !canUndoSimulatedPayment) ||
-      (!offlineDemo && committed);
-    completePaymentForm.hidden =
-      !offlineDemo || !view.controls.canCompletePayment;
-    simulateBufferButton.hidden =
-      !offlineDemo || !view.controls.canSimulateBufferExpiry;
-    bufferExpiredNote.hidden = !(
-      offlineDemo &&
-      view.demo.paymentBufferExpired &&
-      (view.auction?.status === "mapped" ||
-        view.auction?.status === "pending")
-    );
-    markUnpaidButton.hidden =
-      !offlineDemo || completionAwaitingPrice || !view.controls.canMarkUnpaid;
-    markUnpaidButton.disabled = completionAwaitingPrice;
-    unpaidNote.hidden = !markedUnpaid;
-    undoUnpaidButton.hidden = !offlineDemo || !view.controls.canUndoUnpaid;
-    undoPaymentNote.hidden = !canUndoSimulatedPayment;
-    undoSimulatedPaymentButton.hidden = !canUndoSimulatedPayment;
-  }
-
   function renderAuction(view) {
     const auction = view.auction;
 
@@ -2176,9 +2463,6 @@
     mappedItem.textContent = auction.sku
       ? `${formatItemName(auction)}, size ${auction.size}`
       : "No item selected. Select the matching inventory entry below.";
-    auctionEyebrow.textContent = activeMode === "offline_demo"
-      ? "Demo order status"
-      : "Live order status";
     renderOrderStatuses(auction);
     auctionStatus.dataset.status = auction.status;
     pendingMapping.dataset.status = auction.status;
@@ -2186,7 +2470,6 @@
 
     renderSaleResults(view);
     renderStateWarning(view);
-    renderLifecycleControls(view);
   }
 
   function renderAll(options = {}) {
@@ -2197,72 +2480,18 @@
     }
 
     renderVariationNavigation(view);
+    renderLiveAuction(view);
     renderAuction(view);
     renderInventory(view, options.focusSku ?? null);
     renderMetrics(view);
 
     if (options.focusStatus && !pendingMapping.hidden) {
       auctionStatus.focus();
-    } else if (options.focusControl === "mark_unpaid") {
-      markUnpaidButton.focus();
     } else if (options.focusVariation) {
       variationSelector.focus();
     }
 
     return view;
-  }
-
-  function clearPriceError() {
-    soldPriceInput.removeAttribute("aria-invalid");
-    soldPriceError.textContent = "";
-    soldPriceError.hidden = true;
-  }
-
-  function showPriceError(message) {
-    soldPriceInput.setAttribute("aria-invalid", "true");
-    soldPriceError.textContent = message;
-    soldPriceError.hidden = false;
-    soldPriceInput.focus();
-  }
-
-  function announceMapping(result) {
-    if (result.action === "unmapped") {
-      const detail =
-        {
-          committed:
-            "Payment remains complete, but inventory and gross profit need a replacement item.",
-          marked_unpaid:
-            "The unpaid status remains and no item is selected.",
-          pending:
-            "Its pending reservation was released and no item is selected.",
-        }[result.previousStatus] ?? "No item is selected.";
-
-      mappingAnnouncement.textContent =
-        `Variation ${result.view.variationNumber} item unselected. ${detail}`;
-      return;
-    }
-
-    const mapping = result.mapping;
-    const itemDescription = `${formatItemName(mapping)}, size ${mapping.size}`;
-    const paymentLabel =
-      result.view.auction?.observedPaymentStatusLabel ??
-      getObservedPaymentStatusLabel(undefined);
-
-    if (result.action === "completed_sale_mapped") {
-      const profit = viewModel.getProfitDisplay(mapping.profitCents);
-
-      mappingAnnouncement.textContent = `Payment-complete variation ${mapping.variationNumber} matched to ${itemDescription}. Sold for ${viewModel.formatUsdCents(mapping.soldPriceCents)}; ${profit.label} recorded.`;
-    } else if (result.action === "committed_mapping_corrected") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} corrected to ${itemDescription}. Inventory and gross profit recalculated.`;
-    } else if (result.action === "unpaid_mapping_corrected") {
-      mappingAnnouncement.textContent = `Unpaid variation ${mapping.variationNumber} corrected to ${itemDescription}. Remaining inventory and profit stay unchanged.`;
-    } else if (result.action === "remapped") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} changed to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
-    } else if (result.action === "unchanged") {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} is already mapped to ${itemDescription}.`;
-    } else {
-      mappingAnnouncement.textContent = `Variation ${mapping.variationNumber} mapped to ${itemDescription}. TikTok payment: ${paymentLabel}.`;
-    }
   }
 
   function describeSelectedVariation(view) {
@@ -2393,13 +2622,11 @@
 
   function renderInventoryImportSnapshot(snapshot) {
     inventoryImportSnapshot = snapshot;
-    const savedMode = activeMode === "saved_session";
     const streamExists = streamSnapshot.activeSession !== null;
     const busy = snapshot.busy === true;
     const failed = snapshot.phase === "error";
     const preview = snapshot.preview;
     const showPanel =
-      savedMode &&
       !streamExists &&
       !shouldPrepareInventoryForStreamRetry(streamSnapshot);
 
@@ -2557,7 +2784,7 @@
     const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
     updateLayoutOrder(snapshot);
-    updateModeControls();
+    updateSessionControls();
     inventoryImportController.setActiveStream(snapshot.activeSession !== null);
 
     if (streamWasActive && snapshot.activeSession === null) {
@@ -2569,10 +2796,6 @@
           );
         },
       );
-    }
-
-    if (activeMode !== "saved_session") {
-      return;
     }
 
     const failed = snapshot.phase === "error";
@@ -2720,13 +2943,18 @@
   function announceSavedAction(action, view) {
     const variationNumber =
       action.variationNumber ?? view.selectedVariationNumber;
+    const canceled = view.auction?.paymentStatus === "canceled";
 
     if (action.type === "map_variation") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} mapping saved locally.`;
+        canceled
+          ? `Canceled variation ${variationNumber} reference item saved locally. Inventory and metrics were not changed.`
+          : `Variation ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
       mappingAnnouncement.textContent =
-        `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
+        canceled
+          ? `Canceled variation ${variationNumber} reference item cleared locally. Inventory and metrics were not changed.`
+          : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
     }
   }
 
@@ -2737,10 +2965,9 @@
       savedSnapshot?.view?.selectedVariationNumber ?? null;
 
     savedSnapshot = snapshot;
-    updateModeControls();
+    updateSessionControls();
 
     if (
-      activeMode !== "saved_session" ||
       !streamSnapshot.resumed ||
       streamSnapshot.activeSession === null
     ) {
@@ -2917,131 +3144,237 @@
     });
   }
 
-  function selectMode(mode) {
-    if (mode === activeMode) {
-      return;
-    }
-
-    activeMode = mode;
-    endConfirmationOpen = false;
-    streamSessionEndConfirmation.hidden = true;
-    clearPriceError();
-    searchInput.value = "";
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
-    updateModeControls();
-
-    if (activeMode === "offline_demo") {
-      savedSessionError.hidden = true;
-      setTrackerWorkspaceVisible(true);
-      setWorkspaceBusy(false);
-      const view = renderAll();
-
-      variationSelector.focus();
-      mappingAnnouncement.textContent =
-        `Offline demo opened on ${describeSelectedVariation(view)}. Demo actions are temporary and are not saved.`;
-      return;
-    }
-
-    armCaptureRefresh();
-    hasFocusedSavedError = false;
-    hasFocusedStreamError = false;
-    renderStreamSnapshot(streamSessionController.getSnapshot());
-    if (streamSnapshot.resumed && persistentController) {
-      renderSavedSnapshot(persistentController.getSnapshot());
-    }
-
-    if (
-      streamSnapshot.resumed &&
-      persistentController &&
-      savedSnapshot.phase === "ready" &&
-      savedSnapshot.view
-    ) {
-      focusSavedWorkspaceAfterRetry = false;
-      if (hasSelectedRecordedVariation(savedSnapshot.view)) {
-        variationSelector.focus();
-        mappingAnnouncement.textContent =
-          `Returned to live auction tracking on ${describeSelectedVariation(savedSnapshot.view)}.`;
-      } else {
-        streamSessionStatus.focus();
-        mappingAnnouncement.textContent =
-          "Returned to live auction tracking. Waiting for a captured variation.";
-      }
-    } else if (streamSnapshot.activeSession && !streamSnapshot.resumed) {
-      resumeStreamButton.focus();
-    } else if (!streamSnapshot.activeSession && streamSnapshot.phase === "ready") {
-      startStreamButton.focus();
-    }
-  }
-
-  variationSelector.addEventListener("change", () => {
-    if (activeMode === "saved_session") {
-      if (!persistentController || variationSelector.value === "") {
+  function selectVariationFromPicker(selectedVariationNumber) {
+    try {
+      if (
+        !persistentController ||
+        !Number.isSafeInteger(selectedVariationNumber) ||
+        selectedVariationNumber < 1
+      ) {
         mappingAnnouncement.textContent =
           "Waiting for a live auction variation.";
         return;
       }
 
-      try {
-        clearPriceError();
-        searchInput.value = "";
-        const snapshot = persistentController.selectVariation(
-          Number(variationSelector.value),
-        );
+      searchInput.value = "";
 
-        const view = snapshot.view;
+      const snapshot = persistentController.selectVariation(
+        selectedVariationNumber,
+      );
+      const view = snapshot.view;
 
-        mappingAnnouncement.textContent = view.isReviewingHistory
-          ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
-          : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
-      } catch (error) {
-        mappingAnnouncement.textContent =
-          error?.message ?? "That variation could not be selected.";
-      }
+      mappingAnnouncement.textContent = view.isReviewingHistory
+        ? `Reviewing auction ${describeSelectedVariation(view)}. New live auctions will keep updating in this menu without changing your selection.`
+        : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
+    } catch (error) {
+      mappingAnnouncement.textContent =
+        error?.message ?? "That variation could not be selected.";
+    } finally {
+      releaseVariationSelector({ restoreFocus: true });
+    }
+  }
 
+  function commitActiveVariation() {
+    const selectedVariationNumber = activeVariationNumber;
+
+    if (selectedVariationNumber === null) {
+      releaseVariationSelector({ restoreFocus: true });
       return;
     }
 
-    const result = getDemoSession().selectVariation(
-      Number(variationSelector.value),
-    );
+    selectVariationFromPicker(selectedVariationNumber);
+  }
 
-    if (!result.ok) {
-      renderAll();
-      mappingAnnouncement.textContent = result.message;
-      return;
+  variationSelector.addEventListener("click", () => {
+    if (variationSelectorOpen) {
+      releaseVariationSelector({ restoreFocus: true });
+    } else {
+      openVariationSelector();
     }
-
-    clearPriceError();
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
-    searchInput.value = "";
-    const view = renderAll();
-    mappingAnnouncement.textContent = view.isReviewingHistory
-      ? `Reviewing previous ${describeSelectedVariation(view)}. Select an inventory card to tag or correct this variation.`
-      : `Returned to on-screen ${describeSelectedVariation(view)}.`;
   });
 
-  returnToCurrentButton.addEventListener("click", () => {
-    if (activeMode === "saved_session") {
+  function handleVariationSelectorKeydown(event) {
+    if (!variationSelectorOpen) {
+      const opensPicker =
+        event.key === " " ||
+        event.key === "Spacebar" ||
+        event.key === "Enter" ||
+        event.key === "F4" ||
+        event.key === "ArrowDown" ||
+        event.key === "ArrowUp" ||
+        event.key === "Home" ||
+        event.key === "End" ||
+        event.key === "PageDown" ||
+        event.key === "PageUp";
+
+      if (!opensPicker) {
+        return;
+      }
+
+      event.preventDefault();
+      openVariationSelector({
+        boundary:
+          event.key === "Home"
+            ? "start"
+            : event.key === "End"
+              ? "end"
+              : null,
+      });
       return;
     }
 
-    const result = getDemoSession().selectVariation(
-      DEMO_CURRENT_VARIATION_NUMBER,
+    if (
+      event.key === "Escape" ||
+      event.key === "F4" ||
+      (event.altKey && event.key === "ArrowUp")
+    ) {
+      event.preventDefault();
+      releaseVariationSelector({ restoreFocus: true });
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActiveVariation(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActiveVariation(-1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveActiveVariationToBoundary("start");
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveActiveVariationToBoundary("end");
+    } else if (event.key === "PageDown") {
+      event.preventDefault();
+      moveActiveVariation(10);
+    } else if (event.key === "PageUp") {
+      event.preventDefault();
+      moveActiveVariation(-10);
+    } else if (
+      event.key === " " ||
+      event.key === "Spacebar" ||
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+      commitActiveVariation();
+    } else if (event.key === "Tab") {
+      releaseVariationSelector();
+    }
+  }
+
+  variationSelector.addEventListener(
+    "keydown",
+    handleVariationSelectorKeydown,
+  );
+  variationListbox.addEventListener(
+    "keydown",
+    handleVariationSelectorKeydown,
+  );
+
+  variationListbox.addEventListener("pointerdown", (event) => {
+    if (event.button === 0 && event.target.closest?.('[role="option"]')) {
+      event.preventDefault();
+    }
+  });
+
+  variationListbox.addEventListener("pointerup", (event) => {
+    if (event.button === 0 && variationSelectorOpen) {
+      variationSelector.focus({ preventScroll: true });
+    }
+  });
+
+  variationListbox.addEventListener("click", (event) => {
+    const option = event.target.closest?.('[role="option"]');
+
+    if (
+      !variationSelectorOpen ||
+      !option ||
+      !variationListbox.contains(option)
+    ) {
+      return;
+    }
+
+    const selectedVariationNumber = Number(option.dataset.variationNumber);
+
+    selectVariationFromPicker(selectedVariationNumber);
+  });
+
+  variationListbox.addEventListener("toggle", (event) => {
+    if (event.newState === "closed" && variationSelectorOpen) {
+      releaseVariationSelector();
+    }
+  });
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (
+        variationSelectorOpen &&
+        !variationSelectShell.contains(event.target)
+      ) {
+        releaseVariationSelector();
+      }
+    },
+    true,
+  );
+
+  document.addEventListener("focusin", (event) => {
+    if (
+      variationSelectorOpen &&
+      !variationSelectShell.contains(event.target)
+    ) {
+      releaseVariationSelector();
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    positionVariationListbox();
+  });
+
+  document.addEventListener(
+    "scroll",
+    (event) => {
+      if (variationSelectorOpen && event.target !== variationListbox) {
+        positionVariationListbox();
+      }
+    },
+    true,
+  );
+
+  returnToCurrentButton.addEventListener("click", () => {
+    const currentView = getActiveView();
+
+    if (!persistentController || !currentView?.isReviewingHistory) {
+      return;
+    }
+
+    const returnVariation = findVariationOption(
+      currentView,
+      currentView.currentVariationNumber,
     );
 
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
+    if (!returnVariation?.recorded) {
+      mappingAnnouncement.textContent =
+        "The latest live item is not available yet.";
       return;
     }
 
-    clearPriceError();
-    soldPriceInput.value = DEFAULT_DEMO_SOLD_PRICE;
     searchInput.value = "";
-    const view = renderAll();
+    const snapshot = persistentController.selectVariation(
+      currentView.currentVariationNumber,
+    );
+    const view = snapshot.view;
+
+    if (
+      !view ||
+      view.selectedVariationNumber !== currentView.currentVariationNumber
+    ) {
+      mappingAnnouncement.textContent =
+        "The latest live item could not be selected.";
+      return;
+    }
 
     variationSelector.focus();
     mappingAnnouncement.textContent =
-      `Returned to on-screen ${describeSelectedVariation(view)}.`;
+      `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
   });
 
   inventoryGrid.addEventListener("click", (event) => {
@@ -3051,151 +3384,26 @@
       return;
     }
 
-    if (activeMode === "saved_session") {
-      const view = getActiveView();
+    const view = getActiveView();
 
-      if (!hasSelectedRecordedVariation(view)) {
-        mappingAnnouncement.textContent =
-          "Wait for a captured live auction variation before selecting inventory.";
-        return;
-      }
-
-      if (view.auction?.paymentStatus === "canceled") {
-        mappingAnnouncement.textContent =
-          `Canceled variation ${view.selectedVariationNumber} is read-only. Its inventory reservation has already been released.`;
-        return;
-      }
-
-      const selected = button.getAttribute("aria-pressed") === "true";
-
-      runSavedMutation(
-        () => selected
-          ? persistentController.unmapSelectedVariation()
-          : persistentController.mapSelectedSku(button.dataset.sku),
-        {
-          type: selected ? "unmap_variation" : "map_variation",
-          variationNumber: view.selectedVariationNumber,
-          focusSku: button.dataset.sku,
-        },
-      );
-      return;
-    }
-
-    const result = getDemoSession().selectSku(button.dataset.sku);
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    clearPriceError();
-    renderAll({ focusSku: button.dataset.sku });
-    announceMapping(result);
-  });
-
-  completePaymentForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    if (activeMode !== "offline_demo") {
+    if (!hasSelectedRecordedVariation(view)) {
       mappingAnnouncement.textContent =
-        "Payment simulation is available only in Offline demo mode.";
+        "Wait for a captured live auction variation before selecting inventory.";
       return;
     }
 
-    const normalizedPrice = soldPriceInput.value.replace(/^\s*\$/, "");
-    const soldPriceCents = saleParser.parseMoneyToCents(normalizedPrice);
+    const selected = button.getAttribute("aria-pressed") === "true";
 
-    if (soldPriceCents === null || soldPriceCents < 1) {
-      showPriceError("Enter a valid sold price greater than $0.00.");
-      return;
-    }
-
-    const result = getDemoSession().completePayment(soldPriceCents);
-
-    if (!result.ok) {
-      showPriceError(result.message);
-      return;
-    }
-
-    clearPriceError();
-    const view = renderAll({ focusStatus: true });
-    const profit = viewModel.getProfitDisplay(view.auction.profitCents);
-
-    mappingAnnouncement.textContent = `Payment complete for variation ${view.variationNumber}. Sold for ${viewModel.formatUsdCents(view.auction.soldPriceCents)}. ${profit.label}.`;
-  });
-
-  simulateBufferButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().simulatePaymentBufferExpired();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusControl: "mark_unpaid" });
-    mappingAnnouncement.textContent = `Payment buffer expired for variation ${result.view.variationNumber} in this demo.`;
-  });
-
-  markUnpaidButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().markUnpaid();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = `Variation ${result.view.variationNumber} marked unpaid. Remaining inventory and profit stay unchanged; its reservation is released.`;
-  });
-
-  undoUnpaidButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().undoMarkUnpaid();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    renderAll({ focusStatus: true });
-    mappingAnnouncement.textContent = result.mapping
-      ? `Unpaid mark removed from variation ${result.view.variationNumber}. Waiting for payment.`
-      : `Unpaid mark removed from variation ${result.view.variationNumber}. No item is selected.`;
-  });
-
-  undoSimulatedPaymentButton.addEventListener("click", () => {
-    if (activeMode !== "offline_demo") {
-      return;
-    }
-
-    const result = getDemoSession().undoSimulatedPayment();
-
-    if (!result.ok) {
-      mappingAnnouncement.textContent = result.message;
-      return;
-    }
-
-    clearPriceError();
-    searchInput.value = "";
-    renderAll(
-      result.mapping
-        ? { focusSku: result.mapping.sku }
-        : { focusStatus: true },
+    runSavedMutation(
+      () => selected
+        ? persistentController.unmapSelectedVariation()
+        : persistentController.mapSelectedSku(button.dataset.sku),
+      {
+        type: selected ? "unmap_variation" : "map_variation",
+        variationNumber: view.selectedVariationNumber,
+        focusSku: button.dataset.sku,
+      },
     );
-    mappingAnnouncement.textContent = result.mapping
-      ? `Simulated payment undone for variation ${result.view.variationNumber}. It is waiting for payment again. The selected item remains reserved; remaining inventory and gross profit were restored.`
-      : `Simulated payment undone for variation ${result.view.variationNumber}. No item is selected; remaining inventory and gross profit were restored.`;
   });
 
   searchInput.addEventListener("input", () => renderAll());
@@ -3211,14 +3419,6 @@
     searchInput.value = "";
     searchInput.focus();
     renderAll();
-  });
-
-  soldPriceInput.addEventListener("input", clearPriceError);
-
-  demoModeButton.addEventListener("click", () => {
-    selectMode(
-      activeMode === "offline_demo" ? "saved_session" : "offline_demo",
-    );
   });
 
   inventorySheetReference.addEventListener("input", () => {
@@ -3460,7 +3660,7 @@
           "Recovering the legacy inventory for this already-active tracker stream.";
         return persistentTaggerControllerModule.ensureInventoryInitialized({
           client: persistentClient,
-          inventory: viewModel.MOCK_INVENTORY,
+          inventory: viewModel.LEGACY_RECOVERY_INVENTORY,
         });
       })
       .then(() => streamSessionController.retry())
@@ -3639,6 +3839,7 @@
     "pagehide",
     () => {
       clearCaptureRefreshTimer();
+      resetLiveBidTracking();
       chrome.runtime.onMessage.removeListener(handleCaptureStateChanged);
     },
     { once: true },

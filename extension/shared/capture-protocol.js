@@ -37,6 +37,7 @@
     ]);
     const EVENT_TYPES = Object.freeze({
       OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
+      OBSERVE_BIDDING_PRICE: "observe_bidding_price",
       OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
       OBSERVE_VARIATIONS: "observe_variations",
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
@@ -46,6 +47,11 @@
       [EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV]: [
         "attributedGmvDisplay",
         "type",
+      ],
+      [EVENT_TYPES.OBSERVE_BIDDING_PRICE]: [
+        "bidPriceCents",
+        "type",
+        "variationNumber",
       ],
       [EVENT_TYPES.OBSERVE_BIDDING_VARIATION]: ["type", "variationNumber"],
       [EVENT_TYPES.OBSERVE_VARIATIONS]: ["type", "variationNumbers"],
@@ -132,6 +138,18 @@
           fail(
             "INVALID_CAPTURE_MESSAGE",
             "attributedGmvDisplay must be a sanitized exact or compact USD display.",
+          );
+        }
+      } else if (event.type === EVENT_TYPES.OBSERVE_BIDDING_PRICE) {
+        requireVariationNumber(event.variationNumber, "variationNumber");
+
+        if (
+          !Number.isSafeInteger(event.bidPriceCents) ||
+          event.bidPriceCents < 1
+        ) {
+          fail(
+            "INVALID_CAPTURE_MESSAGE",
+            "bidPriceCents must be a positive safe integer.",
           );
         }
       } else if (event.type === EVENT_TYPES.OBSERVE_BIDDING_VARIATION) {

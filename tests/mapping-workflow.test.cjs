@@ -3,7 +3,7 @@ const test = require("node:test");
 
 const reconciliation = require("../extension/shared/reconciliation.js");
 const {
-  MOCK_INVENTORY,
+  LEGACY_RECOVERY_INVENTORY,
   getStockDisplay,
 } = require("../extension/tagger/inventory-view-model.js");
 const {
@@ -11,14 +11,15 @@ const {
   getObservedPaymentStatusLabel,
 } = require("../extension/tagger/mapping-workflow.js");
 
-const STREAM_ID = "demo-stream";
+const STREAM_ID = "local-stream:mapping-test";
 const VARIATION_NUMBER = 203;
+const TEST_INVENTORY = LEGACY_RECOVERY_INVENTORY;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function toEngineInventory(entries = MOCK_INVENTORY) {
+function toEngineInventory(entries = TEST_INVENTORY) {
   return entries.map((entry) => ({
     sku: entry.sku,
     name: entry.style ? `${entry.item} - ${entry.style}` : entry.item,
@@ -30,11 +31,10 @@ function toEngineInventory(entries = MOCK_INVENTORY) {
 
 function createSession(overrides = {}) {
   return createMappingSession({
-    inventory: MOCK_INVENTORY,
+    inventory: TEST_INVENTORY,
     reconciliation,
     streamId: STREAM_ID,
     variationNumber: VARIATION_NUMBER,
-    offlineSimulation: true,
     ...overrides,
   });
 }
@@ -69,7 +69,7 @@ test("uses friendly labels for every observed TikTok payment status", () => {
   );
 });
 
-test("keeps temporary payment failed reserved and locks canonical canceled orders", () => {
+test("keeps temporary payment failed reserved and permits canceled reference mapping", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -95,8 +95,8 @@ test("keeps temporary payment failed reserved and locks canonical canceled order
     variationNumbers: [202, 201],
   });
 
-  const locked = session.selectSku("STUSSY-TEE-BLACK-L");
-  const view = session.getViewState();
+  const mapped = session.selectSku("STUSSY-TEE-BLACK-L");
+  const view = mapped.view;
   const canceledOption = view.variations.find(
     (variation) => variation.variationNumber === 202,
   );
@@ -105,22 +105,41 @@ test("keeps temporary payment failed reserved and locks canonical canceled order
   );
 
   assert.equal(view.selectedVariationNumber, 202);
-  assert.equal(locked.ok, false);
-  assert.equal(locked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.equal(mapped.ok, true);
+  assert.equal(mapped.action, "mapped");
   assert.equal(view.auction.observedPaymentStatus, "canceled");
   assert.equal(view.auction.observedPaymentStatusLabel, "Canceled");
   assert.equal(view.auction.paymentStatus, "canceled");
   assert.equal(view.auction.status, "canceled");
   assert.equal(view.auction.statusLabel, "Canceled");
-  assert.equal(view.auction.mappingStatus, "unmapped");
-  assert.equal(view.mapping, null);
-  assert.ok(view.inventory.every((entry) => !entry.selectionAllowed));
+  assert.equal(view.auction.mappingStatus, "mapped");
+  assert.equal(view.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.ok(view.inventory.every((entry) => entry.selectionAllowed));
   assert.ok(
-    view.inventory.every((entry) => entry.selectionReason === "canceled"),
+    view.inventory.every(
+      (entry) =>
+        entry.selectionReason ===
+          (entry.sku === "STUSSY-TEE-BLACK-L" ? "selected" : "available"),
+    ),
   );
   assert.equal(canceledOption.observedPaymentStatusLabel, "Canceled");
   assert.equal(canceledOption.status, "canceled");
   assert.equal(canceledOption.statusLabel, "Canceled");
+  const canceledReferenceItem = TEST_INVENTORY.find(
+    (entry) => entry.sku === "STUSSY-TEE-BLACK-L",
+  );
+  assert.deepEqual(
+    {
+      item: canceledOption.item,
+      style: canceledOption.style,
+      size: canceledOption.size,
+    },
+    {
+      item: canceledReferenceItem.item,
+      style: canceledReferenceItem.style,
+      size: canceledReferenceItem.size,
+    },
+  );
   assert.equal(failedOption.observedPaymentStatusLabel, "Payment failed");
   assert.equal(failedOption.status, "unmapped");
   assert.equal(
@@ -145,13 +164,6 @@ test("keeps temporary payment failed reserved and locks canonical canceled order
   assert.equal(view.totals.completedPaymentCount, 0);
   assert.equal(view.totals.committedSalesCount, 0);
   assert.equal(view.totals.profitCents, 0);
-  assert.deepEqual(view.controls, {
-    canCompletePayment: false,
-    canSimulateBufferExpiry: false,
-    canMarkUnpaid: false,
-    canUndoSimulatedPayment: false,
-    canUndoUnpaid: false,
-  });
 
   session.selectVariation(201);
   const failedMapping = session.selectSku("NIKE-HOODIE-GREY-XL");
@@ -210,7 +222,7 @@ test("reserves not-observed and unrecognized selections until a terminal status"
   assert.equal(inventory.oversoldQuantity, 1);
 });
 
-test("keeps a canceled order's prior SKU as immutable read-only history", () => {
+test("maps, remaps, and clears canceled reference history without affecting metrics", () => {
   const state = reconciliation.createReconciliationState(
     toEngineInventory(),
   );
@@ -241,21 +253,46 @@ test("keeps a canceled order's prior SKU as immutable read-only history", () => 
   const canceledView = session.getViewState();
   const selected = inventoryEntry(canceledView, "STUSSY-TEE-BLACK-L");
   const relinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
-  const unlinked = session.selectSku("STUSSY-TEE-BLACK-L");
+  const unlinked = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
+  const restored = session.selectSku("STUSSY-TEE-BLACK-L");
 
   assert.equal(canceledView.auction.status, "canceled");
   assert.equal(canceledView.mapping.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(selected.selected, true);
-  assert.equal(selected.selectionAllowed, false);
-  assert.equal(selected.selectionReason, "canceled");
+  assert.equal(selected.selectionAllowed, true);
+  assert.equal(selected.selectionReason, "selected");
   assert.equal(selected.reservedQuantity, 0);
   assert.equal(selected.remainingQuantity, 5);
-  assert.ok(canceledView.inventory.every((entry) => !entry.selectionAllowed));
-  assert.equal(relinked.code, "CANCELED_VARIATION_IMMUTABLE");
-  assert.equal(unlinked.code, "CANCELED_VARIATION_IMMUTABLE");
+  assert.ok(canceledView.inventory.every((entry) => entry.selectionAllowed));
+  assert.equal(relinked.ok, true);
+  assert.equal(relinked.action, "remapped");
+  assert.equal(relinked.mapping.sku, "DENIM-SHORTS-WASHED-BLUE-32");
+  assert.equal(relinked.mapping.status, "canceled");
+  assert.equal(unlinked.ok, true);
+  assert.equal(unlinked.action, "unmapped");
+  assert.equal(unlinked.mapping, null);
+  assert.equal(unlinked.view.auction.status, "canceled");
+  assert.equal(restored.ok, true);
+  assert.equal(restored.action, "mapped");
+  assert.equal(restored.mapping.sku, "STUSSY-TEE-BLACK-L");
+  assert.equal(restored.mapping.status, "canceled");
   assert.equal(session.getViewState().mapping.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(canceledView.totals.committedSalesCount, 0);
   assert.equal(canceledView.totals.profitCents, 0);
+  assert.deepEqual(relinked.view.totals, canceledView.totals);
+  assert.deepEqual(unlinked.view.totals, canceledView.totals);
+  assert.deepEqual(restored.view.totals, canceledView.totals);
+  for (const view of [relinked.view, unlinked.view, restored.view]) {
+    const stussy = inventoryEntry(view, "STUSSY-TEE-BLACK-L");
+    const denim = inventoryEntry(view, "DENIM-SHORTS-WASHED-BLUE-32");
+
+    assert.equal(stussy.reservedQuantity, 0);
+    assert.equal(stussy.soldQuantity, 0);
+    assert.equal(stussy.remainingQuantity, 5);
+    assert.equal(denim.reservedQuantity, 0);
+    assert.equal(denim.soldQuantity, 0);
+    assert.equal(denim.remainingQuantity, 0);
+  }
 });
 
 test("keeps cancellation terminal when a stale completion arrives later", () => {
@@ -392,7 +429,6 @@ test("keeps an observed unpriced completion reserved until its final price arriv
   assert.equal(view.auction.soldPriceCents, null);
   assert.equal(view.auction.status, "pending");
   assert.equal(view.auction.statusLabel, "Waiting for payment");
-  assert.equal(view.controls.canMarkUnpaid, false);
   assert.equal(selectedInventory.remainingQuantity, 5);
   assert.equal(selectedInventory.reservedQuantity, 1);
   assert.equal(selectedInventory.availableToTagQuantity, 4);
@@ -412,14 +448,14 @@ test("keeps an observed unpriced completion reserved until its final price arriv
 });
 
 test("initializes an isolated mapping session without creating an auction", () => {
-  const inventoryBefore = clone(MOCK_INVENTORY);
+  const inventoryBefore = clone(TEST_INVENTORY);
   const session = createSession();
 
   assert.equal(session.streamId, STREAM_ID);
   assert.equal(session.variationNumber, VARIATION_NUMBER);
   assert.equal(session.getCurrentMapping(), null);
   assert.deepEqual(session.getStateSnapshot().streams, []);
-  assert.deepEqual(clone(MOCK_INVENTORY), inventoryBefore);
+  assert.deepEqual(clone(TEST_INVENTORY), inventoryBefore);
 });
 
 test("navigates explicit variation history without changing reconciliation state", () => {
@@ -575,7 +611,8 @@ test("multiple unobserved variations keep distinct pending reservations", () => 
 });
 
 test("correcting a completed historical variation leaves the current mapping intact", () => {
-  const session = createSession({ variationNumbers: [203, 202] });
+  const state = reconciliation.createReconciliationState(toEngineInventory());
+  const session = createSession({ state, variationNumbers: [203, 202] });
 
   session.selectSku("NIKE-HOODIE-GREY-XL");
   const currentBefore = reconciliation.getAuction(session.getStateSnapshot(), {
@@ -585,7 +622,11 @@ test("correcting a completed historical variation leaves the current mapping int
 
   session.selectVariation(202);
   session.selectSku("STUSSY-TEE-BLACK-M");
-  session.completePayment(2000);
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    soldPriceCents: 2000,
+  });
   const corrected = session.selectSku("CARHARTT-JACKET-BROWN-M");
   const currentAfter = reconciliation.getAuction(session.getStateSnapshot(), {
     streamId: STREAM_ID,
@@ -605,138 +646,7 @@ test("correcting a completed historical variation leaves the current mapping int
   assert.deepEqual(currentAfter, currentBefore);
 });
 
-test("correcting an unpaid historical variation preserves current state and undo", () => {
-  const session = createSession({ variationNumbers: [203, 202] });
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const currentBefore = reconciliation.getAuction(session.getStateSnapshot(), {
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-
-  session.selectVariation(202);
-  session.selectSku("NIKE-HOODIE-GREY-XL");
-  session.simulatePaymentBufferExpired();
-  session.markUnpaid();
-  const corrected = session.selectSku("CARHARTT-JACKET-BROWN-M");
-
-  assert.equal(corrected.action, "unpaid_mapping_corrected");
-  assert.equal(corrected.mapping.status, "marked_unpaid");
-  assert.equal(
-    inventoryEntry(corrected.view, "NIKE-HOODIE-GREY-XL").reservedQuantity,
-    0,
-  );
-  assert.equal(
-    inventoryEntry(corrected.view, "CARHARTT-JACKET-BROWN-M").reservedQuantity,
-    0,
-  );
-
-  const restored = session.undoMarkUnpaid();
-  const currentAfter = reconciliation.getAuction(session.getStateSnapshot(), {
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-
-  assert.equal(restored.mapping.status, "pending");
-  assert.equal(restored.mapping.sku, "CARHARTT-JACKET-BROWN-M");
-  assert.equal(
-    inventoryEntry(restored.view, "CARHARTT-JACKET-BROWN-M").reservedQuantity,
-    1,
-  );
-  assert.deepEqual(currentAfter, currentBefore);
-});
-
-test("payment-buffer eligibility stays with its own variation", () => {
-  const session = createSession({ variationNumbers: [203, 202] });
-
-  session.selectVariation(202);
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-
-  assert.equal(session.getViewState().controls.canMarkUnpaid, true);
-
-  session.selectVariation(203);
-  session.selectSku("NIKE-HOODIE-GREY-XL");
-
-  assert.equal(session.getViewState().controls.canMarkUnpaid, false);
-  assert.equal(
-    session.getViewState().controls.canSimulateBufferExpiry,
-    true,
-  );
-
-  session.selectVariation(202);
-
-  assert.equal(session.getViewState().controls.canMarkUnpaid, true);
-  assert.equal(
-    session.getViewState().controls.canSimulateBufferExpiry,
-    false,
-  );
-});
-
-test("undoing one simulated payment preserves changes to other variations", () => {
-  const session = createSession({ variationNumbers: [203, 202] });
-
-  session.selectVariation(202);
-  session.selectSku("STUSSY-TEE-BLACK-M");
-  session.completePayment(2000);
-
-  session.selectVariation(203);
-  session.selectSku("NIKE-HOODIE-GREY-L");
-  session.completePayment(2500);
-  const currentBeforeUndo = reconciliation.getAuction(
-    session.getStateSnapshot(),
-    { streamId: STREAM_ID, variationNumber: 203 },
-  );
-
-  session.selectVariation(202);
-  const undone = session.undoSimulatedPayment();
-  const state = session.getStateSnapshot();
-  const currentAfterUndo = reconciliation.getAuction(state, {
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-
-  assert.equal(undone.ok, true);
-  assert.equal(undone.mapping.status, "pending");
-  assert.equal(undone.mapping.sku, "STUSSY-TEE-BLACK-M");
-  assert.deepEqual(currentAfterUndo, currentBeforeUndo);
-  assert.equal(undone.view.totals.committedSalesCount, 1);
-
-  session.selectVariation(203);
-
-  assert.equal(session.getViewState().controls.canUndoSimulatedPayment, true);
-});
-
-test("offline payment undo preserves an unrelated temporary unpaid simulation", () => {
-  const session = createSession({ variationNumbers: [203, 202] });
-
-  session.selectVariation(202);
-  session.selectSku("STUSSY-TEE-BLACK-M");
-  session.simulatePaymentBufferExpired();
-  const unpaid = session.markUnpaid();
-
-  assert.equal(unpaid.ok, true);
-  assert.equal(unpaid.mapping.status, "marked_unpaid");
-
-  session.selectVariation(203);
-  session.selectSku("NIKE-HOODIE-GREY-L");
-  session.completePayment(2500);
-  const undone = session.undoSimulatedPayment();
-
-  assert.equal(undone.ok, true);
-  assert.equal(undone.mapping.status, "pending");
-  assert.equal(undone.mapping.sku, "NIKE-HOODIE-GREY-L");
-  assert.equal(undone.view.controls.canUndoSimulatedPayment, false);
-
-  session.selectVariation(202);
-  const preservedUnpaid = session.getViewState();
-
-  assert.equal(preservedUnpaid.mapping.status, "marked_unpaid");
-  assert.equal(preservedUnpaid.mapping.sku, "STUSSY-TEE-BLACK-M");
-  assert.equal(preservedUnpaid.controls.canUndoUnpaid, true);
-});
-
-test("maps an available inventory entry to the demo variation", () => {
+test("maps an available inventory entry to the selected Live variation", () => {
   const session = createSession();
   const result = session.selectSku("STUSSY-TEE-BLACK-L");
   const selectedInventory = inventoryEntry(
@@ -754,7 +664,7 @@ test("maps an available inventory entry to the demo variation", () => {
   assert.equal(result.mapping.style, "black");
   assert.equal(result.mapping.size, "L");
   assert.equal(result.mapping.statusLabel, "Waiting for payment");
-  assert.equal(auction.eventKey, "demo-stream:203");
+  assert.equal(auction.eventKey, `${STREAM_ID}:203`);
   assert.equal(auction.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(auction.status, "pending");
   assert.equal(auction.mappingStatus, "mapped");
@@ -832,7 +742,7 @@ test("an unmapped completed warning remains associated with its own variation", 
     currentView.warnings.some(
       (warning) =>
         warning.code === "unmapped_completed_sale" &&
-        warning.eventKey === "demo-stream:202",
+        warning.eventKey === `${STREAM_ID}:202`,
     ),
   );
 
@@ -867,13 +777,6 @@ test("maps a payment-complete variation that arrived before employee tagging", (
     beforeMapping.warnings[0].code,
     "unmapped_completed_sale",
   );
-  assert.deepEqual(beforeMapping.controls, {
-    canCompletePayment: false,
-    canSimulateBufferExpiry: false,
-    canMarkUnpaid: false,
-    canUndoSimulatedPayment: false,
-    canUndoUnpaid: false,
-  });
 
   const result = session.selectSku("STUSSY-TEE-BLACK-L");
   const selectedInventory = inventoryEntry(
@@ -894,14 +797,6 @@ test("maps a payment-complete variation that arrived before employee tagging", (
   assert.equal(result.view.totals.committedSalesCount, 1);
   assert.equal(result.view.totals.committedRevenueCents, 4800);
   assert.equal(result.view.warnings.length, 0);
-  assert.equal(result.view.controls.canUndoSimulatedPayment, false);
-
-  const stateBeforeRejectedUndo = session.getStateSnapshot();
-  const rejectedUndo = session.undoSimulatedPayment();
-
-  assert.equal(rejectedUndo.ok, false);
-  assert.equal(rejectedUndo.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.deepEqual(session.getStateSnapshot(), stateBeforeRejectedUndo);
 });
 
 test("selecting the pending entry again unmaps it and releases its reservation", () => {
@@ -935,11 +830,16 @@ test("selecting the pending entry again unmaps it and releases its reservation",
   assert.equal(inventory.availableToTagQuantity, 5);
 });
 
-test("unmapping a completed demo sale keeps payment truth and its undo checkpoint", () => {
-  const session = createSession();
+test("unmapping a completed Live sale keeps captured payment truth", () => {
+  const state = reconciliation.createReconciliationState(toEngineInventory());
+  const session = createSession({ state });
 
   session.selectSku("STUSSY-TEE-BLACK-L");
-  session.completePayment(4800);
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 4800,
+  });
   const unmapped = session.selectSku("STUSSY-TEE-BLACK-L");
   const inventory = inventoryEntry(unmapped.view, "STUSSY-TEE-BLACK-L");
 
@@ -956,66 +856,11 @@ test("unmapping a completed demo sale keeps payment truth and its undo checkpoin
   assert.equal(unmapped.view.totals.profitCents, 0);
   assert.equal(inventory.soldQuantity, 0);
   assert.equal(inventory.remainingQuantity, 5);
-  assert.equal(unmapped.view.controls.canUndoSimulatedPayment, true);
   assert.ok(
     unmapped.view.warnings.some(
       (warning) => warning.code === "unmapped_completed_sale",
     ),
   );
-
-  const undone = session.undoSimulatedPayment();
-
-  assert.equal(undone.ok, true);
-  assert.equal(undone.mapping, null);
-  assert.equal(undone.view.auction.status, "unmapped");
-  assert.equal(undone.view.auction.paymentStatus, "unknown");
-  assert.equal(undone.view.totals.completedGmvCents, 0);
-  assert.equal(undone.view.controls.canUndoSimulatedPayment, false);
-});
-
-test("unmapping an unpaid variation keeps the unpaid decision until undo", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-  session.markUnpaid();
-  const unmapped = session.selectSku("STUSSY-TEE-BLACK-L");
-
-  assert.equal(unmapped.action, "unmapped");
-  assert.equal(unmapped.previousStatus, "marked_unpaid");
-  assert.equal(unmapped.mapping, null);
-  assert.equal(unmapped.view.auction.status, "marked_unpaid");
-  assert.equal(unmapped.view.auction.mappingStatus, "marked_unpaid");
-  assert.equal(unmapped.view.controls.canCompletePayment, false);
-  assert.equal(unmapped.view.controls.canUndoUnpaid, true);
-  assert.equal(
-    inventoryEntry(unmapped.view, "STUSSY-TEE-BLACK-L").reservedQuantity,
-    0,
-  );
-
-  const restored = session.undoMarkUnpaid();
-
-  assert.equal(restored.ok, true);
-  assert.equal(restored.mapping, null);
-  assert.equal(restored.view.auction.status, "unmapped");
-  assert.equal(restored.view.controls.canUndoUnpaid, false);
-});
-
-test("mapping an unselected unpaid variation keeps its unpaid status", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-  session.markUnpaid();
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const remapped = session.selectSku("NIKE-HOODIE-GREY-XL");
-
-  assert.equal(remapped.ok, true);
-  assert.equal(remapped.action, "unpaid_mapping_corrected");
-  assert.equal(remapped.mapping.sku, "NIKE-HOODIE-GREY-XL");
-  assert.equal(remapped.mapping.status, "marked_unpaid");
-  assert.equal(remapped.view.controls.canCompletePayment, true);
-  assert.equal(remapped.view.controls.canUndoUnpaid, true);
 });
 
 test("unmapping a previous variation leaves the on-screen mapping intact", () => {
@@ -1144,13 +989,13 @@ test("pending mapping does not create payment, profit, or inventory changes", ()
   );
   assert.deepEqual(
     summary.inventory.map((entry) => entry.remainingQuantity),
-    MOCK_INVENTORY.map((entry) => entry.quantityReceived),
+    TEST_INVENTORY.map((entry) => entry.quantityReceived),
   );
 });
 
 test("allows multiple reservations beyond stock and reports the oversold amount", () => {
   const displayInventory = [
-    MOCK_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
+    TEST_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
   ];
   const state = reconciliation.createReconciliationState(
     toEngineInventory(displayInventory),
@@ -1228,20 +1073,19 @@ test("allows multiple reservations beyond stock and reports the oversold amount"
   );
 });
 
-test("completes payment once and derives profit and inventory from the engine", () => {
-  const session = createSession();
+test("projects captured payment truth and engine-derived profit and inventory", () => {
+  const state = reconciliation.createReconciliationState(toEngineInventory());
+  const session = createSession({ state });
 
   session.selectSku("STUSSY-TEE-BLACK-L");
-  const completed = session.completePayment(4800);
-  const completedState = session.getStateSnapshot();
-  const duplicate = session.completePayment(4800);
-  const duplicateState = session.getStateSnapshot();
-  const conflict = session.completePayment(4900);
-  const view = session.getViewState();
-  const selectedInventory = inventoryEntry(view, "STUSSY-TEE-BLACK-L");
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 4800,
+  });
+  const completed = session.getViewState();
+  const selectedInventory = inventoryEntry(completed, "STUSSY-TEE-BLACK-L");
 
-  assert.equal(completed.ok, true);
-  assert.equal(completed.action, "payment_completed");
   assert.equal(completed.mapping.status, "committed");
   assert.equal(completed.mapping.statusLabel, "Payment complete");
   assert.equal(completed.mapping.soldPriceCents, 4800);
@@ -1251,442 +1095,74 @@ test("completes payment once and derives profit and inventory from the engine", 
   assert.equal(selectedInventory.reservedQuantity, 0);
   assert.equal(selectedInventory.remainingQuantity, 4);
   assert.equal(selectedInventory.availableToTagQuantity, 4);
-  assert.equal(view.totals.committedSalesCount, 1);
-  assert.equal(view.totals.profitCents, 3600);
-  assert.equal(duplicate.action, "payment_unchanged");
-  assert.deepEqual(duplicateState, completedState);
-  assert.equal(conflict.action, "payment_conflict");
-  assert.equal(conflict.mapping.soldPriceCents, 4800);
-  assert.equal(conflict.mapping.conflicts[0].code, "conflicting_sold_price");
-});
+  assert.equal(completed.totals.committedSalesCount, 1);
+  assert.equal(completed.totals.profitCents, 3600);
 
-test("undoes a locally simulated payment and restores its pending reservation", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const beforePayment = session.getStateSnapshot();
-  const completed = session.completePayment(4800);
-
-  assert.equal(completed.view.controls.canUndoSimulatedPayment, true);
-
-  const undone = session.undoSimulatedPayment();
-  const inventory = inventoryEntry(undone.view, "STUSSY-TEE-BLACK-L");
-
-  assert.equal(undone.ok, true);
-  assert.equal(undone.action, "simulated_payment_undone");
-  assert.equal(undone.mapping.status, "pending");
-  assert.equal(undone.mapping.statusLabel, "Waiting for payment");
-  assert.equal(undone.mapping.paymentStatus, "unknown");
-  assert.equal(undone.mapping.soldPriceCents, null);
-  assert.equal(undone.mapping.committedUnitCostCents, null);
-  assert.equal(undone.mapping.profitCents, null);
-  assert.equal(inventory.soldQuantity, 0);
-  assert.equal(inventory.reservedQuantity, 1);
-  assert.equal(inventory.remainingQuantity, 5);
-  assert.equal(inventory.availableToTagQuantity, 4);
-  assert.equal(undone.view.totals.completedPaymentCount, 0);
-  assert.equal(undone.view.totals.committedSalesCount, 0);
-  assert.equal(undone.view.totals.committedRevenueCents, 0);
-  assert.equal(undone.view.totals.costOfGoodsCents, 0);
-  assert.equal(undone.view.totals.profitCents, 0);
-  assert.equal(undone.view.controls.canCompletePayment, true);
-  assert.equal(undone.view.controls.canUndoSimulatedPayment, false);
-  assert.deepEqual(session.getStateSnapshot(), beforePayment);
-
-  const stateBeforeSecondUndo = session.getStateSnapshot();
-  const secondUndo = session.undoSimulatedPayment();
-
-  assert.equal(secondUndo.ok, false);
-  assert.equal(secondUndo.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.deepEqual(session.getStateSnapshot(), stateBeforeSecondUndo);
-
-  const completedAgain = session.completePayment(5000);
-
-  assert.equal(completedAgain.ok, true);
-  assert.equal(completedAgain.view.controls.canUndoSimulatedPayment, true);
-});
-
-test("undoing simulated payment preserves a mapping correction", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-M");
-  session.completePayment(4800);
-  session.selectSku("NIKE-HOODIE-GREY-XL");
-
-  const undone = session.undoSimulatedPayment();
-  const originalInventory = inventoryEntry(
-    undone.view,
-    "STUSSY-TEE-BLACK-M",
-  );
-  const correctedInventory = inventoryEntry(
-    undone.view,
-    "NIKE-HOODIE-GREY-XL",
-  );
-
-  assert.equal(undone.mapping.status, "pending");
-  assert.equal(undone.mapping.sku, "NIKE-HOODIE-GREY-XL");
-  assert.equal(originalInventory.reservedQuantity, 0);
-  assert.equal(originalInventory.availableToTagQuantity, 2);
-  assert.equal(correctedInventory.soldQuantity, 0);
-  assert.equal(correctedInventory.reservedQuantity, 1);
-  assert.equal(correctedInventory.remainingQuantity, 3);
-  assert.equal(correctedInventory.availableToTagQuantity, 2);
-  assert.equal(undone.view.totals.profitCents, 0);
-});
-
-test("undoing simulated payment restores demo buffer eligibility", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-  session.completePayment(4800);
-
-  const undone = session.undoSimulatedPayment();
-
-  assert.equal(undone.mapping.status, "pending");
-  assert.equal(undone.view.demo.paymentBufferExpired, true);
-  assert.equal(undone.view.controls.canSimulateBufferExpiry, false);
-  assert.equal(undone.view.controls.canMarkUnpaid, true);
-});
-
-test("rejects simulated-payment undo before a local completion", () => {
-  const session = createSession();
-  const initialState = session.getStateSnapshot();
-
-  const beforeMapping = session.undoSimulatedPayment();
-
-  assert.equal(beforeMapping.ok, false);
-  assert.equal(beforeMapping.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.deepEqual(session.getStateSnapshot(), initialState);
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const pendingState = session.getStateSnapshot();
-  const beforeCompletion = session.undoSimulatedPayment();
-
-  assert.equal(beforeCompletion.ok, false);
-  assert.equal(beforeCompletion.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.deepEqual(session.getStateSnapshot(), pendingState);
-});
-
-test("requires an explicit demo flag before payment can be simulated", () => {
-  const session = createMappingSession({
-    inventory: MOCK_INVENTORY,
-    reconciliation,
+  const completedState = clone(state);
+  reconciliation.recordPaymentComplete(state, {
     streamId: STREAM_ID,
     variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 4800,
   });
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const pendingState = session.getStateSnapshot();
-  const completion = session.completePayment(4800);
-  const buffer = session.simulatePaymentBufferExpired();
-  const unpaid = session.markUnpaid();
-  const undoUnpaid = session.undoMarkUnpaid();
-  const undo = session.undoSimulatedPayment();
-
-  assert.equal(completion.ok, false);
-  assert.equal(completion.code, "PAYMENT_SIMULATION_DISABLED");
-  assert.equal(buffer.ok, false);
-  assert.equal(buffer.code, "BUFFER_SIMULATION_DISABLED");
-  assert.equal(unpaid.code, "UNPAID_SIMULATION_DISABLED");
-  assert.equal(undoUnpaid.code, "UNPAID_SIMULATION_DISABLED");
-  assert.equal(undo.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.equal(undo.view.controls.canUndoSimulatedPayment, false);
-  assert.deepEqual(session.getStateSnapshot(), pendingState);
-});
-
-test("demo simulators never mutate supplied shared state", () => {
-  const state = reconciliation.createReconciliationState(toEngineInventory());
-
-  reconciliation.mapVariation(state, {
-    streamId: STREAM_ID,
-    variationNumber: VARIATION_NUMBER,
-    sku: "STUSSY-TEE-BLACK-L",
-  });
-  const identity = state;
-  const beforeSimulation = clone(state);
-  const session = createSession({ state });
-
-  const completion = session.completePayment(4800);
-  const buffer = session.simulatePaymentBufferExpired();
-
-  assert.equal(completion.code, "PAYMENT_SIMULATION_DISABLED");
-  assert.equal(buffer.code, "BUFFER_SIMULATION_DISABLED");
-  assert.equal(state, identity);
-  assert.deepEqual(state, beforeSimulation);
-  assert.equal(session.getViewState().controls.canUndoSimulatedPayment, false);
-});
-
-test("does not allow a completed payment to be marked unpaid", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.completePayment(4800);
-  const stateBefore = session.getStateSnapshot();
-  const result = session.markUnpaid();
-
-  assert.equal(result.ok, false);
-  assert.equal(result.code, "PAYMENT_ALREADY_COMPLETE");
-  assert.deepEqual(session.getStateSnapshot(), stateBefore);
-});
-
-test("rejects invalid payment completion without creating partial state", () => {
-  const session = createSession();
-  const emptyState = session.getStateSnapshot();
-
-  assert.equal(session.completePayment(4800).code, "VARIATION_NOT_MAPPED");
-  assert.deepEqual(session.getStateSnapshot(), emptyState);
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const mappedState = session.getStateSnapshot();
-
-  [0, -1, 48.5, null].forEach((invalidPrice) => {
-    const result = session.completePayment(invalidPrice);
-
-    assert.equal(result.ok, false);
-    assert.equal(result.code, "INVALID_SOLD_PRICE");
-    assert.deepEqual(session.getStateSnapshot(), mappedState);
-  });
-});
-
-test("requires demo buffer expiry before unpaid and supports undo", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  const mappedState = session.getStateSnapshot();
-  const earlyUnpaid = session.markUnpaid();
-
-  assert.equal(earlyUnpaid.ok, false);
-  assert.equal(earlyUnpaid.code, "PAYMENT_BUFFER_ACTIVE");
-  assert.deepEqual(session.getStateSnapshot(), mappedState);
-
-  const expired = session.simulatePaymentBufferExpired();
-  const expiredInventory = inventoryEntry(
-    expired.view,
-    "STUSSY-TEE-BLACK-L",
-  );
-
-  assert.equal(expired.action, "payment_buffer_expired");
-  assert.equal(expired.view.auction.status, "pending");
-  assert.equal(expired.view.demo.paymentBufferExpired, true);
-  assert.equal(expiredInventory.reservedQuantity, 1);
-  assert.equal(expired.view.totals.committedSalesCount, 0);
-
-  const unpaid = session.markUnpaid();
-  const unpaidInventory = inventoryEntry(unpaid.view, "STUSSY-TEE-BLACK-L");
-
-  assert.equal(unpaid.action, "marked_unpaid");
-  assert.equal(unpaid.mapping.status, "marked_unpaid");
-  assert.equal(unpaid.mapping.statusLabel, "Marked unpaid");
-  assert.equal(unpaidInventory.reservedQuantity, 0);
-  assert.equal(unpaidInventory.remainingQuantity, 5);
-  assert.equal(unpaidInventory.availableToTagQuantity, 5);
-  assert.equal(unpaid.view.totals.profitCents, 0);
-
-  const restored = session.undoMarkUnpaid();
-  const restoredInventory = inventoryEntry(
-    restored.view,
-    "STUSSY-TEE-BLACK-L",
-  );
-
-  assert.equal(restored.action, "unpaid_undone");
-  assert.equal(restored.mapping.status, "pending");
-  assert.equal(restoredInventory.reservedQuantity, 1);
-  assert.equal(restoredInventory.availableToTagQuantity, 4);
-  assert.equal(restored.view.controls.canMarkUnpaid, true);
-});
-
-test("selecting another inventory card corrects an unpaid mapping", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-  session.markUnpaid();
-
-  const corrected = session.selectSku("NIKE-HOODIE-GREY-XL");
-  const originalInventory = inventoryEntry(
-    corrected.view,
-    "STUSSY-TEE-BLACK-L",
-  );
-  const correctedInventory = inventoryEntry(
-    corrected.view,
-    "NIKE-HOODIE-GREY-XL",
-  );
-
-  assert.equal(corrected.ok, true);
-  assert.equal(corrected.action, "unpaid_mapping_corrected");
-  assert.equal(corrected.mapping.status, "marked_unpaid");
-  assert.equal(corrected.mapping.sku, "NIKE-HOODIE-GREY-XL");
-  assert.equal(originalInventory.soldQuantity, 0);
-  assert.equal(originalInventory.reservedQuantity, 0);
-  assert.equal(
-    originalInventory.remainingQuantity,
-    originalInventory.quantityReceived,
-  );
-  assert.equal(correctedInventory.soldQuantity, 0);
-  assert.equal(correctedInventory.reservedQuantity, 0);
-  assert.equal(
-    correctedInventory.remainingQuantity,
-    correctedInventory.quantityReceived,
-  );
-  assert.equal(corrected.view.totals.profitCents, 0);
-  assert.equal(corrected.view.controls.canUndoUnpaid, true);
-});
-
-test("payment completion after an unpaid mark wins and surfaces a conflict", () => {
-  const session = createSession();
-
-  session.selectSku("STUSSY-TEE-BLACK-L");
-  session.simulatePaymentBufferExpired();
-  session.markUnpaid();
-  const completed = session.completePayment(4800);
-  const inventory = inventoryEntry(
-    completed.view,
-    "STUSSY-TEE-BLACK-L",
-  );
-
-  assert.equal(completed.ok, true);
-  assert.equal(completed.mapping.status, "committed");
-  assert.equal(completed.mapping.profitCents, 3600);
-  assert.equal(
-    completed.mapping.conflicts[0].code,
-    "payment_completed_after_marked_unpaid",
-  );
-  assert.equal(inventory.soldQuantity, 1);
-  assert.equal(inventory.reservedQuantity, 0);
-  assert.equal(inventory.remainingQuantity, 4);
-  assert.equal(completed.view.totals.committedSalesCount, 1);
-  assert.equal(completed.view.totals.conflictCount, 1);
-  assert.equal(completed.view.controls.canUndoSimulatedPayment, false);
-
-  const stateBeforeUndo = session.getStateSnapshot();
-  const rejectedUndo = session.undoSimulatedPayment();
-
-  assert.equal(rejectedUndo.code, "SIMULATED_PAYMENT_NOT_UNDOABLE");
-  assert.deepEqual(session.getStateSnapshot(), stateBeforeUndo);
-});
-
-test("live sessions cannot manually undo unpaid state", () => {
-  const displayInventory = [
-    MOCK_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
-  ];
-  const state = reconciliation.createReconciliationState(
-    toEngineInventory(displayInventory),
-  );
-  reconciliation.observePaymentStatuses(state, {
-    streamId: STREAM_ID,
-    statuses: [203, 204].map((variationNumber) => ({
-      variationNumber,
-      observedPaymentStatus:
-        reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
-    })),
-  });
-  const originalSession = createMappingSession({
-    inventory: displayInventory,
-    reconciliation,
-    state,
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-  const reauctionSession = createMappingSession({
-    inventory: displayInventory,
-    reconciliation,
-    state,
-    streamId: STREAM_ID,
-    variationNumber: 204,
-  });
-
-  originalSession.selectSku("NIKE-HOODIE-GREY-L");
-  reconciliation.markUnpaid(state, {
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-  assert.equal(reauctionSession.selectSku("NIKE-HOODIE-GREY-L").ok, true);
-
-  const beforeRejectedUndo = clone(state);
-  const rejected = originalSession.undoMarkUnpaid();
-  const inventory = inventoryEntry(rejected.view, "NIKE-HOODIE-GREY-L");
-
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.code, "UNPAID_SIMULATION_DISABLED");
-  assert.deepEqual(state, beforeRejectedUndo);
-  assert.equal(rejected.mapping.status, "marked_unpaid");
-  assert.equal(inventory.soldQuantity, 0);
-  assert.equal(inventory.reservedQuantity, 1);
-  assert.equal(inventory.remainingQuantity, 1);
-  assert.equal(inventory.availableToTagQuantity, 0);
-  assert.equal(inventory.oversoldQuantity, 0);
-});
-
-test("late payment wins after an unpaid item has already been re-auctioned", () => {
-  const displayInventory = [
-    MOCK_INVENTORY.find((entry) => entry.sku === "NIKE-HOODIE-GREY-L"),
-  ];
-  const state = reconciliation.createReconciliationState(
-    toEngineInventory(displayInventory),
-  );
-  reconciliation.observePaymentStatuses(state, {
-    streamId: STREAM_ID,
-    statuses: [203, 204].map((variationNumber) => ({
-      variationNumber,
-      observedPaymentStatus:
-        reconciliation.OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
-    })),
-  });
-  const originalSession = createMappingSession({
-    inventory: displayInventory,
-    reconciliation,
-    state,
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-  const reauctionSession = createMappingSession({
-    inventory: displayInventory,
-    reconciliation,
-    state,
-    streamId: STREAM_ID,
-    variationNumber: 204,
-  });
-
-  originalSession.selectSku("NIKE-HOODIE-GREY-L");
-  reconciliation.markUnpaid(state, {
-    streamId: STREAM_ID,
-    variationNumber: 203,
-  });
-  reauctionSession.selectSku("NIKE-HOODIE-GREY-L");
+  assert.deepEqual(state, completedState);
 
   reconciliation.recordPaymentComplete(state, {
     streamId: STREAM_ID,
-    variationNumber: 203,
-    soldPriceCents: 2500,
+    variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 4900,
   });
-  const completed = originalSession.getViewState();
-  const inventory = inventoryEntry(completed, "NIKE-HOODIE-GREY-L");
+  const conflicted = session.getViewState();
 
-  assert.equal(completed.mapping.status, "committed");
-  assert.equal(inventory.soldQuantity, 1);
-  assert.equal(inventory.reservedQuantity, 1);
-  assert.equal(inventory.remainingQuantity, 0);
-  assert.equal(inventory.availableToTagQuantity, -1);
-  assert.equal(inventory.reservationShortfallQuantity, 1);
-  assert.ok(
-    completed.mapping.conflicts.some(
-      (conflict) =>
-        conflict.code === "payment_completed_after_marked_unpaid",
-    ),
-  );
-  assert.ok(
-    completed.warnings.some(
-      (warning) => warning.code === "no_stock_available",
-    ),
+  assert.equal(conflicted.mapping.soldPriceCents, 4800);
+  assert.equal(
+    conflicted.mapping.conflicts[0].code,
+    "conflicting_sold_price",
   );
 });
 
-test("committed correction moves stock and recalculates profit even when stock is empty", () => {
+test("mapping workflow exposes only Live mapping and projection APIs", () => {
   const session = createSession();
+  const view = session.getViewState();
+
+  assert.deepEqual(Object.keys(session).sort(), [
+    "currentVariationNumber",
+    "getCurrentMapping",
+    "getInventoryEntries",
+    "getSelectedMapping",
+    "getStateSnapshot",
+    "getVariationOptions",
+    "getViewState",
+    "selectSku",
+    "selectVariation",
+    "streamId",
+    "variationNumber",
+  ]);
+  assert.deepEqual(Object.keys(view).sort(), [
+    "activeBiddingVariationNumber",
+    "auction",
+    "currentVariationNumber",
+    "inventory",
+    "isReviewingHistory",
+    "mapping",
+    "selectedVariationNumber",
+    "streamId",
+    "totals",
+    "variationNumber",
+    "variations",
+    "warnings",
+  ]);
+});
+
+test("committed correction moves stock and recalculates profit even when stock is empty", () => {
+  const state = reconciliation.createReconciliationState(toEngineInventory());
+  const session = createSession({ state });
 
   session.selectSku("STUSSY-TEE-BLACK-M");
-  session.completePayment(1000);
+  reconciliation.recordPaymentComplete(state, {
+    streamId: STREAM_ID,
+    variationNumber: VARIATION_NUMBER,
+    soldPriceCents: 1000,
+  });
   const corrected = session.selectSku("DENIM-SHORTS-WASHED-BLUE-32");
   const view = session.getViewState();
 
@@ -1704,7 +1180,6 @@ test("committed correction moves stock and recalculates profit even when stock i
     -1,
   );
   assert.equal(view.warnings[0].code, "negative_inventory");
-  assert.equal(view.controls.canUndoSimulatedPayment, true);
 });
 
 test("canonical state quantities override stale display quantities", () => {
@@ -1749,7 +1224,7 @@ test("canonical state quantities override stale display quantities", () => {
 
 test("rejects display inventory that is missing from supplied canonical state", () => {
   const state = reconciliation.createReconciliationState(
-    toEngineInventory([MOCK_INVENTORY[0]]),
+    toEngineInventory([TEST_INVENTORY[0]]),
   );
 
   assert.throws(

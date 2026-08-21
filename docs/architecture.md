@@ -44,7 +44,8 @@ The employee-facing interface displays item, style, and size. The hidden `sku` o
 ensures that the correct inventory row is updated. Each tracker stream is permanently
 pinned to one immutable baseline. A later recount appends a different baseline for
 future streams; it never rewrites the opening count or cost used by an active or
-historical stream.
+historical stream. A report-only cost correction changes one saved report without
+mutating that canonical baseline.
 
 ## 2. Payment and mapping are independent
 
@@ -83,16 +84,16 @@ Only a `Payment complete` badge with a parsed final price promotes the record to
 | --- | --- |
 | `unmapped` | No inventory entry has been selected |
 | `mapped` | The variation is linked to a valid inventory `sku` |
-| `marked_unpaid` | Legacy/offline-demo simulation only; Live mode does not create it |
+| `marked_unpaid` | Legacy manual-unpaid state; version 1–6 snapshots normalize it before Live use, and version 7 rejects it |
 
 The engine derives a user-facing auction status from both axes:
 
 | Derived status | Meaning |
 | --- | --- |
 | `unmapped` | No completed payment and no inventory mapping |
-| `mapped` | Inventory is selected in an isolated demo state that does not reserve stock |
+| `mapped` | Legacy display state with inventory selected but no pending reservation |
 | `pending` | Inventory is mapped and canonical payment truth is still unresolved |
-| `marked_unpaid` | Locally closed as unpaid; remaining stock is unchanged and its reservation is released |
+| `marked_unpaid` | Legacy manual-unpaid state normalized during migration |
 | `canceled` | TikTok canonically canceled the auction; its item link is retained, its reservation is released, and no sale is counted |
 | `unmapped_completed` | TikTok shows payment complete, but the inventory item is unknown |
 | `committed` | Payment is complete and the inventory item is mapped |
@@ -121,8 +122,9 @@ Consequences:
    payment observations cannot reverse it.
 7. Clicking an already-selected inventory item removes only the mapping. Any pending
    reservation is released; a completed auction keeps its final price and contribution to Gross Item Sales
-   but becomes `unmapped_completed` until it is tagged again. A canceled variation cannot
-   be mapped, unmapped, or remapped.
+   but becomes `unmapped_completed` until it is tagged again. A canceled variation can be
+   mapped, unmapped, or remapped only as reference attribution; those changes have no
+   inventory or metric effect.
 
 ### Permanent payment failure and re-auction
 
@@ -132,23 +134,21 @@ buffer expires:
 1. The record becomes canonically `canceled` without employee action.
 2. Any selected SKU remains linked for history, while its pending reservation is
    released. Remaining inventory, completed sales, revenue, cost, and profit stay
-   unchanged.
+   unchanged. The employee may later map, correct, or clear that reference SKU without
+   changing those values.
 3. If the same physical item is auctioned again, TikTok assigns a new variation number.
 4. The employee maps that new variation as a separate auction.
 
-Live mode does not infer cancellation with a timer and exposes no **Mark unpaid** or
-**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge. Manual unpaid
-simulation remains confined to Offline demo and cannot mutate canonical live state.
+The Live tagger does not infer cancellation with a timer and exposes no **Mark unpaid** or
+**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge.
 
 ## 3. Reconciliation engine — implemented
 
 `extension/shared/reconciliation.js` is a dependency-free, JSON-serializable business
 rules module. The saved tagger uses its read model while the service-worker coordinator
-owns persistent mapping, rejects legacy manual-unpaid commands, and owns captured
+owns persistent mapping and captured
 variation, current-bidding, payment-status, payment-complete, and Attributed-GMV
-operations. The
-separate offline demo also uses its payment-complete operation. Simulated-payment undo is
-a private demo-session checkpoint, not a reconciliation-engine operation.
+operations.
 
 The module also exposes a strict hydration boundary for data read from persistence. It
 rebuilds a detached canonical state only after validating versions, inventory, streams,
@@ -187,14 +187,19 @@ Implemented behavior includes:
   until completion or cancellation.
 - Recording a real completed sale even if inventory becomes negative, while surfacing an
   oversold warning.
-- Allowing non-canceled auctions to select an exhausted SKU and reporting the shortage as
-  `Oversold by N` instead of disabling or rejecting the mapping.
+- Allowing inventory-affecting auctions to select an exhausted SKU and reporting the
+  shortage as `Oversold by N` instead of disabling or rejecting the mapping. Canceled
+  auctions can reference any SKU without creating or changing a shortage.
 - Separating Gross Item Sales from mapped revenue and gross profit.
 - Storing the latest sanitized TikTok Attributed GMV display on its stream without
   converting a rounded compact value into invented exact cents.
 - Deriving the two **TikTok 6% Fees** display estimates from that sanitized aggregate only
   at presentation time, always marking them approximate and rounding to whole dollars;
   they never enter canonical sales, inventory, cost, or profit accounting.
+- Deriving **Est. Profit After Fees** at presentation time as
+  `(Total GMV * 0.94) - costOfGoodsCents`, subtracting mapped completed-sale COGS before
+  rounding the signed result to an approximate whole dollar. Missing Total GMV produces
+  an em dash, and unmapped completions produce a count-based incomplete warning.
 - Storing one active bidding variation marker per stream, with no payment or inventory
   effect, and clearing it when Sold Items supplies payment truth for that variation.
 
@@ -213,11 +218,11 @@ oversoldQuantity = max(0, -availableToTagQuantity)
 Every mapped canonical-unknown record contributes one pending reservation but does not
 count as sold. Cards present the nonnegative available count after reservations, for
 example `4 left` stacked above `1 pending` from an opening quantity of five. Exact
-cancellation releases the reservation while retaining the item link as read-only
-history; priced completion converts the reservation into a completed sale without
-double-counting it. A zero-stock card remains selectable for every non-canceled order,
-never says **Sold out**, and reports `Oversold by N` for allocations beyond the imported
-quantity.
+cancellation releases the reservation while retaining the item link as reference
+history; later mapping, correction, or clearing changes only that reference. Priced
+completion converts the reservation into a completed sale without double-counting it. A
+zero-stock card remains selectable, never says **Sold out**, and reports `Oversold by N`
+only for inventory-affecting allocations beyond the imported quantity.
 
 ### Baseline and summary scope
 
@@ -264,8 +269,9 @@ Inventory accounting follows the selected stream's pinned baseline:
 Mapping, unmapping, late payment completion, and historical corrections always resolve
 the SKU and committed unit-cost snapshot through the auction stream's original pin. A
 later baseline may reuse the same SKU with a different opening quantity or unit cost, but
-it cannot change historical inventory or profit. A stream also cannot map a SKU that
-exists only in a newer baseline.
+it cannot change historical inventory or profit. A report-only unit-cost correction does
+not enter reconciliation state. A stream also cannot map a SKU that exists only in a
+newer baseline.
 
 The current state stores the latest mapping and status. A full event-by-event employee
 audit log can be added as a separate persistent event-log feature if the client requires
@@ -276,9 +282,12 @@ one.
 ### Confirmed current-auction, completed-sale, and aggregate sources
 
 The bottom card over the video is the current-bidding source. The strict locator uses
-the exact `auction-pin-card` class token as a boundary and releases only the positive
-variation number from one visible direct-own-text value beginning with `#N`. It does not
-use the card's item title, bid amount, bidder, image, or other text as canonical data.
+the exact `auction-pin-card` class token as a boundary and releases the positive variation
+number from exactly one visible direct-own-text value beginning with `#N`. Within that same
+unique card, the live-bid locator separately accepts exactly one visible direct-own-text
+value matching `Bids: $...` and converts it directly to positive integer cents. Neither
+path releases raw text, item title, bidder, image, or other card content. The bid is a
+temporary display estimate, never payment status or final-sale truth.
 
 The current completed-sale source is the left-side **LIVE auctions → Sold items**
 panel. The right-side Chat panel mixes unrelated chat, join, and bid activity and is not
@@ -311,8 +320,8 @@ Consequently, the right-side Chat, analytics, and video card are outside the
 **individual-sale/payment** boundary. Sold Items rows can contain incidental buyer
 and product text, but capture never selects those values as fields, logs the raw row,
 transmits them, or persists them. Separate narrow locators read only the on-video current
-variation number and the validated aggregate USD display; neither reads Sold Items rows
-or supplies payment/final-price truth.
+variation number and sanitized current-bid cents plus the validated aggregate USD display;
+none reads Sold Items rows or supplies payment/final-price truth.
 
 Within that root, capture:
 
@@ -339,9 +348,14 @@ The current-bidding path is independently fail-closed. It requires exactly one v
 element with the `auction-pin-card` class token and exactly one visible descendant whose
 direct own text begins with a positive `#N`. Missing or ambiguous cards and variation
 values are ignored rather than guessed. It performs an immediate scan, observes only
-that card, and rebinds through the same route/body lifecycle when TikTok replaces it.
-Its acknowledgement-based, same-body outbox retains only the newest undelivered
-variation number, so a retry for an older auction cannot overwrite a newer current one.
+that card, and rebinds through the same route/body lifecycle when TikTok replaces it. Bid
+capture additionally requires exactly one visible descendant whose direct own text is a
+canonical `Bids: $...` value; missing or ambiguous bid text does not suppress the valid
+variation-identity observation. Auction-card mutations are coalesced with a 75 ms quiet
+delay and a non-resetting 250 ms maximum wait. Its acknowledgement-based, same-body
+outboxes retain only the newest undelivered variation identity and newest complete
+`(variationNumber, bidPriceCents)` pair. Identity is queued before price, and a retry for
+an older price cannot overwrite a newer bid or auction.
 
 The Attributed GMV path is independently fail-closed. It requires exactly one visible
 `#guide-Step-2` root (plus the explicitly allowlisted previously observed lowercase
@@ -359,11 +373,12 @@ the metric root, and retries transient failures with capped backoff. All three s
 capture paths discard their page-scoped outboxes when the route is exited or
 `document.body` is replaced; each independently backfills a newly discovered root.
 
-The page-to-worker protocol has exactly five event shapes:
+The page-to-worker protocol has exactly six event shapes:
 
 ```text
 { type: "observe_variations", variationNumbers: [37, 38, ...] }
 { type: "observe_bidding_variation", variationNumber: 39 }
+{ type: "observe_bidding_price", variationNumber: 39, bidPriceCents: 2800 }
 { type: "observe_payment_statuses", statuses: [
     { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
 ] }
@@ -372,10 +387,10 @@ The page-to-worker protocol has exactly five event shapes:
 ```
 
 The content script does not send a stream ID, raw badge or auction-card text, buyer data,
-product text, bid amount,
-observation timestamp, source HTML, or any other DOM content. The bidding event contains
-only the current variation number; the aggregate event contains only the allowlisted
-display, never the label, card text, detail row, or DOM.
+product text, observation timestamp, source HTML, or any other DOM content. The bidding
+identity event contains only the current variation number; the price event contains only
+that positive number and a sanitized positive integer-cent bid. The aggregate event
+contains only the allowlisted display, never the label, card text, detail row, or DOM.
 The content script also cannot read extension storage.
 The service worker accepts these messages only from the extension's top frame on the
 exact product-dashboard URL. It resolves the active `local-stream:<uuid>` itself, then
@@ -399,6 +414,17 @@ single active bidding marker, and leaves payment and inventory accounting unchan
 mapping made during bidding is the same durable `(streamId, variationNumber)` mapping
 later used by Sold Items. The first payment-status or priced-completion truth for that
 variation clears the bidding marker without removing its mapping.
+
+An accepted bidding-price observation follows a deliberately separate lightweight path.
+The worker resolves the active local stream and validates the pair against a cached active
+bidding marker. It then replaces one stream-scoped display record in
+`chrome.storage.session`; there is no reconciliation clone/save, bid history, or
+`chrome.storage.local` report data on each price change. Canonical marker changes create a
+new placeholder immediately, before its first price, while marker clearing retains the
+last display record until another auction begins. Stale pairs for a different active
+marker are ignored. Repeating the same pair is a no-op, and the most recent accepted pair
+wins even if a later bid is lower. The active marker remains the canonical identity
+boundary, while Sold Items remains the only authoritative final-price source.
 
 Capture remains read-only with respect to TikTok. It does not click controls, alter the
 page, infer payment failure, or contact Google Sheets.
@@ -425,22 +451,24 @@ and automatic page-to-session association remain later identity work.
 | Dashboard fact | Current action | Status |
 | --- | --- | --- |
 | One `#N` value appears in the unique visible on-video `auction-pin-card` | Create/activate that bidding variation under the worker-resolved stream and select it in the open tagger | Implemented; sends only the number; selecting inventory for it immediately creates a reservation |
+| One canonical `Bids: $...` value appears in that same uniquely identified card | Replace the single stream-scoped transient bid and targeted-update the live panel | Implemented; sends integer cents paired with the variation; never becomes final price or report data |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
 | Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
 | Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
 | Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | Exact `Attributed GMV` metric appears under the unique analytics boundary | Persist only its sanitized exact/compact USD display under the worker-resolved active stream | Implemented; independent of Sold Items and no aggregate-to-cents conversion |
-| A bidding, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding supplies identity only, not sale truth |
+| A bidding-identity, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding identity is not sale truth |
+| A validated live bid changes | Send a separate data-free notice, read the single transient record, and update only the live panel | Implemented; no reconciliation/report write or full inventory rerender |
 | Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
 | Any payment observation follows canonical `Canceled` | Ignore the stale contradiction | Implemented; cancellation is terminal |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
 
 ### End-of-stream report snapshot — implemented
 
-The current report does not perform a new privileged TikTok scrape at End. It freezes a
-strict, immutable projection of the already durable reconciliation state after all
-worker commands ordered ahead of End have completed. The snapshot receives a
+The current report does not perform a new privileged TikTok scrape at End. It creates a
+strict projection of the already durable reconciliation state after all worker commands
+ordered ahead of End have completed. The snapshot receives a
 deterministic `stream-report:<uuid>` identity derived from its exact
 `local-stream:<uuid>`, UTC start/end/generated timestamps, the pinned baseline ID, and
 the last active-bidding marker. No buyer, Sheet ID, sharing link, token, or raw DOM text
@@ -489,13 +517,30 @@ The report retains these deliberately different measures:
   whole dollar. Exact displays use their captured amount; compact displays use only the
   displayed magnitude, and a missing aggregate produces an em dash for both outputs. The
   figures are informational estimates, not stored accounting totals or net revenue;
+- **Est. Profit After Fees**, derived at presentation time as
+  94% of the parsed `attributedGmvDisplay` amount minus `costOfGoodsCents`. The 94% result
+  stays unrounded until exact cent-based mapped completed COGS is subtracted, then the signed result is marked
+  approximate and rounded to the nearest whole dollar. Missing GMV produces an em dash,
+  and `unmappedCompletedCount` produces an explicit incomplete warning. Bidding,
+  processing, fixing/temporary-failed, canceled, and unmapped completed orders add no
+  unit cost. This is not a stored accounting total or true net profit;
 - `completedPaymentCount/totalSalesCount`: completed orders over terminal-outcome sales,
   excluding the active bidding marker and nonterminal processing/fixing states;
 - terminal canceled and still-fixing counts;
 - `costOfGoodsCents` and `grossProfitCents` only for mapped completed sales, where gross
-  profit is mapped revenue minus the pinned unit-cost snapshots; and
+  profit is mapped revenue minus the unit costs saved in that report;
 - completed-sale detail rows that retain unmapped completions with unavailable item/cost
-  fields instead of hiding them.
+  fields instead of hiding them; and
+- an optional canceled-order detail collection retaining each canceled variation's mapped
+  or unmapped reference SKU/item/style/size. Compatible legacy reports retain their
+  aggregate canceled count but may not contain these row details.
+
+The report page combines the completed-sale rows and available canceled-order references
+in one collapsed **Item variations this stream** disclosure under the **Stream variations**
+eyebrow. Its count is completed plus canceled variations, including legacy aggregate
+cancellations whose row details are unavailable, and a **Status** column distinguishes the
+two outcomes. Canceled rows expose reference identity only: sold price, unit cost, and
+gross profit are unavailable, and the rows do not contribute to inventory or any metric.
 
 Exact-SKU performance groups mapped completions by SKU. Combined product performance
 groups those same SKU totals by exact employee-facing `item + style` across sizes. Both
@@ -503,6 +548,12 @@ retain sold quantity, revenue, COGS, and gross profit; top-sold and top-profitab
 retain every tie. The report page derives SKU gross margin as gross profit divided by
 mapped revenue and sell-through as current-stream mapped completed units divided by that
 SKU's opening quantity.
+
+The report page also projects those exact-SKU totals into a native **Profit/Loss by SKU**
+disclosure. It includes only mapped SKUs with completed sales in that report stream and
+sorts them from highest gross profit to largest loss. Positive, negative, and zero values
+use distinct green, red, and neutral presentation. Pending, canceled, unmapped, and unsold
+entries are excluded.
 
 The baseline-wide inventory handoff contains every pinned-baseline SKU with opening
 quantity, current-stream sold quantity, all completed sales under the shared baseline,
@@ -516,38 +567,51 @@ replacementQuantity = max(0, calculatedRemainingQuantity)
 
 Pending is intentionally separate and does not permanently reduce the replacement
 value. When calculated inventory is negative, the report preserves that raw value and
-oversold/recount warning while exporting zero. It supplies the exact simple line
-`SKU: <sku> Updated count: <replacementQuantity>` and a complete six-column table with
-the original `sku,item,style,size,unit_cost` plus the replacement count under
-`quantity_on_hand_at_import`. CSV and tab-separated clipboard serializers neutralize
-spreadsheet-formula prefixes while preserving valid Sheet values.
+oversold/recount warning while exporting zero. The on-screen/printed inventory table also
+shows the saved unit cost for every SKU. Its short visible `Sold` header has the accessible
+meaning "Sold since inventory baseline" and represents baseline-wide completed mapped
+sales. Narrow screens keep the full table in a horizontal scroll region; print removes
+that screen minimum width so all columns can fit the page. The retained Sheet handoff is
+still a complete six-column table with the original `sku,item,style,size,unit_cost` plus
+the replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
+serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet values.
 
-The extension-owned report page loads only the local immutable record. It supports native
-Chrome Print / Save as PDF, a Google Sheets-ready CSV download, a full-table clipboard
-copy for pasting at A1, and a separate simple SKU list. The completed-orders disclosure
-starts collapsed on screen but print styling always includes its entire table with
-repeated column headers. These are employee-initiated local outputs, not Google API
-writes.
+The extension-owned report page loads only the local saved record. It supports native
+Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
+full-table clipboard copy for pasting at A1. The two screen-only correction disclosures
+have different authority boundaries.
+**Finish unresolved payments** exposes only canonical-unresolved `payment_fixing` or
+temporary `payment_failed` orders. Cancellation needs no price and releases the
+reservation; completion requires a seller-verified positive final price and commits the
+mapped unit. This canonical payment correction remains limited to the newest eligible
+report while no tracker stream is active and its baseline/stream are still current.
+**Correct SKU Unit Cost** is available on every finalized current or archived report. It
+lists every SKU saved in that report's inventory, including unsold SKUs, accepts exact
+nonnegative integer-cent costs, and requires confirmation. The worker replaces only that
+same saved report while preserving its report/stream identity, timestamps, baseline
+reference, lifecycle, and archive tier. Cost correction updates
+completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
+top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
+change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
+other reports, the live tracker, or future streams. The stream-variations, Profit/Loss by
+SKU, and definitions disclosures start collapsed on screen, but print styling always
+includes every available completed/canceled variation row, every SKU profit/loss row,
+repeated column headers, and every definition. These are employee-initiated
+local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
 live testing must still determine whether the entire list is always rendered or
 virtualized. No underlying TikTok API or network payload has been selected. The current
 capture can only report facts that reached durable reconciliation state before End.
 
-## 5. Employee tagger — live session and offline demo implemented
+## 5. Employee tagger — Live session implemented
 
 The tagger is a Chrome side-panel interface based on the current mockup. The employee
 should never type a variation number or interact with the hidden SKU.
 
-The Chrome side panel has two explicit modes without a separate Workspace chooser. It
-opens in Live session mode. A compact **Demo** button beside the Prototype badge is an
-accessible pressed-state toggle between the modes:
-
-- **Live session** is the default employee workspace. It requires a persistent local
-  active stream, restores the last durable reconciliation state, persists mapping
-  corrections, and displays loading, saving, success, and retryable error states.
-- **Offline demo** is a disposable sandbox for exercising the payment lifecycle. It owns
-  isolated state, sends no persistent commands, and resets when recreated or reloaded.
+The Chrome side panel is a single **Live session** employee workspace. It requires a
+persistent local active stream, restores the last durable reconciliation state, persists
+mapping corrections, and displays loading, saving, success, and retryable error states.
 
 Before Start, Live session presents Google Sheets inventory import followed by the local
 Start controls. Once a stream is started or resumed, the tracker workspace and Variation
@@ -575,14 +639,27 @@ canceling confirmation or any failed worker command changes nothing.
 
 Shared tagger behavior includes:
 
-- A native variation dropdown. Live-session mode shows canonical stream records from the
-  current-bidding and Sold Items paths; the isolated Offline demo retains its clearly
-  labeled prototype history. The active option is formatted
-  `#N - bidding - <selected item or No item selected>`.
+- An accessible, select-only variation combobox controlling a top-layer listbox of
+  canonical stream records from the current-bidding and Sold Items paths. Each option is
+  formatted `#N - <payment state> - <selected item or no selection>` with separate
+  visual segments and one complete accessible label. Bidding, processing, fixing, and
+  temporary failure use the warning tone; cancellation uses danger; completion uses
+  success; and other payment states remain neutral. In this control only, processing and
+  completion are shortened to `processing` and `complete`. The item segment uses success whenever
+  an item is selected, including for a canceled reference, and displays `no selection` in
+  orange otherwise.
+  These tones supplement the visible wording and accessible label rather than replacing it.
+- Pointer, Enter/Space, F4, arrows, Home/End, Page Up/Page Down, Escape, and Tab behavior is
+  implemented without making individual options extra tab stops. The fixed top-layer
+  listbox aligns to the trigger, chooses above or below based on available space, remains
+  within the viewport, and provides contained vertical scrolling for long histories.
 - Stable variation identity with automatic selection of the next active bidding marker
   while the employee is following the current auction. A manually selected historical
-  variation stays selected while newer markers and status changes update the dropdown.
-- Responsive, employee-facing inventory cards using mock data.
+  variation stays selected while newer markers and status changes continue being captured.
+  While the listbox is open, only its visible option view and scroll position are frozen;
+  the latest requested view replaces any older deferred view and is applied once on close.
+- Responsive, employee-facing inventory cards using the stream's pinned Google Sheets
+  inventory baseline.
 - Search across item, style, and size.
 - Engine-derived remaining, pending, available, and oversold states. Cards show a pending
   reservation from mapping during bidding until completion or cancellation. Zero-stock
@@ -592,14 +669,11 @@ Shared tagger behavior includes:
 - A separate visible **TikTok payment** row for processing, fixing, failed, canceled,
   complete, unrecognized, or not-yet-observed state, independent of the **Inventory tag**
   row.
-- A canceled result that keeps the historical item link visible, reports that its
-  reservation was released and stock stayed unchanged, greys out every inventory card,
-  rejects map/unmap/remap commands, and hides payment-lifecycle actions that no longer
-  apply.
+- A canceled result that keeps its item reference visible, reports that its reservation
+  was released and stock stayed unchanged, and keeps every inventory card interactive so
+  the employee can map, correct, or clear that reference without affecting accounting.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
-- Clearly labeled offline-demo controls that simulate a completed payment and expired
-  payment buffer without acting on TikTok or saved data.
 - A captured final price as soon as payment completes, even while unmapped; unit cost,
   gross profit/loss, and remaining inventory appear only when an item is assigned.
 - A bottom **Metrics** section labels `totals.completedGmvCents` as **Gross Item Sales**:
@@ -618,7 +692,15 @@ Shared tagger behavior includes:
   nearest-whole-dollar rounding, whether the source display was exact or compact. A
   missing Total GMV renders an em dash for each line. These figures do not account for
   refunds, discounts, taxes, shipping treatment, other TikTok fees, or seller expenses,
-  and never feed sales, COGS, gross profit, or inventory. A
+  and never feed sales, COGS, gross profit, or inventory. An **Est. Profit After Fees**
+  card uses the same parsed Total GMV but keeps its 94% amount unrounded until subtracting
+  `totals.costOfGoodsCents` for mapped completed sales, then displays the signed result as
+  an approximate whole dollar. It shows an em dash without Total GMV and an explicit
+  incomplete-sale count while `totals.unmappedCompletedCount` is nonzero. Bidding,
+  processing, fixing/temporary-failed, canceled, and unmapped completed orders add no
+  COGS. The estimate excludes refunds, discounts, taxes, shipping expenses, advertising,
+  labor, other platform charges, and other business costs, so it is not true net profit.
+  A
   **Completed Sales/Total Sales** card renders
   `totals.completedPaymentCount/totals.totalSalesCount`. The numerator counts each uniquely
   priced canonical completion whether mapped or unmapped. The denominator counts unique
@@ -640,35 +722,29 @@ Shared tagger behavior includes:
   assigned. Historical unmapping, mapping, and remapping recalculate the subtotal and
   warning immediately. This basic figure excludes shipping, platform fees, taxes,
   discounts, refunds, and other expenses.
-- **Undo simulated payment**, which restores only the selected variation's isolated demo
-  payment state while preserving later mapping corrections and edits to other variations,
-  removes that simulated revenue/profit deduction, and returns focus to item selection.
-- Demo-only **Mark unpaid after buffer** and **Undo unpaid** simulations. Live mode omits
-  both controls and relies solely on captured TikTok completion or cancellation.
-- Unmapping that releases pending reservations, preserves an unpaid decision, and returns
+- Unmapping that releases pending reservations and returns
   a completed sale to the item-needed exception without changing its payment status or Gross Item Sales contribution.
 - Mapping correction after completion, applied atomically by restoring the old SKU,
   decrementing the new SKU, and recalculating committed cost and profit.
 - An inventory warning when a truthful historical correction produces negative stock.
-- Every inventory entry remains selectable for bidding, pending, and completed
-  non-canceled orders, including at zero availability. A correction or new reservation
-  that exceeds stock produces an `Oversold by N` warning. Only selecting a canonically
-  canceled variation disables the inventory grid; its historical attribution is
-  read-only.
+- Every inventory entry remains selectable for bidding, pending, completed, and canceled
+  orders, including at zero availability. A correction or new inventory allocation that
+  exceeds stock produces an `Oversold by N` warning; a canceled reference mapping cannot
+  create or change that warning.
 - Accessible buttons, keyboard search controls, and a no-results state.
 
-Live-session mode requires a persistent local tracker stream and an imported inventory
+The Live session requires a persistent local tracker stream and an imported inventory
 baseline. Before Start, the side panel asks the worker for import readiness. The Start
 control remains unavailable until a confirmed active baseline has a nonempty Sheet
 fingerprint, and the worker independently enforces the same requirement before creating
 and durably saving a `local-stream:<uuid>` identity. It then pins that stream to the
-baseline. Offline-demo inventory cannot authorize a new Start.
+baseline.
 
 Reopening the panel offers Resume for the same identity; the worker verifies or repairs
 its missing pin before returning the active session. Capture also verifies the pin before
 recording a fact. An existing pin can never be changed. Compatibility remains deliberately
-narrow: an already-active legacy session may resume with its existing baseline, and the
-old mock baseline is used only to repair a previously active legacy session whose
+narrow: an already-active legacy session may resume with its existing baseline, and a
+fixed legacy recovery baseline is used only to repair a previously active legacy session whose
 reconciliation record is truly absent. That recovery path cannot seed a new stream or
 replace non-null canonical state.
 
@@ -683,10 +759,12 @@ are retained as attention notices rather than blockers. If report persistence it
 fails, the normal action preserves the active stream and offers an explicit **End
 without report** fallback.
 
-Ended streams cannot yet be reopened in the tagger, so the archived report is a frozen
-record rather than a post-End editing workspace. Employees should finish corrections and
-wait for expected capture retries when practical. Report links appear after End and open
-the local printable page; no automatic Google Sheet write occurs.
+Ended streams cannot be reopened in the tagger. The guarded payment-buffer correction is
+limited to the newest safe report; report-only SKU-cost correction is available on any
+finalized current or archived report.
+Employees should finish mapping corrections and wait for expected capture retries when
+practical. Report links appear after End and open the local printable page; no automatic
+Google Sheet write occurs.
 
 The live selector lists only persisted variations for the active local stream and keeps
 mapping unavailable until at least one such record exists. If the controller still holds
@@ -694,17 +772,11 @@ its internal unrecorded startup placeholder, the first canonical view selects th
 recorded variation. A non-null `activeBiddingVariationNumber` is the effective current
 variation. A changed marker takes focus only when the employee was already viewing the
 previous current/latest variation. If the employee manually selects history, new
-variations and status changes continue updating the selector without taking focus;
-returning to the current/latest variation resumes automatic follow.
+variations and status changes continue updating the closed combobox without taking focus;
+the compact **Return to live item** action appears while history is selected. It targets
+the active bidding variation when present and otherwise the newest captured variation;
+returning through it resumes automatic follow.
 Selection navigation itself is local UI state and does not write to storage.
-
-The demo exists only while the side panel remains loaded. It uses mock inventory, treats
-`#203` as on screen, and presents previous variations `#202`, `#201`, and `#200` with
-completed, unselected, and unpaid examples. It seeds no pending reservation. Navigation does not create or mutate auction
-records; every demo variation shares one isolated reconciliation state so corrections
-immediately recalculate shared inventory and profit. Reloading resets changes to those
-demo seeds. Simulated-payment undo is enabled only in that isolated demo and cannot
-reverse a TikTok event or modify the live session.
 
 Capture adds the on-video bidding marker, Sold Items variations, sanitized payment
 states, and completed prices to
@@ -715,8 +787,10 @@ record. The employee does not need to refresh TikTok, reopen the panel, or Resum
 The panel calls only the persisted on-video marker the current bidding auction. It
 auto-follows the next marker while the employee is viewing the current auction so the
 item can be mapped before the sale reaches Sold Items. A historical selection remains
-fixed while the dropdown continues receiving newer variations. The local ID remains
-distinct from a verified TikTok room ID.
+fixed while the combobox continues receiving newer variations. Opening its listbox locks
+only the rendered options: canonical capture and saves continue, repeated refreshes retain
+only the newest deferred view, and selecting or dismissing applies that view once before
+normal rendering resumes. The local ID remains distinct from a verified TikTok room ID.
 
 Next tagger work includes:
 
@@ -729,7 +803,7 @@ Next tagger work includes:
   identifies a sale.
 
 The production tagger is planned as a queue rather than a blocking modal so an employee
-can catch up when multiple variations need attention. The current dropdown updates from
+can catch up when multiple variations need attention. The current combobox updates from
 durable capture state and proves multi-variation navigation and correction, but it is not
 yet a prioritized work queue.
 
@@ -776,8 +850,9 @@ hydrates and validates every read, returns `null` only when the key is truly abs
 reports malformed, unsupported, or failed reads and writes as typed errors. It never
 silently clears or replaces corrupt or future-version data.
 
-Reconciliation state is version 7. The outer storage envelope deliberately remains
-schema version 1. Version 4 replaced the mutable top-level inventory array with an
+Reconciliation state is version 7. Report-only unit-cost correction does not alter this
+state and requires neither a state-version migration nor a report-version migration. The
+outer storage envelope deliberately remains schema version 1. Version 4 replaced the mutable top-level inventory array with an
 append-only `inventoryBaselines` collection, an active-baseline pointer for future
 streams, and an immutable `inventoryBaselineId` pin on every stream. Version 5 adds the
 nullable, sanitized `attributedGmvDisplay` field to each stream. Version 6 adds the
@@ -799,7 +874,7 @@ TikTok tracking and any mapped reservation resume without the removed manual Und
 Versions 3 through 6 could also contain the former
 `payment_completed_after_canceled` conflict. Migration repairs that contradiction to
 canonical terminal cancellation, clears its stale completed price and cost allocation,
-and retains any SKU only as canceled read-only history. Canonical version 7 rejects that
+and retains any SKU only as canceled reference history. Canonical version 7 rejects that
 legacy conflict. Dangling bidding markers,
 baseline, SKU, and committed-cost
 relationships, malformed legacy data, and future versions all fail closed. The next real
@@ -846,6 +921,16 @@ report identities agree, detaches every read/write, and never replaces malformed
 future data. Version-1 records migrate strictly to version 2 as non-archived records;
 unknown future versions still fail closed.
 
+Finalized reports remain immutable through the general report coordinator API. Narrow
+internal replacement paths support post-End payment-buffer resolution and report-only
+SKU unit-cost correction. Payment resolution retains its newest-report, inactive-tracker,
+current-baseline, and last-canonical-stream guards because it mutates reconciliation
+state. Unit-cost correction instead accepts any finalized current or archived report,
+validates and reprices only the selected report's self-contained rows, and never consults
+or mutates reconciliation state. Identical retries are idempotent; contradictory payment
+outcomes fail closed. Replacement preserves whether the report is in Business Records or
+Archived Reports.
+
 The finalized library has two tiers under a combined cap of approximately 4 MiB: no more
 than five non-archived **Business Records** and no more than 25 archived records, with 30
 total records. At most one non-archived `pending_end` record temporarily stages the
@@ -872,8 +957,8 @@ the sole canonical-state command owner. Its reconciliation coordinator:
 
 - lazily loads saved state once per worker lifetime;
 - represents a missing key as explicitly uninitialized rather than inventing inventory;
-- accepts transitional one-time mock initialization, append-only baseline creation,
-  explicit mapping, unmapping, unpaid commands, worker-authorized
+- accepts transitional one-time legacy recovery initialization, append-only baseline
+  creation, explicit mapping, unmapping, worker-authorized
   Sold Items variation/payment-status observations, current-bidding observations,
   Attributed GMV observations, and completed payments;
 - treats an identical replay of the same baseline ID as a no-op and rejects that ID if
@@ -906,14 +991,16 @@ Resume, or capture delivery verifies and repairs the missing pin. A conflicting 
 pin fails closed. Baseline creation and replacement initialization are rejected while a
 session is active, preventing the active pointer from changing during a stream. The sole
 upgrade-recovery exception applies when an older saved active session has no
-reconciliation state at all: Retry may create the transitional mock baseline and pin
+reconciliation state at all: Retry may create the fixed legacy recovery baseline and pin
 that same saved stream ID. It never replaces nonnull, malformed, or future-version data.
 
 Worker messages use strict versioned envelopes and return plain success or error data.
 Only the exact extension side-panel page is authorized to issue employee/read and
 inventory-import commands; it is explicitly forbidden from issuing variation,
 current-bidding, payment-status, payment-complete, Attributed-GMV truth, a baseline pin,
-or direct baseline creation.
+or direct baseline creation. A separate strict live-bid read command lets that same
+side-panel page request only the currently validated transient live-auction display
+record.
 The separate capture envelope is accepted only from the extension content script in the
 top frame of the exact TikTok product-dashboard URL. The worker, not the page, supplies
 the active local stream ID. A shared outer FIFO orders stream lifecycle, capture, and
@@ -929,15 +1016,38 @@ worker, coalesces bursts, and issues a fresh canonical-state GET. The notificati
 refetch signal, never a second source of truth; failure to deliver it cannot turn an
 already-successful capture write into a failure.
 
+Live bid changes do not use that durable-state invalidation. The worker instead emits a
+dedicated, data-free `live_bid_changed` notice. The panel validates its worker sender,
+performs one lightweight transient read, rejects any stream/variation mismatch, and
+updates only the compact bid/cost/profit panel. Active mapping, remapping, or unmapping
+comes from the normal canonical view immediately and is also synchronized into the one
+transient record so its cost/profit survives panel reopening after bidding ends. Reviewing
+history never rebinds the panel to the selected historical record.
+The panel stays mounted during an active local tracker stream. Before any detected auction
+it shows `Variation # -` and dashes. A new canonical marker immediately replaces the prior
+heading with `Variation #N` and clears its values until the first valid bid arrives. When
+that marker clears, the panel keeps the last variation, bid, mapped unit cost, and derived
+profit with a muted indicator until the next marker arrives. It never labels the retained
+display as a previous auction, and reviewing history never rebinds it to the selected
+historical record.
+
 Local storage is restricted to trusted extension contexts so the dashboard content
 script cannot read or write the canonical snapshot directly. State changes must pass
 through the worker's validated command boundary.
+
+Live-auction display storage is intentionally noncanonical: `chrome.storage.session`
+contains at most one record pairing the stream and variation with nullable bid and mapped
+unit-cost cents. It is synchronized from canonical mapping/marker state without storing bid
+history, survives service-worker suspension and side-panel reopening, and is naturally
+cleared by a browser restart before the content script reacquires the visible auction. It
+is never copied into reconciliation history, inventory accounting, aggregate metrics, or
+an end-of-stream report.
 
 The side panel first uses dedicated import and stream-session client/controllers. With no
 active session it offers Sheets import and keeps Start unavailable until the worker
 reports a confirmed imported baseline. After a panel or browser restart it offers Resume;
 while resumed it offers an inline-confirmed End. Malformed, corrupt, future-version, and
-failed reads never trigger initialization or replacement. A guarded mock preparation
+failed reads never trigger initialization or replacement. A guarded legacy recovery
 runs only from Retry to repair an already-active session left by the older
 session-before-inventory startup sequence. Only a successfully started or resumed and
 pinned session mounts the persistent tagger controller, which renders inventory from the
@@ -951,17 +1061,20 @@ employee changes, and retain the last good view on refresh failure. Repeated not
 coalesced, and one trailing refresh catches changes that arrive during a load or save.
 A changed active bidding marker becomes the selected tagger view automatically only when
 the employee was following the previous current/latest variation, so normal live tagging
-continues without reopening the menu. When the employee manually reviews history, new
-markers, repeated markers, and payment/status changes update the dropdown without
-changing the selection. Returning to the current/latest variation re-enables follow.
+continues without reopening the listbox. When the employee manually reviews history, new
+markers, repeated markers, and payment/status changes update the closed combobox without
+changing the selection. If the listbox is open, its rendered rows and scroll position stay
+fixed while the newest canonical view is deferred, then applied once when the listbox
+closes. While history is selected, a compact **Return to live item**
+action targets the active bidding variation or, when no bidding marker exists, the newest
+captured variation. Returning through it re-enables follow without issuing a mapping,
+inventory, payment, or persistence mutation.
 Reopening the panel still
 rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
 directly.
 
-The tagger runtime client deliberately exposes no payment-complete command. Offline-demo
-actions send no runtime messages, and their simulations remain detached from canonical
-state. An already-mounted live controller may finish loading in the background while the
-demo is open. The capture runtime client has the inverse narrow authority: it may submit
+The tagger runtime client deliberately exposes no payment-complete command. The capture
+runtime client has the inverse narrow authority: it may submit
 only Sold Items variation numbers, one current bidding variation number, sanitized
 payment-status codes, completed variation/price facts, and the sanitized Attributed GMV
 display, never mappings, stream
@@ -970,8 +1083,7 @@ Sheets reader is a separate worker-owned boundary. The local report may serializ
 six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
 to a later stage.
 
-Offline simulation checkpoints and resets must never overwrite captured or persisted
-canonical state. Exact pre-completion `Canceled` is now authoritative for allocation;
+Exact pre-completion `Canceled` is authoritative for allocation;
 production refunds or post-completion cancellations still require their own future event
 rather than reversing a `payment_complete` record.
 
@@ -979,7 +1091,7 @@ rather than reversing a `payment_complete` record.
 
 Google Sheets is implemented as the pre-stream inventory import source. The employee
 authorizes a Google account through Chrome, supplies one spreadsheet ID, reviews the
-normalized `Inventory` preview, and explicitly confirms it as a new immutable local
+normalized `Inventory` preview, and explicitly confirms it as a new durable local
 baseline. The service worker owns authorization, network access, preview state, baseline
 creation, and all active-stream checks; neither the dashboard content script nor the side
 panel receives an access token.
@@ -994,10 +1106,8 @@ erase the report.
 
 The novice handoff is position-based, not a SKU lookup or merge: duplicate the current
 `Inventory` tab as a backup, use **Copy Updated Inventory**, click the original tab's A1
-cell, and paste the full six-column rectangle. The CSV alternative is imported with
-**Replace current sheet** only after that backup. The human-readable
-`SKU: <sku> Updated count: <quantity>` lines are for checking or manual edits and must
-not be pasted into A1 in place of the six-column table.
+cell, and paste the full six-column rectangle. The matching CSV alternative is imported
+with **Replace current sheet** only after that backup.
 
 ## 7. Google Sheets inventory import contract
 
@@ -1057,8 +1167,12 @@ stream is active.
 `unit_cost` is the per-unit cost snapshot used for basic gross-profit calculations. The
 adapter converts it exactly to the engine's integer `unitCostCents` value (`12.00`
 becomes `1200`) and rejects values that cannot be represented as nonnegative safe integer
-cents. Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are
-outside this first contract.
+cents. If this imported value was wrong for a completed stream's analytics, any finalized
+saved or archived report can explicitly correct its own copy. That report's dependent
+financial rows and six-column handoff are rebuilt, while the immutable imported baseline,
+canonical sales, other reports, and future streams retain the original cost.
+Currency conversion, fees, tax, shipping, refunds, and weighted purchase lots are outside
+this first contract.
 
 ### Atomic validation boundary
 
@@ -1072,7 +1186,9 @@ The normalized preview is detached data. Merely opening or previewing a Sheet mu
 start a stream, activate a baseline, alter reconciliation state, or persist a partial
 baseline. A separate explicit employee confirmation creates a fresh baseline identity,
 appends the complete baseline, and activates it only for future streams; existing
-baselines and stream pins remain immutable.
+baseline identity, entries, quantities, costs, and stream pins remain immutable. The
+later report-only unit-cost correction is a separate saved-report operation, not an
+import mutation.
 
 For a valid two-dimensional `Inventory` value array, the pure parser returns a frozen,
 detached preview with:
@@ -1087,9 +1203,11 @@ detached preview with:
 Invalid input produces one typed import error containing ordered row- and column-specific
 issues for independently validated fields. Diagnostics that depend on an already-invalid
 value may be omitted. The parser does not return a partial inventory array. Fingerprints
-identify equivalent normalized previews; they are not credentials, authorization proofs,
-or baseline identities. Two separately confirmed recounts may therefore use different
-baseline IDs even when their fingerprints are equal.
+identify equivalent normalized previews at confirmation time; they are not credentials,
+authorization proofs, baseline identities, or live inventory hashes. A report-only cost
+correction changes neither the normalized baseline nor its saved source fingerprint. Two
+separately confirmed recounts may therefore use different baseline IDs even when their
+fingerprints are equal.
 
 ### Connected import boundary
 
@@ -1229,6 +1347,9 @@ answer these questions; offline fixtures alone cannot complete the validation:
   `Payment complete` resolves it?
 - Does the observed `m4b_space` Sold Items identity remain unique across different
   accounts, streams, modes, scrolling states, and TikTok deployments?
+- Do the exact visible `auction-pin-card` boundary, direct-own-text `#N` identity, and
+  direct-own-text `Bids: $...` value remain unique and stable across accounts, modes,
+  bid speeds, streams, and TikTok deployments?
 - Is the Sold Items list virtualized or replaced as it grows, and can every earlier row
   be recovered by the initial/backfill scan?
 - Does any relevant content live inside an iframe or shadow root?
@@ -1247,8 +1368,8 @@ Browser support beyond Chrome is a later decision.
 ## 10. Development sequence
 
 1. **Completed:** sale parser and read-only capture probe.
-2. **Completed:** offline reconciliation engine and automated tests.
-3. **Completed:** offline tagger foundation, mapping workflow, and lifecycle controls.
+2. **Completed:** reconciliation engine and automated tests.
+3. **Completed:** tagger foundation, mapping workflow, and captured payment lifecycle display.
 4. **Completed:** versioned storage, service-worker coordination, tagger integration, and
    visible recovery.
 5. **Capture hardening completed:** bounded scheduling, SPA lifecycle recovery, exact
@@ -1263,17 +1384,20 @@ Browser support beyond Chrome is a later decision.
    3. **Completed:** data-free invalidations refresh the open tagger in real time,
       auto-follow each changed bidding variation before it sells while the employee is
       viewing the current auction, preserve a manually selected historical variation as
-      newer options update, and visibly update sanitized payment status and the four
-      Metrics section. A prioritized work queue, visible capture state, TikTok identity,
+      newer options update, provide a mutation-free **Return to live item** action that
+      falls back to the newest captured variation when no bid is active, and visibly
+      update sanitized payment status and the Metrics section. A prioritized work queue,
+      visible capture state, TikTok identity,
       and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening
       baseline contract;
    2. **Completed:** immutable versioned inventory baselines, permanent tracker-stream
-      pins, baseline-scoped inventory/cost accounting, and strict legacy migration; and
+      pins, baseline-scoped inventory/cost accounting, report-only cost correction, and
+      strict legacy migration; and
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
-8. **Completed:** immutable end-of-stream projection, report-aware End/recovery,
+8. **Completed:** strict end-of-stream projection, report-aware End/recovery,
    two-tier local Business Records/archive library, printable/Save-as-PDF business page,
    exact SKU and combined
    product analytics, and six-column clipboard/CSV inventory handoff.

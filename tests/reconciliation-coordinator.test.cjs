@@ -185,14 +185,6 @@ function paymentCommand(variationNumber, soldPriceCents = 4800) {
   };
 }
 
-function unpaidCommand(type, variationNumber) {
-  return {
-    type,
-    streamId: "stream-1",
-    variationNumber,
-  };
-}
-
 async function assertErrorCode(action, code, ErrorType = Error) {
   await assert.rejects(action, (error) => {
     assert.ok(error instanceof ErrorType);
@@ -677,7 +669,7 @@ test("identical completed-payment retries do not write again", async () => {
   assert.deepEqual(memoryStore.getPersistedState(), storedState);
 });
 
-test("routes mapping and payment while rejecting retired manual-unpaid commands", async () => {
+test("routes employee mapping and captured payment commands", async () => {
   const memoryStore = createMemoryStateStore();
   const coordinator = createCoordinator(memoryStore);
 
@@ -685,28 +677,11 @@ test("routes mapping and payment while rejecting retired manual-unpaid commands"
   const mapped = await coordinator.dispatch(mapCommand(1));
   const completed = await coordinator.dispatch(paymentCommand(1));
   await coordinator.dispatch(mapCommand(2, "GREY-HOODIE-L"));
-  const persistedBeforeRejections = memoryStore.getPersistedState();
-
-  await assertErrorCode(
-    () => coordinator.dispatch(
-      unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 2),
-    ),
-    "MANUAL_UNPAID_DISABLED",
-    ReconciliationCoordinatorError,
-  );
-  await assertErrorCode(
-    () => coordinator.dispatch(
-      unpaidCommand(COMMAND_TYPES.UNDO_MARK_UNPAID, 2),
-    ),
-    "MANUAL_UNPAID_DISABLED",
-    ReconciliationCoordinatorError,
-  );
 
   assert.equal(mapped.result.status, "pending");
   assert.equal(completed.result.status, "committed");
   assert.equal(completed.result.profitCents, 3600);
   assert.equal(memoryStore.calls.save.length, 4);
-  assert.deepEqual(memoryStore.getPersistedState(), persistedBeforeRejections);
 });
 
 test("supports payment arriving before employee mapping", async () => {
@@ -721,42 +696,6 @@ test("supports payment arriving before employee mapping", async () => {
   assert.equal(mapping.result.status, "committed");
   assert.equal(mapping.result.profitCents, 2600);
   assert.equal(memoryStore.calls.save.length, 2);
-});
-
-test("rejects retired manual-unpaid commands without writing", async () => {
-  const storedState = reconciliation.createReconciliationState(INVENTORY);
-  const memoryStore = createMemoryStateStore(storedState);
-  const coordinator = createCoordinator(memoryStore);
-
-  await coordinator.dispatch(
-    observePaymentStatusesCommand([
-      {
-        variationNumber: 147,
-        observedPaymentStatus: "payment_complete",
-      },
-    ]),
-  );
-  await coordinator.dispatch(mapCommand(147));
-  const persistedBefore = memoryStore.getPersistedState();
-
-  await assertErrorCode(
-    () =>
-      coordinator.dispatch(
-        unpaidCommand(COMMAND_TYPES.MARK_UNPAID, 147),
-      ),
-    "MANUAL_UNPAID_DISABLED",
-    ReconciliationCoordinatorError,
-  );
-
-  assert.equal(memoryStore.calls.save.length, 2);
-  assert.deepEqual(memoryStore.getPersistedState(), persistedBefore);
-  assert.equal(
-    reconciliation.getAuction(persistedBefore, {
-      streamId: "stream-1",
-      variationNumber: 147,
-    }).mappingStatus,
-    "mapped",
-  );
 });
 
 test("persists an unmap command and returns the canonical unselected state", async () => {
@@ -779,6 +718,55 @@ test("persists an unmap command and returns the canonical unselected state", asy
   assert.equal(persistedAuction.sku, null);
   assert.equal(persistedAuction.mappingStatus, "unmapped");
   assert.equal(memoryStore.calls.save.length, 1);
+});
+
+test("persists canceled reference mapping edits without changing inventory or metrics", async () => {
+  const storedState = reconciliation.createReconciliationState(INVENTORY);
+
+  reconciliation.observePaymentStatuses(storedState, {
+    streamId: "stream-1",
+    statuses: [{
+      variationNumber: 7,
+      observedPaymentStatus: "canceled",
+    }],
+  });
+  const summaryBefore = reconciliation.calculateSummary(storedState, {
+    streamId: "stream-1",
+  });
+  const memoryStore = createMemoryStateStore(storedState);
+  const coordinator = createCoordinator(memoryStore);
+
+  const mapped = await coordinator.dispatch(mapCommand(7));
+  const repeatedMap = await coordinator.dispatch(mapCommand(7));
+  const remapped = await coordinator.dispatch(
+    mapCommand(7, "GREY-HOODIE-L"),
+  );
+  const unmapped = await coordinator.dispatch(unmapCommand(7));
+  const repeatedUnmap = await coordinator.dispatch(unmapCommand(7));
+  const persistedState = memoryStore.getPersistedState();
+  const summaryAfter = reconciliation.calculateSummary(persistedState, {
+    streamId: "stream-1",
+  });
+
+  assert.equal(mapped.result.status, "canceled");
+  assert.equal(mapped.result.sku, "BLACK-TEE-M");
+  assert.equal(mapped.result.committedUnitCostCents, null);
+  assert.equal(repeatedMap.result.status, "canceled");
+  assert.equal(remapped.result.status, "canceled");
+  assert.equal(remapped.result.sku, "GREY-HOODIE-L");
+  assert.equal(remapped.result.committedUnitCostCents, null);
+  assert.equal(unmapped.result.status, "canceled");
+  assert.equal(unmapped.result.sku, null);
+  assert.equal(unmapped.result.mappingStatus, "unmapped");
+  assert.equal(repeatedUnmap.result.status, "canceled");
+  assert.equal(memoryStore.calls.save.length, 3);
+  assert.deepEqual(summaryAfter.totals, summaryBefore.totals);
+  assert.deepEqual(summaryAfter.inventory, summaryBefore.inventory);
+  assert.deepEqual(summaryAfter.itemPerformance, summaryBefore.itemPerformance);
+  assert.deepEqual(
+    reconciliation.hydrateReconciliationState(clone(persistedState)),
+    persistedState,
+  );
 });
 
 test("serializes concurrent writes without losing an update", async () => {
@@ -1214,6 +1202,72 @@ test("failed first initialization remains uninitialized and can be retried", asy
   const retried = await coordinator.dispatch(initializeCommand());
   assert.equal(retried.result.status, "initialized");
   assert.equal(memoryStore.calls.save.length, 2);
+});
+
+test("persists report-scoped payment fixing resolution and keeps retries idempotent", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+
+  await coordinator.dispatch(initializeCommand());
+  await coordinator.dispatch(mapCommand(91));
+  await coordinator.dispatch(observePaymentStatusesCommand([{
+    variationNumber: 91,
+    observedPaymentStatus: "payment_failed",
+  }]));
+  const saveCountBeforeResolution = memoryStore.calls.save.length;
+  const input = {
+    streamId: "stream-1",
+    variationNumber: 91,
+    resolution: "payment_complete",
+    soldPriceCents: 3300,
+  };
+  const resolved = await coordinator.resolvePaymentFixingOrder(input);
+
+  assert.equal(resolved.result.status, "committed");
+  assert.equal(resolved.result.soldPriceCents, 3300);
+  assert.equal(resolved.result.committedUnitCostCents, 1200);
+  assert.equal(memoryStore.calls.save.length, saveCountBeforeResolution + 1);
+
+  const retried = await coordinator.resolvePaymentFixingOrder(input);
+
+  assert.deepEqual(retried, resolved);
+  assert.equal(memoryStore.calls.save.length, saveCountBeforeResolution + 1);
+});
+
+test("a failed payment fixing resolution save leaves canonical state unresolved", async () => {
+  const memoryStore = createMemoryStateStore();
+  const coordinator = createCoordinator(memoryStore);
+
+  await coordinator.dispatch(initializeCommand());
+  await coordinator.dispatch(mapCommand(92));
+  await coordinator.dispatch(observePaymentStatusesCommand([{
+    variationNumber: 92,
+    observedPaymentStatus: "payment_fixing",
+  }]));
+  memoryStore.failNextSave(new ReconciliationStorageError(
+    "STORAGE_WRITE_FAILED",
+    "write failed",
+  ));
+
+  await assertErrorCode(
+    () => coordinator.resolvePaymentFixingOrder({
+      streamId: "stream-1",
+      variationNumber: 92,
+      resolution: "canceled",
+      soldPriceCents: null,
+    }),
+    "STORAGE_WRITE_FAILED",
+    ReconciliationStorageError,
+  );
+
+  const state = (await coordinator.dispatch(getStateCommand())).state;
+  const auction = reconciliation.getAuction(state, {
+    streamId: "stream-1",
+    variationNumber: 92,
+  });
+
+  assert.equal(auction.paymentStatus, "unknown");
+  assert.equal(auction.observedPaymentStatus, "payment_fixing");
 });
 
 test("validates coordinator dependencies immediately", () => {

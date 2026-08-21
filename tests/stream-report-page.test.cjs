@@ -19,6 +19,7 @@ class FakeElement {
     this.textContent = "";
     this.hidden = false;
     this.disabled = false;
+    this.value = "";
     this.dataset = {};
     this.className = "";
     this.attributes = new Map();
@@ -59,8 +60,12 @@ const REPORT_SELECTORS = [
   "#action-feedback",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
+  "#sku-profit-count",
+  "#sku-profit-disclosure",
+  "#sku-profit-empty",
+  "#sku-profit-rows",
+  "#definitions-disclosure",
   "#copy-inventory",
-  "#copy-sku-counts",
   "#download-inventory",
   "#inventory-rows",
   "#most-profitable-items",
@@ -72,6 +77,10 @@ const REPORT_SELECTORS = [
   "#performance-empty",
   "#performance-row-count",
   "#performance-rows",
+  "#payment-resolution-count",
+  "#payment-resolution-feedback",
+  "#payment-resolution-orders",
+  "#payment-resolution-section",
   "#print-report",
   "#report-content",
   "#report-definitions",
@@ -83,11 +92,18 @@ const REPORT_SELECTORS = [
   "#retry-report",
   "#sales-count",
   "#sales-empty",
-  "#sku-count-list",
+  "#variation-details-note",
   "#stream-ended",
   "#stream-reference",
   "#stream-started",
   "#summary-grid",
+  "#unit-cost-correction-disclosure",
+  "#unit-cost-correction-section",
+  "#unit-cost-feedback",
+  "#unit-cost-preview",
+  "#unit-cost-sku",
+  "#unit-cost-value",
+  "#update-unit-cost",
   "#warnings-section",
 ];
 
@@ -128,6 +144,7 @@ function createReport(overrides = {}) {
       completedPaymentCount: 2,
       totalSalesCount: 3,
       completedGmvCents: 2500,
+      costOfGoodsCents: 600,
       grossProfitCents: 900,
       unmappedCompletedCount: 1,
       canceledOrderCount: 1,
@@ -193,6 +210,16 @@ function createReport(overrides = {}) {
         unitCostCents: null,
         grossProfitCents: null,
         conflicts: [],
+      },
+    ],
+    canceledOrders: [
+      {
+        variationNumber: 14,
+        mapped: true,
+        sku: "SKU-A",
+        item: malicious,
+        style: "black",
+        size: "L",
       },
     ],
     inventory: [
@@ -267,7 +294,32 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Print \/ Save as PDF/);
   assert.match(html, /Copy Updated Inventory/);
   assert.match(html, /Download Updated Inventory CSV/);
-  assert.match(html, /Copy SKU Counts/);
+  assert.match(html, /Finish unresolved payments/);
+  assert.match(html, /Correct SKU Unit Cost/);
+  assert.doesNotMatch(
+    html,
+    /canceled-orders-disclosure|Canceled order references/,
+  );
+  assert.doesNotMatch(source, /renderCanceledOrders|#canceled-orders-/);
+  assert.doesNotMatch(css, /\.canceled-orders-/);
+  assert.match(
+    html,
+    /Correct a cost in this saved report[\s\S]*live tracker, other reports, and future streams are unaffected/,
+  );
+  assert.match(
+    html,
+    /id="payment-resolution-section"[\s\S]*?class="report-section payment-resolution-section screen-only"/,
+  );
+  assert.match(html, /id="payment-resolution-feedback"[\s\S]*?aria-live="polite"/);
+  assert.match(
+    html,
+    /id="unit-cost-correction-section"[\s\S]*?class="report-section unit-cost-correction-section screen-only"/,
+  );
+  assert.match(html, /id="unit-cost-feedback"[\s\S]*?aria-live="polite"/);
+  assert.doesNotMatch(html, /Copy SKU Counts/);
+  assert.doesNotMatch(html, /Simple replacement list/i);
+  assert.doesNotMatch(html, /SKU updated counts/i);
+  assert.doesNotMatch(html, /id="(?:copy-sku-counts|sku-count-list)"/);
   assert.match(html, /duplicate the <strong>Inventory<\/strong> tab as a backup/);
   assert.match(html, /click cell <strong>A1<\/strong>/);
   assert.match(html, /Cmd\+V/);
@@ -278,6 +330,8 @@ test("packaged report surface is local, printable, and exposes the required acti
   );
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
+  assert.match(source, /clearTimeout:\s*root\.clearTimeout\.bind\(root\)/);
+  assert.match(source, /const ACTION_FEEDBACK_DURATION_MS = 4_000;/);
   assert.doesNotMatch(html, /report-state-badge|report-state-description/);
   assert.doesNotMatch(source, /\bFinal\b|\bProvisional\b/);
   assert.match(css, /@media print/);
@@ -287,20 +341,32 @@ test("packaged report surface is local, printable, and exposes the required acti
     css,
     /\.summary-card-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;[\s\S]*?\.summary-card-row-value\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/,
   );
-  assert.doesNotMatch(
+  assert.match(
     css,
-    /\.sku-count-list\s*\{[^}]*break-inside:\s*avoid/s,
+    /\.summary-grid dd\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow-wrap:\s*anywhere;/,
   );
+  assert.match(css, /\.summary-grid > \.summary-card-warning\s*\{/);
+  assert.match(css, /\.summary-grid \.summary-card-warning-note\s*\{/);
+  assert.match(
+    css,
+    /@media print[\s\S]*?\.summary-grid \.summary-card-warning-note\s*\{[\s\S]*?color:\s*#704900;/,
+  );
+  assert.doesNotMatch(css, /\.sku-count-list\b/);
+  assert.match(css, /\.payment-resolution-order\s*\{/);
+  assert.match(css, /\.unit-cost-correction-form\s*\{/);
 });
 
-test("completed orders use one collapsed native disclosure that always prints in full", () => {
+test("completed and canceled item variations share one collapsed disclosure that always prints in full", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
   const detailsTag = html.match(
     /<details\s+id="completed-sales-disclosure"[^>]*>/,
   )?.[0];
-  const summary = html.match(
+  const disclosureStart = html.indexOf('<details id="completed-sales-disclosure">');
+  const disclosureEnd = html.indexOf("</details>", disclosureStart);
+  const disclosure = html.slice(disclosureStart, disclosureEnd);
+  const summary = disclosure.match(
     /<summary[\s\S]*?id="completed-sales-toggle"[\s\S]*?<\/summary>/,
   )?.[0];
   const contentStart = html.indexOf('id="completed-sales-content"');
@@ -314,14 +380,24 @@ test("completed orders use one collapsed native disclosure that always prints in
   assert.match(summary, /aria-controls="completed-sales-content"/);
   assert.match(summary, /<h2\s+id="sales-title"[^>]*>/);
   assert.equal((summary.match(/<h2\b/g) ?? []).length, 1);
+  assert.match(summary, /Stream variations/);
+  assert.match(summary, /Item variations this stream/);
+  assert.match(summary, /0 variations/);
   assert.match(summary, /id="sales-count"/);
   assert.equal((html.match(/id="completed-sales-content"/g) ?? []).length, 1);
   assert.equal((html.match(/id="completed-sales-rows"/g) ?? []).length, 1);
   assert.equal((html.match(/id="sales-empty"/g) ?? []).length, 1);
+  assert.match(content, /class="table-scroll screen-scroll"/);
   assert.match(content, /class="data-table sales-table"/);
   assert.match(content, /aria-labelledby="sales-title"/);
   assert.match(content, /id="completed-sales-rows"/);
   assert.match(content, /id="sales-empty"/);
+  assert.match(content, /id="variation-details-note"/);
+  assert.match(content, /<th scope="col">Status<\/th>/);
+  assert.match(
+    content,
+    /Canceled item mappings are reference-only and do not affect inventory or metrics/,
+  );
   assert.match(css, /\.completed-sales-toggle:focus-visible/);
   assert.match(
     printCss,
@@ -337,22 +413,345 @@ test("completed orders use one collapsed native disclosure that always prints in
   );
 });
 
-test("completed orders open for printing and restore their prior disclosure state", () => {
+test("all report tables use a white background and black text on screen and in print", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const printIndex = css.indexOf("@media print");
+  const screenCss = css.slice(0, printIndex);
+  const printCss = css.slice(printIndex);
+
+  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 4);
+  assert.match(html, /<table class="data-table sales-table">/);
+  assert.match(html, /<table class="data-table sku-profit-table">/);
+  assert.match(html, /<table class="data-table performance-table">/);
+  assert.match(html, /<table class="data-table inventory-table">/);
+  assert.match(
+    screenCss,
+    /\.data-table th,\s*\.data-table td\s*\{[\s\S]*?border-bottom:\s*1px solid #c7cdd4;[\s\S]*?color:\s*#000000;[\s\S]*?background:\s*#ffffff;/,
+  );
+  assert.match(
+    screenCss,
+    /\.data-table \.muted-cell,\s*\.data-table \.warning-cell\s*\{\s*color:\s*#000000;/,
+  );
+  assert.match(
+    printCss,
+    /\.table-scroll,\s*\.data-table,\s*\.data-table th,\s*\.data-table td\s*\{\s*color:\s*#000000 !important;\s*background:\s*#ffffff !important;/,
+  );
+});
+
+test("updated inventory shows every SKU unit cost with a compact accessible Sold header", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const tableStart = html.indexOf('<table class="data-table inventory-table">');
+  const tableEnd = html.indexOf("</table>", tableStart);
+  const inventoryTable = html.slice(tableStart, tableEnd);
+  const headerLabels = [...inventoryTable.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)]
+    .map((match) => match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.deepEqual(headerLabels, [
+    "SKU",
+    "Item",
+    "Style",
+    "Size",
+    "Unit cost",
+    "Opening",
+    "Sold",
+    "Pending",
+    "Updated count",
+    "Oversold",
+  ]);
+  assert.match(
+    inventoryTable,
+    /<th[\s\S]*?aria-label="Sold since inventory baseline"[\s\S]*?title="Sold since inventory baseline"[\s\S]*?>Sold<\/th>/,
+  );
+  assert.match(
+    inventoryTable,
+    /<caption>[\s\S]*?completed mapped sales since the inventory baseline[\s\S]*?every SKU[\s\S]*?<\/caption>/,
+  );
+  assert.match(css, /\.table-scroll\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(css, /\.inventory-table\s*\{\s*min-width:\s*800px;/);
+  assert.match(
+    printCss,
+    /\.screen-scroll\s*\{[\s\S]*?overflow:\s*visible;/,
+  );
+  assert.match(printCss, /\.inventory-table\s*\{\s*min-width:\s*0;/);
+  assert.match(
+    printCss,
+    /\.data-table thead\s*\{\s*display:\s*table-header-group;/,
+  );
+
+  const base = createReport();
+  const inventory = [
+    base.inventory[0],
+    {
+      sku: "SKU-ZERO-COST-WITH-A-LONG-IDENTIFIER",
+      item: "Long inventory item name retained in the narrow scrollable table",
+      style: "limited-edition-long-style-name",
+      size: "ONE-SIZE",
+      unitCostCents: 0,
+      openingQuantity: 20,
+      streamSoldQuantity: 0,
+      baselineSoldQuantity: 3,
+      pendingQuantity: 0,
+      replacementQuantity: 17,
+      oversoldQuantity: 0,
+    },
+  ];
   const document = new FakeDocument();
-  const disclosure = document.querySelector("#completed-sales-disclosure");
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport({ inventory }),
+  });
+
+  const rows = document.querySelector("#inventory-rows").children;
+  assert.equal(rows.length, inventory.length);
+  assert.deepEqual(rows.map((row) => row.children.length), [10, 10]);
+  assert.deepEqual(
+    rows.map((row) => row.children[4].textContent),
+    ["$6.00", "$0.00"],
+  );
+  assert.deepEqual(
+    rows[1].children.map((cell) => cell.textContent),
+    [
+      "SKU-ZERO-COST-WITH-A-LONG-IDENTIFIER",
+      "Long inventory item name retained in the narrow scrollable table",
+      "limited-edition-long-style-name",
+      "ONE-SIZE",
+      "$0.00",
+      "20",
+      "3",
+      "0",
+      "17",
+      "0",
+    ],
+  );
+  assert.equal(rows[0].children[4].className, "number-cell");
+  assert.equal(rows[1].children[4].className, "number-cell");
+});
+
+test("SKU profit and loss uses a collapsed stream-scoped disclosure that prints in full", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const detailsTag = html.match(
+    /<details\s+id="sku-profit-disclosure"[^>]*>/,
+  )?.[0];
+  const summary = html.match(
+    /<summary[\s\S]*?id="sku-profit-toggle"[\s\S]*?<\/summary>/,
+  )?.[0];
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(detailsTag);
+  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
+  assert.ok(summary);
+  assert.match(summary, /aria-controls="sku-profit-content"/);
+  assert.match(summary, /Profit\/Loss by SKU/);
+  assert.match(html, /<table class="data-table sku-profit-table">/);
+  assert.match(html, /id="sku-profit-rows"/);
+  assert.match(css, /\.sku-profit-toggle:focus-visible/);
+  assert.match(
+    printCss,
+    /#sku-profit-disclosure:not\(\[open\]\)\s*>\s*#sku-profit-content\s*\{\s*display:\s*block\s*!important;/,
+  );
+  assert.match(
+    printCss,
+    /#sku-profit-toggle::after\s*\{\s*display:\s*none\s*!important;/,
+  );
+});
+
+test("definitions use a collapsed native disclosure without changing their content", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const sectionStart = html.indexOf('class="report-section definitions-section"');
+  const sectionEnd = html.indexOf("</section>", sectionStart);
+  const section = html.slice(sectionStart, sectionEnd);
+  const detailsTag = section.match(
+    /<details\s+id="definitions-disclosure"[^>]*>/,
+  )?.[0];
+  const summary = section.match(
+    /<summary[\s\S]*?id="definitions-toggle"[\s\S]*?<\/summary>/,
+  )?.[0];
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(detailsTag);
+  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
+  assert.ok(summary);
+  assert.match(summary, /aria-controls="definitions-content"/);
+  assert.match(summary, /<h2\s+id="definitions-title"[^>]*>/);
+  assert.equal((summary.match(/<h2\b/g) ?? []).length, 1);
+  assert.match(summary, /How totals are calculated/);
+  assert.match(summary, /Definitions and limitations/);
+  assert.equal((html.match(/id="definitions-content"/g) ?? []).length, 1);
+  assert.equal((html.match(/id="report-definitions"/g) ?? []).length, 1);
+  assert.match(
+    section,
+    /id="definitions-content"[\s\S]*?<dl\s+id="report-definitions"\s+class="definition-list"><\/dl>/,
+  );
+  assert.match(css, /\.definitions-toggle:focus-visible/);
+  assert.match(
+    printCss,
+    /#definitions-disclosure:not\(\[open\]\)\s*>\s*#definitions-content\s*\{\s*display:\s*block\s*!important;/,
+  );
+  assert.match(
+    printCss,
+    /#definitions-toggle::after\s*\{\s*display:\s*none\s*!important;/,
+  );
+  assert.doesNotMatch(
+    printCss,
+    /#definitions-toggle\s*\{[^}]*display:\s*none/s,
+  );
+  assert.deepEqual(reportPage.DEFAULT_DEFINITIONS, [
+    {
+      term: "TikTok Attributed GMV",
+      description:
+        "The last value displayed by TikTok during tracking. TikTok may abbreviate or round this display, and it can include buyer-paid shipping.",
+    },
+    {
+      term: "Gross Item Sales",
+      description:
+        "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
+    },
+    {
+      term: "TikTok 6% Fees",
+      description:
+        "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
+    },
+    {
+      term: "Est. Profit After Fees",
+      description:
+        "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+    },
+    {
+      term: "AOV",
+      description:
+        "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
+    },
+    {
+      term: "Gross profit",
+      description:
+        "Mapped completed-sale revenue minus the seller unit cost saved in this report. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
+    },
+    {
+      term: "Updated count",
+      description:
+        "Opening quantity minus mapped completed sales across the inventory baseline, clamped to zero for the Sheet replacement value. Pending and canceled orders do not permanently reduce this count.",
+    },
+  ]);
+});
+
+test("print disclosures open together and restore their independent prior states", () => {
+  const document = new FakeDocument();
+  const completedSales = document.querySelector("#completed-sales-disclosure");
+  const skuProfit = document.querySelector("#sku-profit-disclosure");
+  const definitions = document.querySelector("#definitions-disclosure");
   const controller = reportPage.createPrintDisclosureController(document);
 
-  disclosure.open = false;
+  completedSales.open = false;
+  skuProfit.open = true;
+  definitions.open = false;
   controller.prepare();
-  assert.equal(disclosure.open, true);
+  assert.equal(completedSales.open, true);
+  assert.equal(skuProfit.open, true);
+  assert.equal(definitions.open, true);
   controller.prepare();
   controller.restore();
-  assert.equal(disclosure.open, false);
+  assert.equal(completedSales.open, false);
+  assert.equal(skuProfit.open, true);
+  assert.equal(definitions.open, false);
 
-  disclosure.open = true;
+  completedSales.open = true;
+  skuProfit.open = false;
+  definitions.open = false;
   controller.prepare();
   controller.restore();
-  assert.equal(disclosure.open, true);
+  assert.equal(completedSales.open, true);
+  assert.equal(skuProfit.open, false);
+  assert.equal(definitions.open, false);
+
+  completedSales.open = false;
+  skuProfit.open = false;
+  definitions.open = true;
+  controller.prepare();
+  controller.restore();
+  assert.equal(completedSales.open, false);
+  assert.equal(skuProfit.open, false);
+  assert.equal(definitions.open, true);
+});
+
+test("app Print and browser print events expand definitions and restore screen state", async () => {
+  const document = new FakeDocument();
+  const completedSales = document.querySelector("#completed-sales-disclosure");
+  const skuProfit = document.querySelector("#sku-profit-disclosure");
+  const definitions = document.querySelector("#definitions-disclosure");
+  const windowListeners = new Map();
+  const printedStates = [];
+
+  completedSales.open = false;
+  skuProfit.open = false;
+  definitions.open = false;
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    addEventListener(name, listener) {
+      windowListeners.set(name, listener);
+    },
+    print() {
+      printedStates.push({
+        completedSales: completedSales.open,
+        skuProfit: skuProfit.open,
+        definitions: definitions.open,
+      });
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [
+    { completedSales: true, skuProfit: true, definitions: true },
+  ]);
+  windowListeners.get("afterprint")();
+  assert.equal(completedSales.open, false);
+  assert.equal(skuProfit.open, false);
+  assert.equal(definitions.open, false);
+
+  completedSales.open = true;
+  skuProfit.open = false;
+  definitions.open = false;
+  windowListeners.get("beforeprint")();
+  assert.equal(completedSales.open, true);
+  assert.equal(skuProfit.open, true);
+  assert.equal(definitions.open, true);
+  windowListeners.get("afterprint")();
+  assert.equal(completedSales.open, true);
+  assert.equal(skuProfit.open, false);
+  assert.equal(definitions.open, false);
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {
@@ -369,20 +768,1031 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#most-sold-products").children.length, 1);
   assert.equal(document.querySelector("#most-sold-products-card").hidden, false);
   assert.equal(document.querySelector("#most-profitable-products-card").hidden, true);
-  assert.equal(document.querySelector("#completed-sales-rows").children.length, 2);
+  assert.equal(document.querySelector("#completed-sales-rows").children.length, 3);
+  assert.equal(document.querySelector("#sku-profit-rows").children.length, 1);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
-  assert.equal(document.querySelector("#summary-grid").children.length, 10);
+  assert.equal(document.querySelector("#summary-grid").children.length, 11);
   assert.match(
     allText(document.querySelector("#summary-grid")),
     /TikTok 6% Fees[\s\S]*Fees paid:[\s\S]*≈\$2[\s\S]*GMV after fees:[\s\S]*≈\$28/,
   );
+  assert.match(
+    allText(document.querySelector("#summary-grid")),
+    /Est\. Profit After Fees[\s\S]*≈\$22[\s\S]*Incomplete — 1 completed sale still needs an inventory item\./,
+  );
+  const estimatedProfitCard = document
+    .querySelector("#summary-grid")
+    .children.find((card) =>
+      allText(card).includes("Est. Profit After Fees"),
+    );
+  assert.equal(estimatedProfitCard.className, "summary-card-warning");
+  assert.equal(
+    estimatedProfitCard.children.at(-1).className,
+    "summary-card-warning-note",
+  );
   assert.equal(document.createdTags.includes("img"), false);
   assert.match(
     allText(document.querySelector("#completed-sales-rows")),
-    /<img src=x onerror="stealOAuthToken\(\)">/,
+    /Completed[\s\S]*<img src=x onerror="stealOAuthToken\(\)">[\s\S]*Canceled/,
   );
-  assert.equal(document.querySelector("#sku-count-list").textContent, "SKU: SKU-A Updated count: 0");
+});
+
+test("item variation rows combine completed and canceled orders in variation order", () => {
+  const document = new FakeDocument();
+  const base = createReport();
+  const report = createReport({
+    totals: {
+      ...base.totals,
+      canceledOrderCount: 2,
+    },
+    canceledOrders: [
+      {
+        variationNumber: 11,
+        mapped: true,
+        sku: "SKU-A",
+        item: "Example tee",
+        style: "black",
+        size: "L",
+      },
+      {
+        variationNumber: 14,
+        mapped: false,
+        sku: null,
+        item: null,
+        style: null,
+        size: null,
+      },
+    ],
+  });
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  const rows = document.querySelector("#completed-sales-rows").children;
+  assert.deepEqual(
+    rows.map((row) => row.children[0].textContent),
+    ["#11", "#12", "#13", "#14"],
+  );
+  assert.deepEqual(rows.map((row) => row.children.length), [9, 9, 9, 9]);
+  assert.deepEqual(
+    rows.map((row) => row.children[1].textContent),
+    ["Canceled", "Completed", "Completed", "Canceled"],
+  );
+  assert.deepEqual(
+    rows[0].children.slice(2, 6).map((cell) => cell.textContent),
+    ["SKU-A", "Example tee", "black", "L"],
+  );
+  assert.deepEqual(
+    rows[0].children.slice(6).map((cell) => cell.textContent),
+    ["—", "—", "—"],
+  );
+  assert.deepEqual(
+    rows[3].children.slice(2).map((cell) => cell.textContent),
+    ["Unmapped", "Not selected", "—", "—", "—", "—", "—"],
+  );
+  assert.deepEqual(
+    rows[1].children.slice(6).map((cell) => cell.textContent),
+    ["$15.00", "$6.00", "$9.00"],
+  );
+  assert.equal(document.querySelector("#sales-count").textContent, "4 variations");
+  assert.equal(document.querySelector("#sales-empty").hidden, true);
+  assert.equal(document.querySelector("#variation-details-note").hidden, true);
+});
+
+test("legacy reports retain canceled totals and explain unavailable row details", () => {
+  const document = new FakeDocument();
+  const base = createReport();
+  const report = createReport({
+    totals: {
+      ...base.totals,
+      canceledOrderCount: 3,
+    },
+    canceledOrders: null,
+  });
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  const rows = document.querySelector("#completed-sales-rows").children;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((row) => row.children[1].textContent),
+    ["Completed", "Completed"],
+  );
+  assert.equal(document.querySelector("#sales-count").textContent, "5 variations");
+  assert.equal(document.querySelector("#sales-empty").hidden, true);
+  assert.equal(document.querySelector("#variation-details-note").hidden, false);
+  assert.match(
+    document.querySelector("#variation-details-note").textContent,
+    /3 canceled variations[\s\S]*not saved[\s\S]*still included above/,
+  );
+
+  const canceledOnlyDocument = new FakeDocument();
+  reportPage.renderItemVariations(canceledOnlyDocument, createReport({
+    completedSales: [],
+    totals: {
+      ...base.totals,
+      completedPaymentCount: 0,
+      canceledOrderCount: 1,
+    },
+    canceledOrders: null,
+  }));
+  assert.equal(
+    canceledOnlyDocument.querySelector("#completed-sales-rows").children.length,
+    0,
+  );
+  assert.equal(canceledOnlyDocument.querySelector("#sales-count").textContent, "1 variation");
+  assert.equal(canceledOnlyDocument.querySelector("#sales-empty").hidden, true);
+  assert.equal(canceledOnlyDocument.querySelector("#variation-details-note").hidden, false);
+});
+
+test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed color-coded values", () => {
+  const document = new FakeDocument();
+  const report = createReport({
+    itemPerformance: [
+      {
+        sku: "SKU-ZERO",
+        item: "Zero tee",
+        style: "white",
+        size: "S",
+        soldQuantity: 1,
+        grossProfitCents: 0,
+      },
+      {
+        sku: "SKU-LOSS",
+        item: "Loss tee",
+        style: "red",
+        size: "M",
+        soldQuantity: 2,
+        grossProfitCents: -23200,
+      },
+      {
+        sku: "SKU-B",
+        item: "Profit tee B",
+        style: "blue",
+        size: "L",
+        soldQuantity: 3,
+        grossProfitCents: 59800,
+      },
+      {
+        sku: "SKU-A",
+        item: "Profit tee A",
+        style: "black",
+        size: "L",
+        soldQuantity: 4,
+        grossProfitCents: 59800,
+      },
+      {
+        sku: "SKU-UNSOLD",
+        item: "Unsold tee",
+        soldQuantity: 0,
+        grossProfitCents: 99900,
+      },
+      {
+        sku: "",
+        item: "Unmapped sale",
+        soldQuantity: 1,
+        grossProfitCents: 50000,
+      },
+      {
+        sku: "SKU-UNKNOWN",
+        item: "Unknown-cost tee",
+        soldQuantity: 1,
+      },
+    ],
+  });
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  const rows = document.querySelector("#sku-profit-rows").children;
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((row) => row.children[0].textContent), [
+    "SKU-A",
+    "SKU-B",
+    "SKU-ZERO",
+    "SKU-LOSS",
+    "SKU-UNKNOWN",
+  ]);
+  assert.deepEqual(rows.map((row) => row.children[3].textContent), [
+    "+$598.00",
+    "+$598.00",
+    "$0.00",
+    "-$232.00",
+    "Not available",
+  ]);
+  assert.deepEqual(rows.map((row) => row.children[3].className), [
+    "number-cell profit-positive",
+    "number-cell profit-positive",
+    "number-cell profit-neutral",
+    "number-cell profit-negative",
+    "number-cell profit-neutral",
+  ]);
+  assert.equal(document.querySelector("#sku-profit-count").textContent, "5 sold SKUs");
+  assert.equal(document.querySelector("#sku-profit-empty").hidden, true);
+  assert.match(allText(rows[0]), /Profit tee A - black - L/);
+});
+
+test("report action notifications dismiss after four seconds and newer messages restart the timer", async () => {
+  const document = new FakeDocument();
+  const timers = [];
+  const clearedTimerIds = [];
+  let nextTimerId = 1;
+  let copyAttempts = 0;
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {
+      clipboard: {
+        async writeText() {
+          copyAttempts += 1;
+
+          if (copyAttempts === 2) {
+            throw new Error("Copy failed.");
+          }
+        },
+      },
+    },
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    setTimeout(callback, milliseconds) {
+      const timer = { id: nextTimerId, callback, milliseconds };
+      nextTimerId += 1;
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(timerId) {
+      clearedTimerIds.push(timerId);
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const actionFeedback = document.querySelector("#action-feedback");
+  const inlineFeedback = document.querySelector("#unit-cost-feedback");
+  const copyButton = document.querySelector("#copy-inventory");
+
+  copyButton.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    actionFeedback.textContent,
+    "Updated six-column inventory copied. Paste it into Google Sheets.",
+  );
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].milliseconds, 4_000);
+
+  inlineFeedback.textContent = "Inline details stay visible.";
+  copyButton.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clearedTimerIds, [timers[0].id]);
+  assert.equal(timers.length, 2);
+  assert.equal(timers[1].milliseconds, 4_000);
+  assert.equal(actionFeedback.textContent, "Copy failed.");
+
+  timers[0].callback();
+  assert.equal(actionFeedback.textContent, "Copy failed.");
+  assert.equal(inlineFeedback.textContent, "Inline details stay visible.");
+
+  timers[1].callback();
+  assert.equal(actionFeedback.textContent, "");
+  assert.equal(inlineFeedback.textContent, "Inline details stay visible.");
+});
+
+test("post-stream payment controls render only supplied unresolved rows and collect explicit outcomes", () => {
+  const document = new FakeDocument();
+  const actions = [];
+  const orders = [
+    {
+      variationNumber: 220,
+      observedPaymentStatus: "payment_failed",
+      mapped: true,
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "black",
+      size: "L",
+    },
+    {
+      variationNumber: 221,
+      observedPaymentStatus: "payment_fixing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+  ];
+
+  const controls = reportPage.renderPaymentFixingOrders(
+    document,
+    orders,
+    (action) => actions.push(action),
+  );
+  const section = document.querySelector("#payment-resolution-section");
+  const rows = document.querySelector("#payment-resolution-orders");
+
+  assert.equal(section.hidden, false);
+  assert.equal(section.attributes.get("aria-busy"), "false");
+  assert.equal(rows.children.length, 2);
+  assert.equal(controls.length, 6);
+  assert.equal(
+    document.querySelector("#payment-resolution-count").textContent,
+    "2 unresolved orders",
+  );
+  assert.match(
+    allText(rows),
+    /Variation #220[\s\S]*Payment failed - fixing period[\s\S]*Example tee - black - L \(SKU-A\)/,
+  );
+  assert.match(allText(rows), /Variation #221[\s\S]*No inventory item selected/);
+
+  const firstPriceInput = rows.children[0].children[1].children[1];
+  firstPriceInput.value = "18.25";
+  rows.children[0].children[2].click();
+  rows.children[1].children[3].click();
+  assert.equal(actions[0].resolution, "payment_complete");
+  assert.equal(actions[0].soldPriceText, "18.25");
+  assert.equal(actions[1].resolution, "canceled");
+  assert.equal(actions[1].soldPriceText, null);
+
+  reportPage.renderPaymentFixingOrders(document, [], () => {});
+  assert.equal(section.hidden, true);
+  assert.equal(rows.children.length, 0);
+});
+
+test("final sold prices convert to integer cents without floating-point rounding", () => {
+  assert.equal(reportPage.parsePositiveUsdCents("18"), 1800);
+  assert.equal(reportPage.parsePositiveUsdCents("18.2"), 1820);
+  assert.equal(reportPage.parsePositiveUsdCents("18.25"), 1825);
+  assert.equal(reportPage.parsePositiveUsdCents("0.01"), 1);
+
+  for (const invalid of ["", "0", "0.00", "-1", "1.234", "$1.00", "1,000"] ) {
+    assert.equal(reportPage.parsePositiveUsdCents(invalid), null);
+  }
+});
+
+test("unit-cost correction renders every eligible inventory SKU and accepts exact zero-dollar costs", () => {
+  const document = new FakeDocument();
+  const entries = [
+    {
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "black",
+      size: "L",
+      unitCostCents: 600,
+      completedSaleCount: 2,
+    },
+    {
+      sku: "SKU-UNSOLD",
+      item: "Unsold tee",
+      style: "white",
+      size: "S",
+      unitCostCents: 0,
+      completedSaleCount: 0,
+    },
+  ];
+
+  const selected = reportPage.renderUnitCostCorrection(
+    document,
+    entries,
+    "SKU-UNSOLD",
+  );
+
+  assert.equal(selected.sku, "SKU-UNSOLD");
+  assert.equal(document.querySelector("#unit-cost-correction-section").hidden, false);
+  assert.equal(document.querySelector("#unit-cost-sku").children.length, 2);
+  assert.match(
+    document.querySelector("#unit-cost-sku").children[0].textContent,
+    /SKU-A - Example tee - black - L - \$6\.00 - 2 sold/,
+  );
+  assert.equal(document.querySelector("#unit-cost-sku").value, "SKU-UNSOLD");
+  assert.equal(document.querySelector("#unit-cost-value").value, "0.00");
+  assert.match(
+    document.querySelector("#unit-cost-preview").textContent,
+    /no completed sales[\s\S]*metrics stay unchanged[\s\S]*only this report's Google Sheets handoff/,
+  );
+
+  assert.equal(reportPage.parseNonnegativeUsdCents("0"), 0);
+  assert.equal(reportPage.parseNonnegativeUsdCents("0.00"), 0);
+  assert.equal(reportPage.parseNonnegativeUsdCents("12.5"), 1250);
+  assert.equal(reportPage.parseNonnegativeUsdCents("12.50"), 1250);
+  for (const invalid of ["", "-1", "1.234", "$1.00", "1,000"] ) {
+    assert.equal(reportPage.parseNonnegativeUsdCents(invalid), null);
+  }
+
+  reportPage.renderUnitCostCorrection(document, []);
+  assert.equal(document.querySelector("#unit-cost-correction-section").hidden, true);
+});
+
+test("report unit-cost correction confirms impact, stays busy, and rerenders the same report and Sheet handoff", async () => {
+  const document = new FakeDocument();
+  const confirmations = [];
+  const updates = [];
+  const copied = [];
+  let currentUnitCostCents = 600;
+  let finishUpdate;
+  const updateGate = new Promise((resolve) => {
+    finishUpdate = resolve;
+  });
+  const originalReport = createReport();
+  const updatedReport = createReport({
+    totals: {
+      ...originalReport.totals,
+      costOfGoodsCents: 800,
+      grossProfitCents: 700,
+    },
+    topItems: {
+      ...originalReport.topItems,
+      mostProfitable: {
+        ...originalReport.topItems.mostProfitable,
+        value: 700,
+      },
+    },
+    itemPerformance: originalReport.itemPerformance.map((entry) => ({
+      ...entry,
+      costOfGoodsCents: 800,
+      grossProfitCents: 700,
+    })),
+    completedSales: originalReport.completedSales.map((sale) =>
+      sale.sku === "SKU-A"
+        ? { ...sale, unitCostCents: 800, grossProfitCents: 700 }
+        : sale,
+    ),
+    inventory: originalReport.inventory.map((entry) => ({
+      ...entry,
+      unitCostCents: 800,
+    })),
+    sheetRows: originalReport.sheetRows.map((entry) => ({
+      ...entry,
+      unit_cost: "8.00",
+    })),
+  });
+  const createUnitCosts = () => ({
+    reportId: REPORT_ID,
+    skus: [
+      {
+        sku: "SKU-A",
+        item: "Example tee",
+        style: "black",
+        size: "L",
+        unitCostCents: currentUnitCostCents,
+        completedSaleCount: 1,
+      },
+      {
+        sku: "SKU-UNSOLD",
+        item: "Unsold tee",
+        style: "white",
+        size: "S",
+        unitCostCents: 100,
+        completedSaleCount: 0,
+      },
+    ],
+  });
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {
+      clipboard: {
+        async writeText(value) {
+          copied.push(value);
+        },
+      },
+    },
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: originalReport,
+            };
+          },
+          async listPaymentFixingOrders() {
+            return { reportId: REPORT_ID, orders: [] };
+          },
+          async listReportUnitCosts() {
+            return createUnitCosts();
+          },
+          async updateReportUnitCost(options) {
+            updates.push(options);
+            await updateGate;
+            currentUnitCostCents = options.unitCostCents;
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: updatedReport,
+            };
+          },
+        };
+      },
+    },
+    confirm(message) {
+      confirmations.push(message);
+      return true;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const section = document.querySelector("#unit-cost-correction-section");
+  const input = document.querySelector("#unit-cost-value");
+  const button = document.querySelector("#update-unit-cost");
+  assert.equal(section.hidden, false);
+  assert.equal(document.querySelector("#unit-cost-sku").children.length, 2);
+  input.value = "8.00";
+  input.listeners.get("input")?.();
+  assert.match(
+    document.querySelector("#unit-cost-preview").textContent,
+    /COGS increases by \$2\.00[\s\S]*gross profit decreases by \$2\.00/,
+  );
+  button.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(section.attributes.get("aria-busy"), "true");
+  assert.equal(input.disabled, true);
+  assert.equal(button.disabled, true);
+  assert.match(
+    confirmations[0],
+    /SKU-A from \$6\.00 to \$8\.00[\s\S]*1 completed sale[\s\S]*only this saved report[\s\S]*other reports[\s\S]*future streams are unaffected/,
+  );
+
+  finishUpdate();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(updates, [
+    { reportId: REPORT_ID, sku: "SKU-A", unitCostCents: 800 },
+  ]);
+  assert.equal(section.attributes.get("aria-busy"), "false");
+  assert.equal(input.disabled, false);
+  assert.equal(input.value, "8.00");
+  assert.match(allText(document.querySelector("#summary-grid")), /Gross profit[\s\S]*\$7\.00/);
+  assert.equal(
+    document.querySelector("#completed-sales-rows").children[0].children[7].textContent,
+    "$8.00",
+  );
+  assert.equal(
+    document.querySelector("#performance-rows").children[0].children[5].textContent,
+    "$8.00",
+  );
+  assert.match(allText(document.querySelector("#most-profitable-items")), /\$7\.00/);
+  assert.equal(
+    document.querySelector("#inventory-rows").children[0].children[0].textContent,
+    "SKU-A",
+  );
+  assert.equal(
+    document.querySelector("#inventory-rows").children[0].children[4].textContent,
+    "$8.00",
+  );
+  assert.match(
+    document.querySelector("#unit-cost-feedback").textContent,
+    /this report[\s\S]*metrics and Google Sheets handoff were updated[\s\S]*other reports and future streams were not changed/,
+  );
+
+  document.querySelector("#copy-inventory").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(copied[0], /SKU-A\t.*\t8\.00/);
+});
+
+test("failed report unit-cost correction keeps the selected SKU and entered cost for retry", async () => {
+  const document = new FakeDocument();
+  let attempts = 0;
+  let actionFeedbackTimer = null;
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+          async listReportUnitCosts() {
+            return {
+              reportId: REPORT_ID,
+              skus: [{
+                sku: "SKU-A",
+                item: "Example tee",
+                style: "black",
+                size: "L",
+                unitCostCents: 600,
+                completedSaleCount: 1,
+              }],
+            };
+          },
+          async updateReportUnitCost() {
+            attempts += 1;
+            throw new Error("The corrected unit cost could not be saved. Try again.");
+          },
+        };
+      },
+    },
+    confirm: () => true,
+    setTimeout(callback, milliseconds) {
+      actionFeedbackTimer = { callback, milliseconds };
+      return 1;
+    },
+    clearTimeout() {},
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const section = document.querySelector("#unit-cost-correction-section");
+  const select = document.querySelector("#unit-cost-sku");
+  const input = document.querySelector("#unit-cost-value");
+  const button = document.querySelector("#update-unit-cost");
+  input.value = "7.25";
+  button.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(attempts, 1);
+  assert.equal(section.hidden, false);
+  assert.equal(section.attributes.get("aria-busy"), "false");
+  assert.equal(select.value, "SKU-A");
+  assert.equal(input.value, "7.25");
+  assert.equal(input.disabled, false);
+  assert.equal(button.disabled, false);
+  assert.equal(
+    document.querySelector("#unit-cost-feedback").textContent,
+    "The corrected unit cost could not be saved. Try again.",
+  );
+  assert.equal(
+    document.querySelector("#unit-cost-feedback").className,
+    "unit-cost-feedback is-error",
+  );
+  assert.equal(actionFeedbackTimer.milliseconds, 4_000);
+  assert.equal(
+    document.querySelector("#action-feedback").textContent,
+    "The corrected unit cost could not be saved. Try again.",
+  );
+
+  actionFeedbackTimer.callback();
+  assert.equal(document.querySelector("#action-feedback").textContent, "");
+  assert.equal(
+    document.querySelector("#unit-cost-feedback").textContent,
+    "The corrected unit cost could not be saved. Try again.",
+  );
+  assert.equal(
+    document.querySelector("#unit-cost-feedback").className,
+    "unit-cost-feedback is-error",
+  );
+});
+
+test("report payment correction confirms, saves, refreshes totals, and removes the resolved row", async () => {
+  const document = new FakeDocument();
+  const confirmations = [];
+  const resolutions = [];
+  let finishResolution;
+  const resolutionGate = new Promise((resolve) => {
+    finishResolution = resolve;
+  });
+  let unresolvedOrders = [
+    {
+      variationNumber: 220,
+      observedPaymentStatus: "payment_failed",
+      mapped: true,
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "black",
+      size: "L",
+    },
+  ];
+  const originalReport = createReport();
+  const updatedReport = createReport({
+    totals: {
+      ...originalReport.totals,
+      completedPaymentCount: 3,
+      totalSalesCount: 3,
+      completedGmvCents: 4325,
+      paymentFixingCount: 0,
+    },
+  });
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: originalReport,
+            };
+          },
+          async listPaymentFixingOrders() {
+            return { reportId: REPORT_ID, orders: unresolvedOrders };
+          },
+          async resolvePaymentFixingOrder(options) {
+            resolutions.push(options);
+            await resolutionGate;
+            unresolvedOrders = [];
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: updatedReport,
+            };
+          },
+        };
+      },
+    },
+    confirm(message) {
+      confirmations.push(message);
+      return true;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const row = document.querySelector("#payment-resolution-orders").children[0];
+  row.children[1].children[1].value = "18.25";
+  row.children[2].click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(
+    document
+      .querySelector("#payment-resolution-section")
+      .attributes.get("aria-busy"),
+    "true",
+  );
+  assert.equal(row.children[1].children[1].disabled, true);
+  assert.equal(row.children[2].disabled, true);
+  assert.equal(row.children[3].disabled, true);
+
+  finishResolution();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(resolutions, [
+    {
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "payment_complete",
+      soldPriceCents: 1825,
+    },
+  ]);
+  assert.match(
+    confirmations[0],
+    /variation #220 Payment complete at \$18\.25[\s\S]*permanently updates/,
+  );
+  assert.equal(document.querySelector("#payment-resolution-section").hidden, true);
+  assert.match(
+    document.querySelector("#action-feedback").textContent,
+    /Report totals and inventory were updated/,
+  );
+  assert.match(allText(document.querySelector("#summary-grid")), /\$43\.25/);
+});
+
+test("report payment cancellation confirms, refreshes inventory, and removes the resolved row", async () => {
+  const document = new FakeDocument();
+  const confirmations = [];
+  const resolutions = [];
+  let unresolvedOrders = [
+    {
+      variationNumber: 220,
+      observedPaymentStatus: "payment_failed",
+      mapped: true,
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "black",
+      size: "L",
+    },
+  ];
+  const originalReport = createReport();
+  const updatedReport = createReport({
+    totals: {
+      ...originalReport.totals,
+      canceledOrderCount: originalReport.totals.canceledOrderCount + 1,
+      paymentFixingCount: 0,
+    },
+    canceledOrders: [
+      ...originalReport.canceledOrders,
+      {
+        variationNumber: 220,
+        mapped: true,
+        sku: "SKU-A",
+        item: "Example tee",
+        style: "black",
+        size: "L",
+      },
+    ],
+    inventory: originalReport.inventory.map((entry) => ({
+      ...entry,
+      pendingQuantity: 0,
+    })),
+  });
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: originalReport,
+            };
+          },
+          async listPaymentFixingOrders() {
+            return { reportId: REPORT_ID, orders: unresolvedOrders };
+          },
+          async resolvePaymentFixingOrder(options) {
+            resolutions.push(options);
+            unresolvedOrders = [];
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: updatedReport,
+            };
+          },
+        };
+      },
+    },
+    confirm(message) {
+      confirmations.push(message);
+      return true;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const row = document.querySelector("#payment-resolution-orders").children[0];
+  row.children[3].click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(resolutions, [
+    {
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "canceled",
+      soldPriceCents: null,
+    },
+  ]);
+  assert.match(
+    confirmations[0],
+    /variation #220 canceled[\s\S]*releases its inventory reservation/,
+  );
+  assert.equal(document.querySelector("#payment-resolution-section").hidden, true);
+  assert.equal(
+    document.querySelector("#inventory-rows").children[0].children[7].textContent,
+    "0",
+  );
+  assert.match(
+    document.querySelector("#action-feedback").textContent,
+    /marked canceled[\s\S]*Report totals and inventory were updated/,
+  );
+  assert.equal(document.querySelector("#sales-count").textContent, "4 variations");
+  const variationRows = document.querySelector("#completed-sales-rows").children;
+  assert.deepEqual(
+    variationRows.at(-1).children.map((cell) => cell.textContent),
+    ["#220", "Canceled", "SKU-A", "Example tee", "black", "L", "—", "—", "—"],
+  );
+});
+
+test("failed report payment correction preserves the row and input for retry", async () => {
+  const document = new FakeDocument();
+  const order = {
+    variationNumber: 220,
+    observedPaymentStatus: "payment_failed",
+    mapped: true,
+    sku: "SKU-A",
+    item: "Example tee",
+    style: "black",
+    size: "L",
+  };
+  let resolutionAttempts = 0;
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+          async listPaymentFixingOrders() {
+            return { reportId: REPORT_ID, orders: [order] };
+          },
+          async resolvePaymentFixingOrder() {
+            resolutionAttempts += 1;
+            throw new Error("The corrected report could not be saved. Try again.");
+          },
+        };
+      },
+    },
+    confirm() {
+      return true;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const section = document.querySelector("#payment-resolution-section");
+  const orders = document.querySelector("#payment-resolution-orders");
+  const row = orders.children[0];
+  const priceInput = row.children[1].children[1];
+  const completeButton = row.children[2];
+  const cancelButton = row.children[3];
+  priceInput.value = "19.50";
+  completeButton.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(resolutionAttempts, 1);
+  assert.equal(section.hidden, false);
+  assert.equal(section.attributes.get("aria-busy"), "false");
+  assert.equal(orders.children.length, 1);
+  assert.equal(priceInput.value, "19.50");
+  assert.equal(priceInput.disabled, false);
+  assert.equal(completeButton.disabled, false);
+  assert.equal(cancelButton.disabled, false);
+  assert.equal(
+    document.querySelector("#payment-resolution-feedback").textContent,
+    "The corrected report could not be saved. Try again.",
+  );
+  assert.equal(
+    document.querySelector("#payment-resolution-feedback").className,
+    "resolution-feedback is-error",
+  );
+  assert.equal(
+    document.querySelector("#action-feedback").textContent,
+    "The corrected report could not be saved. Try again.",
+  );
 });
 
 test("post-stream AOV uses Gross Item Sales divided by completed sales", () => {
@@ -493,18 +1903,113 @@ test("post-stream TikTok fee card displays em dashes when Total GMV was not capt
   ]);
 });
 
+test("post-stream estimated profit after fees uses unrounded 94% GMV minus mapped COGS", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 3,
+      totalSalesCount: 3,
+      completedGmvCents: 620000,
+      costOfGoodsCents: 32000,
+      grossProfitCents: 588000,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$6.83K",
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.deepEqual(metric, {
+    label: "Est. Profit After Fees",
+    value: "≈$6,100",
+    note: "Total GMV after 6% fee, minus mapped item costs",
+    warning: false,
+  });
+  assert.equal(
+    reportPage.DEFAULT_DEFINITIONS.find(
+      (definition) => definition.term === "Est. Profit After Fees",
+    )?.description,
+    "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+  );
+});
+
+test("post-stream estimated profit after fees shows incomplete counts and permits a loss", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 2,
+      totalSalesCount: 2,
+      completedGmvCents: 1000,
+      costOfGoodsCents: 2000,
+      grossProfitCents: -1000,
+      unmappedCompletedCount: 2,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$10.00",
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.deepEqual(metric, {
+    label: "Est. Profit After Fees",
+    value: "≈-$11",
+    note: "Incomplete — 2 completed sales still need inventory items.",
+    warning: true,
+  });
+});
+
+test("post-stream estimated profit after fees displays an em dash without Total GMV", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 0,
+      totalSalesCount: 0,
+      completedGmvCents: 0,
+      costOfGoodsCents: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 0,
+      canceledOrderCount: 0,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: null,
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Est. Profit After Fees",
+  );
+
+  assert.equal(metric.value, "—");
+});
+
 test("inventory payloads use the exact six columns, retain zero, and omit unrelated secrets", () => {
   const report = createReport();
   const tsv = reportPage.serializeInventoryTsv(report);
   const csv = reportPage.serializeInventoryCsv(report);
-  const counts = reportPage.buildSkuCountText(report);
   const expectedHeader =
     "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost";
 
   assert.equal(tsv.split("\n")[0], expectedHeader);
+  assert.equal(reportPage.SHEET_HEADERS.length, 6);
+  assert.deepEqual(reportPage.SHEET_HEADERS, [
+    "sku",
+    "item",
+    "style",
+    "size",
+    "quantity_on_hand_at_import",
+    "unit_cost",
+  ]);
+  assert.ok(tsv.split("\n").every((row) => row.split("\t").length === 6));
+  assert.ok(
+    csv
+      .split("\r\n")
+      .every(
+        (row) =>
+          row.match(/(?:^|,)(?:"(?:[^"]|"")*"|[^,]*)/g).length === 6,
+      ),
+  );
   assert.match(tsv, /SKU-A[^\n]*\t0\t6\.00/);
   assert.match(csv, /quantity_on_hand_at_import/);
-  assert.equal(counts, "SKU: SKU-A Updated count: 0");
 
   for (const secret of [
     report.oauthToken,
@@ -513,11 +2018,10 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
   ]) {
     assert.equal(tsv.includes(secret), false);
     assert.equal(csv.includes(secret), false);
-    assert.equal(counts.includes(secret), false);
   }
 });
 
-test("long inventory renders every row and keeps the simple count list complete", () => {
+test("long inventory renders every row in the updated inventory table", () => {
   const inventory = Array.from({ length: 1000 }, (_, index) => ({
     sku: `SKU-${String(index).padStart(4, "0")}`,
     item: "Long inventory item",
@@ -553,10 +2057,12 @@ test("long inventory renders every row and keeps the simple count list complete"
     report,
   });
 
-  assert.equal(document.querySelector("#inventory-rows").children.length, 1000);
-  assert.equal(
-    document.querySelector("#sku-count-list").textContent.split("\n").length,
-    1000,
+  const rows = document.querySelector("#inventory-rows").children;
+  assert.equal(rows.length, 1000);
+  assert.ok(
+    rows.every(
+      (row) => row.children.length === 10 && row.children[4].textContent === "$1.00",
+    ),
   );
 });
 
@@ -644,6 +2150,245 @@ test("stream report client strictly parses list and hydrates an exact GET respon
     type: protocol.COMMAND_TYPES.GET_REPORT,
     reportId: REPORT_ID,
   });
+});
+
+test("stream report client strictly lists and resolves post-stream payment-fixing orders", async () => {
+  const sentCommands = [];
+  const report = createReport();
+  const orders = [
+    {
+      variationNumber: 220,
+      observedPaymentStatus: "payment_failed",
+      mapped: true,
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "",
+      size: "L",
+    },
+    {
+      variationNumber: 221,
+      observedPaymentStatus: "payment_fixing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+  ];
+  const client = createClient({
+    runtime: {
+      async sendMessage(message) {
+        sentCommands.push(message.command);
+
+        if (
+          message.command.type ===
+          protocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS
+        ) {
+          return { ok: true, data: { reportId: REPORT_ID, orders } };
+        }
+
+        return {
+          ok: true,
+          data: {
+            reportId: REPORT_ID,
+            lifecycleStatus: "finalized",
+            report,
+          },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await client.listPaymentFixingOrders({ reportId: REPORT_ID }),
+    { reportId: REPORT_ID, orders },
+  );
+  assert.deepEqual(
+    await client.resolvePaymentFixingOrder({
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "payment_complete",
+      soldPriceCents: 1825,
+    }),
+    { reportId: REPORT_ID, lifecycleStatus: "finalized", report },
+  );
+  assert.deepEqual(sentCommands, [
+    {
+      type: protocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
+      reportId: REPORT_ID,
+    },
+    {
+      type: protocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "payment_complete",
+      soldPriceCents: 1825,
+    },
+  ]);
+
+  await assert.rejects(
+    client.resolvePaymentFixingOrder({
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "payment_complete",
+      soldPriceCents: null,
+    }),
+    (error) => error.code === "INVALID_CLIENT_COMMAND",
+  );
+  await assert.rejects(
+    client.resolvePaymentFixingOrder({
+      reportId: REPORT_ID,
+      variationNumber: 220,
+      resolution: "canceled",
+      soldPriceCents: 1825,
+    }),
+    (error) => error.code === "INVALID_CLIENT_COMMAND",
+  );
+});
+
+test("stream report client rejects ineligible payment statuses in list responses", async () => {
+  const client = createClient({
+    runtime: {
+      async sendMessage() {
+        return {
+          ok: true,
+          data: {
+            reportId: REPORT_ID,
+            orders: [
+              {
+                variationNumber: 220,
+                observedPaymentStatus: "payment_processing",
+                mapped: false,
+                sku: null,
+                item: null,
+                style: null,
+                size: null,
+              },
+            ],
+          },
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    client.listPaymentFixingOrders({ reportId: REPORT_ID }),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
+});
+
+test("stream report client strictly lists and updates report unit costs", async () => {
+  const sentCommands = [];
+  const report = createReport();
+  const skus = [
+    {
+      sku: "SKU-A",
+      item: "Example tee",
+      style: "black",
+      size: "L",
+      unitCostCents: 600,
+      completedSaleCount: 2,
+    },
+    {
+      sku: "SKU-UNSOLD",
+      item: "Unsold tee",
+      style: "",
+      size: "OS",
+      unitCostCents: 0,
+      completedSaleCount: 0,
+    },
+  ];
+  const client = createClient({
+    runtime: {
+      async sendMessage(message) {
+        sentCommands.push(message.command);
+
+        if (
+          message.command.type ===
+          protocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS
+        ) {
+          return { ok: true, data: { reportId: REPORT_ID, skus } };
+        }
+
+        return {
+          ok: true,
+          data: {
+            reportId: REPORT_ID,
+            lifecycleStatus: "finalized",
+            report,
+          },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await client.listReportUnitCosts({ reportId: REPORT_ID }),
+    { reportId: REPORT_ID, skus },
+  );
+  assert.deepEqual(
+    await client.updateReportUnitCost({
+      reportId: REPORT_ID,
+      sku: "SKU-UNSOLD",
+      unitCostCents: 0,
+    }),
+    { reportId: REPORT_ID, lifecycleStatus: "finalized", report },
+  );
+  assert.deepEqual(sentCommands, [
+    {
+      type: protocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
+      reportId: REPORT_ID,
+    },
+    {
+      type: protocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+      reportId: REPORT_ID,
+      sku: "SKU-UNSOLD",
+      unitCostCents: 0,
+    },
+  ]);
+
+  for (const invalid of [
+    { reportId: REPORT_ID, sku: "", unitCostCents: 0 },
+    { reportId: REPORT_ID, sku: " SKU-A", unitCostCents: 0 },
+    { reportId: REPORT_ID, sku: "SKU-A", unitCostCents: -1 },
+    { reportId: REPORT_ID, sku: "SKU-A", unitCostCents: 1.5 },
+  ]) {
+    await assert.rejects(
+      client.updateReportUnitCost(invalid),
+      (error) => error.code === "INVALID_CLIENT_COMMAND",
+    );
+  }
+});
+
+test("stream report client rejects duplicate or malformed report unit-cost rows", async () => {
+  const valid = {
+    sku: "SKU-A",
+    item: "Example tee",
+    style: "black",
+    size: "L",
+    unitCostCents: 600,
+    completedSaleCount: 1,
+  };
+  const responses = [
+    [valid, { ...valid }],
+    [{ ...valid, unitCostCents: -1 }],
+    [{ ...valid, completedSaleCount: -1 }],
+    [{ ...valid, unexpected: true }],
+  ];
+
+  for (const skus of responses) {
+    const client = createClient({
+      runtime: {
+        async sendMessage() {
+          return { ok: true, data: { reportId: REPORT_ID, skus } };
+        },
+      },
+    });
+    await assert.rejects(
+      client.listReportUnitCosts({ reportId: REPORT_ID }),
+      (error) => error.code === "INVALID_RESPONSE",
+    );
+  }
 });
 
 test("stream report client lists archived reports and strictly echoes archive mutations", async () => {

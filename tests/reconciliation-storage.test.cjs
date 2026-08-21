@@ -403,26 +403,24 @@ test("lazily migrates v6 unpaid and cancellation-overridden state without rewrit
     variationNumber: 20,
     sku: "BLACK-TEE-M",
   });
-  reconciliation.markUnpaid(v6State, {
-    streamId: "legacy-v6-stream",
-    variationNumber: 20,
-  });
   reconciliation.mapVariation(v6State, {
     streamId: "legacy-v6-stream",
     variationNumber: 21,
     sku: "GREY-HOODIE-L",
   });
-  reconciliation.markUnpaid(v6State, {
-    streamId: "legacy-v6-stream",
-    variationNumber: 21,
-  });
-  reconciliation.recordPaymentComplete(v6State, {
-    streamId: "legacy-v6-stream",
-    variationNumber: 21,
+  const [legacyUnpaid, legacyCanceled] = v6State.streams[0].variations;
+
+  legacyUnpaid.mappingStatus = "marked_unpaid";
+  Object.assign(legacyCanceled, {
+    mappingStatus: "marked_unpaid",
+    paymentStatus: "payment_complete",
+    observedPaymentStatus: "payment_complete",
     soldPriceCents: 4800,
-  });
-  v6State.streams[0].variations[1].conflicts.push({
-    code: "payment_completed_after_canceled",
+    committedUnitCostCents: 2400,
+    conflicts: [
+      { code: "payment_completed_after_marked_unpaid" },
+      { code: "payment_completed_after_canceled" },
+    ],
   });
   v6State.version = 6;
   const storedV6State = clone(v6State);
@@ -646,7 +644,7 @@ for (const [label, corrupt] of corruptStateCases) {
   });
 }
 
-test("rejects ephemeral manual-unpaid state at the v7 storage boundary", async () => {
+test("rejects legacy manual-unpaid state at the v7 storage boundary", async () => {
   const state = reconciliation.createReconciliationState(INVENTORY);
 
   reconciliation.mapVariation(state, {
@@ -654,15 +652,7 @@ test("rejects ephemeral manual-unpaid state at the v7 storage boundary", async (
     variationNumber: 9,
     sku: "BLACK-TEE-M",
   });
-  reconciliation.markUnpaid(state, {
-    streamId: "evening-stream",
-    variationNumber: 9,
-  });
-  reconciliation.recordPaymentComplete(state, {
-    streamId: "evening-stream",
-    variationNumber: 9,
-    soldPriceCents: 3600,
-  });
+  state.streams[0].variations[0].mappingStatus = "marked_unpaid";
 
   const memoryStorage = createMemoryStorage();
   const store = createStore(memoryStorage);
@@ -674,7 +664,7 @@ test("rejects ephemeral manual-unpaid state at the v7 storage boundary", async (
   assert.equal(memoryStorage.calls.set.length, 0);
 });
 
-test("round-trips price and unpaid conflicts while canceled completion stays ignored", async () => {
+test("round-trips price and legacy-payment conflicts while canceled completion stays ignored", async () => {
   const state = reconciliation.createReconciliationState(INVENTORY);
 
   reconciliation.mapVariation(state, {
@@ -697,18 +687,13 @@ test("round-trips price and unpaid conflicts while canceled completion stays ign
     variationNumber: 11,
     sku: "GREY-HOODIE-L",
   });
-  reconciliation.markUnpaid(state, {
-    streamId: "conflict-stream",
-    variationNumber: 11,
-  });
   reconciliation.recordPaymentComplete(state, {
     streamId: "conflict-stream",
     variationNumber: 11,
     soldPriceCents: 4800,
   });
-  reconciliation.undoMarkUnpaid(state, {
-    streamId: "conflict-stream",
-    variationNumber: 11,
+  state.streams[0].variations[1].conflicts.push({
+    code: "payment_completed_after_marked_unpaid",
   });
   reconciliation.mapVariation(state, {
     streamId: "conflict-stream",

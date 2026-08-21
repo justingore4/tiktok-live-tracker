@@ -103,6 +103,8 @@ function createPersistentIntegration(memoryStore, getActiveState) {
 function createHarness(options = {}) {
   const activeCalls = [];
   const stateCalls = [];
+  const liveBidCalls = [];
+  const liveBidSyncCalls = [];
   let activeState = options.activeState ?? createActiveState();
   const activeStreamCoordinator = {
     async dispatch(command) {
@@ -133,9 +135,29 @@ function createHarness(options = {}) {
       };
     },
   };
+  const liveBidCoordinator = options.withLiveBidCoordinator
+    ? {
+        async observe(value) {
+          liveBidCalls.push(clone(value));
+          return options.liveBidResult ?? {
+            status: "accepted",
+          };
+        },
+        async synchronize(value) {
+          liveBidSyncCalls.push(clone(value));
+
+          if (options.liveBidSyncError) {
+            throw options.liveBidSyncError;
+          }
+
+          return options.liveBidSyncResult ?? { status: "unchanged" };
+        },
+      }
+    : undefined;
   const integration = createCaptureIntegration({
     activeStreamCoordinator,
     captureProtocol,
+    ...(liveBidCoordinator ? { liveBidCoordinator } : {}),
     reconciliationCoordinator,
     stateCoordinator,
     streamSession,
@@ -145,6 +167,8 @@ function createHarness(options = {}) {
   return {
     activeCalls,
     integration,
+    liveBidCalls,
+    liveBidSyncCalls,
     setActiveState(state) {
       activeState = state;
     },
@@ -298,6 +322,106 @@ test("binds the live bidding variation to the worker-owned active stream", async
       streamId: STREAM_ONE,
       variationNumber: 252,
     },
+  ]);
+});
+
+test("routes live prices to transient storage without pinning or reconciliation writes", async () => {
+  const harness = createHarness({ withLiveBidCoordinator: true });
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+      variationNumber: 252,
+      bidPriceCents: 2800,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(harness.integration.consumeLiveBidChanged(), true);
+  assert.equal(harness.integration.consumeLiveBidChanged(), false);
+  assert.deepEqual(harness.liveBidCalls, [
+    {
+      streamId: STREAM_ONE,
+      variationNumber: 252,
+      bidPriceCents: 2800,
+    },
+  ]);
+  assert.equal(harness.stateCalls.length, 0);
+  assert.equal(harness.liveBidSyncCalls.length, 0);
+});
+
+test("silently ignored stale prices still ACK exactly so capture does not retry", async () => {
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    liveBidResult: { status: "ignored" },
+  });
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+      variationNumber: 251,
+      bidPriceCents: 2800,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(harness.integration.consumeLiveBidChanged(), false);
+  assert.equal(harness.stateCalls.length, 0);
+});
+
+test("unchanged transient prices ACK without requesting an invalidation", async () => {
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    liveBidResult: { status: "unchanged" },
+  });
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+      variationNumber: 252,
+      bidPriceCents: 2800,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(harness.integration.consumeLiveBidChanged(), false);
+});
+
+test("canonical capture responses synchronize the cached active marker", async () => {
+  const state = { version: 7, streams: [] };
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    liveBidSyncResult: { status: "accepted" },
+    stateResponse: { state, result: null },
+  });
+
+  await harness.integration.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  });
+
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    { streamId: STREAM_ONE, state },
+  ]);
+  assert.equal(harness.integration.consumeLiveBidChanged(), true);
+});
+
+test("transient synchronization failure cannot reject durable canonical capture", async () => {
+  const state = { version: 7, streams: [] };
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    stateResponse: { state, result: null },
+    liveBidSyncError: new Error("session storage unavailable"),
+  });
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+      variationNumber: 252,
+    }),
+    { status: "accepted" },
+  );
+  assert.equal(harness.integration.consumeLiveBidChanged(), false);
+  assert.equal(harness.stateCalls.length, 2);
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    { streamId: STREAM_ONE, state },
   ]);
 });
 

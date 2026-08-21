@@ -11,7 +11,8 @@
   function createStreamReportModule() {
     "use strict";
 
-    const REPORT_VERSION = 1;
+    const REPORT_VERSION = 2;
+    const LEGACY_REPORT_VERSION = 1;
     const MAX_ROWS = 1000;
     const MAX_TEXT_LENGTH = 200;
     const MAX_ID_LENGTH = 200;
@@ -43,6 +44,26 @@
       "inventory_recount_required",
     ]);
     const REASON_CODES = new Set(REASON_ORDER);
+    const LEGACY_REPORT_KEYS = Object.freeze([
+      "completedSales",
+      "completeness",
+      "inventory",
+      "inventoryUpdateLines",
+      "itemPerformance",
+      "metadata",
+      "productPerformance",
+      "reportId",
+      "sheetRows",
+      "topItems",
+      "topProducts",
+      "totals",
+      "version",
+      "warnings",
+    ]);
+    const REPORT_KEYS = Object.freeze([
+      "canceledOrders",
+      ...LEGACY_REPORT_KEYS,
+    ]);
 
     class StreamReportError extends Error {
       constructor(code, message) {
@@ -515,6 +536,52 @@
         unitCostCents,
         grossProfitCents,
         conflicts,
+      };
+    }
+
+    function normalizeCanceledOrder(value, path) {
+      requireExactRecord(
+        value,
+        ["item", "mapped", "size", "sku", "style", "variationNumber"],
+        path,
+      );
+      const variationNumber = requireInteger(
+        value.variationNumber,
+        `${path}.variationNumber`,
+        1,
+      );
+      const mapped = requireBoolean(value.mapped, `${path}.mapped`);
+      const sku = value.sku === null
+        ? null
+        : requireSku(value.sku, `${path}.sku`);
+      const item = requireNullableText(value.item, `${path}.item`, {
+        maximum: 160,
+      });
+      const style = requireNullableText(value.style, `${path}.style`, {
+        allowEmpty: true,
+        maximum: 160,
+      });
+      const size = requireNullableText(value.size, `${path}.size`, {
+        allowEmpty: true,
+        maximum: 80,
+      });
+
+      if (
+        mapped !== (sku !== null) ||
+        mapped !== (item !== null) ||
+        mapped !== (style !== null) ||
+        mapped !== (size !== null)
+      ) {
+        fail("INVALID_REPORT", `${path} has inconsistent mapped fields.`);
+      }
+
+      return {
+        variationNumber,
+        mapped,
+        sku,
+        item,
+        style,
+        size,
       };
     }
 
@@ -992,27 +1059,21 @@
       return warnings;
     }
 
-    function hydrateStreamReport(candidate) {
-      requireExactRecord(
-        candidate,
-        [
-          "completedSales",
-          "completeness",
-          "inventory",
-          "inventoryUpdateLines",
-          "itemPerformance",
-          "metadata",
-          "productPerformance",
-          "reportId",
-          "sheetRows",
-          "topItems",
-          "topProducts",
-          "totals",
-          "version",
-          "warnings",
-        ],
-        "report",
-      );
+    function normalizeReportCandidate(candidate) {
+      if (!isPlainRecord(candidate)) {
+        fail("INVALID_REPORT", "report must be an object.");
+      }
+
+      if (candidate.version === LEGACY_REPORT_VERSION) {
+        requireExactRecord(candidate, LEGACY_REPORT_KEYS, "report");
+        return {
+          ...candidate,
+          version: REPORT_VERSION,
+          canceledOrders: null,
+        };
+      }
+
+      requireExactRecord(candidate, REPORT_KEYS, "report");
 
       if (candidate.version !== REPORT_VERSION) {
         fail(
@@ -1020,6 +1081,12 @@
           `Stream report version ${candidate.version} is not supported.`,
         );
       }
+
+      return candidate;
+    }
+
+    function hydrateStreamReport(candidateValue) {
+      const candidate = normalizeReportCandidate(candidateValue);
 
       const reportId = requireText(candidate.reportId, "report.reportId", {
         maximum: 50,
@@ -1056,6 +1123,12 @@
       ).map((sale, index) =>
         normalizeCompletedSale(sale, `report.completedSales[${index}]`),
       );
+      const canceledOrders = candidate.canceledOrders === null
+        ? null
+        : requireArray(candidate.canceledOrders, "report.canceledOrders")
+            .map((order, index) =>
+              normalizeCanceledOrder(order, `report.canceledOrders[${index}]`),
+            );
       const inventory = requireArray(candidate.inventory, "report.inventory")
         .map((row, index) =>
           normalizeInventoryRow(row, `report.inventory[${index}]`),
@@ -1120,6 +1193,9 @@
       const completedVariationNumbers = completedSales.map(
         (sale) => sale.variationNumber,
       );
+      const canceledVariationNumbers = canceledOrders?.map(
+        (order) => order.variationNumber,
+      ) ?? [];
 
       if (
         uniqueSkus.size !== itemPerformance.length ||
@@ -1129,6 +1205,15 @@
         !valuesEqual(
           [...completedVariationNumbers].sort((left, right) => left - right),
           completedVariationNumbers,
+        ) ||
+        new Set(canceledVariationNumbers).size !==
+          canceledVariationNumbers.length ||
+        !valuesEqual(
+          [...canceledVariationNumbers].sort((left, right) => left - right),
+          canceledVariationNumbers,
+        ) ||
+        canceledVariationNumbers.some((variationNumber) =>
+          completedVariationNumbers.includes(variationNumber)
         ) ||
         !valuesEqual([...skuSets[0]].sort(), skuSets[0])
       ) {
@@ -1156,6 +1241,8 @@
 
       if (
         completedSales.length !== totals.completedPaymentCount ||
+        (canceledOrders !== null &&
+          canceledOrders.length !== totals.canceledOrderCount) ||
         completedSales.filter((sale) => !sale.mapped).length !==
           totals.unmappedCompletedCount ||
         completedSales.reduce(
@@ -1172,6 +1259,24 @@
       ) {
         fail("INVALID_REPORT", "Report sales do not match report totals.");
       }
+
+      canceledOrders
+        ?.filter((order) => order.mapped)
+        .forEach((order) => {
+          const inventoryItem = inventoryBySku.get(order.sku);
+
+          if (
+            !inventoryItem ||
+            order.item !== inventoryItem.item ||
+            order.style !== inventoryItem.style ||
+            order.size !== inventoryItem.size
+          ) {
+            fail(
+              "INVALID_REPORT",
+              "A canceled order does not match its reference inventory item.",
+            );
+          }
+        });
 
       const completedBySku = new Map(
         itemPerformance.map((item) => [
@@ -1303,6 +1408,7 @@
         itemPerformance,
         productPerformance,
         completedSales,
+        canceledOrders,
         inventory,
         inventoryUpdateLines,
         sheetRows,
@@ -1406,6 +1512,23 @@
             unitCostCents: auction.committedUnitCostCents,
             grossProfitCents: auction.profitCents,
             conflicts: auction.conflicts.map(normalizeAuctionConflict),
+          };
+        })
+        .sort((left, right) => left.variationNumber - right.variationNumber);
+      const canceledOrders = summary.auctions
+        .filter((auction) => auction.paymentStatus === "canceled")
+        .map((auction) => {
+          const inventoryItem = auction.sku
+            ? inventoryBySku.get(auction.sku) ?? null
+            : null;
+
+          return {
+            variationNumber: auction.variationNumber,
+            mapped: inventoryItem !== null,
+            sku: inventoryItem?.sku ?? null,
+            item: inventoryItem?.item ?? null,
+            style: inventoryItem?.style ?? null,
+            size: inventoryItem?.size ?? null,
           };
         })
         .sort((left, right) => left.variationNumber - right.variationNumber);
@@ -1517,12 +1640,161 @@
         itemPerformance,
         productPerformance,
         completedSales,
+        canceledOrders,
         inventory,
         inventoryUpdateLines: inventory.map(
           (row) => `SKU: ${row.sku} Updated count: ${row.replacementQuantity}`,
         ),
         sheetRows,
         warnings,
+      });
+    }
+
+    function normalizeUnitCostCorrection(input) {
+      if (!isPlainRecord(input)) {
+        fail("INVALID_ARGUMENT", "A report unit-cost correction is required.");
+      }
+
+      const actualKeys = Object.keys(input).sort();
+      const expectedKeys = ["sku", "unitCostCents"];
+
+      if (
+        actualKeys.length !== expectedKeys.length ||
+        actualKeys.some((key, index) => key !== expectedKeys[index])
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          "A report unit-cost correction must contain exactly sku and unitCostCents.",
+        );
+      }
+
+      if (
+        typeof input.sku !== "string" ||
+        input.sku !== input.sku.trim() ||
+        !SKU_PATTERN.test(input.sku)
+      ) {
+        fail("INVALID_ARGUMENT", "sku is not a supported SKU.");
+      }
+
+      if (!Number.isSafeInteger(input.unitCostCents) || input.unitCostCents < 0) {
+        fail(
+          "INVALID_ARGUMENT",
+          "unitCostCents must be a nonnegative safe integer.",
+        );
+      }
+
+      return {
+        sku: input.sku,
+        unitCostCents: input.unitCostCents,
+      };
+    }
+
+    function correctReportUnitCost(report, input) {
+      const hydrated = hydrateStreamReport(report);
+      const correction = normalizeUnitCostCorrection(input);
+      const inventoryItem = hydrated.inventory.find(
+        (item) => item.sku === correction.sku,
+      );
+
+      if (!inventoryItem) {
+        fail(
+          "UNKNOWN_SKU",
+          `Report inventory does not contain SKU ${correction.sku}.`,
+        );
+      }
+
+      const projectedCostOfGoods = hydrated.itemPerformance.reduce(
+        (total, item) =>
+          total +
+          (item.sku === correction.sku
+            ? BigInt(item.soldQuantity) * BigInt(correction.unitCostCents)
+            : BigInt(item.costOfGoodsCents)),
+        0n,
+      );
+
+      if (projectedCostOfGoods > BigInt(Number.MAX_SAFE_INTEGER)) {
+        fail(
+          "INVALID_ARGUMENT",
+          "unitCostCents would make report cost totals unsafe.",
+        );
+      }
+
+      const completedSales = hydrated.completedSales.map((sale) =>
+        sale.mapped && sale.sku === correction.sku
+          ? {
+              ...sale,
+              unitCostCents: correction.unitCostCents,
+              grossProfitCents:
+                sale.soldPriceCents - correction.unitCostCents,
+            }
+          : sale,
+      );
+      const itemPerformance = hydrated.itemPerformance.map((item) => {
+        if (item.sku !== correction.sku) {
+          return item;
+        }
+
+        const costOfGoodsCents = Number(
+          BigInt(item.soldQuantity) * BigInt(correction.unitCostCents),
+        );
+
+        return {
+          ...item,
+          costOfGoodsCents,
+          grossProfitCents: item.revenueCents - costOfGoodsCents,
+        };
+      });
+      const productPerformance = createProductPerformance(itemPerformance);
+      const inventory = hydrated.inventory.map((item) =>
+        item.sku === correction.sku
+          ? { ...item, unitCostCents: correction.unitCostCents }
+          : item,
+      );
+      const sheetRows = hydrated.sheetRows.map((row) =>
+        row.sku === correction.sku
+          ? { ...row, unit_cost: centsToDecimal(correction.unitCostCents) }
+          : row,
+      );
+      const costOfGoodsCents = Number(projectedCostOfGoods);
+      const totals = {
+        ...hydrated.totals,
+        costOfGoodsCents,
+        grossProfitCents:
+          hydrated.totals.committedRevenueCents - costOfGoodsCents,
+      };
+
+      return hydrateStreamReport({
+        ...hydrated,
+        totals,
+        topItems: {
+          mostSold: expectedTopMetric(
+            itemPerformance,
+            "sold_quantity",
+            "soldQuantity",
+          ),
+          mostProfitable: expectedTopMetric(
+            itemPerformance,
+            "gross_profit_cents",
+            "grossProfitCents",
+          ),
+        },
+        topProducts: {
+          mostSold: expectedTopProductMetric(
+            productPerformance,
+            "sold_quantity",
+            "soldQuantity",
+          ),
+          mostProfitable: expectedTopProductMetric(
+            productPerformance,
+            "gross_profit_cents",
+            "grossProfitCents",
+          ),
+        },
+        itemPerformance,
+        productPerformance,
+        completedSales,
+        inventory,
+        sheetRows,
       });
     }
 
@@ -1570,10 +1842,12 @@
     }
 
     return Object.freeze({
+      LEGACY_REPORT_VERSION,
       REPORT_VERSION,
       REPORT_ID_PATTERN,
       SHEET_HEADERS,
       StreamReportError,
+      correctReportUnitCost,
       createReportIdForStream,
       createStreamReport,
       hydrateStreamReport,

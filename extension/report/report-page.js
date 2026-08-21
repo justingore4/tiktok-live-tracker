@@ -23,10 +23,12 @@
         reportModule: root.TikTokLiveTrackerStreamReport,
         clientModule: root.TikTokLiveTrackerStreamReportClient,
         addEventListener: root.addEventListener.bind(root),
+        confirm: root.confirm.bind(root),
         print: () => root.print(),
         Blob: root.Blob,
         URL: root.URL,
         setTimeout: root.setTimeout.bind(root),
+        clearTimeout: root.clearTimeout.bind(root),
       });
     };
 
@@ -49,6 +51,7 @@
       "quantity_on_hand_at_import",
       "unit_cost",
     ]);
+    const ACTION_FEEDBACK_DURATION_MS = 4_000;
     const DEFAULT_DEFINITIONS = Object.freeze([
       Object.freeze({
         term: "TikTok Attributed GMV",
@@ -66,6 +69,11 @@
           "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
       }),
       Object.freeze({
+        term: "Est. Profit After Fees",
+        description:
+          "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
+      }),
+      Object.freeze({
         term: "AOV",
         description:
           "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
@@ -73,7 +81,7 @@
       Object.freeze({
         term: "Gross profit",
         description:
-          "Mapped completed-sale revenue minus the imported seller unit cost. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
+          "Mapped completed-sale revenue minus the seller unit cost saved in this report. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
       }),
       Object.freeze({
         term: "Updated count",
@@ -120,6 +128,15 @@
       const dollars = Math.floor(absoluteValue / 100).toLocaleString("en-US");
       const cents = String(absoluteValue % 100).padStart(2, "0");
       return `${value < 0 ? "-" : ""}$${dollars}.${cents}`;
+    }
+
+    function formatSignedUsdCents(value, unavailable = "Not available") {
+      if (!Number.isSafeInteger(value)) {
+        return unavailable;
+      }
+
+      const formatted = formatUsdCents(value, unavailable);
+      return value > 0 ? `+${formatted}` : formatted;
     }
 
     function formatTimestamp(value) {
@@ -252,6 +269,13 @@
               totals.attributedGmvDisplay,
             )
           : null;
+      const estimatedProfitAfterFees =
+        typeof feeCalculator?.calculateEstimatedProfitAfterFees === "function"
+          ? feeCalculator.calculateEstimatedProfitAfterFees(
+              totals.attributedGmvDisplay,
+              totals.costOfGoodsCents,
+            )
+          : null;
 
       return [
         {
@@ -272,6 +296,15 @@
             },
           ],
           note: "Approximate values calculated from Total GMV",
+        },
+        {
+          label: "Est. Profit After Fees",
+          value: estimatedProfitAfterFees ?? "—",
+          note:
+            unmatchedCount > 0
+              ? `Incomplete — ${unmatchedCount} completed sale${unmatchedCount === 1 ? "" : "s"} still ${unmatchedCount === 1 ? "needs an inventory item" : "need inventory items"}.`
+              : "Total GMV after 6% fee, minus mapped item costs",
+          warning: unmatchedCount > 0,
         },
         {
           label: "Gross Item Sales",
@@ -314,7 +347,7 @@
         {
           label: "Mapped cost of goods",
           value: formatUsdCents(totals.costOfGoodsCents),
-          note: "Imported unit costs for mapped completed sales",
+          note: "Unit costs saved in this report",
         },
         {
           label: "Mapped gross margin",
@@ -341,21 +374,6 @@
         entries,
         value: Number.isSafeInteger(metric.value) ? metric.value : null,
       };
-    }
-
-    function buildSkuCountText(report) {
-      if (Array.isArray(report?.inventoryUpdateLines)) {
-        return report.inventoryUpdateLines
-          .filter((line) => typeof line === "string")
-          .join("\n");
-      }
-
-      return (Array.isArray(report?.inventory) ? report.inventory : [])
-        .map(
-          (entry) =>
-            `SKU: ${String(entry?.sku ?? "")} Updated count: ${getUpdatedQuantity(entry)}`,
-        )
-        .join("\n");
     }
 
     function normalizeSheetCell(value) {
@@ -473,6 +491,9 @@
       const summary = document.querySelector("#summary-grid");
       const cards = createSummaryMetrics(report).map((metric) => {
         const card = document.createElement("div");
+        if (metric.warning) {
+          card.className = "summary-card-warning";
+        }
         appendTextElement(document, card, "dt", metric.label);
         if (Array.isArray(metric.rows)) {
           const rows = document.createElement("dd");
@@ -500,7 +521,13 @@
         } else {
           appendTextElement(document, card, "dd", metric.value);
         }
-        appendTextElement(document, card, "small", metric.note);
+        appendTextElement(
+          document,
+          card,
+          "small",
+          metric.note,
+          metric.warning ? "summary-card-warning-note" : "",
+        );
         return card;
       });
       replaceChildren(summary, cards);
@@ -569,43 +596,246 @@
       }
     }
 
-    function renderCompletedSales(document, report) {
+    function getObservedPaymentLabel(status) {
+      return status === "payment_failed"
+        ? "Payment failed - fixing period"
+        : "Payment fixing";
+    }
+
+    function renderPaymentFixingOrders(document, ordersValue, onResolve) {
+      const section = document.querySelector("#payment-resolution-section");
+      const container = document.querySelector("#payment-resolution-orders");
+      const count = document.querySelector("#payment-resolution-count");
+      const orders = Array.isArray(ordersValue) ? ordersValue : [];
+      const controls = [];
+
+      if (!section || !container || !count) {
+        return controls;
+      }
+
+      const rows = orders.map((order) => {
+        const row = document.createElement("article");
+        const copy = document.createElement("div");
+        const priceField = document.createElement("label");
+        const priceInput = document.createElement("input");
+        const completeButton = document.createElement("button");
+        const cancelButton = document.createElement("button");
+        const variationNumber = safeInteger(order?.variationNumber);
+        const inputId = `payment-resolution-price-${variationNumber}`;
+
+        row.className = "payment-resolution-order";
+        row.dataset.variationNumber = String(variationNumber);
+        copy.className = "payment-resolution-copy";
+        appendTextElement(
+          document,
+          copy,
+          "h3",
+          `Variation #${variationNumber}`,
+          "payment-resolution-order-title",
+        );
+        appendTextElement(
+          document,
+          copy,
+          "p",
+          getObservedPaymentLabel(order?.observedPaymentStatus),
+          "payment-resolution-status",
+        );
+        appendTextElement(
+          document,
+          copy,
+          "p",
+          order?.mapped
+            ? `Selected inventory: ${getItemDescription(order)} (${order.sku})`
+            : "No inventory item selected.",
+          "payment-resolution-item",
+        );
+
+        priceField.className = "payment-price-field";
+        priceField.setAttribute("for", inputId);
+        appendTextElement(
+          document,
+          priceField,
+          "span",
+          "Sold price (required for complete)",
+        );
+        priceInput.id = inputId;
+        priceInput.className = "payment-price-input";
+        priceInput.type = "text";
+        priceInput.inputMode = "decimal";
+        priceInput.autocomplete = "off";
+        priceInput.placeholder = "0.00";
+        priceInput.setAttribute("aria-label", `Sold price for variation ${variationNumber}`);
+        priceField.append(priceInput);
+
+        completeButton.className = "primary-action complete-payment-action";
+        completeButton.type = "button";
+        completeButton.textContent = "Mark complete";
+        completeButton.addEventListener("click", () => {
+          onResolve?.({
+            order,
+            priceInput,
+            resolution: "payment_complete",
+            soldPriceText: priceInput.value,
+          });
+        });
+
+        cancelButton.className = "secondary-action cancel-payment-action";
+        cancelButton.type = "button";
+        cancelButton.textContent = "Mark canceled";
+        cancelButton.addEventListener("click", () => {
+          onResolve?.({
+            order,
+            priceInput,
+            resolution: "canceled",
+            soldPriceText: null,
+          });
+        });
+
+        controls.push(priceInput, completeButton, cancelButton);
+        row.append(copy, priceField, completeButton, cancelButton);
+        return row;
+      });
+
+      replaceChildren(container, rows);
+      count.textContent = `${rows.length} unresolved order${rows.length === 1 ? "" : "s"}`;
+      section.hidden = rows.length === 0;
+      section.setAttribute("aria-busy", "false");
+      return controls;
+    }
+
+    function renderItemVariations(document, report) {
       const body = document.querySelector("#completed-sales-rows");
       const empty = document.querySelector("#sales-empty");
       const count = document.querySelector("#sales-count");
+      const detailsNote = document.querySelector("#variation-details-note");
       const sales = Array.isArray(report?.completedSales)
         ? report.completedSales
         : [];
-      const rows = sales.map((sale) => {
+      const canceledDetailsAvailable = Array.isArray(report?.canceledOrders);
+      const canceledOrders = canceledDetailsAvailable
+        ? report.canceledOrders
+        : [];
+      const canceledCount = Number.isSafeInteger(report?.totals?.canceledOrderCount)
+        ? safeInteger(report.totals.canceledOrderCount)
+        : canceledOrders.length;
+      const variations = [
+        ...sales.map((order) => ({ order, status: "Completed" })),
+        ...canceledOrders.map((order) => ({ order, status: "Canceled" })),
+      ].sort(
+        (left, right) =>
+          safeInteger(left.order?.variationNumber) -
+          safeInteger(right.order?.variationNumber),
+      );
+      const rows = variations.map(({ order, status }) => {
         const row = document.createElement("tr");
-        const mapped = typeof sale?.sku === "string" && sale.sku !== "";
+        const canceled = status === "Canceled";
+        const mapped = typeof order?.sku === "string" && order.sku !== "";
         row.append(
-          createTableCell(document, `#${safeInteger(sale?.variationNumber)}`),
-          createTableCell(document, mapped ? sale.sku : "Unmapped", {
+          createTableCell(document, `#${safeInteger(order?.variationNumber)}`),
+          createTableCell(document, status),
+          createTableCell(document, mapped ? order.sku : "Unmapped", {
             className: mapped ? "sku-cell" : "warning-cell",
           }),
-          createTableCell(document, mapped ? sale?.item : "Not selected"),
-          createTableCell(document, mapped ? sale?.style : "—", {
+          createTableCell(document, mapped ? order?.item : "Not selected"),
+          createTableCell(document, mapped ? order?.style : "—", {
             className: mapped ? "" : "muted-cell",
           }),
-          createTableCell(document, mapped ? sale?.size : "—", {
+          createTableCell(document, mapped ? order?.size : "—", {
             className: mapped ? "" : "muted-cell",
           }),
-          createTableCell(document, formatUsdCents(sale?.soldPriceCents), {
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(order?.soldPriceCents), {
             className: "number-cell",
           }),
-          createTableCell(document, formatUsdCents(getSaleCostCents(sale), "—"), {
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(getSaleCostCents(order), "—"), {
             className: "number-cell",
           }),
-          createTableCell(document, formatUsdCents(getSaleProfitCents(sale), "—"), {
+          createTableCell(document, canceled
+            ? "—"
+            : formatUsdCents(getSaleProfitCents(order), "—"), {
             className: "number-cell",
           }),
         );
         return row;
       });
       replaceChildren(body, rows);
+      const combinedTotal = sales.length + canceledCount;
+      empty.hidden = combinedTotal !== 0;
+      empty.textContent = "No completed or canceled item variations were captured for this stream.";
+      count.textContent = `${combinedTotal} variation${combinedTotal === 1 ? "" : "s"}`;
+
+      const unavailableCanceledCount = canceledDetailsAvailable ? 0 : canceledCount;
+      detailsNote.hidden = unavailableCanceledCount === 0;
+      detailsNote.textContent = unavailableCanceledCount === 0
+        ? ""
+        : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
+    }
+
+    function renderSkuProfitLoss(document, report) {
+      const body = document.querySelector("#sku-profit-rows");
+      const empty = document.querySelector("#sku-profit-empty");
+      const count = document.querySelector("#sku-profit-count");
+      const performance = (Array.isArray(report?.itemPerformance)
+        ? report.itemPerformance
+        : [])
+        .filter(
+          (entry) =>
+            typeof entry?.sku === "string" &&
+            entry.sku.trim() !== "" &&
+            safeInteger(entry?.soldQuantity) > 0,
+        )
+        .slice()
+        .sort((left, right) => {
+          const leftProfit = Number.isSafeInteger(left?.grossProfitCents)
+            ? left.grossProfitCents
+            : null;
+          const rightProfit = Number.isSafeInteger(right?.grossProfitCents)
+            ? right.grossProfitCents
+            : null;
+
+          if (leftProfit === null || rightProfit === null) {
+            if (leftProfit !== rightProfit) {
+              return leftProfit === null ? 1 : -1;
+            }
+          }
+
+          if (leftProfit !== rightProfit) {
+            return leftProfit > rightProfit ? -1 : 1;
+          }
+
+          const leftSku = left.sku.trim();
+          const rightSku = right.sku.trim();
+          return leftSku < rightSku ? -1 : leftSku > rightSku ? 1 : 0;
+        });
+      const rows = performance.map((entry) => {
+        const row = document.createElement("tr");
+        const grossProfitCents = Number.isSafeInteger(entry?.grossProfitCents)
+          ? entry.grossProfitCents
+          : null;
+        const profitClass = grossProfitCents !== null && grossProfitCents > 0
+          ? "profit-positive"
+          : grossProfitCents !== null && grossProfitCents < 0
+            ? "profit-negative"
+            : "profit-neutral";
+        row.append(
+          createTableCell(document, entry.sku.trim(), { className: "sku-cell" }),
+          createTableCell(document, getItemDescription(entry)),
+          createTableCell(document, safeInteger(entry?.soldQuantity), {
+            className: "number-cell",
+          }),
+          createTableCell(document, formatSignedUsdCents(grossProfitCents), {
+            className: `number-cell ${profitClass}`,
+          }),
+        );
+        return row;
+      });
+
+      replaceChildren(body, rows);
       empty.hidden = rows.length !== 0;
-      count.textContent = `${rows.length} completed sale${rows.length === 1 ? "" : "s"}`;
+      count.textContent = `${rows.length} sold SKU${rows.length === 1 ? "" : "s"}`;
     }
 
     function formatPercentage(numerator, denominator) {
@@ -689,6 +919,9 @@
           createTableCell(document, entry?.item ?? ""),
           createTableCell(document, entry?.style ?? ""),
           createTableCell(document, entry?.size ?? ""),
+          createTableCell(document, formatUsdCents(entry?.unitCostCents), {
+            className: "number-cell",
+          }),
           createTableCell(document, getOpeningQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getCompletedQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getPendingQuantity(entry), { className: "number-cell" }),
@@ -700,7 +933,139 @@
         return row;
       });
       replaceChildren(body, rows);
-      document.querySelector("#sku-count-list").textContent = buildSkuCountText(report);
+    }
+
+    function parsePositiveUsdCents(value) {
+      if (typeof value !== "string") {
+        return null;
+      }
+
+      const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(value.trim());
+
+      if (!match) {
+        return null;
+      }
+
+      const dollars = Number(match[1]);
+      const cents = Number((match[2] ?? "").padEnd(2, "0"));
+
+      if (!Number.isSafeInteger(dollars) || dollars > Math.floor(Number.MAX_SAFE_INTEGER / 100)) {
+        return null;
+      }
+
+      const total = dollars * 100 + cents;
+      return Number.isSafeInteger(total) && total > 0 ? total : null;
+    }
+
+    function parseNonnegativeUsdCents(value) {
+      if (typeof value !== "string") {
+        return null;
+      }
+
+      const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(value.trim());
+
+      if (!match) {
+        return null;
+      }
+
+      const dollars = Number(match[1]);
+      const cents = Number((match[2] ?? "").padEnd(2, "0"));
+
+      if (
+        !Number.isSafeInteger(dollars) ||
+        dollars > Math.floor(Number.MAX_SAFE_INTEGER / 100)
+      ) {
+        return null;
+      }
+
+      const total = dollars * 100 + cents;
+      return Number.isSafeInteger(total) && total >= 0 ? total : null;
+    }
+
+    function createUnitCostImpactSummary(entry, nextUnitCostCents) {
+      const completedSaleCount = safeInteger(entry?.completedSaleCount);
+      const currentUnitCostCents = safeInteger(entry?.unitCostCents);
+
+      if (!Number.isSafeInteger(nextUnitCostCents) || nextUnitCostCents < 0) {
+        return `Enter a nonnegative unit cost to preview its effect on ${completedSaleCount} completed sale${completedSaleCount === 1 ? "" : "s"}.`;
+      }
+
+      if (completedSaleCount === 0) {
+        return "This SKU had no completed sales in this stream. Report metrics stay unchanged; only this report's Google Sheets handoff will use the corrected cost.";
+      }
+
+      const costDifferenceCents =
+        (nextUnitCostCents - currentUnitCostCents) * completedSaleCount;
+      const saleCopy = `${completedSaleCount} completed sale${completedSaleCount === 1 ? "" : "s"}`;
+
+      if (!Number.isSafeInteger(costDifferenceCents)) {
+        return `${saleCopy} will be recalculated with the corrected cost.`;
+      }
+
+      if (costDifferenceCents === 0) {
+        return `${saleCopy} use this cost. Mapped COGS and gross profit remain unchanged.`;
+      }
+
+      const differenceDisplay = formatUsdCents(Math.abs(costDifferenceCents));
+      return costDifferenceCents > 0
+        ? `${saleCopy} will be updated. Mapped COGS increases by ${differenceDisplay}, and gross profit decreases by ${differenceDisplay}.`
+        : `${saleCopy} will be updated. Mapped COGS decreases by ${differenceDisplay}, and gross profit increases by ${differenceDisplay}.`;
+    }
+
+    function renderUnitCostCorrection(
+      document,
+      skuEntriesValue,
+      selectedSkuValue = null,
+    ) {
+      const section = document.querySelector("#unit-cost-correction-section");
+      const select = document.querySelector("#unit-cost-sku");
+      const input = document.querySelector("#unit-cost-value");
+      const button = document.querySelector("#update-unit-cost");
+      const preview = document.querySelector("#unit-cost-preview");
+      const entries = Array.isArray(skuEntriesValue) ? skuEntriesValue : [];
+
+      if (!section || !select || !input || !button || !preview) {
+        return null;
+      }
+
+      const options = entries.map((entry) => {
+        const option = document.createElement("option");
+        const completedSaleCount = safeInteger(entry?.completedSaleCount);
+        const soldCopy = `${completedSaleCount} sold`;
+        option.value = entry.sku;
+        option.textContent = [
+          entry.sku,
+          getItemDescription(entry),
+          formatUsdCents(entry.unitCostCents),
+          soldCopy,
+        ].join(" - ");
+        return option;
+      });
+      replaceChildren(select, options);
+
+      const selectedEntry = entries.find(
+        (entry) => entry.sku === selectedSkuValue,
+      ) ?? entries[0] ?? null;
+      section.hidden = selectedEntry === null;
+      select.disabled = selectedEntry === null;
+      input.disabled = selectedEntry === null;
+      button.disabled = selectedEntry === null;
+
+      if (selectedEntry === null) {
+        select.value = "";
+        input.value = "";
+        preview.textContent = "";
+        return null;
+      }
+
+      select.value = selectedEntry.sku;
+      input.value = (selectedEntry.unitCostCents / 100).toFixed(2);
+      preview.textContent = createUnitCostImpactSummary(
+        selectedEntry,
+        selectedEntry.unitCostCents,
+      );
+      section.setAttribute("aria-busy", "false");
+      return selectedEntry;
     }
 
     function renderDefinitions(document) {
@@ -760,7 +1125,8 @@
         "#most-profitable-products",
         "#most-profitable-products-card",
       );
-      renderCompletedSales(document, report);
+      renderSkuProfitLoss(document, report);
+      renderItemVariations(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
       renderDefinitions(document);
@@ -834,29 +1200,37 @@
     }
 
     function createPrintDisclosureController(document) {
-      const disclosure = document?.querySelector?.(
-        "#completed-sales-disclosure",
-      );
-      let wasOpen = null;
+      const disclosures = [
+        document?.querySelector?.("#completed-sales-disclosure"),
+        document?.querySelector?.("#sku-profit-disclosure"),
+        document?.querySelector?.("#definitions-disclosure"),
+      ].filter(Boolean);
+      let priorOpenStates = null;
 
       const prepare = () => {
-        if (!disclosure) {
+        if (disclosures.length === 0) {
           return;
         }
 
-        if (wasOpen === null) {
-          wasOpen = disclosure.open === true;
+        if (priorOpenStates === null) {
+          priorOpenStates = disclosures.map(
+            (disclosure) => disclosure.open === true,
+          );
         }
-        disclosure.open = true;
+        disclosures.forEach((disclosure) => {
+          disclosure.open = true;
+        });
       };
 
       const restore = () => {
-        if (!disclosure || wasOpen === null) {
+        if (priorOpenStates === null) {
           return;
         }
 
-        disclosure.open = wasOpen;
-        wasOpen = null;
+        disclosures.forEach((disclosure, index) => {
+          disclosure.open = priorOpenStates[index];
+        });
+        priorOpenStates = null;
       };
 
       return Object.freeze({ prepare, restore });
@@ -924,7 +1298,14 @@
         protocol,
       });
       let currentRecord = null;
+      let currentPaymentFixingOrders = [];
+      let paymentResolutionControls = [];
+      let paymentResolutionBusy = false;
+      let currentUnitCostEntries = [];
+      let unitCostCorrectionBusy = false;
       let loadSequence = 0;
+      let actionFeedbackSequence = 0;
+      let actionFeedbackTimerId = null;
       const printDisclosure = createPrintDisclosureController(document);
 
       if (typeof dependencies.addEventListener === "function") {
@@ -933,7 +1314,132 @@
       }
 
       const feedback = (message) => {
-        document.querySelector("#action-feedback").textContent = message;
+        const target = document.querySelector("#action-feedback");
+        const sequence = ++actionFeedbackSequence;
+
+        if (!target) {
+          return;
+        }
+
+        if (
+          actionFeedbackTimerId !== null &&
+          typeof dependencies.clearTimeout === "function"
+        ) {
+          dependencies.clearTimeout(actionFeedbackTimerId);
+        }
+
+        actionFeedbackTimerId = null;
+        target.textContent = message;
+
+        if (
+          message === "" ||
+          typeof dependencies.setTimeout !== "function"
+        ) {
+          return;
+        }
+
+        actionFeedbackTimerId = dependencies.setTimeout(() => {
+          if (sequence !== actionFeedbackSequence) {
+            return;
+          }
+
+          target.textContent = "";
+          actionFeedbackTimerId = null;
+        }, ACTION_FEEDBACK_DURATION_MS);
+      };
+
+      const resolutionFeedback = (message, isError = false) => {
+        const target = document.querySelector("#payment-resolution-feedback");
+
+        if (!target) {
+          return;
+        }
+
+        target.textContent = message;
+        target.className = isError
+          ? "resolution-feedback is-error"
+          : "resolution-feedback";
+      };
+
+      const unitCostFeedback = (message, isError = false) => {
+        const target = document.querySelector("#unit-cost-feedback");
+
+        if (!target) {
+          return;
+        }
+
+        target.textContent = message;
+        target.className = isError
+          ? "unit-cost-feedback is-error"
+          : "unit-cost-feedback";
+      };
+
+      const setResolutionBusy = (busy) => {
+        const section = document.querySelector("#payment-resolution-section");
+
+        paymentResolutionBusy = busy;
+        section?.setAttribute("aria-busy", busy ? "true" : "false");
+        paymentResolutionControls.forEach((control) => {
+          control.disabled = busy;
+        });
+      };
+
+      const displayPaymentFixingOrders = (orders, onResolve) => {
+        currentPaymentFixingOrders = Array.isArray(orders) ? orders : [];
+        paymentResolutionControls = renderPaymentFixingOrders(
+          document,
+          currentPaymentFixingOrders,
+          onResolve,
+        );
+        setResolutionBusy(paymentResolutionBusy);
+      };
+
+      const setUnitCostBusy = (busy) => {
+        const section = document.querySelector("#unit-cost-correction-section");
+        const controls = [
+          document.querySelector("#unit-cost-sku"),
+          document.querySelector("#unit-cost-value"),
+          document.querySelector("#update-unit-cost"),
+        ].filter(Boolean);
+
+        unitCostCorrectionBusy = busy;
+        section?.setAttribute("aria-busy", busy ? "true" : "false");
+        controls.forEach((control) => {
+          control.disabled = busy || currentUnitCostEntries.length === 0;
+        });
+      };
+
+      const getSelectedUnitCostEntry = () => {
+        const sku = document.querySelector("#unit-cost-sku")?.value;
+        return currentUnitCostEntries.find((entry) => entry.sku === sku) ?? null;
+      };
+
+      const updateUnitCostPreview = () => {
+        const entry = getSelectedUnitCostEntry();
+        const preview = document.querySelector("#unit-cost-preview");
+        const input = document.querySelector("#unit-cost-value");
+
+        if (!preview || !entry) {
+          if (preview) {
+            preview.textContent = "";
+          }
+          return;
+        }
+
+        preview.textContent = createUnitCostImpactSummary(
+          entry,
+          parseNonnegativeUsdCents(input?.value),
+        );
+      };
+
+      const displayReportUnitCosts = (entries, selectedSku = null) => {
+        currentUnitCostEntries = Array.isArray(entries) ? entries : [];
+        renderUnitCostCorrection(
+          document,
+          currentUnitCostEntries,
+          selectedSku,
+        );
+        setUnitCostBusy(unitCostCorrectionBusy);
       };
 
       const showError = (message) => {
@@ -943,6 +1449,195 @@
         document.querySelector("#report-error").hidden = false;
         document.querySelector("#report-error-message").textContent = message;
         document.querySelector("#print-report").disabled = true;
+      };
+
+      const hydrateRecord = (response) => {
+        const report = typeof reportModule?.hydrateStreamReport === "function"
+          ? reportModule.hydrateStreamReport(response.report)
+          : response.report;
+
+        return {
+          reportId: response.reportId,
+          lifecycleStatus: response.lifecycleStatus,
+          report,
+        };
+      };
+
+      let resolvePaymentOrder = null;
+
+      const getPaymentFixingOrders = async (reportId) => {
+        if (typeof client.listPaymentFixingOrders !== "function") {
+          return [];
+        }
+
+        const response = await client.listPaymentFixingOrders({ reportId });
+        return response.orders;
+      };
+
+      const getReportUnitCosts = async (reportId) => {
+        if (typeof client.listReportUnitCosts !== "function") {
+          return [];
+        }
+
+        const response = await client.listReportUnitCosts({ reportId });
+        return response.skus;
+      };
+
+      resolvePaymentOrder = async ({
+        order,
+        priceInput,
+        resolution,
+        soldPriceText,
+      }) => {
+        if (!currentRecord || typeof client.resolvePaymentFixingOrder !== "function") {
+          return;
+        }
+
+        const variationNumber = safeInteger(order?.variationNumber);
+        const soldPriceCents = resolution === "payment_complete"
+          ? parsePositiveUsdCents(soldPriceText)
+          : null;
+
+        if (resolution === "payment_complete" && soldPriceCents === null) {
+          resolutionFeedback(
+            "Enter the final sold price as a positive dollar amount with no more than two decimal places.",
+            true,
+          );
+          priceInput?.focus?.();
+          return;
+        }
+
+        const itemDescription = order?.mapped
+          ? getItemDescription(order)
+          : "unmapped item";
+        const confirmation = resolution === "payment_complete"
+          ? `Mark variation #${variationNumber} Payment complete at ${formatUsdCents(soldPriceCents)} for ${itemDescription}? This permanently updates this saved report and its inventory totals.`
+          : order?.mapped
+            ? `Mark variation #${variationNumber} canceled? This permanently resolves the order and releases its inventory reservation.`
+            : `Mark variation #${variationNumber} canceled? This permanently resolves the order as canceled.`;
+
+        if (
+          typeof dependencies.confirm !== "function" ||
+          dependencies.confirm(confirmation) !== true
+        ) {
+          return;
+        }
+
+        setResolutionBusy(true);
+        resolutionFeedback(`Saving variation #${variationNumber}...`);
+
+        try {
+          const response = await client.resolvePaymentFixingOrder({
+            reportId: currentRecord.reportId,
+            variationNumber,
+            resolution,
+            soldPriceCents,
+          });
+          currentRecord = hydrateRecord(response);
+          renderReport(document, currentRecord);
+          displayPaymentFixingOrders(
+            currentPaymentFixingOrders.filter(
+              (candidate) => candidate.variationNumber !== variationNumber,
+            ),
+            resolvePaymentOrder,
+          );
+
+          const outcome = resolution === "payment_complete"
+            ? "Payment complete"
+            : "canceled";
+          const successMessage = `Variation #${variationNumber} was marked ${outcome}. Report totals and inventory were updated.`;
+          feedback(successMessage);
+          resolutionFeedback(successMessage);
+
+          try {
+            const orders = await getPaymentFixingOrders(currentRecord.reportId);
+            displayPaymentFixingOrders(orders, resolvePaymentOrder);
+          } catch (_refreshError) {
+            feedback(`${successMessage} Reload the report to recheck unfinished payments.`);
+          }
+
+          try {
+            const entries = await getReportUnitCosts(currentRecord.reportId);
+            displayReportUnitCosts(entries);
+          } catch (_refreshError) {
+            displayReportUnitCosts([]);
+          }
+        } catch (error) {
+          const message = error?.message ??
+            "The unfinished payment could not be updated.";
+          resolutionFeedback(message, true);
+          feedback(message);
+        } finally {
+          setResolutionBusy(false);
+        }
+      };
+
+      const updateSelectedUnitCost = async () => {
+        if (
+          !currentRecord ||
+          unitCostCorrectionBusy ||
+          typeof client.updateReportUnitCost !== "function"
+        ) {
+          return;
+        }
+
+        const entry = getSelectedUnitCostEntry();
+        const input = document.querySelector("#unit-cost-value");
+        const unitCostCents = parseNonnegativeUsdCents(input?.value);
+
+        if (!entry || unitCostCents === null) {
+          unitCostFeedback(
+            "Enter a nonnegative dollar amount with no more than two decimal places, such as 0.00 or 12.50.",
+            true,
+          );
+          input?.focus?.();
+          return;
+        }
+
+        const impact = createUnitCostImpactSummary(entry, unitCostCents);
+        const confirmation =
+          `Update ${entry.sku} from ${formatUsdCents(entry.unitCostCents)} to ${formatUsdCents(unitCostCents)}? ${impact} This changes only this saved report and its Google Sheets handoff. The live tracker, other reports, and future streams are unaffected.`;
+
+        if (
+          typeof dependencies.confirm !== "function" ||
+          dependencies.confirm(confirmation) !== true
+        ) {
+          return;
+        }
+
+        setUnitCostBusy(true);
+        unitCostFeedback(`Updating ${entry.sku}...`);
+
+        try {
+          const response = await client.updateReportUnitCost({
+            reportId: currentRecord.reportId,
+            sku: entry.sku,
+            unitCostCents,
+          });
+          currentRecord = hydrateRecord(response);
+          renderReport(document, currentRecord);
+
+          const successMessage =
+            `${entry.sku} now uses ${formatUsdCents(unitCostCents)} in this report. Its metrics and Google Sheets handoff were updated; other reports and future streams were not changed.`;
+          feedback(successMessage);
+          unitCostFeedback(successMessage);
+
+          try {
+            const entries = await getReportUnitCosts(currentRecord.reportId);
+            displayReportUnitCosts(entries, entry.sku);
+            unitCostFeedback(successMessage);
+          } catch (_refreshError) {
+            displayReportUnitCosts([]);
+            feedback(`${successMessage} Reload the report before making another cost correction.`);
+          }
+        } catch (error) {
+          const message = error?.message ??
+            "The corrected unit cost could not be saved. Try again.";
+          unitCostFeedback(message, true);
+          feedback(message);
+        } finally {
+          setUnitCostBusy(false);
+        }
       };
 
       const load = async () => {
@@ -978,15 +1673,47 @@
             throw new Error("The requested saved stream report was not found.");
           }
 
-          const report = typeof reportModule?.hydrateStreamReport === "function"
-            ? reportModule.hydrateStreamReport(response.report)
-            : response.report;
-          currentRecord = {
-            reportId: response.reportId,
-            lifecycleStatus: response.lifecycleStatus,
-            report,
-          };
+          currentRecord = hydrateRecord(response);
           renderReport(document, currentRecord);
+          resolutionFeedback("");
+          unitCostFeedback("");
+
+          try {
+            const orders = await getPaymentFixingOrders(currentRecord.reportId);
+
+            if (sequence !== loadSequence) {
+              return;
+            }
+
+            displayPaymentFixingOrders(orders, resolvePaymentOrder);
+          } catch (error) {
+            displayPaymentFixingOrders([], resolvePaymentOrder);
+            feedback(
+              error?.message ??
+                "Unfinished payments could not be checked. Reload the report to try again.",
+            );
+          }
+
+          try {
+            const entries = await getReportUnitCosts(currentRecord.reportId);
+
+            if (sequence !== loadSequence) {
+              return;
+            }
+
+            displayReportUnitCosts(entries);
+          } catch (error) {
+            displayReportUnitCosts([]);
+            feedback(
+              error?.message ??
+                "Unit costs could not be checked. Reload the report to try again.",
+            );
+          }
+
+          if (sequence !== loadSequence) {
+            return;
+          }
+
           document.querySelector("#report-loading").setAttribute("aria-busy", "false");
           document.querySelector("#report-content").focus();
         } catch (error) {
@@ -1002,6 +1729,24 @@
       };
 
       document.querySelector("#retry-report").addEventListener("click", load);
+      document.querySelector("#unit-cost-sku")?.addEventListener("change", () => {
+        const entry = getSelectedUnitCostEntry();
+        const input = document.querySelector("#unit-cost-value");
+
+        if (entry && input) {
+          input.value = (entry.unitCostCents / 100).toFixed(2);
+        }
+        unitCostFeedback("");
+        updateUnitCostPreview();
+      });
+      document.querySelector("#unit-cost-value")?.addEventListener(
+        "input",
+        updateUnitCostPreview,
+      );
+      document.querySelector("#update-unit-cost")?.addEventListener(
+        "click",
+        updateSelectedUnitCost,
+      );
       document.querySelector("#print-report").addEventListener("click", () => {
         if (currentRecord) {
           printDisclosure.prepare();
@@ -1026,18 +1771,6 @@
           feedback("Updated six-column inventory copied. Paste it into Google Sheets.");
         } catch (error) {
           feedback(error?.message ?? "Updated inventory could not be copied.");
-        }
-      });
-      document.querySelector("#copy-sku-counts").addEventListener("click", async () => {
-        if (!currentRecord) {
-          return;
-        }
-
-        try {
-          await writeClipboard(navigator, buildSkuCountText(currentRecord.report));
-          feedback("SKU updated counts copied.");
-        } catch (error) {
-          feedback(error?.message ?? "SKU counts could not be copied.");
         }
       });
       document.querySelector("#download-inventory").addEventListener("click", () => {
@@ -1065,7 +1798,6 @@
     return Object.freeze({
       DEFAULT_DEFINITIONS,
       SHEET_HEADERS,
-      buildSkuCountText,
       createPrintDisclosureController,
       createFileStamp,
       createReportFilename,
@@ -1076,7 +1808,12 @@
       formatUsdCents,
       getRequestedReportId,
       mountStreamReportPage,
+      parseNonnegativeUsdCents,
+      parsePositiveUsdCents,
+      renderItemVariations,
+      renderPaymentFixingOrders,
       renderReport,
+      renderUnitCostCorrection,
       serializeInventoryCsv,
       serializeInventoryTsv,
     });

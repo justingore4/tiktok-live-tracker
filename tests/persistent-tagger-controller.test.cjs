@@ -9,7 +9,7 @@ const controllerModule = require(
 const reconciliation = require("../extension/shared/reconciliation.js");
 const mappingWorkflow = require("../extension/tagger/mapping-workflow.js");
 
-const STREAM_ID = "demo-stream";
+const STREAM_ID = "local-stream:persistent-controller-test";
 const CURRENT_VARIATION = 203;
 const INVENTORY = Object.freeze([
   Object.freeze({
@@ -167,11 +167,11 @@ test("exports a pure saved-session controller without payment or manual-unpaid A
   ]);
   assert.doesNotMatch(
     source,
-    /chrome\.|recordPaymentComplete|record_payment_complete|completePayment|markSelectedUnpaid|undoSelectedUnpaid/,
+    /chrome\.|recordPaymentComplete|record_payment_complete/,
   );
 });
 
-test("prepares the opening mock baseline before a stream can be started", async () => {
+test("prepares the legacy recovery baseline before a stream can be started", async () => {
   const memory = createMemoryClient(null);
 
   const prepared = await controllerModule.ensureInventoryInitialized({
@@ -293,7 +293,7 @@ test("resume fails closed instead of falling back to the active baseline", async
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
 });
 
-test("Sold Items fallback follows new captures only while the newest variation is selected", async () => {
+test("Sold Items fallback returns to the newest recorded variation and resumes following without a mutation", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -348,11 +348,22 @@ test("Sold Items fallback follows new captures only while the newest variation i
       (variation) => variation.variationNumber === 254,
     ),
   );
+  assert.equal(preserved.view.currentVariationNumber, 254);
+  assert.equal(preserved.view.isReviewingHistory, true);
 
-  assert.equal(
-    controller.selectVariation(254).view.selectedVariationNumber,
-    254,
+  const stateBeforeReturn = memory.getState();
+  const inventoryBeforeReturn = clone(preserved.view.inventory);
+  const callsBeforeReturn = clone(memory.calls);
+  const returned = controller.selectVariation(
+    preserved.view.currentVariationNumber,
   );
+
+  assert.equal(returned.view.selectedVariationNumber, 254);
+  assert.equal(returned.view.currentVariationNumber, 254);
+  assert.equal(returned.view.isReviewingHistory, false);
+  assert.deepEqual(returned.view.inventory, inventoryBeforeReturn);
+  assert.deepEqual(memory.getState(), stateBeforeReturn);
+  assert.deepEqual(memory.calls, callsBeforeReturn);
 
   const resumedState = memory.getState();
   reconciliation.observeVariations(resumedState, {
@@ -402,6 +413,131 @@ test("refresh retains selection when canonical state has no newly captured varia
     ).status,
     "unmapped_completed",
   );
+});
+
+test("selecting history during an in-flight refresh survives newer capture data", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const snapshots = [];
+
+  controller.subscribe((snapshot) => snapshots.push(snapshot));
+  await controller.start();
+
+  const refreshRead = createDeferred();
+  const refreshedState = memory.getState();
+
+  reconciliation.observeVariations(refreshedState, {
+    streamId: STREAM_ID,
+    variationNumbers: [204],
+  });
+  reconciliation.recordPaymentComplete(refreshedState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    soldPriceCents: 2800,
+  });
+  memory.client.getState = () => refreshRead.promise;
+
+  const refresh = controller.refresh();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(controller.getSnapshot().phase, "loading");
+  assert.equal(controller.getSnapshot().operation, "refresh");
+
+  const selectedDuringRefresh = controller.selectVariation(201);
+
+  assert.equal(selectedDuringRefresh.phase, "loading");
+  assert.equal(selectedDuringRefresh.operation, "refresh");
+  assert.equal(selectedDuringRefresh.view.selectedVariationNumber, 201);
+  assert.equal(snapshots.at(-1).view.selectedVariationNumber, 201);
+
+  refreshRead.resolve({ state: clone(refreshedState), result: null });
+  const refreshed = await refresh;
+  const completedVariation = refreshed.view.variations.find(
+    (variation) => variation.variationNumber === 202,
+  );
+
+  assert.equal(refreshed.phase, "ready");
+  assert.equal(refreshed.operation, "refresh");
+  assert.equal(refreshed.view.selectedVariationNumber, 201);
+  assert.equal(refreshed.view.currentVariationNumber, 204);
+  assert.equal(refreshed.view.isReviewingHistory, true);
+  assert.ok(
+    refreshed.view.variations.some(
+      (variation) => variation.variationNumber === 204,
+    ),
+  );
+  assert.equal(completedVariation.status, "unmapped_completed");
+  assert.equal(completedVariation.observedPaymentStatus, "payment_complete");
+  assert.equal(completedVariation.soldPriceCents, 2800);
+});
+
+test("variation selection remains blocked during initial load and saved mutations", async () => {
+  const state = createState();
+
+  reconciliation.observeVariations(state, {
+    streamId: STREAM_ID,
+    variationNumbers: [201, 202, 203],
+  });
+  const loadRead = createDeferred();
+  const loadingMemory = createMemoryClient(state);
+
+  loadingMemory.client.getState = () => loadRead.promise;
+  const loadingController = createController(loadingMemory.client);
+  const load = loadingController.start();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const blockedDuringLoad = loadingController.selectVariation(201);
+
+  assert.equal(blockedDuringLoad.phase, "loading");
+  assert.equal(blockedDuringLoad.operation, "load");
+  assert.equal(blockedDuringLoad.view, null);
+
+  loadRead.resolve({ state: clone(state), result: null });
+  const loaded = await load;
+
+  assert.equal(loaded.view.selectedVariationNumber, 203);
+
+  const savingMemory = createMemoryClient(state);
+  const saveWrite = createDeferred();
+
+  savingMemory.client.mapVariation = () => saveWrite.promise;
+  const savingController = createController(savingMemory.client);
+
+  await savingController.start();
+  savingController.selectVariation(202);
+  const save = savingController.mapSelectedSku("BLACK-TEE-L");
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const blockedDuringSave = savingController.selectVariation(201);
+
+  assert.equal(blockedDuringSave.phase, "saving");
+  assert.equal(blockedDuringSave.operation, "map_variation");
+  assert.equal(blockedDuringSave.view.selectedVariationNumber, 202);
+
+  const savedState = reconciliation.hydrateReconciliationState(state);
+  const result = reconciliation.mapVariation(savedState, {
+    streamId: STREAM_ID,
+    variationNumber: 202,
+    sku: "BLACK-TEE-L",
+  });
+
+  saveWrite.resolve({ state: clone(savedState), result });
+  const saved = await save;
+
+  assert.equal(saved.phase, "ready");
+  assert.equal(saved.view.selectedVariationNumber, 202);
 });
 
 test("older backfill and later payment updates do not steal the live selection", async () => {
@@ -473,7 +609,7 @@ test("older backfill and later payment updates do not steal the live selection",
   assert.equal(completedOption.soldPriceCents, 1800);
 });
 
-test("selects the newest recorded variation when only a prototype placeholder was selected", async () => {
+test("selects the newest recorded variation when only the startup fallback was selected", async () => {
   const state = createState();
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
@@ -502,7 +638,7 @@ test("selects the newest recorded variation when only a prototype placeholder wa
   );
 });
 
-test("initial restore selects the newest recorded variation even when the prototype number is recorded", async () => {
+test("initial restore selects the newest recorded variation even when the fallback number is recorded", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -754,11 +890,10 @@ test("starts idle, publishes detached snapshots, and unsubscribes idempotently",
   });
   const unsubscribe = controller.subscribe((snapshot) => {
     snapshots.push(snapshot);
-    snapshot.mode = "changed by listener";
+    snapshot.operation = "changed by listener";
   });
 
   assert.deepEqual(controller.getSnapshot(), {
-    mode: "saved_session",
     phase: "idle",
     operation: null,
     busy: false,
@@ -775,7 +910,7 @@ test("starts idle, publishes detached snapshots, and unsubscribes idempotently",
     snapshots.map((snapshot) => snapshot.phase),
     ["idle", "loading", "ready"],
   );
-  assert.equal(controller.getSnapshot().mode, "saved_session");
+  assert.equal(controller.getSnapshot().operation, "load");
   assert.equal(snapshots.length, 3);
 });
 
@@ -1143,6 +1278,7 @@ test("initial load prefers the active bidding variation over Sold Items history"
   const loaded = await controller.start();
 
   assert.equal(loaded.view.activeBiddingVariationNumber, 252);
+  assert.equal(loaded.view.activeAuctionMapping, null);
   assert.equal(loaded.view.selectedVariationNumber, 252);
   assert.equal(loaded.view.auction.variationNumber, 252);
 });
@@ -1219,7 +1355,7 @@ test("clearing the active marker keeps the same current variation before fallbac
   assert.equal(nextOption.selected, true);
 });
 
-test("active bidding follows only while the employee is viewing the latest variation", async () => {
+test("active bidding is the return target and resumes following without a mutation", async () => {
   const state = createState();
 
   reconciliation.observeVariations(state, {
@@ -1276,11 +1412,23 @@ test("active bidding follows only while the employee is viewing the latest varia
       (variation) => variation.variationNumber === 254,
     ),
   );
+  assert.equal(preserved.view.currentVariationNumber, 254);
+  assert.equal(preserved.view.isReviewingHistory, true);
 
-  assert.equal(
-    controller.selectVariation(254).view.selectedVariationNumber,
-    254,
+  const stateBeforeReturn = memory.getState();
+  const inventoryBeforeReturn = clone(preserved.view.inventory);
+  const callsBeforeReturn = clone(memory.calls);
+  const returned = controller.selectVariation(
+    preserved.view.currentVariationNumber,
   );
+
+  assert.equal(returned.view.activeBiddingVariationNumber, 254);
+  assert.equal(returned.view.selectedVariationNumber, 254);
+  assert.equal(returned.view.currentVariationNumber, 254);
+  assert.equal(returned.view.isReviewingHistory, false);
+  assert.deepEqual(returned.view.inventory, inventoryBeforeReturn);
+  assert.deepEqual(memory.getState(), stateBeforeReturn);
+  assert.deepEqual(memory.calls, callsBeforeReturn);
 
   const resumedState = memory.getState();
   reconciliation.observeBiddingVariation(resumedState, {
@@ -1323,12 +1471,37 @@ test("same bidding marker refreshes retain an employee's historical selection", 
 
   assert.equal(refreshed.view.activeBiddingVariationNumber, 252);
   assert.equal(refreshed.view.selectedVariationNumber, 203);
+  assert.deepEqual(refreshed.view.activeAuctionMapping, {
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+    unitCostCents: 1200,
+  });
   assert.equal(
     refreshed.view.variations.find(
       (variation) => variation.variationNumber === 252,
     ).item,
     "Stussy tee",
   );
+
+  const anotherHistoricalSelection = controller.selectVariation(202);
+
+  assert.equal(anotherHistoricalSelection.view.selectedVariationNumber, 202);
+  assert.deepEqual(anotherHistoricalSelection.view.activeAuctionMapping, {
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+    unitCostCents: 1200,
+  });
+
+  const unmappedState = memory.getState();
+  reconciliation.unmapVariation(unmappedState, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+  });
+  memory.setState(unmappedState);
+  const unmapped = await controller.refresh();
+
+  assert.equal(unmapped.view.selectedVariationNumber, 202);
+  assert.equal(unmapped.view.activeAuctionMapping, null);
 });
 
 test("coalesces duplicate starts and rejects mutations while busy", async () => {

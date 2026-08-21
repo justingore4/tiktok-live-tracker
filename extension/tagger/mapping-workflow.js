@@ -16,16 +16,12 @@
       "createReconciliationState",
       "getAuction",
       "mapVariation",
-      "markUnpaid",
-      "recordPaymentComplete",
       "unmapVariation",
-      "undoMarkUnpaid",
     ];
     const STATUS_LABELS = Object.freeze({
       canceled: "Canceled",
       committed: "Payment complete",
       mapped: "Item selected",
-      marked_unpaid: "Marked unpaid",
       pending: "Waiting for payment",
       unmapped: "Not tagged",
       unmapped_completed: "Payment complete - item needed",
@@ -105,10 +101,6 @@
       };
     }
 
-    function cloneSerializableState(value) {
-      return JSON.parse(JSON.stringify(value));
-    }
-
     function getActiveBiddingVariationNumber(summary) {
       return Number.isSafeInteger(summary?.activeBiddingVariationNumber) &&
         summary.activeBiddingVariationNumber > 0
@@ -170,11 +162,6 @@
         displaySkus.add(entry.sku);
       });
 
-      const ownsState = options.state === undefined;
-      // Supplied state may contain captured TikTok truth. Demo-only events and
-      // rollback checkpoints are enabled solely for an isolated session state.
-      const offlineSimulationEnabled =
-        ownsState && options.offlineSimulation === true;
       let state =
         options.state ??
         reconciliation.createReconciliationState(
@@ -211,41 +198,12 @@
         }
       });
 
-      const paymentBufferExpiredByEvent = new Map();
-      const simulatedPaymentCheckpoints = new Map();
-
-      knownVariationNumbers.forEach((variationNumber) => {
-        const auction = reconciliation.getAuction(state, {
-          streamId,
-          variationNumber,
-        });
-
-        if (auction?.mappingStatus === "marked_unpaid") {
-          paymentBufferExpiredByEvent.set(
-            `${streamId}:${variationNumber}`,
-            true,
-          );
-        }
-      });
-
       function auctionKey(extra = {}, variationNumber = selectedVariationNumber) {
         return {
           streamId,
           variationNumber,
           ...extra,
         };
-      }
-
-      function selectedEventKey() {
-        return `${streamId}:${selectedVariationNumber}`;
-      }
-
-      function isPaymentBufferExpired() {
-        return paymentBufferExpiredByEvent.get(selectedEventKey()) === true;
-      }
-
-      function getSimulatedPaymentCheckpoint() {
-        return simulatedPaymentCheckpoints.get(selectedEventKey()) ?? null;
       }
 
       function findDisplayEntry(sku) {
@@ -324,23 +282,16 @@
           summary.inventory.map((entry) => [entry.sku, entry]),
         );
         const auction = reconciliation.getAuction(state, auctionKey());
-        const canceled = auction?.paymentStatus === "canceled";
-
         return inventory.map((displayEntry) => {
           const canonicalEntry = summaryBySku.get(displayEntry.sku);
           const selected = auction?.sku === displayEntry.sku;
-          const selectionAllowed = !canceled;
-          const selectionReason = canceled
-            ? "canceled"
-            : selected
-              ? "selected"
-              : "available";
+          const selectionReason = selected ? "selected" : "available";
 
           return {
             ...displayEntry,
             ...canonicalEntry,
             selected,
-            selectionAllowed,
+            selectionAllowed: true,
             selectionReason,
           };
         });
@@ -353,12 +304,6 @@
         const effectiveCurrentVariationNumber =
           activeBiddingVariationNumber ?? currentVariationNumber;
         const auction = getAuctionDisplay(summary);
-        const isPending = auction?.status === "pending";
-        const isMapped = auction?.status === "mapped";
-        const isMarkedUnpaid = auction?.status === "marked_unpaid";
-        const paymentBufferExpired = isPaymentBufferExpired();
-        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
-
         return {
           streamId,
           variationNumber: selectedVariationNumber,
@@ -373,29 +318,6 @@
           inventory: getInventoryEntries(summary),
           totals: { ...summary.totals },
           warnings: summary.warnings.map((warning) => ({ ...warning })),
-          demo: {
-            offlineSimulationEnabled,
-            paymentBufferExpired,
-          },
-          controls: {
-            canCompletePayment:
-              offlineSimulationEnabled &&
-              auction?.sku !== null &&
-              (isMapped || isPending || isMarkedUnpaid),
-            canSimulateBufferExpiry:
-              offlineSimulationEnabled &&
-              (isMapped || isPending) &&
-              !paymentBufferExpired,
-            canMarkUnpaid:
-              offlineSimulationEnabled &&
-              (isMapped || isPending) &&
-              paymentBufferExpired,
-            canUndoSimulatedPayment:
-              offlineSimulationEnabled &&
-              simulatedPaymentCheckpoint !== null &&
-              auction?.paymentStatus === "payment_complete",
-            canUndoUnpaid: offlineSimulationEnabled && isMarkedUnpaid,
-          },
         };
       }
 
@@ -465,24 +387,9 @@
 
         const previousAuction = reconciliation.getAuction(state, auctionKey());
         const sameSku = previousAuction?.sku === sku;
-        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
-
-        if (previousAuction?.paymentStatus === "canceled") {
-          return createRejectedResult(
-            "CANCELED_VARIATION_IMMUTABLE",
-            "Canceled variations keep their previous item as read-only history and cannot change inventory.",
-          );
-        }
 
         if (sameSku) {
           reconciliation.unmapVariation(state, auctionKey());
-
-          if (simulatedPaymentCheckpoint) {
-            reconciliation.unmapVariation(
-              simulatedPaymentCheckpoint.state,
-              auctionKey(),
-            );
-          }
 
           return createResult(true, "unmapped", {
             previousStatus: previousAuction.status,
@@ -492,13 +399,6 @@
 
         reconciliation.mapVariation(state, auctionKey({ sku }));
 
-        if (simulatedPaymentCheckpoint) {
-          reconciliation.mapVariation(
-            simulatedPaymentCheckpoint.state,
-            auctionKey({ sku }),
-          );
-        }
-
         let action = "mapped";
 
         if (
@@ -506,8 +406,6 @@
           !previousAuction.sku
         ) {
           action = "completed_sale_mapped";
-        } else if (previousAuction?.mappingStatus === "marked_unpaid") {
-          action = "unpaid_mapping_corrected";
         } else if (previousAuction?.sku) {
           if (previousAuction.paymentStatus === "payment_complete") {
             action = "committed_mapping_corrected";
@@ -519,222 +417,6 @@
         return createResult(true, action);
       }
 
-      function completePayment(soldPriceCents) {
-        if (!offlineSimulationEnabled) {
-          return createRejectedResult(
-            "PAYMENT_SIMULATION_DISABLED",
-            "Payment simulation is available only in the isolated offline demo.",
-          );
-        }
-
-        if (!Number.isSafeInteger(soldPriceCents) || soldPriceCents < 1) {
-          return createRejectedResult(
-            "INVALID_SOLD_PRICE",
-            "Enter a sold price greater than $0.00.",
-          );
-        }
-
-        const previousAuction = reconciliation.getAuction(state, auctionKey());
-
-        if (!previousAuction?.sku) {
-          return createRejectedResult(
-            "VARIATION_NOT_MAPPED",
-            "Select an inventory entry before completing payment.",
-          );
-        }
-
-        const nextCheckpoint =
-          previousAuction.status === "mapped" ||
-          previousAuction.status === "pending"
-            ? {
-                state: cloneSerializableState(state),
-                paymentBufferExpired: isPaymentBufferExpired(),
-              }
-            : null;
-
-        reconciliation.recordPaymentComplete(
-          state,
-          auctionKey({ soldPriceCents }),
-        );
-
-        if (nextCheckpoint) {
-          simulatedPaymentCheckpoints.set(
-            selectedEventKey(),
-            nextCheckpoint,
-          );
-        }
-
-        let action = "payment_completed";
-
-        if (previousAuction.paymentStatus === "payment_complete") {
-          action = previousAuction.soldPriceCents === soldPriceCents
-            ? "payment_unchanged"
-            : "payment_conflict";
-        }
-
-        return createResult(true, action);
-      }
-
-      function undoSimulatedPayment() {
-        const auction = reconciliation.getAuction(state, auctionKey());
-        const simulatedPaymentCheckpoint = getSimulatedPaymentCheckpoint();
-
-        if (
-          !offlineSimulationEnabled ||
-          !simulatedPaymentCheckpoint ||
-          auction?.paymentStatus !== "payment_complete"
-        ) {
-          return createRejectedResult(
-            "SIMULATED_PAYMENT_NOT_UNDOABLE",
-            "Only a payment created by this offline demo can be undone.",
-          );
-        }
-
-        const nextState = cloneSerializableState(state);
-        const checkpointStream = simulatedPaymentCheckpoint.state.streams.find(
-          (stream) => stream.streamId === streamId,
-        );
-        const checkpointAuction = checkpointStream?.variations.find(
-          (candidate) =>
-            candidate.variationNumber === selectedVariationNumber,
-        );
-        const nextStream = nextState.streams.find(
-          (stream) => stream.streamId === streamId,
-        );
-
-        if (!checkpointAuction || !nextStream) {
-          return createRejectedResult(
-            "SIMULATED_PAYMENT_CHECKPOINT_INVALID",
-            "The offline payment checkpoint could not be restored.",
-          );
-        }
-
-        const nextAuctionIndex = nextStream.variations.findIndex(
-          (candidate) =>
-            candidate.variationNumber === selectedVariationNumber,
-        );
-
-        if (nextAuctionIndex < 0) {
-          return createRejectedResult(
-            "SIMULATED_PAYMENT_CHECKPOINT_INVALID",
-            "The offline payment checkpoint could not be restored.",
-          );
-        }
-
-        nextStream.variations[nextAuctionIndex] = cloneSerializableState(
-          checkpointAuction,
-        );
-        // Offline Demo may intentionally contain temporary marked_unpaid
-        // auctions, which are forbidden at the persisted Live-state boundary.
-        // Both inputs were created and mutated solely by this isolated session,
-        // so restore the detached in-memory clone without invoking persistence
-        // hydration. Live sessions can never enter this branch.
-        state = nextState;
-        paymentBufferExpiredByEvent.set(
-          selectedEventKey(),
-          simulatedPaymentCheckpoint.paymentBufferExpired,
-        );
-        simulatedPaymentCheckpoints.delete(selectedEventKey());
-
-        return createResult(true, "simulated_payment_undone");
-      }
-
-      function simulatePaymentBufferExpired() {
-        if (!offlineSimulationEnabled) {
-          return createRejectedResult(
-            "BUFFER_SIMULATION_DISABLED",
-            "Payment-buffer simulation is available only in the isolated offline demo.",
-          );
-        }
-
-        const auction = reconciliation.getAuction(state, auctionKey());
-
-        if (
-          !auction?.sku ||
-          (auction.status !== "mapped" && auction.status !== "pending")
-        ) {
-          return createRejectedResult(
-            "PAYMENT_NOT_PENDING",
-            "Only a mapped auction waiting for payment can expire its buffer.",
-          );
-        }
-
-        if (isPaymentBufferExpired()) {
-          return createResult(true, "payment_buffer_unchanged");
-        }
-
-        paymentBufferExpiredByEvent.set(selectedEventKey(), true);
-        return createResult(true, "payment_buffer_expired");
-      }
-
-      function markCurrentUnpaid() {
-        if (!offlineSimulationEnabled) {
-          return createRejectedResult(
-            "UNPAID_SIMULATION_DISABLED",
-            "Unpaid-order simulation is available only in the isolated offline demo.",
-          );
-        }
-
-        const auction = reconciliation.getAuction(state, auctionKey());
-
-        if (!auction?.sku) {
-          return createRejectedResult(
-            "VARIATION_NOT_MAPPED",
-            "Select an inventory entry before marking unpaid.",
-          );
-        }
-
-        if (auction.paymentStatus === "payment_complete") {
-          return createRejectedResult(
-            "PAYMENT_ALREADY_COMPLETE",
-            "A completed TikTok payment cannot be marked unpaid.",
-          );
-        }
-
-        if (auction?.mappingStatus === "marked_unpaid") {
-          return createResult(true, "unpaid_unchanged");
-        }
-
-        if (!isPaymentBufferExpired()) {
-          return createRejectedResult(
-            "PAYMENT_BUFFER_ACTIVE",
-            "Wait until TikTok's payment buffer expires before marking unpaid.",
-          );
-        }
-
-        try {
-          reconciliation.markUnpaid(state, auctionKey());
-        } catch (error) {
-          return createRejectedResult(
-            error.code ?? "MARK_UNPAID_FAILED",
-            error.message,
-          );
-        }
-
-        return createResult(true, "marked_unpaid");
-      }
-
-      function undoCurrentUnpaid() {
-        if (!offlineSimulationEnabled) {
-          return createRejectedResult(
-            "UNPAID_SIMULATION_DISABLED",
-            "Unpaid-order simulation is available only in the isolated offline demo.",
-          );
-        }
-
-        const auction = reconciliation.getAuction(state, auctionKey());
-
-        if (auction?.mappingStatus !== "marked_unpaid") {
-          return createRejectedResult(
-            "NOT_MARKED_UNPAID",
-            "This variation is not marked unpaid.",
-          );
-        }
-
-        reconciliation.undoMarkUnpaid(state, auctionKey());
-        return createResult(true, "unpaid_undone");
-      }
-
       function getStateSnapshot() {
         return JSON.parse(JSON.stringify(state));
       }
@@ -743,19 +425,14 @@
         streamId,
         variationNumber: currentVariationNumber,
         currentVariationNumber,
-        completePayment,
         getCurrentMapping,
         getInventoryEntries,
         getSelectedMapping,
         getStateSnapshot,
         getViewState,
         getVariationOptions: () => getViewState().variations,
-        markUnpaid: markCurrentUnpaid,
         selectSku,
         selectVariation,
-        simulatePaymentBufferExpired,
-        undoSimulatedPayment,
-        undoMarkUnpaid: undoCurrentUnpaid,
       });
     }
 

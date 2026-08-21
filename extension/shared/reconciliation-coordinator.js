@@ -27,8 +27,6 @@
       MAP_VARIATION: "map_variation",
       UNMAP_VARIATION: "unmap_variation",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
-      MARK_UNPAID: "mark_unpaid",
-      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_STATE]: ["type"],
@@ -80,16 +78,6 @@
         "type",
         "variationNumber",
       ],
-      [COMMAND_TYPES.MARK_UNPAID]: [
-        "streamId",
-        "type",
-        "variationNumber",
-      ],
-      [COMMAND_TYPES.UNDO_MARK_UNPAID]: [
-        "streamId",
-        "type",
-        "variationNumber",
-      ],
     });
     const REQUIRED_RECONCILIATION_METHODS = [
       "createReconciliationState",
@@ -102,6 +90,7 @@
       "observeAttributedGmv",
       "observeVariations",
       "recordPaymentComplete",
+      "resolvePaymentFixingOrder",
       "pinStreamToInventoryBaseline",
       "unmapVariation",
     ];
@@ -530,12 +519,6 @@
                 soldPriceCents: command.soldPriceCents,
               }),
             );
-          case COMMAND_TYPES.MARK_UNPAID:
-          case COMMAND_TYPES.UNDO_MARK_UNPAID:
-            fail(
-              "MANUAL_UNPAID_DISABLED",
-              "Manual unpaid controls are disabled; TikTok cancellation status is authoritative.",
-            );
           default:
             fail("UNKNOWN_COMMAND", `State command ${commandType} is not supported.`);
         }
@@ -558,7 +541,32 @@
         return execution;
       }
 
-      return Object.freeze({ dispatch });
+      function snapshotInternalInput(input) {
+        return cloneSerializable(input);
+      }
+
+      return Object.freeze({
+        dispatch,
+        resolvePaymentFixingOrder(input) {
+          let snapshot;
+
+          try {
+            snapshot = snapshotInternalInput(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          const execution = commandTail.then(async () => {
+            await ensureLoaded();
+            return mutateState((state) =>
+              reconciliation.resolvePaymentFixingOrder(state, snapshot),
+            );
+          });
+
+          commandTail = execution.catch(() => undefined);
+          return execution;
+        },
+      });
     }
 
     return {

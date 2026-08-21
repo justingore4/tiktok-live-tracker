@@ -45,6 +45,7 @@
         typeof protocol !== "object" ||
         typeof protocol.createCaptureMessage !== "function" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_ATTRIBUTED_GMV !== "string" ||
+        typeof protocol.EVENT_TYPES?.OBSERVE_BIDDING_PRICE !== "string" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_BIDDING_VARIATION !== "string" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_VARIATIONS !== "string" ||
         typeof protocol.EVENT_TYPES?.OBSERVE_PAYMENT_STATUSES !== "string" ||
@@ -148,6 +149,14 @@
         });
       }
 
+      function observeBiddingPrice({ variationNumber, bidPriceCents } = {}) {
+        return enqueue({
+          type: trustedProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+          variationNumber,
+          bidPriceCents,
+        });
+      }
+
       function observePaymentStatuses(statuses) {
         return enqueue({
           type: trustedProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
@@ -167,6 +176,7 @@
 
       return Object.freeze({
         observeAttributedGmv,
+        observeBiddingPrice,
         observeBiddingVariation,
         observePaymentStatuses,
         observeVariations,

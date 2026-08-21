@@ -45,6 +45,7 @@
       const {
         activeStreamCoordinator,
         captureProtocol,
+        liveBidCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -58,6 +59,17 @@
         typeof captureProtocol.validateCaptureMessage !== "function"
       ) {
         throw new TypeError("A valid capture protocol is required.");
+      }
+
+      if (
+        liveBidCoordinator !== undefined &&
+        (
+          !liveBidCoordinator ||
+          typeof liveBidCoordinator.observe !== "function" ||
+          typeof liveBidCoordinator.synchronize !== "function"
+        )
+      ) {
+        throw new TypeError("A valid live-bid coordinator is required.");
       }
 
       if (
@@ -110,6 +122,7 @@
       return {
         activeStreamCoordinator,
         captureProtocol,
+        liveBidCoordinator: liveBidCoordinator ?? null,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -121,12 +134,28 @@
       const {
         activeStreamCoordinator,
         captureProtocol,
+        liveBidCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
         streamSessionCoordinator,
       } = validateDependencies(options);
       let eventTail = Promise.resolve();
+      let liveBidChanged = false;
+
+      async function synchronizeLiveAuction(streamId, state) {
+        if (liveBidCoordinator === null) {
+          return { status: "unchanged" };
+        }
+
+        try {
+          return await liveBidCoordinator.synchronize({ streamId, state });
+        } catch (_error) {
+          // Canonical capture persistence is authoritative. A best-effort
+          // session projection must never make the durable capture retry.
+          return { status: "unchanged" };
+        }
+      }
 
       function snapshotEvent(event) {
         return captureProtocol.validateCaptureMessage(
@@ -164,6 +193,28 @@
       async function executeEvent(event) {
         const streamId = await resolveActiveStreamId();
         let command;
+
+        liveBidChanged = false;
+
+        if (
+          event.type === captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE
+        ) {
+          if (liveBidCoordinator === null) {
+            fail(
+              "LIVE_BID_COORDINATOR_UNAVAILABLE",
+              "The transient live-bid service is unavailable.",
+            );
+          }
+
+          const outcome = await liveBidCoordinator.observe({
+            streamId,
+            variationNumber: event.variationNumber,
+            bidPriceCents: event.bidPriceCents,
+          });
+
+          liveBidChanged = outcome?.status === "accepted";
+          return { status: "accepted" };
+        }
 
         await stateCoordinator.dispatch({
           type:
@@ -224,7 +275,13 @@
             );
         }
 
-        await stateCoordinator.dispatch(command);
+        const response = await stateCoordinator.dispatch(command);
+
+        const liveAuctionOutcome = await synchronizeLiveAuction(
+          streamId,
+          response?.state ?? null,
+        );
+        liveBidChanged = liveAuctionOutcome?.status === "accepted";
 
         return { status: "accepted" };
       }
@@ -244,7 +301,14 @@
         return execution;
       }
 
-      return Object.freeze({ dispatch });
+      function consumeLiveBidChanged() {
+        const changed = liveBidChanged;
+
+        liveBidChanged = false;
+        return changed;
+      }
+
+      return Object.freeze({ consumeLiveBidChanged, dispatch });
     }
 
     return Object.freeze({

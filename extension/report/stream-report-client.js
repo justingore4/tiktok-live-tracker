@@ -27,6 +27,10 @@
       "LIST_REPORTS",
       "LIST_ARCHIVED_REPORTS",
       "GET_REPORT",
+      "LIST_PAYMENT_FIXING_ORDERS",
+      "RESOLVE_PAYMENT_FIXING_ORDER",
+      "LIST_REPORT_UNIT_COSTS",
+      "UPDATE_REPORT_UNIT_COST",
       "ARCHIVE_REPORTS",
       "RESTORE_REPORTS",
       "DELETE_ARCHIVED_REPORTS",
@@ -265,6 +269,69 @@
       return { reportIds };
     }
 
+    function requireResolutionOptions(value, protocol) {
+      if (
+        !hasExactKeys(value, [
+          "reportId",
+          "resolution",
+          "soldPriceCents",
+          "variationNumber",
+        ]) ||
+        typeof value.reportId !== "string" ||
+        !protocol.REPORT_ID_PATTERN.test(value.reportId) ||
+        !Number.isSafeInteger(value.variationNumber) ||
+        value.variationNumber < 1 ||
+        !["payment_complete", "canceled"].includes(value.resolution) ||
+        (
+          value.resolution === "payment_complete" &&
+          (!Number.isSafeInteger(value.soldPriceCents) ||
+            value.soldPriceCents < 1)
+        ) ||
+        (
+          value.resolution === "canceled" &&
+          value.soldPriceCents !== null
+        )
+      ) {
+        fail(
+          "INVALID_CLIENT_COMMAND",
+          "Payment resolution requires a valid report, variation, outcome, and final sold price.",
+        );
+      }
+
+      return {
+        reportId: value.reportId,
+        variationNumber: value.variationNumber,
+        resolution: value.resolution,
+        soldPriceCents: value.soldPriceCents,
+      };
+    }
+
+    function requireUnitCostOptions(value, protocol) {
+      if (
+        !hasExactKeys(value, ["reportId", "sku", "unitCostCents"]) ||
+        typeof value.reportId !== "string" ||
+        !protocol.REPORT_ID_PATTERN.test(value.reportId) ||
+        typeof value.sku !== "string" ||
+        value.sku.length < 1 ||
+        value.sku.length > 64 ||
+        value.sku !== value.sku.trim() ||
+        /[\u0000-\u001f\u007f]/.test(value.sku) ||
+        !Number.isSafeInteger(value.unitCostCents) ||
+        value.unitCostCents < 0
+      ) {
+        fail(
+          "INVALID_CLIENT_COMMAND",
+          "Unit-cost correction requires a valid report, exact inventory SKU, and nonnegative integer cents.",
+        );
+      }
+
+      return {
+        reportId: value.reportId,
+        sku: value.sku,
+        unitCostCents: value.unitCostCents,
+      };
+    }
+
     function requireCanonicalTimestamp(value, fieldName) {
       if (typeof value !== "string") {
         fail("INVALID_RESPONSE", `${fieldName} must be a UTC timestamp.`);
@@ -396,6 +463,142 @@
       }
 
       return { reportIds: [...data.reportIds] };
+    }
+
+    function parsePaymentFixingOrdersData(data, protocol, requestedReportId) {
+      if (
+        !hasExactKeys(data, ["orders", "reportId"]) ||
+        data.reportId !== requestedReportId ||
+        !protocol.REPORT_ID_PATTERN.test(data.reportId) ||
+        !Array.isArray(data.orders) ||
+        data.orders.length > 10_000
+      ) {
+        fail(
+          "INVALID_RESPONSE",
+          "The stream-report service returned invalid unfinished payments.",
+        );
+      }
+
+      let priorVariationNumber = 0;
+      const orders = data.orders.map((order, index) => {
+        const path = `orders[${index}]`;
+
+        if (
+          !hasExactKeys(order, [
+            "item",
+            "mapped",
+            "observedPaymentStatus",
+            "size",
+            "sku",
+            "style",
+            "variationNumber",
+          ]) ||
+          !Number.isSafeInteger(order.variationNumber) ||
+          order.variationNumber < 1 ||
+          order.variationNumber <= priorVariationNumber ||
+          !["payment_fixing", "payment_failed"].includes(
+            order.observedPaymentStatus,
+          ) ||
+          typeof order.mapped !== "boolean"
+        ) {
+          fail(
+            "INVALID_RESPONSE",
+            `The stream-report service returned an invalid ${path}.`,
+          );
+        }
+
+        const identityIsValid = order.mapped
+          ? typeof order.sku === "string" &&
+            order.sku.trim() !== "" &&
+            typeof order.item === "string" &&
+            order.item.trim() !== "" &&
+            typeof order.style === "string" &&
+            typeof order.size === "string"
+          : [order.sku, order.item, order.style, order.size].every(
+              (value) => value === null,
+            );
+
+        if (!identityIsValid) {
+          fail(
+            "INVALID_RESPONSE",
+            `The stream-report service returned an inconsistent ${path}.`,
+          );
+        }
+
+        priorVariationNumber = order.variationNumber;
+        return {
+          variationNumber: order.variationNumber,
+          observedPaymentStatus: order.observedPaymentStatus,
+          mapped: order.mapped,
+          sku: order.sku,
+          item: order.item,
+          style: order.style,
+          size: order.size,
+        };
+      });
+
+      return { reportId: data.reportId, orders };
+    }
+
+    function parseReportUnitCostsData(data, protocol, requestedReportId) {
+      if (
+        !hasExactKeys(data, ["reportId", "skus"]) ||
+        data.reportId !== requestedReportId ||
+        !protocol.REPORT_ID_PATTERN.test(data.reportId) ||
+        !Array.isArray(data.skus) ||
+        data.skus.length > 10_000
+      ) {
+        fail(
+          "INVALID_RESPONSE",
+          "The stream-report service returned invalid report unit costs.",
+        );
+      }
+
+      const seenSkus = new Set();
+      const skus = data.skus.map((entry, index) => {
+        const path = `skus[${index}]`;
+
+        if (
+          !hasExactKeys(entry, [
+            "completedSaleCount",
+            "item",
+            "size",
+            "sku",
+            "style",
+            "unitCostCents",
+          ]) ||
+          typeof entry.sku !== "string" ||
+          entry.sku.length < 1 ||
+          entry.sku.length > 64 ||
+          entry.sku !== entry.sku.trim() ||
+          /[\u0000-\u001f\u007f]/.test(entry.sku) ||
+          seenSkus.has(entry.sku) ||
+          typeof entry.item !== "string" ||
+          typeof entry.style !== "string" ||
+          typeof entry.size !== "string" ||
+          !Number.isSafeInteger(entry.unitCostCents) ||
+          entry.unitCostCents < 0 ||
+          !Number.isSafeInteger(entry.completedSaleCount) ||
+          entry.completedSaleCount < 0
+        ) {
+          fail(
+            "INVALID_RESPONSE",
+            `The stream-report service returned an invalid ${path}.`,
+          );
+        }
+
+        seenSkus.add(entry.sku);
+        return {
+          sku: entry.sku,
+          item: entry.item,
+          style: entry.style,
+          size: entry.size,
+          unitCostCents: entry.unitCostCents,
+          completedSaleCount: entry.completedSaleCount,
+        };
+      });
+
+      return { reportId: data.reportId, skus };
     }
 
     function parseGetData(data, protocol, streamReport, requestedReportId) {
@@ -575,6 +778,119 @@
         );
       }
 
+      function listPaymentFixingOrders(optionsValue) {
+        let requestedReportId;
+
+        return enqueueCommand(
+          () => {
+            const { reportId } = requireReportOptions(optionsValue);
+            requestedReportId = reportId;
+
+            return {
+              type: protocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
+              reportId,
+            };
+          },
+          (data) =>
+            parsePaymentFixingOrdersData(
+              data,
+              protocol,
+              requestedReportId,
+            ),
+        );
+      }
+
+      function resolvePaymentFixingOrder(optionsValue) {
+        let requestedReportId;
+
+        return enqueueCommand(
+          () => {
+            const command = requireResolutionOptions(optionsValue, protocol);
+            requestedReportId = command.reportId;
+
+            return {
+              type: protocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
+              ...command,
+            };
+          },
+          (data) => {
+            const parsed = parseGetData(
+              data,
+              protocol,
+              streamReport,
+              requestedReportId,
+            );
+
+            if (
+              !parsed.report ||
+              parsed.lifecycleStatus !== "finalized"
+            ) {
+              fail(
+                "INVALID_RESPONSE",
+                "The stream-report service did not return the updated report.",
+              );
+            }
+
+            return parsed;
+          },
+        );
+      }
+
+      function listReportUnitCosts(optionsValue) {
+        let requestedReportId;
+
+        return enqueueCommand(
+          () => {
+            const { reportId } = requireReportOptions(optionsValue);
+            requestedReportId = reportId;
+
+            return {
+              type: protocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
+              reportId,
+            };
+          },
+          (data) =>
+            parseReportUnitCostsData(
+              data,
+              protocol,
+              requestedReportId,
+            ),
+        );
+      }
+
+      function updateReportUnitCost(optionsValue) {
+        let requestedReportId;
+
+        return enqueueCommand(
+          () => {
+            const command = requireUnitCostOptions(optionsValue, protocol);
+            requestedReportId = command.reportId;
+
+            return {
+              type: protocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+              ...command,
+            };
+          },
+          (data) => {
+            const parsed = parseGetData(
+              data,
+              protocol,
+              streamReport,
+              requestedReportId,
+            );
+
+            if (!parsed.report || parsed.lifecycleStatus !== "finalized") {
+              fail(
+                "INVALID_RESPONSE",
+                "The stream-report service did not return the updated report.",
+              );
+            }
+
+            return parsed;
+          },
+        );
+      }
+
       function createMutationMethod(commandType) {
         return function mutateReports(optionsValue) {
           let requestedReportIds;
@@ -612,8 +928,12 @@
         deleteArchivedReports,
         getReport,
         listArchivedReports,
+        listPaymentFixingOrders,
+        listReportUnitCosts,
         listReports,
+        resolvePaymentFixingOrder,
         restoreReports,
+        updateReportUnitCost,
       });
     }
 

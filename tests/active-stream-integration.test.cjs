@@ -282,7 +282,6 @@ test("captured Sold Items observations survive worker restart under the active s
     committedSalesCount: 0,
     unmappedCompletedCount: 1,
     pendingMappedCount: 0,
-    markedUnpaidCount: 0,
     conflictCount: 0,
     completedGmvCents: 700,
     committedRevenueCents: 0,

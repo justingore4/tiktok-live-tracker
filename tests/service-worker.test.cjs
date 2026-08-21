@@ -8,6 +8,7 @@ const captureProtocol = require("../extension/shared/capture-protocol.js");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
+const liveBidProtocol = require("../extension/shared/live-bid-protocol.js");
 const streamReportProtocol = require(
   "../extension/shared/stream-report-protocol.js"
 );
@@ -35,6 +36,7 @@ function createWorkerHarness(options = {}) {
   const runtimeSendMessages = [];
   const inventoryImportCalls = [];
   const reportCalls = [];
+  const liveBidSyncCalls = [];
   const consoleErrors = [];
   const timerCalls = [];
   const timerReceiverMarker = {};
@@ -168,6 +170,27 @@ function createWorkerHarness(options = {}) {
     }
   }
 
+  class FakeLiveBidProtocolError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeLiveBidStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeLiveBidCoordinatorError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
   class FakeGoogleSheetsInventoryImportError extends Error {
     constructor(code, message) {
       super(message);
@@ -175,6 +198,7 @@ function createWorkerHarness(options = {}) {
     }
   }
 
+  let paymentFixingListIndex = 0;
   const reconciliation = {
     ReconciliationError: FakeReconciliationError,
     hydrateReconciliationState(candidate) {
@@ -187,6 +211,31 @@ function createWorkerHarness(options = {}) {
 
       return JSON.parse(JSON.stringify(candidate));
     },
+    listPaymentFixingOrders(_candidate, input) {
+      dispatchCalls.push({
+        type: "list_payment_fixing_orders_internal",
+        streamId: input.streamId,
+      });
+      const sequence = options.paymentFixingOrdersSequence;
+      const orders = Array.isArray(sequence) && sequence.length > 0
+        ? sequence[Math.min(paymentFixingListIndex++, sequence.length - 1)]
+        : options.paymentFixingOrders ?? [];
+
+      return JSON.parse(JSON.stringify(orders));
+    },
+    calculateSummary(_candidate, input) {
+      dispatchCalls.push({
+        type: "calculate_summary_internal",
+        streamId: input.streamId,
+      });
+      return JSON.parse(JSON.stringify(
+        options.reconciliationSummary ?? {
+          inventory: [],
+          itemPerformance: [],
+          auctions: [],
+        },
+      ));
+    },
   };
   const storageModule = {
     ReconciliationStorageError: FakeStorageError,
@@ -196,6 +245,23 @@ function createWorkerHarness(options = {}) {
     },
   };
   const coordinator = {
+    async resolvePaymentFixingOrder(input) {
+      dispatchCalls.push({
+        type: "resolve_payment_fixing_order_internal",
+        ...JSON.parse(JSON.stringify(input)),
+      });
+
+      if (options.paymentResolutionError) {
+        throw options.paymentResolutionError;
+      }
+
+      return options.paymentResolutionResponse ?? {
+        state: persistedReconciliationState === undefined
+          ? JSON.parse(JSON.stringify(preparedReconciliationState))
+          : JSON.parse(JSON.stringify(persistedReconciliationState)),
+        result: { status: input.resolution },
+      };
+    },
     async dispatch(command) {
       dispatchCalls.push(command);
 
@@ -323,10 +389,8 @@ function createWorkerHarness(options = {}) {
       OBSERVE_PAYMENT_STATUSES: "observe_payment_statuses",
       OBSERVE_VARIATIONS: "observe_variations",
       MAP_VARIATION: "map_variation",
-      MARK_UNPAID: "mark_unpaid",
       RECORD_PAYMENT_COMPLETE: "record_payment_complete",
       UNMAP_VARIATION: "unmap_variation",
-      UNDO_MARK_UNPAID: "undo_mark_unpaid",
     },
     ReconciliationCoordinatorError: FakeCoordinatorError,
     createReconciliationCoordinator(receivedOptions) {
@@ -484,7 +548,76 @@ function createWorkerHarness(options = {}) {
     },
   };
   let lastPreparedReport = null;
+  let currentPaymentReportRecord = options.paymentReportRecord === undefined
+    ? null
+    : JSON.parse(JSON.stringify(options.paymentReportRecord));
+  let remainingReportReplacementFailures =
+    options.reportReplacementFailureCount ?? 0;
   const reportCoordinator = {
+    async correctFinalizedReportUnitCost(input) {
+      reportCalls.push({
+        type: "correct_unit_cost",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+
+      if (options.reportUnitCostCorrectionError) {
+        throw options.reportUnitCostCorrectionError === "known"
+          ? new FakeStreamReportStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save the corrected stream report.",
+            )
+          : options.reportUnitCostCorrectionError;
+      }
+
+      currentPaymentReportRecord = JSON.parse(JSON.stringify(
+        options.unitCostCorrectedReportRecord ?? currentPaymentReportRecord,
+      ));
+      return JSON.parse(JSON.stringify(currentPaymentReportRecord));
+    },
+    async getReport(reportId) {
+      reportCalls.push({ type: "get", reportId });
+      return JSON.parse(JSON.stringify(
+        currentPaymentReportRecord ?? {
+          reportId: null,
+          lifecycleStatus: null,
+          report: null,
+        },
+      ));
+    },
+    async getLatestFinalizedReport() {
+      reportCalls.push({ type: "get_latest" });
+      return JSON.parse(JSON.stringify(
+        options.latestReportRecord ?? currentPaymentReportRecord ?? {
+          reportId: null,
+          lifecycleStatus: null,
+          report: null,
+        },
+      ));
+    },
+    async replaceFinalizedReport(input) {
+      reportCalls.push({
+        type: "replace_finalized",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+
+      if (
+        options.reportReplacementError &&
+        remainingReportReplacementFailures > 0
+      ) {
+        remainingReportReplacementFailures -= 1;
+        throw options.reportReplacementError === "known"
+          ? new FakeStreamReportStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save the corrected stream report.",
+            )
+          : options.reportReplacementError;
+      }
+
+      currentPaymentReportRecord = JSON.parse(JSON.stringify(
+        options.replacementReportRecord ?? currentPaymentReportRecord,
+      ));
+      return JSON.parse(JSON.stringify(currentPaymentReportRecord));
+    },
     async prepareReport(input) {
       reportCalls.push({
         type: "prepare",
@@ -600,6 +733,9 @@ function createWorkerHarness(options = {}) {
     },
   };
   const captureEventIntegration = {
+    consumeLiveBidChanged() {
+      return options.liveBidChanged === true;
+    },
     async dispatch(event) {
       captureDispatchCalls.push(JSON.parse(JSON.stringify(event)));
 
@@ -626,6 +762,51 @@ function createWorkerHarness(options = {}) {
     createCaptureIntegration(receivedOptions) {
       captureIntegrationOptions = receivedOptions;
       return captureEventIntegration;
+    },
+  };
+  const liveBidProtocolModule = {
+    MESSAGE_CHANNEL: "tiktok-live-tracker.live-bid",
+    MESSAGE_VERSION: 1,
+    COMMAND_TYPES: { GET_LIVE_BID: "get_live_bid" },
+    LiveBidProtocolError: FakeLiveBidProtocolError,
+    createLiveBidChangedNotification() {
+      return {
+        channel: "tiktok-live-tracker.live-bid",
+        version: 1,
+        event: { type: "live_bid_changed" },
+      };
+    },
+    isLiveBidChangedNotification(message) {
+      return message?.event?.type === "live_bid_changed";
+    },
+    validateLiveBidMessage(message) {
+      return message.command;
+    },
+  };
+  const liveBidStorageModule = {
+    LiveBidStorageError: FakeLiveBidStorageError,
+    createLiveBidStore() {
+      return {};
+    },
+  };
+  const liveBidCoordinator = {
+    async dispatch() {
+      return options.liveBidDispatchResult ?? { liveAuction: null };
+    },
+    async synchronize(value) {
+      liveBidSyncCalls.push(JSON.parse(JSON.stringify(value)));
+
+      if (options.liveBidSyncError) {
+        throw options.liveBidSyncError;
+      }
+
+      return options.liveBidSyncResult ?? { status: "unchanged" };
+    },
+  };
+  const liveBidCoordinatorModule = {
+    LiveBidCoordinatorError: FakeLiveBidCoordinatorError,
+    createLiveBidCoordinator() {
+      return liveBidCoordinator;
     },
   };
   const googleSheetsInventoryImportModule = {
@@ -719,6 +900,9 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
     TikTokLiveTrackerCaptureProtocol: captureProtocol,
     TikTokLiveTrackerCaptureIntegration: captureIntegrationModule,
+    TikTokLiveTrackerLiveBidProtocol: liveBidProtocolModule,
+    TikTokLiveTrackerLiveBidStorage: liveBidStorageModule,
+    TikTokLiveTrackerLiveBidCoordinator: liveBidCoordinatorModule,
     TikTokLiveTrackerInventorySheetImport: {},
     TikTokLiveTrackerInventoryImportProtocol: inventoryImportProtocol,
     TikTokLiveTrackerGoogleSheetsInventoryImport:
@@ -737,7 +921,7 @@ function createWorkerHarness(options = {}) {
       },
     },
     chrome: {
-      storage: { local: storageArea },
+      storage: { local: storageArea, session: storageArea },
       runtime: {
         id: extensionId,
         getManifest() {
@@ -904,6 +1088,7 @@ function createWorkerHarness(options = {}) {
     reportCoordinator,
     reportPageUrl,
     listeners,
+    liveBidSyncCalls,
     reconciliation,
     runtimeSendMessages,
     send,
@@ -933,6 +1118,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/stream-session.js",
     "shared/stream-session-storage.js",
     "shared/stream-session-coordinator.js",
+    "shared/live-bid-protocol.js",
+    "shared/live-bid-storage.js",
+    "shared/live-bid-coordinator.js",
     "shared/capture-protocol.js",
     "shared/capture-integration.js",
     "shared/inventory-sheet-import.js",
@@ -1517,7 +1705,7 @@ test("keeps Start idempotent for an already-active legacy stream", async () => {
   );
 });
 
-test("does not allow inactive mock initialization to bypass Sheet import", async () => {
+test("does not allow inactive legacy recovery to bypass Sheet import", async () => {
   const harness = createWorkerHarness();
   const request = harness.send(
     harness.createMessage({
@@ -1862,6 +2050,107 @@ test("accepts a sanitized bidding variation through the capture boundary", async
     data: { status: "accepted" },
   });
   assert.deepEqual(harness.captureDispatchCalls, [event]);
+});
+
+test("a new bidding variation emits canonical and retained-auction invalidations", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: true });
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 253,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
+
+test("live bid prices emit only their lightweight data-free invalidation", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: true });
+  const event = {
+    type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+    variationNumber: 252,
+    bidPriceCents: 2800,
+  };
+  const request = harness.send(
+    harness.createCaptureMessage(event),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.captureDispatchCalls, [event]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
+
+test("silently ignored stale live bid prices do not invalidate either UI path", async () => {
+  const harness = createWorkerHarness({ liveBidChanged: false });
+  const request = harness.send(
+    harness.createCaptureMessage({
+      type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+      variationNumber: 251,
+      bidPriceCents: 2800,
+    }),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.equal(harness.runtimeSendMessages.length, 0);
+});
+
+test("only the exact side panel can read the transient live bid", async () => {
+  const expected = {
+    liveAuction: {
+      variationNumber: 252,
+      bidPriceCents: 2800,
+      unitCostCents: 1200,
+    },
+  };
+  const harness = createWorkerHarness({ liveBidDispatchResult: expected });
+  const message = liveBidProtocol.createLiveBidMessage();
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+
+  assert.deepEqual(
+    await harness.send(message, harness.createCaptureSender()).response,
+    {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message: "This extension context cannot issue live-bid commands.",
+      },
+    },
+  );
 });
 
 test("keeps accepted capture responses independent of notification delivery", async () => {
@@ -2446,6 +2735,597 @@ test("report reads and archive mutations enforce exact extension senders", async
   });
 });
 
+function createPaymentCorrectionFixture(options = {}) {
+  const streamId =
+    "local-stream:11111111-1111-4111-8111-111111111111";
+  const reportId =
+    "stream-report:11111111-1111-4111-8111-111111111111";
+  const baselineId =
+    "inventory-baseline:11111111-1111-4111-8111-111111111111";
+  const reconciliationState = {
+    version: 7,
+    activeInventoryBaselineId: options.activeBaselineId ?? baselineId,
+    inventoryBaselines: [],
+    streams: [
+      {
+        streamId,
+        inventoryBaselineId: baselineId,
+        variations: [],
+      },
+      ...(options.laterStream === true
+        ? [{
+            streamId:
+              "local-stream:22222222-2222-4222-8222-222222222222",
+            inventoryBaselineId: baselineId,
+            variations: [],
+          }]
+        : []),
+    ],
+  };
+  const record = {
+    reportId,
+    lifecycleStatus: "finalized",
+    report: {
+      reportId,
+      completedSales: [],
+      inventory: [{
+        sku: "KOREA-TEE-OS",
+        item: "korea",
+        style: "tee",
+        size: "OS",
+        unitCostCents: 500,
+      }],
+      itemPerformance: [{
+        sku: "KOREA-TEE-OS",
+        soldQuantity: 0,
+      }],
+      totals: {
+        paymentFixingCount: options.paymentFixingCount ?? 1,
+      },
+      metadata: {
+        streamId,
+        inventoryBaselineId: baselineId,
+        startedAt: "2026-08-19T10:00:00.000Z",
+        endedAt: "2026-08-19T12:00:00.000Z",
+        generatedAt: "2026-08-19T12:00:00.000Z",
+      },
+    },
+  };
+
+  return { baselineId, reconciliationState, record, reportId, streamId };
+}
+
+test("lists post-End payment-fixing orders only from the packaged report page", async () => {
+  const fixture = createPaymentCorrectionFixture();
+  const orders = [{
+    variationNumber: 299,
+    observedPaymentStatus: "payment_failed",
+    mapped: true,
+    sku: "TEST-SKU",
+    item: "Test item",
+    style: "",
+    size: "OS",
+  }];
+  const harness = createWorkerHarness({
+    statefulReconciliation: true,
+    initialReconciliationState: fixture.reconciliationState,
+    paymentReportRecord: fixture.record,
+    paymentFixingOrders: orders,
+  });
+  const message = harness.createReportMessage({
+    type: "list_payment_fixing_orders",
+    reportId: fixture.reportId,
+  });
+  const fromReport = harness.send(
+    message,
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    }),
+  );
+  const fromSidePanel = harness.send(message);
+
+  assert.deepEqual(await fromReport.response, {
+    ok: true,
+    data: { reportId: fixture.reportId, orders },
+  });
+  assert.deepEqual(await fromSidePanel.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the packaged report page can correct ended-stream report data.",
+    },
+  });
+});
+
+test("resolves an eligible latest report canonically before replacing its snapshot", async () => {
+  const fixture = createPaymentCorrectionFixture();
+  const replacement = {
+    ...fixture.record,
+    report: {
+      ...fixture.record.report,
+      corrected: true,
+    },
+  };
+  const harness = createWorkerHarness({
+    statefulReconciliation: true,
+    initialReconciliationState: fixture.reconciliationState,
+    paymentReportRecord: fixture.record,
+    replacementReportRecord: replacement,
+  });
+  const request = harness.send(
+    harness.createReportMessage({
+      type: "resolve_payment_fixing_order",
+      reportId: fixture.reportId,
+      variationNumber: 299,
+      resolution: "payment_complete",
+      soldPriceCents: 2800,
+    }),
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    }),
+  );
+
+  assert.deepEqual(await request.response, { ok: true, data: replacement });
+  assert.deepEqual(
+    harness.dispatchCalls.find(
+      (call) => call.type === "resolve_payment_fixing_order_internal",
+    ),
+    {
+      type: "resolve_payment_fixing_order_internal",
+      streamId: fixture.streamId,
+      variationNumber: 299,
+      resolution: "payment_complete",
+      soldPriceCents: 2800,
+    },
+  );
+  const replacementCall = harness.reportCalls.find(
+    (call) => call.type === "replace_finalized",
+  );
+
+  assert.equal(replacementCall.input.reportId, fixture.reportId);
+  assert.deepEqual(
+    replacementCall.input.reconciliationState,
+    fixture.reconciliationState,
+  );
+});
+
+test("a report reload repairs a state-first payment resolution after report persistence failed", async () => {
+  const fixture = createPaymentCorrectionFixture();
+  const replacement = {
+    ...fixture.record,
+    report: {
+      ...fixture.record.report,
+      totals: { paymentFixingCount: 0 },
+      corrected: true,
+    },
+  };
+  const harness = createWorkerHarness({
+    statefulReconciliation: true,
+    initialReconciliationState: fixture.reconciliationState,
+    paymentReportRecord: fixture.record,
+    paymentFixingOrdersSequence: [[]],
+    replacementReportRecord: replacement,
+    reportReplacementError: "known",
+    reportReplacementFailureCount: 1,
+  });
+  const sender = harness.createSender({
+    url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+  });
+  const firstAttempt = harness.send(
+    harness.createReportMessage({
+      type: "resolve_payment_fixing_order",
+      reportId: fixture.reportId,
+      variationNumber: 299,
+      resolution: "canceled",
+      soldPriceCents: null,
+    }),
+    sender,
+  );
+
+  assert.deepEqual(await firstAttempt.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not save the corrected stream report.",
+    },
+  });
+  assert.equal(
+    harness.dispatchCalls.filter(
+      (call) => call.type === "resolve_payment_fixing_order_internal",
+    ).length,
+    1,
+  );
+
+  const reloaded = harness.send(
+    harness.createReportMessage({
+      type: "get_report",
+      reportId: fixture.reportId,
+    }),
+    sender,
+  );
+
+  assert.deepEqual(await reloaded.response, { ok: true, data: replacement });
+  assert.equal(
+    harness.reportCalls.filter(
+      (call) => call.type === "replace_finalized",
+    ).length,
+    2,
+  );
+  assert.equal(
+    harness.dispatchCalls.filter(
+      (call) => call.type === "resolve_payment_fixing_order_internal",
+    ).length,
+    1,
+  );
+});
+
+test("GET keeps a valid saved report readable when reconciliation is absent or fails", async () => {
+  const fixture = createPaymentCorrectionFixture();
+
+  for (const unavailableOptions of [
+    {
+      statefulReconciliation: true,
+      initialReconciliationState: null,
+    },
+    { dispatchError: "known" },
+  ]) {
+    const harness = createWorkerHarness({
+      paymentReportRecord: fixture.record,
+      ...unavailableOptions,
+    });
+    const request = harness.send(
+      harness.createReportMessage({
+        type: "get_report",
+        reportId: fixture.reportId,
+      }),
+      harness.createSender({
+        url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+      }),
+    );
+
+    assert.deepEqual(await request.response, {
+      ok: true,
+      data: fixture.record,
+    });
+    assert.equal(
+      harness.reportCalls.some((call) => call.type === "replace_finalized"),
+      false,
+    );
+  }
+});
+
+test("GET with no fixing orders returns the saved report without reading canonical state", async () => {
+  const fixture = createPaymentCorrectionFixture({ paymentFixingCount: 0 });
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    paymentReportRecord: fixture.record,
+  });
+  const request = harness.send(
+    harness.createReportMessage({
+      type: "get_report",
+      reportId: fixture.reportId,
+    }),
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: fixture.record,
+  });
+  assert.equal(
+    harness.dispatchCalls.some((call) => call.type === "get_state"),
+    false,
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "get_latest"),
+    false,
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "replace_finalized"),
+    false,
+  );
+});
+
+test("hides unsafe payment controls and rejects stale payment mutations", async () => {
+  for (const unsafe of [
+    { activeBaselineId:
+      "inventory-baseline:99999999-9999-4999-8999-999999999999" },
+    { laterStream: true },
+  ]) {
+    const fixture = createPaymentCorrectionFixture(unsafe);
+    const harness = createWorkerHarness({
+      statefulReconciliation: true,
+      initialReconciliationState: fixture.reconciliationState,
+      paymentReportRecord: fixture.record,
+      paymentFixingOrders: [{ variationNumber: 299 }],
+    });
+    const sender = harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    });
+    const listed = harness.send(
+      harness.createReportMessage({
+        type: "list_payment_fixing_orders",
+        reportId: fixture.reportId,
+      }),
+      sender,
+    );
+    const resolved = harness.send(
+      harness.createReportMessage({
+        type: "resolve_payment_fixing_order",
+        reportId: fixture.reportId,
+        variationNumber: 299,
+        resolution: "canceled",
+        soldPriceCents: null,
+      }),
+      sender,
+    );
+
+    assert.deepEqual(await listed.response, {
+      ok: true,
+      data: { reportId: fixture.reportId, orders: [] },
+    });
+    const resolutionResponse = await resolved.response;
+
+    assert.equal(resolutionResponse.ok, false);
+    assert.equal(
+      resolutionResponse.error.code,
+      unsafe.laterStream === true
+        ? "REPORT_NOT_LATEST_STREAM"
+        : "REPORT_INVENTORY_BASELINE_STALE",
+    );
+    assert.equal(
+      harness.reportCalls.some((call) => call.type === "replace_finalized"),
+      false,
+    );
+  }
+});
+
+test("blocks payment correction during an active stream and for non-newest reports", async () => {
+  const fixture = createPaymentCorrectionFixture();
+  const newer = {
+    ...fixture.record,
+    reportId: "stream-report:22222222-2222-4222-8222-222222222222",
+    report: {
+      ...fixture.record.report,
+      reportId: "stream-report:22222222-2222-4222-8222-222222222222",
+    },
+  };
+
+  for (const harnessOptions of [
+    {
+      initialActiveSession: {
+        streamId: fixture.streamId,
+        startedAt: "2026-08-19T10:00:00.000Z",
+      },
+    },
+    { latestReportRecord: newer },
+  ]) {
+    const harness = createWorkerHarness({
+      statefulReconciliation: true,
+      initialReconciliationState: fixture.reconciliationState,
+      paymentReportRecord: fixture.record,
+      ...harnessOptions,
+    });
+    const sender = harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    });
+    const listed = harness.send(
+      harness.createReportMessage({
+        type: "list_payment_fixing_orders",
+        reportId: fixture.reportId,
+      }),
+      sender,
+    );
+    const resolved = harness.send(
+      harness.createReportMessage({
+        type: "resolve_payment_fixing_order",
+        reportId: fixture.reportId,
+        variationNumber: 299,
+        resolution: "canceled",
+        soldPriceCents: null,
+      }),
+      sender,
+    );
+
+    assert.deepEqual(await listed.response, {
+      ok: true,
+      data: { reportId: fixture.reportId, orders: [] },
+    });
+    const resolutionResponse = await resolved.response;
+
+    assert.equal(resolutionResponse.ok, false);
+    assert.equal(
+      resolutionResponse.error.code,
+      harnessOptions.initialActiveSession
+        ? "ACTIVE_STREAM_ALREADY_EXISTS"
+        : "REPORT_NOT_LATEST",
+    );
+  }
+});
+
+test("lists every saved-report SKU during an active stream without reading canonical state", async () => {
+  const fixture = createPaymentCorrectionFixture({ paymentFixingCount: 0 });
+  fixture.record.report.inventory.push({
+    sku: "UNSOLD-HAT-OS",
+    item: "hat",
+    style: "",
+    size: "OS",
+    unitCostCents: 300,
+  });
+  fixture.record.report.itemPerformance[0].soldQuantity = 69;
+  fixture.record.report.itemPerformance.push({
+    sku: "UNSOLD-HAT-OS",
+    soldQuantity: 0,
+  });
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    initialActiveSession: {
+      streamId: "local-stream:99999999-9999-4999-8999-999999999999",
+      startedAt: "2026-08-20T10:00:00.000Z",
+    },
+    paymentReportRecord: fixture.record,
+  });
+  const message = harness.createReportMessage({
+    type: "list_report_unit_costs",
+    reportId: fixture.reportId,
+  });
+  const fromReport = harness.send(
+    message,
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    }),
+  );
+  const fromSidePanel = harness.send(message);
+
+  assert.deepEqual(await fromReport.response, {
+    ok: true,
+    data: {
+      reportId: fixture.reportId,
+      skus: [
+        {
+          sku: "KOREA-TEE-OS",
+          item: "korea",
+          style: "tee",
+          size: "OS",
+          unitCostCents: 500,
+          completedSaleCount: 69,
+        },
+        {
+          sku: "UNSOLD-HAT-OS",
+          item: "hat",
+          style: "",
+          size: "OS",
+          unitCostCents: 300,
+          completedSaleCount: 0,
+        },
+      ],
+    },
+  });
+  assert.deepEqual(await fromSidePanel.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the packaged report page can correct ended-stream report data.",
+    },
+  });
+  assert.equal(
+    harness.dispatchCalls.some((call) =>
+      ["get_state", "calculate_summary_internal"].includes(call.type)
+    ),
+    false,
+  );
+});
+
+test("updates any selected report directly while a newer stream is active", async () => {
+  const fixture = createPaymentCorrectionFixture({ paymentFixingCount: 0 });
+  const replacement = {
+    ...fixture.record,
+    report: {
+      ...fixture.record.report,
+      inventory: [{ sku: "KOREA-TEE-OS", unitCostCents: 625 }],
+      correctedCost: true,
+    },
+  };
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    initialActiveSession: {
+      streamId: "local-stream:99999999-9999-4999-8999-999999999999",
+      startedAt: "2026-08-20T10:00:00.000Z",
+    },
+    paymentReportRecord: fixture.record,
+    latestReportRecord: {
+      reportId: "stream-report:99999999-9999-4999-8999-999999999999",
+      lifecycleStatus: "finalized",
+      report: { reportId: "stream-report:99999999-9999-4999-8999-999999999999" },
+    },
+    unitCostCorrectedReportRecord: replacement,
+  });
+  const response = harness.send(
+    harness.createReportMessage({
+      type: "update_report_unit_cost",
+      reportId: fixture.reportId,
+      sku: "KOREA-TEE-OS",
+      unitCostCents: 625,
+    }),
+    harness.createSender({
+      url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+    }),
+  );
+
+  assert.deepEqual(await response.response, { ok: true, data: replacement });
+  assert.deepEqual(
+    harness.reportCalls.find((call) => call.type === "correct_unit_cost"),
+    {
+      type: "correct_unit_cost",
+      input: {
+        reportId: fixture.reportId,
+        sku: "KOREA-TEE-OS",
+        unitCostCents: 625,
+      },
+    },
+  );
+  assert.equal(
+    harness.dispatchCalls.some((call) => call.type === "get_state"),
+    false,
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "get_latest"),
+    false,
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "replace_finalized"),
+    false,
+  );
+});
+
+test("a failed report-only unit-cost save leaves the saved report readable and canonical state untouched", async () => {
+  const fixture = createPaymentCorrectionFixture({ paymentFixingCount: 0 });
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    paymentReportRecord: fixture.record,
+    reportUnitCostCorrectionError: "known",
+  });
+  const sender = harness.createSender({
+    url: `${harness.reportPageUrl}?reportId=${fixture.reportId}`,
+  });
+  const update = harness.send(
+    harness.createReportMessage({
+      type: "update_report_unit_cost",
+      reportId: fixture.reportId,
+      sku: "KOREA-TEE-OS",
+      unitCostCents: 625,
+    }),
+    sender,
+  );
+
+  assert.deepEqual(await update.response, {
+    ok: false,
+    error: {
+      code: "STORAGE_WRITE_FAILED",
+      message: "Could not save the corrected stream report.",
+    },
+  });
+  const reloaded = harness.send(
+    harness.createReportMessage({
+      type: "get_report",
+      reportId: fixture.reportId,
+    }),
+    sender,
+  );
+  assert.deepEqual(await reloaded.response, {
+    ok: true,
+    data: fixture.record,
+  });
+  assert.equal(
+    harness.dispatchCalls.some((call) => call.type === "get_state"),
+    false,
+  );
+});
+
 test("ignores unrelated runtime messages", async () => {
   const harness = createWorkerHarness();
   const request = harness.send({ channel: "another-feature" });
@@ -2623,33 +3503,61 @@ test("pins and forwards employee mutations only for the active stream", async ()
   }
 });
 
-test("rejects manual unpaid commands because Live payment outcomes are automatic", async () => {
+test("employee mapping refreshes retained cost with a lightweight invalidation", async () => {
   const activeSession = {
     streamId: "local-stream:66666666-6666-4666-8666-666666666666",
     startedAt: "2026-08-08T22:00:00.000Z",
     identitySource: "local_session",
   };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    liveBidSyncResult: { status: "accepted" },
+  });
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.MAP_VARIATION,
+    streamId: activeSession.streamId,
+    variationNumber: 203,
+    sku: "TEST-SKU",
+  };
 
-  for (const typeName of ["MARK_UNPAID", "UNDO_MARK_UNPAID"]) {
-    const harness = createWorkerHarness({ initialActiveSession: activeSession });
-    const request = harness.send(
-      harness.createMessage({
-        type: harness.coordinatorModule.COMMAND_TYPES[typeName],
-        streamId: activeSession.streamId,
-        variationNumber: 203,
-      }),
-    );
+  assert.deepEqual(
+    await harness.send(harness.createMessage(command)).response,
+    { ok: true, data: { state: null, result: null } },
+  );
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    { streamId: activeSession.streamId, state: null },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+  ]);
+});
 
-    assert.deepEqual(await request.response, {
-      ok: false,
-      error: {
-        code: "MANUAL_UNPAID_DISABLED",
-        message:
-          "Live payment failures and cancellations are tracked automatically from TikTok.",
-      },
-    });
-    assert.equal(harness.dispatchCalls.length, 0);
-  }
+test("retained-cost storage failure cannot reject a saved employee mapping", async () => {
+  const activeSession = {
+    streamId: "local-stream:66666666-6666-4666-8666-666666666666",
+    startedAt: "2026-08-08T22:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    liveBidSyncError: new Error("session storage unavailable"),
+  });
+  const command = {
+    type: harness.coordinatorModule.COMMAND_TYPES.UNMAP_VARIATION,
+    streamId: activeSession.streamId,
+    variationNumber: 203,
+  };
+
+  assert.deepEqual(
+    await harness.send(harness.createMessage(command)).response,
+    { ok: true, data: { state: null, result: null } },
+  );
+  assert.equal(harness.liveBidSyncCalls.length, 1);
+  assert.equal(harness.runtimeSendMessages.length, 0);
 });
 
 test("rejects employee mutations when no tracker stream is active", async () => {

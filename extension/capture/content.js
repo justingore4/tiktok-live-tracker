@@ -7,6 +7,8 @@
   const LIFECYCLE_INTERVAL_MS = 250;
   const QUIET_SCAN_DELAY_MS = 150;
   const MAX_SCAN_WAIT_MS = 1000;
+  const BIDDING_QUIET_SCAN_DELAY_MS = 75;
+  const BIDDING_MAX_SCAN_WAIT_MS = 250;
   const DELIVERY_RETRY_DELAY_MS = 1000;
   const MAX_DELIVERY_RETRY_DELAY_MS = 5000;
   const EXPECTED_CAPTURE_RETRY_CODES = new Set([
@@ -46,7 +48,7 @@
     return;
   }
 
-  if (!biddingVariationLocator?.locateUniqueVisibleBiddingVariation) {
+  if (!biddingVariationLocator?.locateUniqueVisibleBiddingAuction) {
     console.error(`${LOG_PREFIX} Bidding variation locator failed to load.`);
     return;
   }
@@ -269,14 +271,52 @@
   function createBiddingVariationDeliveryState(body) {
     return {
       body,
+      deliveredBid: null,
       deliveredVariationNumber: null,
       deliveryRetryDelayMs: DELIVERY_RETRY_DELAY_MS,
       deliveryRetryTimerId: null,
       deliveryRunning: false,
       latestObservedVariationNumber: null,
+      latestObservedBid: null,
+      queuedBid: null,
       queuedVariationNumber: null,
       reportedDeliveryErrorCodes: new Set(),
     };
+  }
+
+  function isSameBiddingPrice(left, right) {
+    return (
+      Boolean(left) &&
+      Boolean(right) &&
+      left.variationNumber === right.variationNumber &&
+      left.bidPriceCents === right.bidPriceCents
+    );
+  }
+
+  function hasQueuedBiddingDelivery(delivery) {
+    return (
+      (delivery.queuedVariationNumber !== null &&
+        delivery.queuedVariationNumber !==
+          delivery.deliveredVariationNumber) ||
+      (delivery.queuedBid !== null &&
+        !isSameBiddingPrice(delivery.queuedBid, delivery.deliveredBid))
+    );
+  }
+
+  function restoreLatestBiddingQueue(delivery) {
+    delivery.queuedVariationNumber =
+      delivery.latestObservedVariationNumber !==
+      delivery.deliveredVariationNumber
+        ? delivery.latestObservedVariationNumber
+        : null;
+    delivery.queuedBid =
+      delivery.latestObservedBid !== null &&
+      !isSameBiddingPrice(
+        delivery.latestObservedBid,
+        delivery.deliveredBid,
+      )
+        ? delivery.latestObservedBid
+        : null;
   }
 
   function paymentFingerprint(sale) {
@@ -813,11 +853,7 @@
           return;
         }
 
-        if (
-          delivery.queuedVariationNumber === null ||
-          delivery.queuedVariationNumber ===
-            delivery.deliveredVariationNumber
-        ) {
+        if (!hasQueuedBiddingDelivery(delivery)) {
           return;
         }
 
@@ -847,49 +883,93 @@
 
   async function drainBiddingVariationQueue(delivery) {
     try {
-      while (
-        isCurrentBiddingVariationDelivery(delivery) &&
-        delivery.queuedVariationNumber !== null &&
-        delivery.queuedVariationNumber !== delivery.deliveredVariationNumber
-      ) {
-        const variationNumber = delivery.queuedVariationNumber;
-        delivery.queuedVariationNumber = null;
+      while (isCurrentBiddingVariationDelivery(delivery)) {
+        if (
+          delivery.queuedVariationNumber !== null &&
+          delivery.queuedVariationNumber !==
+            delivery.deliveredVariationNumber
+        ) {
+          const variationNumber = delivery.queuedVariationNumber;
+          delivery.queuedVariationNumber = null;
+
+          try {
+            await captureClient.observeBiddingVariation(variationNumber);
+
+            if (!isCurrentBiddingVariationDelivery(delivery)) {
+              return;
+            }
+
+            delivery.deliveredVariationNumber = variationNumber;
+            delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            restoreLatestBiddingQueue(delivery);
+          } catch (error) {
+            // Delivery may have crossed the boundary before a transport error,
+            // so force the newest identity to be sent again before its price.
+            delivery.deliveredVariationNumber = null;
+            restoreLatestBiddingQueue(delivery);
+
+            reportDeliveryError(
+              delivery,
+              "Bidding variation delivery failed.",
+              error,
+            );
+            scheduleBiddingVariationDeliveryRetry(delivery);
+            return;
+          }
+
+          if (
+            delivery.deliveryRetryTimerId !== null ||
+            !isCurrentBiddingVariationDelivery(delivery)
+          ) {
+            return;
+          }
+
+          // Establish the worker-owned active variation before its first bid.
+          continue;
+        }
+
+        const bid = delivery.queuedBid;
+
+        if (bid === null || isSameBiddingPrice(bid, delivery.deliveredBid)) {
+          delivery.queuedBid = null;
+          break;
+        }
+
+        if (bid.variationNumber !== delivery.deliveredVariationNumber) {
+          restoreLatestBiddingQueue(delivery);
+
+          if (
+            delivery.queuedVariationNumber === null ||
+            delivery.queuedVariationNumber ===
+              delivery.deliveredVariationNumber
+          ) {
+            // A stale price must never cross after a newer card identity.
+            delivery.queuedBid = null;
+            break;
+          }
+
+          continue;
+        }
+
+        delivery.queuedBid = null;
 
         try {
-          await captureClient.observeBiddingVariation(variationNumber);
+          await captureClient.observeBiddingPrice(bid);
 
           if (!isCurrentBiddingVariationDelivery(delivery)) {
             return;
           }
 
-          delivery.deliveredVariationNumber = variationNumber;
+          delivery.deliveredBid = bid;
           delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
-
-          if (
-            delivery.queuedVariationNumber === null &&
-            delivery.latestObservedVariationNumber !== null &&
-            delivery.latestObservedVariationNumber !==
-              delivery.deliveredVariationNumber
-          ) {
-            delivery.queuedVariationNumber =
-              delivery.latestObservedVariationNumber;
-          }
+          restoreLatestBiddingQueue(delivery);
         } catch (error) {
-          // A newer auction-card observation wins over the failed stale one.
-          if (
-            delivery.queuedVariationNumber === null &&
-            delivery.latestObservedVariationNumber !==
-              delivery.deliveredVariationNumber
-          ) {
-            delivery.queuedVariationNumber =
-              delivery.latestObservedVariationNumber;
-          }
+          // The newest sampled price wins. Force it across again because a
+          // transport failure can occur after the worker accepted the send.
+          delivery.deliveredBid = null;
+          restoreLatestBiddingQueue(delivery);
 
-          reportDeliveryError(
-            delivery,
-            "Bidding variation delivery failed.",
-            error,
-          );
+          reportDeliveryError(delivery, "Bidding price delivery failed.", error);
           scheduleBiddingVariationDeliveryRetry(delivery);
           return;
         }
@@ -903,29 +983,40 @@
     }
   }
 
-  function queueBiddingVariation(session, variationNumber) {
+  function queueBiddingAuction(session, variationNumber, bidPriceCents) {
     if (!isCurrentBiddingVariationSession(session)) {
       return false;
     }
 
     const delivery = session.delivery;
 
+    const changedVariation =
+      delivery.latestObservedVariationNumber !== variationNumber;
     delivery.latestObservedVariationNumber = variationNumber;
 
-    if (
-      !delivery.deliveryRunning &&
-      variationNumber === delivery.deliveredVariationNumber
-    ) {
+    if (changedVariation) {
+      delivery.latestObservedBid = null;
+      delivery.queuedBid = null;
+    }
+
+    if (Number.isSafeInteger(bidPriceCents) && bidPriceCents > 0) {
+      const bid = Object.freeze({ variationNumber, bidPriceCents });
+      delivery.latestObservedBid = bid;
+      delivery.queuedBid = isSameBiddingPrice(bid, delivery.deliveredBid)
+        ? null
+        : bid;
+    }
+
+    if (variationNumber === delivery.deliveredVariationNumber) {
       delivery.queuedVariationNumber = null;
+    } else {
+      delivery.queuedVariationNumber = variationNumber;
+    }
+
+    if (!hasQueuedBiddingDelivery(delivery)) {
       cancelBiddingVariationDeliveryRetry(delivery);
       return false;
     }
-
-    if (variationNumber === delivery.queuedVariationNumber) {
-      return false;
-    }
-
-    delivery.queuedVariationNumber = variationNumber;
 
     if (
       delivery.deliveryRunning ||
@@ -1155,7 +1246,7 @@
     }
 
     const located =
-      biddingVariationLocator.locateUniqueVisibleBiddingVariation(targetBody);
+      biddingVariationLocator.locateUniqueVisibleBiddingAuction(targetBody);
 
     if (located.status !== "found") {
       return stopBiddingVariationCapture({
@@ -1189,14 +1280,18 @@
     }
 
     const located =
-      biddingVariationLocator.locateUniqueVisibleBiddingVariation(session.body);
+      biddingVariationLocator.locateUniqueVisibleBiddingAuction(session.body);
 
     if (located.status !== "found" || located.root !== session.root) {
       reconcileBiddingVariationCapture();
       return;
     }
 
-    queueBiddingVariation(session, located.variationNumber);
+    queueBiddingAuction(
+      session,
+      located.variationNumber,
+      located.bidPriceStatus === "found" ? located.bidPriceCents : null,
+    );
   }
 
   function reconcileCapture() {
@@ -1607,8 +1702,8 @@
         onError(error) {
           reportError("Bidding variation scan failed.", error);
         },
-        quietDelayMs: QUIET_SCAN_DELAY_MS,
-        maxWaitMs: MAX_SCAN_WAIT_MS,
+        quietDelayMs: BIDDING_QUIET_SCAN_DELAY_MS,
+        maxWaitMs: BIDDING_MAX_SCAN_WAIT_MS,
       });
 
       observer = new MutationObserver((records) => {

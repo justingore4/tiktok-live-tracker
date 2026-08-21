@@ -58,9 +58,7 @@ function createReadClient(readState) {
     getState: read,
     initializeState: read,
     mapVariation: read,
-    markUnpaid: read,
     unmapVariation: read,
-    undoMarkUnpaid: read,
   };
 }
 
@@ -100,7 +98,14 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
   assert.match(metricsSection, />\s*Canceled Orders:\s*</);
   assert.match(metricsSection, />\s*Payment Fixing:\s*</);
-  assert.match(metricsSection, />\s*Gross Profits\s*</);
+  assert.match(
+    metricsSection,
+    /class="metric-title-with-description"[\s\S]*?>\s*Gross Profits\s*<[\s\S]*?class="metric-description">Mapped completed revenue - unit costs<\//,
+  );
+  assert.match(
+    metricsSection,
+    /class="metric-title-with-description"[\s\S]*?>\s*Est\. Profit After Fees\s*<[\s\S]*?class="metric-description">GMV post 6% fee - COGS<\//,
+  );
   assert.match(metricsSection, /id="revenue-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="aov-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="total-gmv-value"[^>]*>&mdash;</);
@@ -120,14 +125,22 @@ test("side panel exposes bottom performance metrics and renders their values", (
     metricsSection,
     /id="gross-profit-warning"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?aria-atomic="true"[\s\S]*?hidden/,
   );
+  assert.match(
+    metricsSection,
+    /id="estimated-profit-after-fees-value"[\s\S]*?aria-describedby="estimated-profit-after-fees-warning"[\s\S]*?>&mdash;</,
+  );
+  assert.match(
+    metricsSection,
+    /id="estimated-profit-after-fees-warning"[\s\S]*?class="metric-warning"[\s\S]*?hidden/,
+  );
   assert.equal(
     [
       ...metricsSection.matchAll(
         /class="metric-card(?:\s+metric-card-(?:fees|order-status|profit))?"/g,
       ),
     ].length,
-    7,
-    "the Metrics section must preserve its existing cards and include AOV and TikTok fees",
+    8,
+    "the Metrics section must preserve its existing cards and include estimated profit after fees",
   );
 
   assert.match(
@@ -176,6 +189,14 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
+    /const estimatedProfitAfterFeesValue = document\.querySelector\([\s\S]*?"#estimated-profit-after-fees-value"/,
+  );
+  assert.match(
+    source,
+    /const estimatedProfitAfterFeesWarning = document\.querySelector\([\s\S]*?"#estimated-profit-after-fees-warning"/,
+  );
+  assert.match(
+    source,
     /function renderMetrics\(view\)\s*{[\s\S]*?viewModel\.formatUsdCents\([\s\S]*?view\.totals\.completedGmvCents[\s\S]*?view\.totals\.profitCents[\s\S]*?view\.totals\.attributedGmvDisplay[\s\S]*?view\.totals\.unmappedCompletedCount[\s\S]*?}/,
   );
   assert.match(
@@ -197,6 +218,16 @@ test("side panel exposes bottom performance metrics and renders their values", (
     source,
     /formattedGmvAfterFees\s*=\s*[\s\S]*?gmvAfterFeesDisplay\s*\?\?\s*"—"/,
     "missing Total GMV must leave the live after-fee value unavailable",
+  );
+  assert.match(
+    source,
+    /calculateEstimatedProfitAfterFees\([\s\S]*?attributedGmvDisplay,[\s\S]*?view\.totals\.costOfGoodsCents[\s\S]*?estimatedProfitAfterFeesValue\.textContent\s*=[\s\S]*?formattedEstimatedProfitAfterFees/,
+    "estimated profit after fees must use Total GMV and completed mapped-sale unit costs",
+  );
+  assert.match(
+    source,
+    /formattedEstimatedProfitAfterFees\s*=\s*[\s\S]*?estimatedProfitAfterFees\s*\?\?\s*"—"/,
+    "missing Total GMV must leave estimated profit after fees unavailable",
   );
   assert.match(
     source,
@@ -238,6 +269,21 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(
     source,
     /unmatchedCompletedCount > 0[\s\S]*?grossProfitWarning\.hidden = false[\s\S]*?grossProfitWarning\.hidden = true/,
+  );
+  assert.match(
+    source,
+    /unmatchedCompletedCount > 0[\s\S]*?estimatedProfitAfterFeesWarning\.textContent = warning[\s\S]*?estimatedProfitAfterFeesWarning\.hidden = false[\s\S]*?estimatedProfitAfterFeesWarning\.hidden = true[\s\S]*?estimatedProfitAfterFeesWarning\.textContent = ""/,
+    "estimated profit after fees must share the accessible incomplete-cost warning",
+  );
+  assert.match(
+    css,
+    /\.metric-profit-content\s*>\s*span\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow-wrap:\s*anywhere;/,
+    "profit values must wrap safely instead of overflowing narrow metric cards",
+  );
+  assert.match(
+    css,
+    /\.metric-description\s*\{[\s\S]*?display:\s*block;[\s\S]*?font-size:\s*10px;[\s\S]*?overflow-wrap:\s*anywhere;/,
+    "the estimated-profit description must stay compact and wrap safely",
   );
   assert.match(
     css,

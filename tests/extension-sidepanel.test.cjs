@@ -56,6 +56,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeStreamReportProtocolError extends Error {}
   class FakeStreamReportStorageError extends Error {}
   class FakeStreamReportCoordinatorError extends Error {}
+  class FakeLiveBidProtocolError extends Error {}
+  class FakeLiveBidStorageError extends Error {}
+  class FakeLiveBidCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -109,6 +112,32 @@ test("service worker opens the side panel from the toolbar action", () => {
       CaptureIntegrationError: FakeCaptureIntegrationError,
       createCaptureIntegration() {
         return { dispatch: () => Promise.resolve({ status: "accepted" }) };
+      },
+    },
+    TikTokLiveTrackerLiveBidProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.live-bid",
+      LiveBidProtocolError: FakeLiveBidProtocolError,
+      createLiveBidChangedNotification() {
+        return {
+          channel: "tiktok-live-tracker.live-bid",
+          version: 1,
+          event: { type: "live_bid_changed" },
+        };
+      },
+      isLiveBidChangedNotification() {
+        return false;
+      },
+    },
+    TikTokLiveTrackerLiveBidStorage: {
+      LiveBidStorageError: FakeLiveBidStorageError,
+      createLiveBidStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerLiveBidCoordinator: {
+      LiveBidCoordinatorError: FakeLiveBidCoordinatorError,
+      createLiveBidCoordinator() {
+        return { dispatch: () => Promise.resolve({ liveAuction: null }) };
       },
     },
     TikTokLiveTrackerInventorySheetImport: {},
@@ -173,6 +202,11 @@ test("service worker opens the side panel from the toolbar action", () => {
             return Promise.resolve();
           },
         },
+        session: {
+          setAccessLevel() {
+            return Promise.resolve();
+          },
+        },
       },
       runtime: {
         id: "extension-id",
@@ -209,19 +243,23 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
 
   assert.deepEqual(resourcePaths, [
     "sidepanel.css",
-    "../shared/sale-parser.js",
     "../shared/reconciliation.js",
     "../shared/reconciliation-coordinator.js",
     "../shared/stream-session-coordinator.js",
     "../shared/inventory-import-protocol.js",
     "../shared/stream-report-protocol.js",
+    "../shared/live-bid-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
     "inventory-import-client.js",
     "inventory-import-controller.js",
+    "live-bid-client.js",
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
+    "live-auction-view-model.js",
+    "variation-selector-view-model.js",
+    "variation-selector-lock.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
     "../shared/stream-report.js",
@@ -236,7 +274,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
   assert.doesNotMatch(html, /<script(?![^>]+src=)[^>]*>/i);
 });
 
-test("side panel exposes accessible lifecycle controls and clearly labels demo data", () => {
+test("side panel exposes accessible Live lifecycle controls", () => {
   const html = fs.readFileSync(
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
@@ -249,13 +287,9 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.ok(headerSource);
   assert.ok(footerSource);
   assert.match(html, /<label[^>]+for="inventory-search"/);
-  assert.match(html, /<label[^>]+for="variation-selector"/);
-  assert.match(headerSource, /class="header-actions"/);
-  assert.match(
-    headerSource,
-    /id="offline-demo-mode"[\s\S]+type="button"[\s\S]+aria-pressed="false"[\s\S]+aria-label="Switch to offline demo mode"[\s\S]+>\s*Demo\s*</,
-  );
-  assert.match(headerSource, /class="prototype-badge"[^>]*>Prototype</);
+  assert.match(html, /id="variation-selector-label"[^>]+visually-hidden/);
+  assert.doesNotMatch(headerSource, /<button/);
+  assert.doesNotMatch(headerSource, /prototype-badge|>\s*Prototype\s*</);
   assert.doesNotMatch(
     html,
     /id="saved-session-mode"|class="mode-panel"|class="mode-controls"|aria-label="Tracker mode"/,
@@ -369,7 +403,11 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   );
   assert.match(
     html,
-    /id="variation-selector"[^>]+aria-describedby="variation-context"/,
+    /id="variation-selector"[^>]+role="combobox"[^>]+aria-expanded="false"[^>]+aria-haspopup="listbox"[^>]+aria-controls="variation-listbox"[^>]+aria-labelledby="variation-selector-label variation-selector-value"[^>]+aria-describedby="variation-context"/,
+  );
+  assert.match(
+    html,
+    /id="variation-listbox"[^>]+role="listbox"[^>]+aria-labelledby="variation-selector-label"[^>]+popover="manual"/,
   );
   assert.match(
     html,
@@ -388,7 +426,7 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
     /Selecting an item reserves one unit until TikTok reports Payment[\s\S]+complete or Canceled\.[\s\S]+Temporary Payment failed remains pending\.[\s\S]+Zero-stock items remain selectable[\s\S]+oversold\./,
   );
   assert.match(html, /id="pending-mapping"/);
-  assert.match(html, /id="auction-eyebrow"[^>]*>Auction status</);
+  assert.match(html, /id="auction-eyebrow"[^>]*>Live order status</);
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
   assert.match(html, /id="state-warning"[^>]+role="status"/);
   assert.match(html, /id="auction-status"[^>]+tabindex="-1"/);
@@ -401,29 +439,55 @@ test("side panel exposes accessible lifecycle controls and clearly labels demo d
   assert.match(html, /id="payment-price"[^>]+hidden/);
   assert.match(html, /<dt>Inventory tag<\/dt>/);
   assert.match(html, /data-field="mapping-status"[\s\S]+No item selected/);
-  assert.match(html, /<label[^>]+for="sold-price"/);
-  assert.match(html, /id="sold-price"[\s\S]+aria-describedby=/);
-  assert.match(html, /id="sold-price-error"[^>]+role="alert"/);
-  assert.match(
-    html,
-    /id="lifecycle-controls"[^>]+hidden[\s\S]+>\s*Offline test controls\s*</,
-  );
-  assert.match(html, />\s*Simulate payment complete\s*</);
-  assert.match(html, />\s*Simulate payment buffer expired\s*</);
-  assert.match(html, />\s*Mark unpaid after buffer\s*</);
-  assert.match(html, />\s*Undo unpaid\s*</);
-  assert.match(html, /id="undo-payment-note"/);
-  assert.match(
-    html,
-    /id="undo-simulated-payment"[\s\S]+aria-describedby="undo-payment-note"/,
-  );
-  assert.match(html, />\s*Undo simulated payment\s*</);
   assert.match(html, /data-field="gross-profit"/);
   assert.match(html, />\s*Live session\s*</);
-  assert.match(html, /Offline demo/);
-  assert.match(html, /do not change TikTok/);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("variation picker keeps its compact layout while coloring status segments", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+
+  assert.match(
+    panelSource,
+    /function createVariationOptionContent\(display\)[\s\S]+variation-option-number[\s\S]+variation-option-status[\s\S]+display\.paymentTone[\s\S]+variation-option-item[\s\S]+display\.itemTone/,
+  );
+  assert.match(
+    styleSource,
+    /#variation-selector\s*\{[\s\S]*?min-height: 44px;[\s\S]*?border-radius: 10px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="warning"\]\s*\{[\s\S]*?color: #ffd88a;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="danger"\]\s*\{[\s\S]*?color: #ffb1b7;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="success"\],[\s\S]+\.variation-option-item\[data-tone="success"\]\s*\{[\s\S]*?color: #9df0df;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-item\[data-tone="unselected"\]\s*\{[\s\S]*?color: #ffad5c;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-listbox\s*\{[\s\S]*?position: fixed;[\s\S]*?max-height:[\s\S]*?overflow-y: auto;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-item\s*\{[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;/,
+  );
 });
 
 test("side panel keeps setup and active-stream controls in their intended order", () => {
@@ -567,7 +631,7 @@ test("active stream compacts its session controls without changing other lifecyc
   );
 });
 
-test("tagger UI separates persistent commands from the offline lifecycle", () => {
+test("tagger UI routes employee changes through persistent Live commands", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const panelSource = fs.readFileSync(
     path.join(taggerDirectory, "sidepanel.js"),
@@ -582,17 +646,11 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
     "utf8",
   );
   const mappingSource = `${panelSource}\n${workflowSource}`;
-  const demoSeedsSource = panelSource.match(
-    /const DEMO_VARIATION_SEEDS = Object\.freeze\(\[[\s\S]*?\]\);/,
+  const inventoryClickHandler = panelSource.match(
+    /inventoryGrid\.addEventListener\("click",[\s\S]*?searchInput\.addEventListener\("input"/,
   )?.[0];
 
-  assert.ok(demoSeedsSource);
-  assert.doesNotMatch(demoSeedsSource, /status: "pending"/);
-  assert.match(
-    demoSeedsSource,
-    /variationNumber: 201,[\s\S]+status: "unmapped"/,
-  );
-
+  assert.ok(inventoryClickHandler);
   assert.match(
     panelSource,
     /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
@@ -621,53 +679,48 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /function renderVariationNavigation\(view\)/);
   assert.match(
     panelSource,
-    /variationSelector\.addEventListener\("change",[\s\S]+persistentController\.selectVariation[\s\S]+getDemoSession\(\)\.selectVariation/,
+    /function selectVariationFromPicker\(selectedVariationNumber\)[\s\S]+persistentController\.selectVariation/,
   );
   assert.match(
     panelSource,
-    /returnToCurrentButton\.addEventListener\("click",[\s\S]+activeMode === "saved_session"[\s\S]+getDemoSession\(\)\.selectVariation/,
+    /returnToCurrentButton\.addEventListener\("click",[\s\S]+persistentController\.selectVariation\([\s\S]+currentView\.currentVariationNumber/,
+  );
+  assert.match(
+    panelSource,
+    /const reviewingRecordedHistory =[\s\S]+variations\.length > 0 && view\.isReviewingHistory/,
+  );
+  assert.match(
+    panelSource,
+    /returnToCurrentButton\.hidden = !reviewingRecordedHistory;[\s\S]+returnToCurrentButton\.textContent = "Return to live item"/,
+  );
+  assert.match(
+    panelSource,
+    /findVariationOption\([\s\S]+currentView\.currentVariationNumber[\s\S]+returnVariation\?\.recorded/,
+  );
+  assert.match(
+    panelSource,
+    /The next live auction will open automatically\./,
+  );
+  assert.match(
+    styleSource,
+    /\.return-to-current-live\s*\{[\s\S]*?min-height: 34px;[\s\S]*?font-size: 10px;/,
   );
   assert.match(panelSource, /view\.selectedVariationNumber/);
-  assert.doesNotMatch(panelSource, /\bDEMO_VARIATION_NUMBER\b/);
   assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
   assert.match(panelSource, /Click to unselect this item/);
   assert.match(
     panelSource,
     /No item selected\. Select the matching inventory entry below\./,
   );
-  assert.match(panelSource, /getDemoSession\(\)\.completePayment/);
-  assert.match(panelSource, /getDemoSession\(\)\.simulatePaymentBufferExpired/);
-  assert.match(panelSource, /getDemoSession\(\)\.markUnpaid/);
-  assert.match(panelSource, /getDemoSession\(\)\.undoMarkUnpaid/);
-  assert.match(panelSource, /getDemoSession\(\)\.undoSimulatedPayment/);
-  assert.match(panelSource, /offlineSimulation: true/);
-  assert.match(
-    panelSource,
-    /undoSimulatedPaymentButton\.addEventListener\("click",[\s\S]+searchInput\.value = "";[\s\S]+result\.mapping[\s\S]+focusStatus: true/,
-  );
-  assert.match(
-    panelSource,
-    /committed && !canUndoSimulatedPayment/,
-  );
-  assert.match(
-    panelSource,
-    /undoSimulatedPaymentButton\.hidden = !canUndoSimulatedPayment/,
-  );
-  assert.match(
-    panelSource,
-    /Remove the simulated payment with no item selected/,
-  );
   assert.match(panelSource, /const auction = view\.auction/);
-  assert.match(panelSource, /getDemoSession\(\)\.selectSku\(button\.dataset\.sku\)/);
   assert.match(panelSource, /persistentController\.mapSelectedSku/);
   assert.match(panelSource, /persistentController\.unmapSelectedVariation/);
   assert.match(panelSource, /type: selected \? "unmap_variation" : "map_variation"/);
-  assert.match(panelSource, /result\.action === "unmapped"/);
-  assert.match(workflowSource, /reconciliation\.unmapVariation\(state, auctionKey\(\)\)/);
-  assert.match(
-    workflowSource,
-    /reconciliation\.unmapVariation\([\s\S]+simulatedPaymentCheckpoint\.state/,
+  assert.doesNotMatch(
+    inventoryClickHandler,
+    /paymentStatus === "canceled"|is read-only/,
   );
+  assert.match(workflowSource, /reconciliation\.unmapVariation\(state, auctionKey\(\)\)/);
   assert.doesNotMatch(panelSource, /persistentController\.markSelectedUnpaid/);
   assert.doesNotMatch(panelSource, /persistentController\.undoSelectedUnpaid/);
   assert.match(panelSource, /const mountedController = persistentController/);
@@ -690,7 +743,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(startHandlerSource, /streamSessionController\.startNewStream\(\)/);
   assert.doesNotMatch(
     startHandlerSource,
-    /ensureInventoryInitialized|MOCK_INVENTORY/,
+    /ensureInventoryInitialized|LEGACY_RECOVERY_INVENTORY/,
   );
   assert.match(panelSource, /streamSessionController\.startNewStream\(\)/);
   assert.match(panelSource, /streamSessionController\.resumeActiveStream\(\)/);
@@ -703,7 +756,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /variationContext\.textContent = "Live auction variations"/);
   assert.match(
     panelSource,
-    /const status = option\.bidding[\s\S]+\? "bidding"[\s\S]+return `#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}`/,
+    /variationSelectorViewModel\.createOptionDisplay\(option,[\s\S]+formatItemName/,
   );
   assert.match(
     panelSource,
@@ -711,49 +764,23 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(panelSource, /Wait for a live auction variation before tagging/);
   assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
-  assert.match(panelSource, /let activeMode = "saved_session"/);
   assert.doesNotMatch(
     panelSource,
     /savedModeButton|#saved-session-mode|modeDescription|#mode-description/,
   );
-  assert.match(
-    panelSource,
-    /demoModeButton\.addEventListener\("click",[\s\S]+selectMode\([\s\S]+activeMode === "offline_demo"[\s\S]+\? "saved_session"[\s\S]+: "offline_demo"[\s\S]+\)/,
-  );
-  assert.match(
-    panelSource,
-    /demoModeButton\.setAttribute\("aria-pressed", String\(!savedMode\)\)/,
-  );
-  assert.match(
-    panelSource,
-    /const demoToggleLabel = savedMode[\s\S]+\? "Switch to offline demo mode"[\s\S]+: "Return to live session"[\s\S]+demoModeButton\.setAttribute\("aria-label", demoToggleLabel\)/,
-  );
-  assert.match(
-    styleSource,
-    /\.prototype-badge,\s*\.header-demo-toggle,\s*\.demo-badge\s*\{/,
-  );
-  assert.match(
-    styleSource,
-    /\.header-actions\s*\{[\s\S]*?display: inline-flex;[\s\S]*?gap: 6px;/,
-  );
-  assert.match(
-    styleSource,
-    /\.prototype-badge\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
-  );
-  assert.match(
-    styleSource,
-    /\.header-demo-toggle\s*\{[\s\S]*?width: 70px;[\s\S]*?min-height: 26px;[\s\S]*?padding: 5px 8px;/,
-  );
   assert.doesNotMatch(
     styleSource,
-    /\.prototype-badge\s*\{\s*display:\s*none;/,
+    /\.prototype-badge/,
   );
   assert.match(
     panelSource,
     /trackerWorkspace\.toggleAttribute\("inert", shouldBeInert\)/,
   );
   assert.match(panelSource, /savedSnapshot\?\.phase === "error"/);
-  assert.match(panelSource, /savedSnapshot\?\.phase === "error" \|\| endConfirmationOpen/);
+  assert.match(
+    panelSource,
+    /savedSnapshot\?\.phase === "error"\s*\|\|\s*endConfirmationOpen/,
+  );
   assert.match(panelSource, /persistentController === null \|\| savedSnapshot\?\.phase !== "ready"/);
   assert.match(
     panelSource,
@@ -799,7 +826,7 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.doesNotMatch(panelSource, /innerHTML\s*=/);
   assert.match(
     streamRetrySource,
-    /if \(!prepareMissingInventory\) \{[\s\S]+return null;[\s\S]+persistentTaggerControllerModule\.ensureInventoryInitialized\(\{[\s\S]+client: persistentClient,[\s\S]+inventory: viewModel\.MOCK_INVENTORY/,
+    /if \(!prepareMissingInventory\) \{[\s\S]+return null;[\s\S]+persistentTaggerControllerModule\.ensureInventoryInitialized\(\{[\s\S]+client: persistentClient,[\s\S]+inventory: viewModel\.LEGACY_RECOVERY_INVENTORY/,
   );
   assert.ok(
     streamRetrySource.indexOf(
@@ -809,27 +836,22 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   );
   assert.match(panelSource, /savedSessionError\.focus\(\)/);
   assert.match(panelSource, /pendingSavedAction \|\| savedSnapshot\?\.busy/);
-  assert.match(panelSource, /activeMode !== "offline_demo"/);
   assert.doesNotMatch(panelSource, /persistentController\.[^(]*Payment/);
-  assert.match(panelSource, /result\.action === "completed_sale_mapped"/);
+  assert.match(workflowSource, /action = "completed_sale_mapped"/);
   assert.match(workflowSource, /canceled: "Canceled"/);
-  assert.match(
-    workflowSource,
-    /const canceled = auction\?\.paymentStatus === "canceled"[\s\S]+const selectionAllowed = !canceled/,
-  );
-  assert.match(
-    workflowSource,
-    /if \(previousAuction\?\.paymentStatus === "canceled"\)[\s\S]+"CANCELED_VARIATION_IMMUTABLE"/,
-  );
+  assert.match(workflowSource, /selectionAllowed: true/);
+  assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
   assert.doesNotMatch(workflowSource, /"SOLD_OUT"|"NO_STOCK_AVAILABLE"/);
   assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
-  assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
+  assert.doesNotMatch(
+    panelSource,
+    /Payment is complete, but this variation still needs an inventory item\./,
+  );
   assert.doesNotMatch(
     panelSource,
     /warnings\.some\([\s\S]+unmapped_completed_sale/,
   );
   assert.doesNotMatch(panelSource, /changeMappingButton|#change-mapping/);
-  assert.match(panelSource, /auctionEyebrow\.textContent/);
   assert.match(panelSource, /function renderOrderStatuses\(auction\)/);
   assert.match(panelSource, /observedPaymentStatus\.textContent = observedLabel/);
   assert.match(
@@ -864,25 +886,38 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.match(panelSource, /remains reserved and pending/);
   assert.match(
     panelSource,
-    /lifecycleControls\.hidden =[\s\S]+!offlineDemo \|\|[\s\S]+completionAwaitingPrice \|\|/,
+    /"Canceled · reference item selected · no inventory change"/,
   );
-  assert.match(
-    panelSource,
-    /markUnpaidButton\.hidden =[\s\S]+!offlineDemo \|\| completionAwaitingPrice/,
-  );
-  assert.match(
-    panelSource,
-    /markUnpaidButton\.disabled = completionAwaitingPrice/,
-  );
-  assert.match(panelSource, /"Canceled item · reservation released · stock restored"/);
+  assert.match(panelSource, /"Canceled · no reference item selected"/);
   assert.match(panelSource, /selectedLabel\.textContent = "Canceled item"/);
-  assert.match(panelSource, /this history is read-only/);
-  assert.match(panelSource, /button\.dataset\.lockedReason = canceled \? "canceled" : ""/);
-  assert.match(styleSource, /data-locked-reason="canceled"/);
-  assert.match(panelSource, /const canceled = view\.auction\?\.status === "canceled"/);
-  assert.match(panelSource, /lifecycleControls\.hidden =[\s\S]+canceled \|\|/);
+  assert.match(panelSource, /Click to unselect this reference item/);
+  assert.match(
+    panelSource,
+    /Select an item only to record what was auctioned; mapping, changing, or clearing it will not affect inventory or metrics/,
+  );
+  assert.match(
+    panelSource,
+    /You can still select a reference item without changing inventory or metrics/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
+  );
+  assert.doesNotMatch(panelSource, /dataset\.lockedReason/);
+  assert.doesNotMatch(styleSource, /data-locked-reason="canceled"/);
+  assert.match(
+    panelSource,
+    /const canceled = view\.auction\?\.paymentStatus === "canceled"/,
+  );
   assert.doesNotMatch(panelSource, /payment_completed_after_canceled/);
-  assert.match(panelSource, /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/);
+  assert.doesNotMatch(
+    panelSource,
+    /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/,
+  );
   assert.match(
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
@@ -902,6 +937,55 @@ test("tagger UI separates persistent commands from the offline lifecycle", () =>
   assert.doesNotMatch(
     mappingSource,
     /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
+  );
+});
+
+test("canceled variation cards stay selectable for reference-only item changes", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const workflowSource = fs.readFileSync(
+    path.join(taggerDirectory, "mapping-workflow.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const cardSource = panelSource.match(
+    /function createInventoryCard\(entry, view\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  const clickSource = panelSource.match(
+    /inventoryGrid\.addEventListener\("click",[\s\S]*?searchInput\.addEventListener\("input"/,
+  )?.[0];
+
+  assert.ok(cardSource);
+  assert.ok(clickSource);
+  assert.match(workflowSource, /selectionAllowed: true/);
+  assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
+  assert.match(
+    cardSource,
+    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+  );
+  assert.match(cardSource, /Click to unselect this reference item/);
+  assert.match(cardSource, /No inventory (?:is|will be) changed/);
+  assert.doesNotMatch(cardSource, /lockedReason|read-only/);
+  assert.doesNotMatch(styleSource, /data-locked-reason="canceled"/);
+  assert.doesNotMatch(
+    clickSource,
+    /paymentStatus === "canceled"|is read-only/,
+  );
+  assert.match(clickSource, /persistentController\.mapSelectedSku/);
+  assert.match(clickSource, /persistentController\.unmapSelectedVariation/);
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+  );
+  assert.match(
+    panelSource,
+    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
   );
 });
 
@@ -1260,7 +1344,7 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /payment_completed_after_marked_unpaid/);
   assert.match(
     panelSource,
-    /#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}/,
+    /function createVariationOptionContent\(display\)[\s\S]+variation-option-status[\s\S]+display\.paymentTone[\s\S]+variation-option-item[\s\S]+display\.itemTone/,
   );
   assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
