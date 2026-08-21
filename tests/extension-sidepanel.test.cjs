@@ -843,7 +843,10 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
   assert.doesNotMatch(workflowSource, /"SOLD_OUT"|"NO_STOCK_AVAILABLE"/);
   assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
-  assert.match(panelSource, /view\.auction\?\.status === "unmapped_completed"/);
+  assert.doesNotMatch(
+    panelSource,
+    /Payment is complete, but this variation still needs an inventory item\./,
+  );
   assert.doesNotMatch(
     panelSource,
     /warnings\.some\([\s\S]+unmapped_completed_sale/,
