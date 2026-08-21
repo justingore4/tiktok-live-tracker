@@ -1284,10 +1284,15 @@ button {
   transform: translateY(-70%) rotate(45deg);
 }
 
+.variation-select-shell[data-open="true"]::after {
+  transform: translateY(-25%) rotate(225deg);
+}
+
 #variation-selector {
+  display: flex;
   width: 100%;
   min-height: 44px;
-  appearance: none;
+  align-items: center;
   overflow: hidden;
   padding: 7px 34px 7px 11px;
   border: 1px solid rgb(126 190 255 / 42%);
@@ -1302,14 +1307,107 @@ button {
   cursor: pointer;
 }
 
-#variation-selector:hover {
+#variation-selector:hover:not([aria-disabled="true"]) {
   border-color: rgb(126 190 255 / 72%);
   background: rgb(5 29 58 / 88%);
+}
+
+#variation-selector[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: default;
 }
 
 #variation-selector:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
+}
+
+#variation-selector-value,
+.variation-option-content {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#variation-selector-value {
+  width: 100%;
+}
+
+.variation-option-number,
+.variation-option-separator,
+.variation-option-status {
+  flex: none;
+}
+
+.variation-option-item {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.variation-option-status[data-tone="warning"] {
+  color: #ffd88a;
+}
+
+.variation-option-status[data-tone="danger"] {
+  color: #ffb1b7;
+}
+
+.variation-option-status[data-tone="success"],
+.variation-option-item[data-tone="success"] {
+  color: #9df0df;
+}
+
+.variation-option-item[data-tone="unselected"] {
+  color: #ffad5c;
+}
+
+.variation-listbox {
+  position: fixed;
+  z-index: 1000;
+  inset: auto;
+  max-height: min(55vh, 480px);
+  margin: 0;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(126 190 255 / 55%);
+  border-radius: 10px;
+  color: #ffffff;
+  background: #17314f;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+  font: inherit;
+  font-size: clamp(14px, 4vw, 17px);
+  font-weight: 680;
+  scrollbar-color: #8994a3 #17314f;
+}
+
+.variation-listbox[data-fallback-open="true"] {
+  display: block;
+}
+
+.variation-listbox::backdrop {
+  background: transparent;
+}
+
+.variation-option {
+  min-height: 38px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.variation-option:hover,
+.variation-option[data-active="true"] {
+  background: rgb(121 189 255 / 22%);
+}
+
+.variation-option[data-current="true"] {
+  box-shadow: inset 3px 0 0 var(--blue-bright);
 }
 
 .return-to-current {

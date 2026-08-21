@@ -62,6 +62,8 @@
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const liveAuctionViewModel =
     globalThis.TikTokLiveTrackerLiveAuctionViewModel;
+  const variationSelectorViewModel =
+    globalThis.TikTokLiveTrackerVariationSelectorViewModel;
   const variationSelectorLockModule =
     globalThis.TikTokLiveTrackerVariationSelectorLock;
   const persistentTaggerControllerModule =
@@ -286,7 +288,14 @@
   );
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const variationContext = document.querySelector("#variation-context");
+  const variationSelectShell = document.querySelector(
+    ".variation-select-shell",
+  );
   const variationSelector = document.querySelector("#variation-selector");
+  const variationSelectorValue = document.querySelector(
+    "#variation-selector-value",
+  );
+  const variationListbox = document.querySelector("#variation-listbox");
   const returnToCurrentButton = document.querySelector("#return-to-current");
   const liveAuctionPanel = document.querySelector("#live-auction");
   const liveAuctionTitle = document.querySelector("#live-auction-title");
@@ -383,6 +392,8 @@
     !liveBidClientModule ||
     !liveAuctionViewModel ||
     typeof liveAuctionViewModel.createDisplay !== "function" ||
+    !variationSelectorViewModel ||
+    typeof variationSelectorViewModel.createOptionDisplay !== "function" ||
     !variationSelectorLockModule ||
     typeof variationSelectorLockModule.createVariationSelectorLock !==
       "function" ||
@@ -436,6 +447,8 @@
     variationSelectorLockModule.createVariationSelectorLock({
       apply: renderVariationSelectorOptions,
     });
+  let variationSelectorOpen = false;
+  let activeVariationNumber = null;
   let persistentController = null;
   let unsubscribePersistentController = null;
   let mountedStreamId = null;
@@ -926,7 +939,7 @@
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
     resetLiveBidTracking();
-    variationSelectorLock.reset();
+    resetVariationSelector();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -1001,9 +1014,50 @@
     );
   }
 
-  function releaseVariationSelector() {
+  function hideVariationListbox() {
+    try {
+      if (
+        typeof variationListbox.hidePopover === "function" &&
+        variationListbox.matches(":popover-open")
+      ) {
+        variationListbox.hidePopover();
+      }
+    } catch (error) {
+      console.error(
+        "[TikTok Live Tracker] Variation listbox could not be hidden.",
+        error,
+      );
+    }
+
+    variationListbox.hidden = true;
+    variationListbox.removeAttribute("data-fallback-open");
+  }
+
+  function clearOpenVariationSelector() {
+    restoreCurrentVariationHighlight();
+    variationSelectorOpen = false;
+    activeVariationNumber = null;
+    variationSelectShell.dataset.open = "false";
+    variationSelector.setAttribute("aria-expanded", "false");
+    variationSelector.removeAttribute("aria-activedescendant");
+    hideVariationListbox();
+  }
+
+  function resetVariationSelector() {
+    clearOpenVariationSelector();
+    variationSelectorLock.reset();
+  }
+
+  function releaseVariationSelector(options = {}) {
+    const { restoreFocus = false } = options;
+
+    clearOpenVariationSelector();
     variationSelectorLock.release();
     setWorkspaceBusy(savedSnapshot?.busy === true);
+
+    if (restoreFocus && variationSelector.tabIndex >= 0) {
+      variationSelector.focus();
+    }
   }
 
   function isSavedWorkspaceUnavailable() {
@@ -1769,15 +1823,219 @@
     }
   }
 
-  function formatVariationOption(option) {
-    const item = option.item
-      ? `${formatItemName(option)}, size ${option.size}`
-      : "No item selected";
-    const status = option.bidding
-      ? "bidding"
-      : option.observedPaymentStatusLabel;
+  function getVariationOptionDisplay(option) {
+    return variationSelectorViewModel.createOptionDisplay(option, {
+      formatItemName,
+    });
+  }
 
-    return `#${option.variationNumber} - ${status} - ${item}`;
+  function createVariationOptionContent(display) {
+    const content = document.createElement("span");
+    const variationNumber = document.createElement("span");
+    const firstSeparator = document.createElement("span");
+    const paymentStatus = document.createElement("span");
+    const secondSeparator = document.createElement("span");
+    const itemStatus = document.createElement("span");
+
+    content.className = "variation-option-content";
+    variationNumber.className = "variation-option-number";
+    variationNumber.textContent = display.variationLabel;
+    firstSeparator.className = "variation-option-separator";
+    firstSeparator.textContent = " - ";
+    paymentStatus.className = "variation-option-status";
+    paymentStatus.dataset.tone = display.paymentTone;
+    paymentStatus.textContent = display.paymentLabel;
+    secondSeparator.className = "variation-option-separator";
+    secondSeparator.textContent = " - ";
+    itemStatus.className = "variation-option-item";
+    itemStatus.dataset.tone = display.itemTone;
+    itemStatus.textContent = display.itemLabel;
+    content.append(
+      variationNumber,
+      firstSeparator,
+      paymentStatus,
+      secondSeparator,
+      itemStatus,
+    );
+
+    return content;
+  }
+
+  function getVariationOptionRows() {
+    return [...variationListbox.querySelectorAll('[role="option"]')];
+  }
+
+  function restoreCurrentVariationHighlight() {
+    getVariationOptionRows().forEach((row) => {
+      const current = row.dataset.current === "true";
+
+      row.dataset.active = "false";
+      row.setAttribute("aria-selected", String(current));
+    });
+  }
+
+  function setActiveVariation(variationNumber, options = {}) {
+    const { scroll = true } = options;
+    const rows = getVariationOptionRows();
+    const nextRow = rows.find(
+      (row) => Number(row.dataset.variationNumber) === variationNumber,
+    ) ?? rows[0] ?? null;
+
+    if (!nextRow) {
+      activeVariationNumber = null;
+      variationSelector.removeAttribute("aria-activedescendant");
+      return false;
+    }
+
+    rows.forEach((row) => {
+      const active = row === nextRow;
+
+      row.dataset.active = String(active);
+    });
+    activeVariationNumber = Number(nextRow.dataset.variationNumber);
+    variationSelector.setAttribute("aria-activedescendant", nextRow.id);
+
+    if (scroll && typeof nextRow.scrollIntoView === "function") {
+      nextRow.scrollIntoView({ block: "nearest" });
+    }
+
+    return true;
+  }
+
+  function moveActiveVariation(offset) {
+    const rows = getVariationOptionRows();
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const currentIndex = rows.findIndex(
+      (row) => Number(row.dataset.variationNumber) === activeVariationNumber,
+    );
+    const nextIndex = Math.min(
+      rows.length - 1,
+      Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + offset),
+    );
+
+    setActiveVariation(Number(rows[nextIndex].dataset.variationNumber));
+  }
+
+  function moveActiveVariationToBoundary(boundary) {
+    const rows = getVariationOptionRows();
+    const row = boundary === "end" ? rows.at(-1) : rows[0];
+
+    if (row) {
+      setActiveVariation(Number(row.dataset.variationNumber));
+    }
+  }
+
+  function positionVariationListbox() {
+    if (!variationSelectorOpen) {
+      return;
+    }
+
+    const triggerRect = variationSelector.getBoundingClientRect();
+    const viewportWidth = Math.max(
+      document.documentElement?.clientWidth ?? 0,
+      window.innerWidth ?? 0,
+    );
+    const viewportHeight = Math.max(
+      document.documentElement?.clientHeight ?? 0,
+      window.innerHeight ?? 0,
+    );
+    const viewportMargin = 8;
+    const popupGap = 4;
+    const popupWidth = Math.max(
+      0,
+      Math.min(triggerRect.width, viewportWidth - viewportMargin * 2),
+    );
+    const popupLeft = Math.min(
+      Math.max(viewportMargin, triggerRect.left),
+      Math.max(viewportMargin, viewportWidth - viewportMargin - popupWidth),
+    );
+    const spaceBelow = Math.max(
+      0,
+      viewportHeight - triggerRect.bottom - popupGap - viewportMargin,
+    );
+    const spaceAbove = Math.max(
+      0,
+      triggerRect.top - popupGap - viewportMargin,
+    );
+    const heightCap = Math.min(480, Math.floor(viewportHeight * 0.55));
+    const openAbove =
+      spaceBelow < Math.min(160, heightCap) && spaceAbove > spaceBelow;
+    const availableHeight = openAbove ? spaceAbove : spaceBelow;
+
+    variationListbox.style.width = `${popupWidth}px`;
+    variationListbox.style.left = `${popupLeft}px`;
+    variationListbox.style.maxHeight = `${Math.max(
+      1,
+      Math.min(heightCap, availableHeight),
+    )}px`;
+
+    if (openAbove) {
+      variationListbox.style.top = "auto";
+      variationListbox.style.bottom = `${
+        viewportHeight - triggerRect.top + popupGap
+      }px`;
+    } else {
+      variationListbox.style.top = `${triggerRect.bottom + popupGap}px`;
+      variationListbox.style.bottom = "auto";
+    }
+  }
+
+  function showVariationListbox() {
+    variationListbox.hidden = false;
+    positionVariationListbox();
+
+    try {
+      if (typeof variationListbox.showPopover === "function") {
+        variationListbox.showPopover();
+      } else {
+        variationListbox.dataset.fallbackOpen = "true";
+      }
+    } catch (error) {
+      variationListbox.dataset.fallbackOpen = "true";
+      console.error(
+        "[TikTok Live Tracker] Variation listbox could not enter the top layer.",
+        error,
+      );
+    }
+  }
+
+  function openVariationSelector(options = {}) {
+    const { boundary = null } = options;
+
+    if (
+      variationSelectorOpen ||
+      variationSelector.getAttribute("aria-disabled") === "true"
+    ) {
+      return false;
+    }
+
+    const rows = getVariationOptionRows();
+
+    if (rows.length === 0) {
+      return false;
+    }
+
+    variationSelectorLock.lock();
+    variationSelectorOpen = true;
+    variationSelectShell.dataset.open = "true";
+    variationSelector.setAttribute("aria-expanded", "true");
+    showVariationListbox();
+
+    if (boundary === "start" || boundary === "end") {
+      moveActiveVariationToBoundary(boundary);
+    } else {
+      const selectedVariationNumber = Number(
+        variationSelector.dataset.variationNumber,
+      );
+
+      setActiveVariation(selectedVariationNumber);
+    }
+
+    return true;
   }
 
   function renderLiveAuction(view) {
@@ -1820,30 +2078,44 @@
     const variations = getRecordedVariations(view);
 
     if (variations.length === 0) {
-      const option = document.createElement("option");
-
-      option.value = "";
-      option.textContent = "Waiting for live auction variations";
-      option.disabled = true;
-      option.selected = true;
-      fragment.append(option);
+      variationSelectorValue.textContent =
+        "Waiting for live auction variations";
+      variationSelector.removeAttribute("data-variation-number");
+      variationSelector.setAttribute("aria-disabled", "true");
+      variationSelector.tabIndex = -1;
     } else {
       variations.forEach((variation) => {
-        const option = document.createElement("option");
+        const display = getVariationOptionDisplay(variation);
+        const option = document.createElement("div");
 
-        option.value = String(variation.variationNumber);
-        option.textContent = formatVariationOption(variation);
-        option.selected = variation.selected;
+        option.id = `variation-option-${variation.variationNumber}`;
+        option.className = "variation-option";
+        option.dataset.variationNumber = String(variation.variationNumber);
+        option.dataset.current = String(variation.selected);
+        option.dataset.active = "false";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-label", display.fullLabel);
+        option.setAttribute("aria-selected", String(variation.selected));
+        option.append(createVariationOptionContent(display));
         fragment.append(option);
       });
+
+      const selectedVariation = variations.find(
+        (variation) => variation.selected,
+      ) ?? variations[0];
+      const selectedDisplay = getVariationOptionDisplay(selectedVariation);
+
+      variationSelectorValue.replaceChildren(
+        createVariationOptionContent(selectedDisplay),
+      );
+      variationSelector.dataset.variationNumber = String(
+        selectedVariation.variationNumber,
+      );
+      variationSelector.setAttribute("aria-disabled", "false");
+      variationSelector.tabIndex = 0;
     }
 
-    variationSelector.replaceChildren(fragment);
-    variationSelector.disabled = variations.length === 0;
-
-    if (variations.length > 0) {
-      variationSelector.value = String(view.selectedVariationNumber);
-    }
+    variationListbox.replaceChildren(fragment);
   }
 
   function renderVariationNavigation(view) {
@@ -2030,10 +2302,6 @@
 
     if (conflict?.code === "payment_completed_after_marked_unpaid") {
       return "TikTok completed this payment after it was marked unpaid. The completed sale was counted and flagged for review.";
-    }
-
-    if (view.auction?.status === "unmapped_completed") {
-      return "Payment is complete, but this variation still needs an inventory item. Select the matching entry below.";
     }
 
     if (isObservedCompletionAwaitingPrice(view.auction)) {
@@ -2876,42 +3144,13 @@
     });
   }
 
-  variationSelector.addEventListener("pointerdown", (event) => {
-    if (event.button === 0) {
-      variationSelectorLock.lock();
-    }
-  });
-
-  variationSelector.addEventListener("keydown", (event) => {
-    const opensPicker =
-      event.key === " " ||
-      event.key === "Spacebar" ||
-      event.key === "Enter" ||
-      event.key === "F4" ||
-      event.key === "ArrowDown" ||
-      event.key === "ArrowUp" ||
-      event.key === "Home" ||
-      event.key === "End" ||
-      event.key === "PageDown" ||
-      event.key === "PageUp";
-
-    if (opensPicker) {
-      variationSelectorLock.lock();
-    } else if (event.key === "Escape") {
-      releaseVariationSelector();
-    }
-  });
-
-  variationSelector.addEventListener("blur", () => {
-    releaseVariationSelector();
-  });
-
-  variationSelector.addEventListener("change", () => {
-    const selectedValue = variationSelector.value;
-    const selectedVariationNumber = Number(selectedValue);
-
+  function selectVariationFromPicker(selectedVariationNumber) {
     try {
-      if (!persistentController || selectedValue === "") {
+      if (
+        !persistentController ||
+        !Number.isSafeInteger(selectedVariationNumber) ||
+        selectedVariationNumber < 1
+      ) {
         mappingAnnouncement.textContent =
           "Waiting for a live auction variation.";
         return;
@@ -2931,9 +3170,174 @@
       mappingAnnouncement.textContent =
         error?.message ?? "That variation could not be selected.";
     } finally {
+      releaseVariationSelector({ restoreFocus: true });
+    }
+  }
+
+  function commitActiveVariation() {
+    const selectedVariationNumber = activeVariationNumber;
+
+    if (selectedVariationNumber === null) {
+      releaseVariationSelector({ restoreFocus: true });
+      return;
+    }
+
+    selectVariationFromPicker(selectedVariationNumber);
+  }
+
+  variationSelector.addEventListener("click", () => {
+    if (variationSelectorOpen) {
+      releaseVariationSelector({ restoreFocus: true });
+    } else {
+      openVariationSelector();
+    }
+  });
+
+  function handleVariationSelectorKeydown(event) {
+    if (!variationSelectorOpen) {
+      const opensPicker =
+        event.key === " " ||
+        event.key === "Spacebar" ||
+        event.key === "Enter" ||
+        event.key === "F4" ||
+        event.key === "ArrowDown" ||
+        event.key === "ArrowUp" ||
+        event.key === "Home" ||
+        event.key === "End" ||
+        event.key === "PageDown" ||
+        event.key === "PageUp";
+
+      if (!opensPicker) {
+        return;
+      }
+
+      event.preventDefault();
+      openVariationSelector({
+        boundary:
+          event.key === "Home"
+            ? "start"
+            : event.key === "End"
+              ? "end"
+              : null,
+      });
+      return;
+    }
+
+    if (
+      event.key === "Escape" ||
+      event.key === "F4" ||
+      (event.altKey && event.key === "ArrowUp")
+    ) {
+      event.preventDefault();
+      releaseVariationSelector({ restoreFocus: true });
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActiveVariation(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActiveVariation(-1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveActiveVariationToBoundary("start");
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveActiveVariationToBoundary("end");
+    } else if (event.key === "PageDown") {
+      event.preventDefault();
+      moveActiveVariation(10);
+    } else if (event.key === "PageUp") {
+      event.preventDefault();
+      moveActiveVariation(-10);
+    } else if (
+      event.key === " " ||
+      event.key === "Spacebar" ||
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+      commitActiveVariation();
+    } else if (event.key === "Tab") {
+      releaseVariationSelector();
+    }
+  }
+
+  variationSelector.addEventListener(
+    "keydown",
+    handleVariationSelectorKeydown,
+  );
+  variationListbox.addEventListener(
+    "keydown",
+    handleVariationSelectorKeydown,
+  );
+
+  variationListbox.addEventListener("pointerdown", (event) => {
+    if (event.button === 0 && event.target.closest?.('[role="option"]')) {
+      event.preventDefault();
+    }
+  });
+
+  variationListbox.addEventListener("pointerup", (event) => {
+    if (event.button === 0 && variationSelectorOpen) {
+      variationSelector.focus({ preventScroll: true });
+    }
+  });
+
+  variationListbox.addEventListener("click", (event) => {
+    const option = event.target.closest?.('[role="option"]');
+
+    if (
+      !variationSelectorOpen ||
+      !option ||
+      !variationListbox.contains(option)
+    ) {
+      return;
+    }
+
+    const selectedVariationNumber = Number(option.dataset.variationNumber);
+
+    selectVariationFromPicker(selectedVariationNumber);
+  });
+
+  variationListbox.addEventListener("toggle", (event) => {
+    if (event.newState === "closed" && variationSelectorOpen) {
       releaseVariationSelector();
     }
   });
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (
+        variationSelectorOpen &&
+        !variationSelectShell.contains(event.target)
+      ) {
+        releaseVariationSelector();
+      }
+    },
+    true,
+  );
+
+  document.addEventListener("focusin", (event) => {
+    if (
+      variationSelectorOpen &&
+      !variationSelectShell.contains(event.target)
+    ) {
+      releaseVariationSelector();
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    positionVariationListbox();
+  });
+
+  document.addEventListener(
+    "scroll",
+    (event) => {
+      if (variationSelectorOpen && event.target !== variationListbox) {
+        positionVariationListbox();
+      }
+    },
+    true,
+  );
 
   returnToCurrentButton.addEventListener("click", () => {
     const currentView = getActiveView();

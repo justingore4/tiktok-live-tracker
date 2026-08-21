@@ -18,7 +18,7 @@ function createHarness() {
   return { applied, lock };
 }
 
-test("variation selector renders immediately while its native menu is closed", () => {
+test("variation selector renders immediately while its custom menu is closed", () => {
   const { applied, lock } = createHarness();
   const initial = { selectedVariationNumber: 10 };
 
@@ -102,7 +102,7 @@ test("side panel loads and wires the variation selector lock before lifecycle st
   assert.match(source, /createVariationSelectorLock\s*\(\s*\{/);
 });
 
-test("side panel freezes only native selector mutations while the rest of the view updates", () => {
+test("side panel freezes only custom selector mutations while the rest of the view updates", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "extension", "tagger", "sidepanel.js"),
     "utf8",
@@ -120,17 +120,25 @@ test("side panel freezes only native selector mutations while the rest of the vi
   assert.ok(optionsStart >= 0);
   assert.ok(navigationStart > optionsStart);
   assert.ok(inventoryStart > navigationStart);
-  assert.match(optionRenderer, /variationSelector\.replaceChildren\(fragment\)/);
-  assert.match(optionRenderer, /variationSelector\.disabled = variations\.length === 0/);
+  assert.match(optionRenderer, /variationListbox\.replaceChildren\(fragment\)/);
+  assert.match(optionRenderer, /variationSelectorValue\.replaceChildren\(/);
   assert.match(
     optionRenderer,
-    /variationSelector\.value = String\(view\.selectedVariationNumber\)/,
+    /variationSelector\.setAttribute\("aria-disabled", "true"\)/,
+  );
+  assert.match(
+    optionRenderer,
+    /variationSelector\.setAttribute\("aria-disabled", "false"\)/,
+  );
+  assert.match(
+    optionRenderer,
+    /variationSelector\.dataset\.variationNumber = String\(/,
   );
   assert.match(
     navigationRenderer,
     /variationSelectorLock\.requestRender\(view\)/,
   );
-  assert.doesNotMatch(navigationRenderer, /replaceChildren/);
+  assert.doesNotMatch(navigationRenderer, /replaceChildren|showPopover|hidePopover/);
   assert.match(navigationRenderer, /variationContext\.textContent/);
   assert.match(navigationRenderer, /inventoryTitle\.textContent/);
   assert.match(navigationRenderer, /returnToCurrentButton\.hidden/);
@@ -145,44 +153,88 @@ test("pointer and keyboard selector paths preserve refresh data and release safe
   const refreshPredicateStart = source.indexOf(
     "function snapshotIsBackgroundRefresh(snapshot)",
   );
-  const releaseStart = source.indexOf("function releaseVariationSelector()");
+  const releaseStart = source.indexOf("function releaseVariationSelector(options = {})");
   const unavailableStart = source.indexOf(
     "function isSavedWorkspaceUnavailable()",
+  );
+  const openStart = source.indexOf("function openVariationSelector(options = {})");
+  const liveAuctionStart = source.indexOf("function renderLiveAuction(view)");
+  const selectStart = source.indexOf(
+    "function selectVariationFromPicker(selectedVariationNumber)",
+  );
+  const commitStart = source.indexOf("function commitActiveVariation()");
+  const activeStart = source.indexOf(
+    "function setActiveVariation(variationNumber, options = {})",
+  );
+  const moveStart = source.indexOf("function moveActiveVariation(offset)");
+  const keyboardStart = source.indexOf(
+    "function handleVariationSelectorKeydown(event)",
+  );
+  const keyboardListenersStart = source.indexOf(
+    'variationSelector.addEventListener(\n    "keydown"',
   );
   const savedStart = source.indexOf("function renderSavedSnapshot(snapshot)");
   const mutationStart = source.indexOf("function runSavedMutation(");
   const busyRenderer = source.slice(busyStart, refreshPredicateStart);
   const releaseHandler = source.slice(releaseStart, unavailableStart);
+  const openHandler = source.slice(openStart, liveAuctionStart);
+  const selectionHandler = source.slice(selectStart, commitStart);
+  const activeHandler = source.slice(activeStart, moveStart);
   const savedRenderer = source.slice(savedStart, mutationStart);
-  const changeHandler = source.match(
-    /variationSelector\.addEventListener\("change", \(\) => \{[\s\S]*?\n  \}\);/,
+  const keyboardHandler = source.slice(keyboardStart, keyboardListenersStart);
+  const optionClickHandler = source.match(
+    /variationListbox\.addEventListener\("click", \(event\) => \{[\s\S]*?\n  \}\);/,
   )?.[0];
 
   assert.ok(busyStart >= 0);
   assert.ok(refreshPredicateStart > busyStart);
   assert.ok(releaseStart > refreshPredicateStart);
   assert.ok(unavailableStart > releaseStart);
+  assert.ok(openStart >= 0);
+  assert.ok(liveAuctionStart > openStart);
+  assert.ok(selectStart >= 0);
+  assert.ok(commitStart > selectStart);
+  assert.ok(activeStart >= 0);
+  assert.ok(moveStart > activeStart);
+  assert.ok(keyboardStart >= 0);
+  assert.ok(keyboardListenersStart > keyboardStart);
   assert.ok(savedStart >= 0);
   assert.ok(mutationStart > savedStart);
-  assert.ok(changeHandler);
+  assert.ok(keyboardHandler);
+  assert.ok(optionClickHandler);
   assert.match(
-    source,
-    /variationSelector\.addEventListener\("pointerdown", \(event\) => \{[\s\S]*?event\.button === 0[\s\S]*?variationSelectorLock\.lock\(\)/,
+    openHandler,
+    /variationSelectorLock\.lock\(\)[\s\S]+variationSelectorOpen = true[\s\S]+showVariationListbox\(\)/,
   );
   assert.match(
-    source,
-    /variationSelector\.addEventListener\("keydown", \(event\) => \{[\s\S]*?event\.key === " "[\s\S]*?event\.key === "Enter"[\s\S]*?event\.key === "ArrowDown"[\s\S]*?event\.key === "ArrowUp"[\s\S]*?variationSelectorLock\.lock\(\)[\s\S]*?event\.key === "Escape"[\s\S]*?releaseVariationSelector\(\)/,
+    keyboardHandler,
+    /event\.key === " "[\s\S]+event\.key === "Enter"[\s\S]+event\.key === "ArrowDown"[\s\S]+event\.key === "ArrowUp"[\s\S]+event\.key === "Home"[\s\S]+event\.key === "End"[\s\S]+event\.key === "PageDown"[\s\S]+event\.key === "PageUp"/,
   );
   assert.match(
-    source,
-    /variationSelector\.addEventListener\("blur", \(\) => \{\s*releaseVariationSelector\(\)/,
+    keyboardHandler,
+    /event\.key === "Escape"[\s\S]+event\.altKey[\s\S]+releaseVariationSelector\(\{ restoreFocus: true \}\)[\s\S]+commitActiveVariation\(\)[\s\S]+event\.key === "Tab"[\s\S]+releaseVariationSelector\(\)/,
   );
-  assert.match(changeHandler, /const selectedValue = variationSelector\.value/);
-  assert.match(changeHandler, /Number\(selectedValue\)/);
-  assert.match(changeHandler, /finally \{\s*releaseVariationSelector\(\)/);
+  assert.doesNotMatch(
+    source,
+    /variationSelector\.addEventListener\("blur"/,
+  );
+  assert.match(source, /variationListbox\.addEventListener\([\s\S]+"keydown"[\s\S]+handleVariationSelectorKeydown/);
+  assert.match(activeHandler, /row\.dataset\.active = String\(active\)/);
+  assert.match(activeHandler, /aria-activedescendant/);
+  assert.doesNotMatch(activeHandler, /aria-selected/);
+  assert.match(selectionHandler, /persistentController\.selectVariation\(/);
+  assert.match(
+    selectionHandler,
+    /finally \{\s*releaseVariationSelector\(\{ restoreFocus: true \}\)/,
+  );
+  assert.match(optionClickHandler, /Number\(option\.dataset\.variationNumber\)/);
+  assert.match(
+    optionClickHandler,
+    /selectVariationFromPicker\(selectedVariationNumber\)/,
+  );
   assert.ok(
-    changeHandler.indexOf("const selectedValue") <
-      changeHandler.indexOf("releaseVariationSelector()"),
+    optionClickHandler.indexOf("const selectedVariationNumber") <
+      optionClickHandler.indexOf("selectVariationFromPicker"),
     "the chosen variation must be captured before deferred DOM work flushes",
   );
 
@@ -199,9 +251,11 @@ test("pointer and keyboard selector paths preserve refresh data and release safe
     /trackerWorkspace\.toggleAttribute\("inert", shouldBeInert\)/,
   );
   assert.ok(
-    releaseHandler.indexOf("variationSelectorLock.release()") <
+    releaseHandler.indexOf("clearOpenVariationSelector()") <
+      releaseHandler.indexOf("variationSelectorLock.release()") &&
+      releaseHandler.indexOf("variationSelectorLock.release()") <
       releaseHandler.indexOf("setWorkspaceBusy"),
-    "latest deferred options must flush before current busy state is restored",
+    "the popup must close before latest options flush and busy state restores",
   );
 
   assert.ok(
@@ -211,6 +265,22 @@ test("pointer and keyboard selector paths preserve refresh data and release safe
   );
   assert.match(
     source,
-    /function unmountPersistentController\(\) \{[\s\S]*?variationSelectorLock\.reset\(\)/,
+    /function unmountPersistentController\(\) \{[\s\S]*?resetVariationSelector\(\)/,
+  );
+  assert.match(
+    source,
+    /function resetVariationSelector\(\) \{[\s\S]*?clearOpenVariationSelector\(\)[\s\S]*?variationSelectorLock\.reset\(\)/,
+  );
+  assert.match(
+    source,
+    /document\.addEventListener\([\s\S]+"pointerdown"[\s\S]+!variationSelectShell\.contains\(event\.target\)[\s\S]+releaseVariationSelector\(\)/,
+  );
+  assert.match(
+    source,
+    /document\.addEventListener\("focusin", \(event\) => \{[\s\S]+!variationSelectShell\.contains\(event\.target\)[\s\S]+releaseVariationSelector\(\)/,
+  );
+  assert.match(
+    source,
+    /variationListbox\.addEventListener\("pointerup", \(event\) => \{[\s\S]+variationSelector\.focus\(\{ preventScroll: true \}\)/,
   );
 });

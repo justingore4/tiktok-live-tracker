@@ -437,18 +437,28 @@ screen test-user run does not complete those release reviews.
 
 6. Keep the active Live session side panel open during bidding. Confirm the variation
    number at the bottom of the video becomes the selected option formatted
-   `#N - bidding - No item selected`. Map an inventory item and confirm the option retains
-   `bidding` while its final segment changes to the selected item, style, and size.
+   `#N - bidding - no selection`. The number and separators remain neutral, `bidding`
+   is yellow, and `no selection` is orange. Map an inventory item and confirm the
+   option retains yellow `bidding` while its final segment changes to the green selected
+   item, style, and size. Verify payment processing displays `processing` in yellow,
+   payment completion displays `complete` in green, fixing and temporary failure remain
+   yellow, cancellation is red, and unrecognized/not-yet-observed
+   payment text remains neutral. For a canceled variation, confirm a mapped row is red plus
+   green and an unmapped row is red plus orange.
 7. Wait for TikTok to show a new auction. Confirm its variation becomes selected without
    opening the menu. Then confirm the prior auction remains in history when Sold Items
    supplies its payment truth, its item mapping persists, and `bidding` is replaced by
-   the observed payment wording. Open and scroll the selector without choosing an option,
-   then let another variation or payment-status update arrive. The native menu must remain
-   open at the same scroll position while the worker continues saving capture data, and its
-   visible options must remain unchanged until the employee closes it or makes a selection.
-   Reopen it and confirm the newest variation and every deferred status or mapping label
-   appear together. Repeat once with pointer input and once with the keyboard. Select a
-   historical variation and confirm the compact
+   the observed payment wording. Open and scroll the listbox without choosing an option,
+   then let another variation or payment-status update arrive. It must remain open at the
+   same scroll position while the worker continues saving capture data, and its visible
+   options must remain unchanged until the employee closes it or makes a selection. Reopen
+   it and confirm one newest option view contains the newest variation plus every deferred
+   status or mapping label. Repeat with pointer input, then verify Enter/Space opens or
+   selects, arrows move one row, Page Up/Page Down move ten, Home/End reach the boundaries,
+   Escape and F4 dismiss, and Tab closes while continuing focus navigation. Narrow the side
+   panel and confirm the listbox stays within the viewport, chooses above or below based on
+   available room, preserves vertical scrolling, and truncates long item labels cleanly.
+   Select a historical variation and confirm the compact
    **Return to live item** button appears below the selector. It must select the active
    bidding variation, or the newest captured variation when there is no active marker,
    then disappear and resume automatic follow. Confirm this navigation does not alter any
@@ -622,9 +632,10 @@ Only the persisted `activeBiddingVariationNumber` from the strict on-video card 
 the current bidding auction. A changed marker is selected automatically only while the
 employee is viewing the previously current auction. While the employee reviews a
 historical variation, new markers and status changes continue being captured but do not
-change its selection. Visible selector-option mutations are deferred while its native menu
-is open so a background refresh cannot close the menu or reset its scroll position. The
-newest saved option state is applied when the employee selects or dismisses the menu. A
+change its selection. Visible option mutations are deferred while the accessible listbox
+is open so a background refresh cannot close it or reset its scroll position. Only the
+newest deferred saved view is retained and applied once when the employee selects or
+dismisses the listbox. A
 compact **Return to live item** action is visible only in that historical-review state. It
 targets the active bidding variation when available and otherwise the newest captured
 variation; selecting it resumes automatic follow without a mapping, inventory, payment,
@@ -823,8 +834,9 @@ any live Google dependency remain intentionally absent.
 - The open tagger treats only the strict on-video marker as current bidding. It
   auto-displays the next changed marker while the current auction is selected, but keeps
   a manually selected historical variation in view while newer data continues being
-  captured. An open native variation menu temporarily freezes its visible options and
-  applies the newest saved option state after selection or dismissal. The same mapping
+  captured. An open accessible variation listbox temporarily freezes its visible options
+  and scroll position while capture and persistence continue, then applies the newest
+  deferred saved view once after selection or dismissal. The same mapping
   remains attached when Sold Items payment truth arrives.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.

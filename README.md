@@ -65,14 +65,18 @@ auctioned again, the employee maps its new variation number.
   exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
   dashboard path.
 - A responsive Chrome side-panel prototype with imported Google Sheets inventory, search, pending reservations,
-  zero-stock and oversold states, one-click item mapping and unmapping, and a current/previous
-  variation selector. The active on-video auction is labeled `bidding` and can be mapped
-  before the sale reaches Sold Items. While the employee is viewing the current auction,
-  the next auction is selected automatically. A manually selected historical variation
-  stays selected while newer auctions continue being captured. To protect an open native
-  selector from closing during a live update, visible option changes pause only while its
-  menu is open and catch up to the newest saved state when the employee selects or dismisses
-  it. Inventory cards show remaining stock separately from pending reservations.
+  zero-stock and oversold states, one-click item mapping and unmapping, and an accessible
+  current/previous variation combobox and listbox. The active on-video auction is labeled
+  `bidding` and can be mapped before the sale reaches Sold Items. Payment wording is yellow
+  for bidding, processing, fixing, and temporary failure; red for cancellation; green for
+  completion; and neutral for other states. The separate item segment is green whenever an
+  item is selected, including for a canceled reference, and orange when no item is selected.
+  While the employee is viewing the current auction, the next auction is selected
+  automatically. A manually selected historical variation stays selected while newer
+  auctions continue being captured. Opening the listbox freezes only its visible options
+  and scroll position; capture and persistence continue, and the newest queued option view
+  is applied once when the employee selects or dismisses the listbox. Inventory cards show
+  remaining stock separately from pending reservations.
 - A compact **Live auction** panel that stays visible throughout an active local tracker
   stream, including while an employee reviews an older variation. A newly detected
   on-video auction immediately changes its heading to `Variation #N` and clears the prior
@@ -410,9 +414,9 @@ before updating the Sheet.
       current auction, and display its later observed TikTok payment status independently
       of inventory mapping. Reviewing history pauses automatic switching without pausing
       capture and exposes a compact **Return to live item** action. Visible option changes
-      are deferred only while the native selector menu is open, then applied from the newest
-      saved view when it closes. The return action targets the active bidding variation when
-      one exists, otherwise the newest captured variation, and resumes automatic follow
+      are deferred only while the accessible variation listbox is open, then applied once
+      from the newest saved view when it closes. The return action targets the active
+      bidding variation when one exists, otherwise the newest captured variation, and resumes automatic follow
       without changing any auction or inventory data. A prioritized queue, visible capture
       status, verified TikTok
       stream identity, and broader live validation remain next.
@@ -541,15 +545,27 @@ misconfigured build fail before requesting Google authorization.
 
 14. Keep the active Live session side panel open while an auction is running. Confirm the
     variation shown in the card at the bottom of the video appears automatically as
-    `#N - bidding - No item selected`. Select its inventory item before bidding ends and
-    confirm the same option keeps `bidding` but replaces `No item selected` with the item,
-    style, and size. The selector eyebrow should read **Live auction variations**. When
+    `#N - bidding - no selection`. Its variation number and separators remain neutral,
+    `bidding` is yellow, and `no selection` is orange. Select its inventory item before
+    bidding ends and confirm the same option keeps yellow `bidding` but replaces the final
+    segment with the green item, style, and size. Payment processing displays `processing`
+    in yellow, payment completion displays `complete` in green, and fixing and temporary
+    failure remain yellow; cancellation remains red. A mapped
+    canceled row must combine a red payment segment with a green item segment, while an
+    unmapped canceled row combines red with orange. The selector eyebrow should read
+    **Live auction variations**. When
     TikTok starts the next auction, its number must become current without opening the
-    menu. Then open and scroll the selector without choosing an option while another
-    variation or payment-status update arrives. The native menu must remain open at the
-    same scroll position while capture continues; close it or choose an option, then reopen
-    it and confirm all deferred option text and new variations appear. Manually select a
-    previous variation and confirm later updates do not replace that historical selection.
+    menu. Then open and scroll the listbox without choosing an option while another
+    variation or payment-status update arrives. The listbox must remain open at the same
+    scroll position while capture continues; close it or choose an option, then reopen it
+    and confirm the single newest option view contains all deferred text and variations.
+    Verify mouse selection and the keyboard controls: Enter/Space opens or selects, arrow
+    keys move one row, Page Up/Page Down move ten rows, Home/End move to a boundary,
+    Escape or F4 dismisses, and Tab closes while continuing normal focus navigation. At a
+    narrow side-panel width, confirm the listbox stays inside the viewport, opens above or
+    below as space permits, scrolls vertically, and truncates long item text without hiding
+    any row. Manually select a previous variation and confirm later updates do not replace
+    that historical selection.
     Confirm a compact **Return to live item** button appears below the selector;
     select it and verify the active bidding variation becomes selected. If there is no
     active bidding marker, verify it instead selects the newest captured variation. The

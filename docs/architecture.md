@@ -639,12 +639,25 @@ canceling confirmation or any failed worker command changes nothing.
 
 Shared tagger behavior includes:
 
-- A native variation dropdown showing canonical stream records from the current-bidding
-  and Sold Items paths. The active option is formatted
-  `#N - bidding - <selected item or No item selected>`.
+- An accessible, select-only variation combobox controlling a top-layer listbox of
+  canonical stream records from the current-bidding and Sold Items paths. Each option is
+  formatted `#N - <payment state> - <selected item or no selection>` with separate
+  visual segments and one complete accessible label. Bidding, processing, fixing, and
+  temporary failure use the warning tone; cancellation uses danger; completion uses
+  success; and other payment states remain neutral. In this control only, processing and
+  completion are shortened to `processing` and `complete`. The item segment uses success whenever
+  an item is selected, including for a canceled reference, and displays `no selection` in
+  orange otherwise.
+  These tones supplement the visible wording and accessible label rather than replacing it.
+- Pointer, Enter/Space, F4, arrows, Home/End, Page Up/Page Down, Escape, and Tab behavior is
+  implemented without making individual options extra tab stops. The fixed top-layer
+  listbox aligns to the trigger, chooses above or below based on available space, remains
+  within the viewport, and provides contained vertical scrolling for long histories.
 - Stable variation identity with automatic selection of the next active bidding marker
   while the employee is following the current auction. A manually selected historical
-  variation stays selected while newer markers and status changes update the dropdown.
+  variation stays selected while newer markers and status changes continue being captured.
+  While the listbox is open, only its visible option view and scroll position are frozen;
+  the latest requested view replaces any older deferred view and is applied once on close.
 - Responsive, employee-facing inventory cards using the stream's pinned Google Sheets
   inventory baseline.
 - Search across item, style, and size.
@@ -759,7 +772,7 @@ its internal unrecorded startup placeholder, the first canonical view selects th
 recorded variation. A non-null `activeBiddingVariationNumber` is the effective current
 variation. A changed marker takes focus only when the employee was already viewing the
 previous current/latest variation. If the employee manually selects history, new
-variations and status changes continue updating the selector without taking focus;
+variations and status changes continue updating the closed combobox without taking focus;
 the compact **Return to live item** action appears while history is selected. It targets
 the active bidding variation when present and otherwise the newest captured variation;
 returning through it resumes automatic follow.
@@ -774,8 +787,10 @@ record. The employee does not need to refresh TikTok, reopen the panel, or Resum
 The panel calls only the persisted on-video marker the current bidding auction. It
 auto-follows the next marker while the employee is viewing the current auction so the
 item can be mapped before the sale reaches Sold Items. A historical selection remains
-fixed while the dropdown continues receiving newer variations. The local ID remains
-distinct from a verified TikTok room ID.
+fixed while the combobox continues receiving newer variations. Opening its listbox locks
+only the rendered options: canonical capture and saves continue, repeated refreshes retain
+only the newest deferred view, and selecting or dismissing applies that view once before
+normal rendering resumes. The local ID remains distinct from a verified TikTok room ID.
 
 Next tagger work includes:
 
@@ -788,7 +803,7 @@ Next tagger work includes:
   identifies a sale.
 
 The production tagger is planned as a queue rather than a blocking modal so an employee
-can catch up when multiple variations need attention. The current dropdown updates from
+can catch up when multiple variations need attention. The current combobox updates from
 durable capture state and proves multi-variation navigation and correction, but it is not
 yet a prioritized work queue.
 
@@ -1046,9 +1061,11 @@ employee changes, and retain the last good view on refresh failure. Repeated not
 coalesced, and one trailing refresh catches changes that arrive during a load or save.
 A changed active bidding marker becomes the selected tagger view automatically only when
 the employee was following the previous current/latest variation, so normal live tagging
-continues without reopening the menu. When the employee manually reviews history, new
-markers, repeated markers, and payment/status changes update the dropdown without
-changing the selection. While history is selected, a compact **Return to live item**
+continues without reopening the listbox. When the employee manually reviews history, new
+markers, repeated markers, and payment/status changes update the closed combobox without
+changing the selection. If the listbox is open, its rendered rows and scroll position stay
+fixed while the newest canonical view is deferred, then applied once when the listbox
+closes. While history is selected, a compact **Return to live item**
 action targets the active bidding variation or, when no bidding marker exists, the newest
 captured variation. Returning through it re-enables follow without issuing a mapping,
 inventory, payment, or persistence mutation.

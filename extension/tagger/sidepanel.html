@@ -360,15 +360,35 @@
           </p>
           <div class="variation-picker">
             <h2 id="current-auction-title">Variation</h2>
-            <span class="variation-select-shell">
-              <label class="visually-hidden" for="variation-selector">
+            <div class="variation-select-shell">
+              <span id="variation-selector-label" class="visually-hidden">
                 Choose a variation to review
-              </label>
-              <select
+              </span>
+              <div
                 id="variation-selector"
+                role="combobox"
+                tabindex="-1"
+                aria-disabled="true"
+                aria-expanded="false"
+                aria-haspopup="listbox"
+                aria-controls="variation-listbox"
+                aria-labelledby="variation-selector-label variation-selector-value"
                 aria-describedby="variation-context"
-              ></select>
-            </span>
+              >
+                <span id="variation-selector-value">
+                  Waiting for live auction variations
+                </span>
+              </div>
+              <div
+                id="variation-listbox"
+                class="variation-listbox"
+                role="listbox"
+                tabindex="-1"
+                aria-labelledby="variation-selector-label"
+                popover="manual"
+                hidden
+              ></div>
+            </div>
           </div>
           <button id="return-to-current" class="return-to-current" type="button" hidden>
             Return to live item
@@ -878,6 +898,7 @@
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="live-auction-view-model.js"></script>
+    <script src="variation-selector-view-model.js"></script>
     <script src="variation-selector-lock.js"></script>
     <script src="mapping-workflow.js"></script>
     <script src="persistent-tagger-controller.js"></script>

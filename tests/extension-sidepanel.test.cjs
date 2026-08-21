@@ -258,6 +258,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "live-auction-view-model.js",
+    "variation-selector-view-model.js",
     "variation-selector-lock.js",
     "mapping-workflow.js",
     "persistent-tagger-controller.js",
@@ -286,7 +287,7 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.ok(headerSource);
   assert.ok(footerSource);
   assert.match(html, /<label[^>]+for="inventory-search"/);
-  assert.match(html, /<label[^>]+for="variation-selector"/);
+  assert.match(html, /id="variation-selector-label"[^>]+visually-hidden/);
   assert.doesNotMatch(headerSource, /<button/);
   assert.doesNotMatch(headerSource, /prototype-badge|>\s*Prototype\s*</);
   assert.doesNotMatch(
@@ -402,7 +403,11 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(
     html,
-    /id="variation-selector"[^>]+aria-describedby="variation-context"/,
+    /id="variation-selector"[^>]+role="combobox"[^>]+aria-expanded="false"[^>]+aria-haspopup="listbox"[^>]+aria-controls="variation-listbox"[^>]+aria-labelledby="variation-selector-label variation-selector-value"[^>]+aria-describedby="variation-context"/,
+  );
+  assert.match(
+    html,
+    /id="variation-listbox"[^>]+role="listbox"[^>]+aria-labelledby="variation-selector-label"[^>]+popover="manual"/,
   );
   assert.match(
     html,
@@ -438,6 +443,51 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, />\s*Live session\s*</);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("variation picker keeps its compact layout while coloring status segments", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+
+  assert.match(
+    panelSource,
+    /function createVariationOptionContent\(display\)[\s\S]+variation-option-number[\s\S]+variation-option-status[\s\S]+display\.paymentTone[\s\S]+variation-option-item[\s\S]+display\.itemTone/,
+  );
+  assert.match(
+    styleSource,
+    /#variation-selector\s*\{[\s\S]*?min-height: 44px;[\s\S]*?border-radius: 10px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="warning"\]\s*\{[\s\S]*?color: #ffd88a;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="danger"\]\s*\{[\s\S]*?color: #ffb1b7;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-status\[data-tone="success"\],[\s\S]+\.variation-option-item\[data-tone="success"\]\s*\{[\s\S]*?color: #9df0df;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-item\[data-tone="unselected"\]\s*\{[\s\S]*?color: #ffad5c;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-listbox\s*\{[\s\S]*?position: fixed;[\s\S]*?max-height:[\s\S]*?overflow-y: auto;/,
+  );
+  assert.match(
+    styleSource,
+    /\.variation-option-item\s*\{[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;/,
+  );
 });
 
 test("side panel keeps setup and active-stream controls in their intended order", () => {
@@ -629,7 +679,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.match(panelSource, /function renderVariationNavigation\(view\)/);
   assert.match(
     panelSource,
-    /variationSelector\.addEventListener\("change",[\s\S]+persistentController\.selectVariation/,
+    /function selectVariationFromPicker\(selectedVariationNumber\)[\s\S]+persistentController\.selectVariation/,
   );
   assert.match(
     panelSource,
@@ -706,7 +756,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.match(panelSource, /variationContext\.textContent = "Live auction variations"/);
   assert.match(
     panelSource,
-    /const status = option\.bidding[\s\S]+\? "bidding"[\s\S]+return `#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}`/,
+    /variationSelectorViewModel\.createOptionDisplay\(option,[\s\S]+formatItemName/,
   );
   assert.match(
     panelSource,
@@ -1291,7 +1341,7 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /payment_completed_after_marked_unpaid/);
   assert.match(
     panelSource,
-    /#\$\{option\.variationNumber\} - \$\{status\} - \$\{item\}/,
+    /function createVariationOptionContent\(display\)[\s\S]+variation-option-status[\s\S]+display\.paymentTone[\s\S]+variation-option-item[\s\S]+display\.itemTone/,
   );
   assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
