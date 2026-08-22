@@ -170,8 +170,8 @@ test("pointer and keyboard selector paths preserve refresh data and release safe
   const keyboardStart = source.indexOf(
     "function handleVariationSelectorKeydown(event)",
   );
-  const keyboardListenersStart = source.indexOf(
-    'variationSelector.addEventListener(\n    "keydown"',
+  const keyboardListenersStart = source.search(
+    /variationSelector\.addEventListener\(\s*"keydown"/,
   );
   const savedStart = source.indexOf("function renderSavedSnapshot(snapshot)");
   const mutationStart = source.indexOf("function runSavedMutation(");

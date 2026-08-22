@@ -52,43 +52,6 @@
       "unit_cost",
     ]);
     const ACTION_FEEDBACK_DURATION_MS = 4_000;
-    const DEFAULT_DEFINITIONS = Object.freeze([
-      Object.freeze({
-        term: "TikTok Attributed GMV",
-        description:
-          "The last value displayed by TikTok during tracking. TikTok may abbreviate or round this display, and it can include buyer-paid shipping.",
-      }),
-      Object.freeze({
-        term: "Gross Item Sales",
-        description:
-          "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
-      }),
-      Object.freeze({
-        term: "TikTok 6% Fees",
-        description:
-          "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
-      }),
-      Object.freeze({
-        term: "Est. Profit After Fees",
-        description:
-          "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
-      }),
-      Object.freeze({
-        term: "AOV",
-        description:
-          "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
-      }),
-      Object.freeze({
-        term: "Gross profit",
-        description:
-          "Mapped completed-sale revenue minus the seller unit cost saved in this report. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
-      }),
-      Object.freeze({
-        term: "Updated count",
-        description:
-          "Opening quantity minus mapped completed sales across the inventory baseline, clamped to zero for the Sheet replacement value. Pending and canceled orders do not permanently reduce this count.",
-      }),
-    ]);
     const WARNING_MESSAGES = Object.freeze({
       active_bidding_at_end:
         "A bidding variation was still active when tracking ended.",
@@ -865,9 +828,8 @@
         .filter((entry) => safeInteger(entry?.soldQuantity) > 0);
       const rows = performance.map((entry) => {
         const row = document.createElement("tr");
-        const openingQuantity = getOpeningQuantity(
-          inventoryBySku.get(entry.sku),
-        );
+        const inventoryEntry = inventoryBySku.get(entry.sku);
+        const openingQuantity = getOpeningQuantity(inventoryEntry);
         row.append(
           createTableCell(document, entry?.sku ?? "", { className: "sku-cell" }),
           createTableCell(
@@ -878,6 +840,9 @@
           ),
           createTableCell(document, entry?.size ?? ""),
           createTableCell(document, safeInteger(entry?.soldQuantity), {
+            className: "number-cell",
+          }),
+          createTableCell(document, formatUsdCents(inventoryEntry?.unitCostCents), {
             className: "number-cell",
           }),
           createTableCell(document, formatUsdCents(entry?.revenueCents), {
@@ -1068,19 +1033,6 @@
       return selectedEntry;
     }
 
-    function renderDefinitions(document) {
-      const list = document.querySelector("#report-definitions");
-      const children = [];
-      DEFAULT_DEFINITIONS.forEach(({ term, description }) => {
-        const dt = document.createElement("dt");
-        const dd = document.createElement("dd");
-        dt.textContent = term;
-        dd.textContent = description;
-        children.push(dt, dd);
-      });
-      replaceChildren(list, children);
-    }
-
     function renderReport(document, record) {
       const report = record.report;
       const metadata = isPlainRecord(report?.metadata) ? report.metadata : {};
@@ -1129,7 +1081,6 @@
       renderItemVariations(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
-      renderDefinitions(document);
 
       document.title = createReportFilename(report, "Stream-Report", "pdf")
         .replace(/\.pdf$/i, "");
@@ -1203,7 +1154,6 @@
       const disclosures = [
         document?.querySelector?.("#completed-sales-disclosure"),
         document?.querySelector?.("#sku-profit-disclosure"),
-        document?.querySelector?.("#definitions-disclosure"),
       ].filter(Boolean);
       let priorOpenStates = null;
 
@@ -1307,6 +1257,22 @@
       let actionFeedbackSequence = 0;
       let actionFeedbackTimerId = null;
       const printDisclosure = createPrintDisclosureController(document);
+      const inventoryInstructions = document.querySelector("#inventory-instructions");
+      const inventoryInstructionsToggle = document.querySelector(
+        "#toggle-inventory-instructions",
+      );
+      const setInventoryInstructionsExpanded = (expanded) => {
+        inventoryInstructions.hidden = !expanded;
+        inventoryInstructionsToggle.setAttribute(
+          "aria-expanded",
+          String(expanded),
+        );
+        inventoryInstructionsToggle.textContent = expanded
+          ? "Hide instructions -"
+          : "Show instructions +";
+      };
+
+      setInventoryInstructionsExpanded(false);
 
       if (typeof dependencies.addEventListener === "function") {
         dependencies.addEventListener("beforeprint", printDisclosure.prepare);
@@ -1758,6 +1724,9 @@
           }
         }
       });
+      inventoryInstructionsToggle.addEventListener("click", () => {
+        setInventoryInstructionsExpanded(inventoryInstructions.hidden);
+      });
       document.querySelector("#copy-inventory").addEventListener("click", async () => {
         if (!currentRecord) {
           return;
@@ -1796,7 +1765,6 @@
     }
 
     return Object.freeze({
-      DEFAULT_DEFINITIONS,
       SHEET_HEADERS,
       createPrintDisclosureController,
       createFileStamp,

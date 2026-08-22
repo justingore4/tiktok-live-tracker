@@ -160,9 +160,10 @@ auctioned again, the employee maps its new variation number.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
-  failed request changes nothing. The **Item variations this stream**, **Profit/Loss by
-  SKU**, and **Definitions and limitations** sections are collapsed by default for screen
-  browsing and always expanded in printed/PDF output.
+  failed request changes nothing. The **Item variations this stream** and **Profit/Loss by
+  SKU** sections are collapsed by default for screen browsing and always expanded in
+  printed/PDF output. The screen-only **Correct SKU Unit Cost** disclosure appears at the
+  bottom of the report.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
@@ -281,7 +282,7 @@ auctioned again, the employee maps its new variation number.
 - Automated capture, parser, reconciliation, persistence, service-worker, and tagger
   tests using Node's built-in test runner.
 
-### End-of-stream report definitions
+### End-of-stream report calculations
 
 The saved report is generated from the durable data captured when the employee confirms
 **End and create report**. The newest safe report can resolve an unfinished
@@ -694,8 +695,9 @@ misconfigured build fail before requesting Google authorization.
     the same control remains available on older and archived finalized reports, after a
     newer stream exists, and while another stream is active. Verify canonical inventory,
     other reports, and future streams keep their original cost.
-21. To replace the Sheet counts, first duplicate the Google Sheets **Inventory** tab as a
-    backup. In the report select **Copy Updated Inventory**, return to the original
+21. To replace the Sheet counts, open **Show instructions +** in the Google Sheets handoff
+    if needed, then first duplicate the Google Sheets **Inventory** tab as a backup. In the
+    report select **Copy Updated Inventory**, return to the original
     **Inventory** tab, click cell **A1** (the first cell in the upper-left corner), and
     press **Ctrl+V** on Windows or **Cmd+V** on macOS. Verify the pasted rectangle has the
     exact six headers `sku`, `item`, `style`, `size`, `quantity_on_hand_at_import`, and

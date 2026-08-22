@@ -578,8 +578,10 @@ serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet
 
 The extension-owned report page loads only the local saved record. It supports native
 Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
-full-table clipboard copy for pasting at A1. The two screen-only correction disclosures
-have different authority boundaries.
+full-table clipboard copy for pasting at A1. Its handoff instructions start collapsed
+behind a screen toggle beside those two actions, while print styling includes the full
+instructions. The two screen-only correction disclosures have different authority
+boundaries.
 **Finish unresolved payments** exposes only canonical-unresolved `payment_fixing` or
 temporary `payment_failed` orders. Cancellation needs no price and releases the
 reservation; completion requires a seller-verified positive final price and commits the
@@ -593,11 +595,11 @@ reference, lifecycle, and archive tier. Cost correction updates
 completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
 top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
 change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
-other reports, the live tracker, or future streams. The stream-variations, Profit/Loss by
-SKU, and definitions disclosures start collapsed on screen, but print styling always
-includes every available completed/canceled variation row, every SKU profit/loss row,
-repeated column headers, and every definition. These are employee-initiated
-local outputs, not Google API writes.
+other reports, the live tracker, or future streams. The stream-variations and Profit/Loss
+by SKU disclosures start collapsed on screen, but print styling always includes every
+available completed/canceled variation row, every SKU profit/loss row, and repeated
+column headers. The screen-only unit-cost correction disclosure is the final report
+section. These are employee-initiated local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
 live testing must still determine whether the entire list is always rendered or

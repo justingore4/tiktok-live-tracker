@@ -4,26 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
-    <title>TikTok LIVE Stream Report</title>
+    <title>Post Stream Report</title>
     <link rel="stylesheet" href="report.css">
   </head>
   <body>
     <a class="skip-link screen-only" href="#report-content">Skip to report</a>
 
     <main class="report-shell">
-      <header class="app-header">
-        <div class="brand-mark" aria-hidden="true">T</div>
-        <div class="brand-copy">
-          <p class="eyebrow">Seller tool</p>
-          <p class="product-name">TikTok Live Tracker</p>
-        </div>
-        <div class="header-actions screen-only">
-          <button id="print-report" class="primary-action" type="button" disabled>
-            Print / Save as PDF
-          </button>
-        </div>
-      </header>
-
       <section
         id="report-loading"
         class="report-message"
@@ -52,48 +39,53 @@
 
       <article id="report-content" class="report-content" tabindex="-1" hidden>
         <header class="report-cover report-block">
-          <div>
-            <p class="eyebrow">End-of-stream business summary</p>
-            <h1 id="report-title">TikTok LIVE Stream Report</h1>
-            <p id="report-subtitle" class="report-subtitle">
-              Locally prepared from captured sales and confirmed inventory mappings.
-            </p>
+          <div class="report-cover-title-row">
+            <h1 id="report-title">Post Stream Report</h1>
+            <button
+              id="print-report"
+              class="primary-action report-print-action screen-only"
+              type="button"
+              disabled
+            >
+              Print / Save as PDF
+            </button>
           </div>
+          <dl class="report-meta" aria-label="Stream report details">
+            <div>
+              <dt>Stream tracking started</dt>
+              <dd id="stream-started">Not recorded</dd>
+            </div>
+            <div>
+              <dt>Tracking ended</dt>
+              <dd id="stream-ended">Not recorded</dd>
+            </div>
+            <div>
+              <dt>Stream reference</dt>
+              <dd id="stream-reference">Unavailable</dd>
+            </div>
+          </dl>
         </header>
 
-        <dl class="report-meta report-block" aria-label="Stream report details">
-          <div>
-            <dt>Stream tracking started</dt>
-            <dd id="stream-started">Not recorded</dd>
-          </div>
-          <div>
-            <dt>Tracking ended</dt>
-            <dd id="stream-ended">Not recorded</dd>
-          </div>
-          <div>
-            <dt>Stream reference</dt>
-            <dd id="stream-reference">Unavailable</dd>
-          </div>
-        </dl>
-
         <section class="report-section" aria-labelledby="summary-title">
-          <div class="section-heading">
+          <div class="section-heading summary-heading">
             <div>
               <p class="eyebrow">Performance</p>
               <h2 id="summary-title">Stream summary</h2>
             </div>
+            <aside
+              id="warnings-section"
+              class="summary-notices"
+              aria-labelledby="warnings-title"
+              hidden
+            >
+              <div class="summary-notices-heading">
+                <p class="eyebrow">Review before updating inventory</p>
+                <h3 id="warnings-title">Report notices</h3>
+              </div>
+              <ul id="report-warnings" class="warning-list"></ul>
+            </aside>
           </div>
           <dl id="summary-grid" class="summary-grid"></dl>
-        </section>
-
-        <section id="warnings-section" class="report-section warning-section" aria-labelledby="warnings-title" hidden>
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Review before updating inventory</p>
-              <h2 id="warnings-title">Report notices</h2>
-            </div>
-          </div>
-          <ul id="report-warnings" class="warning-list"></ul>
         </section>
 
         <section
@@ -121,60 +113,6 @@
             aria-live="polite"
             aria-atomic="true"
           ></p>
-        </section>
-
-        <section
-          id="unit-cost-correction-section"
-          class="report-section unit-cost-correction-section screen-only"
-          aria-labelledby="unit-cost-correction-title"
-          aria-busy="false"
-          hidden
-        >
-          <details id="unit-cost-correction-disclosure">
-            <summary
-              id="unit-cost-correction-toggle"
-              class="unit-cost-correction-toggle"
-              aria-controls="unit-cost-correction-content"
-            >
-              <h2 id="unit-cost-correction-title" class="unit-cost-correction-heading">
-                <span class="eyebrow">Post-stream correction</span>
-                <span class="unit-cost-correction-title">Correct SKU Unit Cost</span>
-              </h2>
-            </summary>
-            <div id="unit-cost-correction-content" class="unit-cost-correction-content">
-              <p class="section-intro">
-                Correct a cost in this saved report and its Google Sheets handoff. Every inventory SKU is available, including SKUs not sold during this stream. The live tracker, other reports, and future streams are unaffected.
-              </p>
-              <div class="unit-cost-correction-form">
-                <label class="unit-cost-field" for="unit-cost-sku">
-                  <span>Inventory SKU</span>
-                  <select id="unit-cost-sku" autocomplete="off"></select>
-                </label>
-                <label class="unit-cost-field" for="unit-cost-value">
-                  <span>Correct unit cost (USD)</span>
-                  <input
-                    id="unit-cost-value"
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    placeholder="0.00"
-                    aria-describedby="unit-cost-preview unit-cost-feedback"
-                  >
-                </label>
-                <button id="update-unit-cost" class="primary-action" type="button">
-                  Update Unit Cost
-                </button>
-              </div>
-              <p id="unit-cost-preview" class="unit-cost-preview"></p>
-              <p
-                id="unit-cost-feedback"
-                class="unit-cost-feedback"
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              ></p>
-            </div>
-          </details>
         </section>
 
         <section class="report-section" aria-labelledby="performers-title">
@@ -317,6 +255,7 @@
                   <th scope="col">Product</th>
                   <th scope="col">Size</th>
                   <th scope="col" class="number-cell">Units sold</th>
+                  <th scope="col" class="number-cell">Unit cost</th>
                   <th scope="col" class="number-cell">Revenue</th>
                   <th scope="col" class="number-cell">COGS</th>
                   <th scope="col" class="number-cell">Gross profit</th>
@@ -345,17 +284,34 @@
               <button id="download-inventory" class="secondary-action" type="button">
                 Download Updated Inventory CSV
               </button>
+              <button
+                id="toggle-inventory-instructions"
+                class="secondary-action inventory-instructions-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="inventory-instructions"
+              >
+                Show instructions +
+              </button>
             </div>
           </div>
-          <ol class="inventory-workflow">
-            <li>At the bottom of Google Sheets, duplicate the <strong>Inventory</strong> tab as a backup.</li>
-            <li>On this report, click <strong>Copy Updated Inventory</strong>.</li>
-            <li>Return to the original <strong>Inventory</strong> tab and click cell <strong>A1</strong>.</li>
-            <li>Press <strong>Cmd+V</strong> on macOS or <strong>Ctrl+V</strong> on Windows.</li>
-          </ol>
-          <p class="section-intro">
-            The pasted six-column rectangle replaces cells by position; it does not look up or merge rows by SKU. Keep the rows in this exported order. Download Updated Inventory CSV is available as an alternative.
-          </p>
+          <div
+            id="inventory-instructions"
+            class="inventory-instructions"
+            role="region"
+            aria-label="Google Sheets handoff instructions"
+            hidden
+          >
+            <ol class="inventory-workflow">
+              <li>At the bottom of Google Sheets, duplicate the <strong>Inventory</strong> tab as a backup.</li>
+              <li>On this report, click <strong>Copy Updated Inventory</strong>.</li>
+              <li>Return to the original <strong>Inventory</strong> tab and click cell <strong>A1</strong>.</li>
+              <li>Press <strong>Cmd+V</strong> on macOS or <strong>Ctrl+V</strong> on Windows.</li>
+            </ol>
+            <p class="section-intro">
+              The pasted six-column rectangle replaces cells by position; it does not look up or merge rows by SKU. Keep the rows in this exported order. Download Updated Inventory CSV is available as an alternative.
+            </p>
+          </div>
           <div class="table-scroll screen-scroll" tabindex="0">
             <table class="data-table inventory-table">
               <caption>
@@ -385,20 +341,56 @@
           </div>
         </section>
 
-        <section class="report-section definitions-section" aria-labelledby="definitions-title">
-          <details id="definitions-disclosure">
+        <section
+          id="unit-cost-correction-section"
+          class="report-section unit-cost-correction-section screen-only"
+          aria-labelledby="unit-cost-correction-title"
+          aria-busy="false"
+          hidden
+        >
+          <details id="unit-cost-correction-disclosure">
             <summary
-              id="definitions-toggle"
-              class="definitions-toggle"
-              aria-controls="definitions-content"
+              id="unit-cost-correction-toggle"
+              class="unit-cost-correction-toggle"
+              aria-controls="unit-cost-correction-content"
             >
-              <h2 id="definitions-title" class="definitions-summary-heading">
-                <span class="eyebrow">How totals are calculated</span>
-                <span class="definitions-title">Definitions and limitations</span>
+              <h2 id="unit-cost-correction-title" class="unit-cost-correction-heading">
+                <span class="eyebrow">Post-stream correction</span>
+                <span class="unit-cost-correction-title">Correct SKU Unit Cost</span>
               </h2>
             </summary>
-            <div id="definitions-content" class="definitions-content">
-              <dl id="report-definitions" class="definition-list"></dl>
+            <div id="unit-cost-correction-content" class="unit-cost-correction-content">
+              <p class="section-intro">
+                Correct a cost in this saved report and its Google Sheets handoff. Every inventory SKU is available, including SKUs not sold during this stream. The live tracker, other reports, and future streams are unaffected.
+              </p>
+              <div class="unit-cost-correction-form">
+                <label class="unit-cost-field" for="unit-cost-sku">
+                  <span>Inventory SKU</span>
+                  <select id="unit-cost-sku" autocomplete="off"></select>
+                </label>
+                <label class="unit-cost-field" for="unit-cost-value">
+                  <span>Correct unit cost (USD)</span>
+                  <input
+                    id="unit-cost-value"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="0.00"
+                    aria-describedby="unit-cost-preview unit-cost-feedback"
+                  >
+                </label>
+                <button id="update-unit-cost" class="primary-action" type="button">
+                  Update Unit Cost
+                </button>
+              </div>
+              <p id="unit-cost-preview" class="unit-cost-preview"></p>
+              <p
+                id="unit-cost-feedback"
+                class="unit-cost-feedback"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              ></p>
             </div>
           </details>
         </section>

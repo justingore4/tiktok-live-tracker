@@ -216,8 +216,8 @@ test("side panel places a compact live auction panel directly after Variation", 
   const html = fs.readFileSync(path.join(directory, "sidepanel.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "sidepanel.css"), "utf8");
   const source = fs.readFileSync(path.join(directory, "sidepanel.js"), "utf8");
-  const currentAuctionEnd = html.indexOf(
-    '<section\n        id="live-auction"',
+  const currentAuctionEnd = html.search(
+    /<section\s+id="live-auction"/,
   );
   const pendingMappingStart = html.indexOf('id="pending-mapping"');
 

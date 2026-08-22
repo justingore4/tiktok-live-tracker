@@ -555,8 +555,9 @@ screen test-user run does not complete those release reviews.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Item variations this stream**, **Profit/Loss by SKU**, and **Definitions and
-    limitations** start collapsed and expand on activation. The stream-variation count must
+    Confirm **Item variations this stream** and **Profit/Loss by SKU** start collapsed and
+    expand on activation. Confirm **Correct SKU Unit Cost** is the final report section.
+    The stream-variation count must
     remain visible in both table states and equal completed plus canceled totals. Confirm
     the **Status** column distinguishes completed and canceled rows; canceled rows retain
     their mapped or unmapped reference identity but have no sale price, unit cost, gross
@@ -568,9 +569,8 @@ screen test-user run does not complete those release reviews.
     entries must not appear in that profit/loss section.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension. Verify the PDF includes every available completed/canceled variation row,
-    eligible SKU profit/loss row, and definition even when those sections were collapsed
-    on screen.
+    extension. Verify the PDF includes every available completed/canceled variation row
+    and eligible SKU profit/loss row even when those sections were collapsed on screen.
     End a test stream with one mapped `Payment failed` or `Payment fixing` order. In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing
     changes. Then mark it complete with an invalid price and confirm validation fails;
@@ -597,7 +597,9 @@ screen test-user run does not complete those release reviews.
     is active. Confirm canonical inventory, other reports, and future streams retain the
     original cost. The payment-resolution section retains its stricter eligibility guards.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
-    backup. In the report select **Copy Updated Inventory**, return to the original
+    backup. Confirm the instructions start hidden, **Show instructions +** follows the CSV
+    action, and toggling it reveals the full workflow without hiding the inventory table.
+    In the report select **Copy Updated Inventory**, return to the original
     `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
     macOS. Before copying, verify the report table shows the saved unit cost for every SKU,
     including `$0.00`; its visible **Sold** header means completed mapped sales since the

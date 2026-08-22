@@ -64,9 +64,9 @@ const REPORT_SELECTORS = [
   "#sku-profit-disclosure",
   "#sku-profit-empty",
   "#sku-profit-rows",
-  "#definitions-disclosure",
   "#copy-inventory",
   "#download-inventory",
+  "#inventory-instructions",
   "#inventory-rows",
   "#most-profitable-items",
   "#most-profitable-products",
@@ -83,7 +83,6 @@ const REPORT_SELECTORS = [
   "#payment-resolution-section",
   "#print-report",
   "#report-content",
-  "#report-definitions",
   "#report-error",
   "#report-error-message",
   "#report-generated-at",
@@ -97,6 +96,7 @@ const REPORT_SELECTORS = [
   "#stream-reference",
   "#stream-started",
   "#summary-grid",
+  "#toggle-inventory-instructions",
   "#unit-cost-correction-disclosure",
   "#unit-cost-correction-section",
   "#unit-cost-feedback",
@@ -354,6 +354,112 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.doesNotMatch(css, /\.sku-count-list\b/);
   assert.match(css, /\.payment-resolution-order\s*\{/);
   assert.match(css, /\.unit-cost-correction-form\s*\{/);
+  assert.doesNotMatch(css, /\.unit-cost-correction-section\s*\{[^}]*border-color:/);
+});
+
+test("compact Post Stream Report cover contains all stream metadata", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const coverStart = html.indexOf('<header class="report-cover report-block">');
+  const coverEnd = html.indexOf("</header>", coverStart);
+  const cover = html.slice(coverStart, coverEnd);
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(coverStart >= 0);
+  assert.match(html, /<title>Post Stream Report<\/title>/);
+  assert.match(
+    cover,
+    /<div class="report-cover-title-row">[\s\S]*?<h1 id="report-title">Post Stream Report<\/h1>[\s\S]*?id="print-report"[\s\S]*?Print \/ Save as PDF[\s\S]*?<\/div>/,
+  );
+  assert.match(
+    cover,
+    /id="print-report"[\s\S]*?class="primary-action report-print-action screen-only"[\s\S]*?type="button"[\s\S]*?disabled/,
+  );
+  assert.equal((html.match(/id="print-report"/g) ?? []).length, 1);
+  assert.match(
+    cover,
+    /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?id="stream-reference"[\s\S]*?<\/dl>/,
+  );
+  assert.equal((html.match(/class="report-meta"/g) ?? []).length, 1);
+  assert.doesNotMatch(
+    html,
+    /class="app-header"|class="brand-mark"|class="brand-copy"|Seller tool|TikTok LIVE Stream Report|End-of-stream business summary|Locally prepared from captured sales and confirmed inventory mappings|report-subtitle/,
+  );
+  assert.doesNotMatch(css, /\.app-header\b|\.brand-mark\b|\.brand-copy\b|\.product-name\b|\.header-actions\b/);
+  assert.match(
+    css,
+    /\.report-cover\s*\{[\s\S]*?gap:\s*16px;[\s\S]*?padding:\s*clamp\(18px, 3vw, 28px\);/,
+  );
+  assert.match(
+    css,
+    /\.report-cover h1\s*\{[\s\S]*?font-size:\s*clamp\(25px, 3\.5vw, 36px\);/,
+  );
+  assert.match(
+    css,
+    /\.report-cover-title-row\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;[\s\S]*?justify-content:\s*space-between;/,
+  );
+  assert.match(
+    css,
+    /\.report-print-action\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?margin-left:\s*auto;/,
+  );
+  assert.match(
+    printCss,
+    /\.report-cover\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?padding:\s*0\.18in;[\s\S]*?\.report-cover h1\s*\{[\s\S]*?font-size:\s*20pt;/,
+  );
+});
+
+test("report notices stay compact inside Stream summary and disappear when empty", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const summaryStart = html.indexOf(
+    '<section class="report-section" aria-labelledby="summary-title">',
+  );
+  const summaryEnd = html.indexOf("</section>", summaryStart);
+  const summarySection = html.slice(summaryStart, summaryEnd);
+  const noticesStart = summarySection.indexOf('id="warnings-section"');
+  const metricsStart = summarySection.indexOf('id="summary-grid"');
+
+  assert.ok(summaryStart >= 0);
+  assert.ok(noticesStart > summarySection.indexOf('id="summary-title"'));
+  assert.ok(metricsStart > noticesStart);
+  assert.match(
+    summarySection,
+    /<aside[\s\S]*?id="warnings-section"[\s\S]*?class="summary-notices"[\s\S]*?hidden[\s\S]*?>/,
+  );
+  assert.match(
+    summarySection,
+    /Review before updating inventory[\s\S]*Report notices[\s\S]*id="report-warnings"/,
+  );
+  assert.doesNotMatch(html, /<section[^>]+id="warnings-section"/);
+  assert.equal((html.match(/id="warnings-section"/g) ?? []).length, 1);
+  assert.match(
+    css,
+    /\.summary-notices\s*\{[\s\S]*?grid-template-columns:\s*max-content minmax\(0, 1fr\);[\s\S]*?max-width:\s*860px;[\s\S]*?padding:\s*9px 12px;/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width:\s*720px\)[\s\S]*?\.summary-heading\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?\.summary-notices\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+  );
+
+  const warningDocument = new FakeDocument();
+  reportPage.renderReport(warningDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport(),
+  });
+  assert.equal(warningDocument.querySelector("#warnings-section").hidden, false);
+  assert.equal(warningDocument.querySelector("#report-warnings").children.length, 2);
+
+  const clearDocument = new FakeDocument();
+  reportPage.renderReport(clearDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport({ warnings: [] }),
+  });
+  assert.equal(clearDocument.querySelector("#warnings-section").hidden, true);
+  assert.equal(clearDocument.querySelector("#report-warnings").children.length, 0);
 });
 
 test("completed and canceled item variations share one collapsed disclosure that always prints in full", () => {
@@ -440,6 +546,47 @@ test("all report tables use a white background and black text on screen and in p
   );
 });
 
+test("SKU performance shows each selling SKU unit cost without crowding screen or print", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const tableStart = html.indexOf('<table class="data-table performance-table">');
+  const tableEnd = html.indexOf("</table>", tableStart);
+  const performanceTable = html.slice(tableStart, tableEnd);
+  const headerLabels = [...performanceTable.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)]
+    .map((match) => match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.deepEqual(headerLabels, [
+    "SKU",
+    "Product",
+    "Size",
+    "Units sold",
+    "Unit cost",
+    "Revenue",
+    "COGS",
+    "Gross profit",
+    "Gross margin",
+    "Sell-through",
+  ]);
+  assert.match(css, /\.performance-table\s*\{\s*min-width:\s*960px;/);
+  assert.match(
+    printCss,
+    /\.inventory-table,\s*\.performance-table\s*\{\s*min-width:\s*0;/,
+  );
+
+  const document = new FakeDocument();
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport(),
+  });
+  const cells = document.querySelector("#performance-rows").children[0].children;
+
+  assert.equal(cells.length, 10);
+  assert.equal(cells[4].textContent, "$6.00");
+});
+
 test("updated inventory shows every SKU unit cost with a compact accessible Sold header", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -477,7 +624,10 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
     printCss,
     /\.screen-scroll\s*\{[\s\S]*?overflow:\s*visible;/,
   );
-  assert.match(printCss, /\.inventory-table\s*\{\s*min-width:\s*0;/);
+  assert.match(
+    printCss,
+    /\.inventory-table,\s*\.performance-table\s*\{\s*min-width:\s*0;/,
+  );
   assert.match(
     printCss,
     /\.data-table thead\s*\{\s*display:\s*table-header-group;/,
@@ -534,6 +684,44 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
   assert.equal(rows[1].children[4].className, "number-cell");
 });
 
+test("Google Sheets instructions start collapsed beside the handoff actions and print in full", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const sectionStart = html.indexOf("inventory-update-section");
+  const sectionEnd = html.indexOf("</section>", sectionStart);
+  const section = html.slice(sectionStart, sectionEnd);
+  const copyIndex = section.indexOf('id="copy-inventory"');
+  const downloadIndex = section.indexOf('id="download-inventory"');
+  const toggleIndex = section.indexOf('id="toggle-inventory-instructions"');
+  const instructionsIndex = section.indexOf('id="inventory-instructions"');
+  const tableIndex = section.indexOf('<table class="data-table inventory-table">');
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(sectionStart >= 0);
+  assert.ok(copyIndex >= 0);
+  assert.ok(downloadIndex > copyIndex);
+  assert.ok(toggleIndex > downloadIndex);
+  assert.ok(instructionsIndex > toggleIndex);
+  assert.ok(tableIndex > instructionsIndex);
+  assert.match(
+    section,
+    /id="toggle-inventory-instructions"[\s\S]*?aria-expanded="false"[\s\S]*?aria-controls="inventory-instructions"[\s\S]*?Show instructions \+/,
+  );
+  assert.match(
+    section,
+    /id="inventory-instructions"[\s\S]*?role="region"[\s\S]*?aria-label="Google Sheets handoff instructions"[\s\S]*?hidden[\s\S]*?>[\s\S]*?<ol class="inventory-workflow">[\s\S]*?The pasted six-column rectangle/,
+  );
+  assert.match(
+    printCss,
+    /#inventory-instructions\[hidden\]\s*\{\s*display:\s*block !important;/,
+  );
+  assert.match(
+    printCss,
+    /\.inventory-workflow\s*\{[\s\S]*?border-color:\s*#cfd5dc;[\s\S]*?color:\s*#111820;[\s\S]*?background:\s*#f5f7fa;/,
+  );
+});
+
 test("SKU profit and loss uses a collapsed stream-scoped disclosure that prints in full", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -564,137 +752,63 @@ test("SKU profit and loss uses a collapsed stream-scoped disclosure that prints 
   );
 });
 
-test("definitions use a collapsed native disclosure without changing their content", () => {
+test("unit-cost correction is the final report section and definitions are fully removed", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
-  const sectionStart = html.indexOf('class="report-section definitions-section"');
-  const sectionEnd = html.indexOf("</section>", sectionStart);
-  const section = html.slice(sectionStart, sectionEnd);
-  const detailsTag = section.match(
-    /<details\s+id="definitions-disclosure"[^>]*>/,
-  )?.[0];
-  const summary = section.match(
-    /<summary[\s\S]*?id="definitions-toggle"[\s\S]*?<\/summary>/,
-  )?.[0];
-  const printCss = css.slice(css.indexOf("@media print"));
+  const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
+  const correctionStart = html.indexOf('id="unit-cost-correction-section"');
+  const footerStart = html.indexOf('<footer class="report-footer">');
 
-  assert.ok(detailsTag);
-  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
-  assert.ok(summary);
-  assert.match(summary, /aria-controls="definitions-content"/);
-  assert.match(summary, /<h2\s+id="definitions-title"[^>]*>/);
-  assert.equal((summary.match(/<h2\b/g) ?? []).length, 1);
-  assert.match(summary, /How totals are calculated/);
-  assert.match(summary, /Definitions and limitations/);
-  assert.equal((html.match(/id="definitions-content"/g) ?? []).length, 1);
-  assert.equal((html.match(/id="report-definitions"/g) ?? []).length, 1);
-  assert.match(
-    section,
-    /id="definitions-content"[\s\S]*?<dl\s+id="report-definitions"\s+class="definition-list"><\/dl>/,
-  );
-  assert.match(css, /\.definitions-toggle:focus-visible/);
-  assert.match(
-    printCss,
-    /#definitions-disclosure:not\(\[open\]\)\s*>\s*#definitions-content\s*\{\s*display:\s*block\s*!important;/,
-  );
-  assert.match(
-    printCss,
-    /#definitions-toggle::after\s*\{\s*display:\s*none\s*!important;/,
-  );
+  assert.ok(correctionStart >= 0);
+  assert.ok(footerStart > correctionStart);
+  assert.equal(html.lastIndexOf("<section", footerStart), html.lastIndexOf("<section", correctionStart));
+  assert.equal((html.match(/id="unit-cost-correction-section"/g) ?? []).length, 1);
   assert.doesNotMatch(
-    printCss,
-    /#definitions-toggle\s*\{[^}]*display:\s*none/s,
+    html,
+    /definitions-(?:section|disclosure|toggle|title|content)|report-definitions|definition-list|Definitions and limitations|How totals are calculated/i,
   );
-  assert.deepEqual(reportPage.DEFAULT_DEFINITIONS, [
-    {
-      term: "TikTok Attributed GMV",
-      description:
-        "The last value displayed by TikTok during tracking. TikTok may abbreviate or round this display, and it can include buyer-paid shipping.",
-    },
-    {
-      term: "Gross Item Sales",
-      description:
-        "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
-    },
-    {
-      term: "TikTok 6% Fees",
-      description:
-        "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
-    },
-    {
-      term: "Est. Profit After Fees",
-      description:
-        "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
-    },
-    {
-      term: "AOV",
-      description:
-        "Gross Item Sales divided by the number of completed sales. Processing, payment-fixing, and canceled orders are excluded.",
-    },
-    {
-      term: "Gross profit",
-      description:
-        "Mapped completed-sale revenue minus the seller unit cost saved in this report. It is not net profit and excludes platform fees, shipping labels, refunds, ads, taxes, and other expenses.",
-    },
-    {
-      term: "Updated count",
-      description:
-        "Opening quantity minus mapped completed sales across the inventory baseline, clamped to zero for the Sheet replacement value. Pending and canceled orders do not permanently reduce this count.",
-    },
-  ]);
+  assert.doesNotMatch(source, /DEFAULT_DEFINITIONS|renderDefinitions|#definitions-/);
+  assert.doesNotMatch(css, /\.definitions-|\.definition-list|#definitions-/);
 });
 
 test("print disclosures open together and restore their independent prior states", () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
   const skuProfit = document.querySelector("#sku-profit-disclosure");
-  const definitions = document.querySelector("#definitions-disclosure");
   const controller = reportPage.createPrintDisclosureController(document);
 
   completedSales.open = false;
   skuProfit.open = true;
-  definitions.open = false;
   controller.prepare();
   assert.equal(completedSales.open, true);
   assert.equal(skuProfit.open, true);
-  assert.equal(definitions.open, true);
   controller.prepare();
   controller.restore();
   assert.equal(completedSales.open, false);
   assert.equal(skuProfit.open, true);
-  assert.equal(definitions.open, false);
 
   completedSales.open = true;
   skuProfit.open = false;
-  definitions.open = false;
   controller.prepare();
   controller.restore();
   assert.equal(completedSales.open, true);
   assert.equal(skuProfit.open, false);
-  assert.equal(definitions.open, false);
-
-  completedSales.open = false;
-  skuProfit.open = false;
-  definitions.open = true;
-  controller.prepare();
-  controller.restore();
-  assert.equal(completedSales.open, false);
-  assert.equal(skuProfit.open, false);
-  assert.equal(definitions.open, true);
 });
 
-test("app Print and browser print events expand definitions and restore screen state", async () => {
+test("handoff instructions toggle while Print expands report tables and restores screen state", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
   const skuProfit = document.querySelector("#sku-profit-disclosure");
-  const definitions = document.querySelector("#definitions-disclosure");
+  const inventoryInstructions = document.querySelector("#inventory-instructions");
+  const inventoryInstructionsToggle = document.querySelector(
+    "#toggle-inventory-instructions",
+  );
   const windowListeners = new Map();
   const printedStates = [];
 
   completedSales.open = false;
   skuProfit.open = false;
-  definitions.open = false;
   reportPage.mountStreamReportPage({
     document,
     location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
@@ -726,32 +840,39 @@ test("app Print and browser print events expand definitions and restore screen s
       printedStates.push({
         completedSales: completedSales.open,
         skuProfit: skuProfit.open,
-        definitions: definitions.open,
       });
     },
   });
 
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(inventoryInstructions.hidden, true);
+  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "false");
+  assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
+  inventoryInstructionsToggle.click();
+  assert.equal(inventoryInstructions.hidden, false);
+  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "true");
+  assert.equal(inventoryInstructionsToggle.textContent, "Hide instructions -");
+  inventoryInstructionsToggle.click();
+  assert.equal(inventoryInstructions.hidden, true);
+  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "false");
+  assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
+
   document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [
-    { completedSales: true, skuProfit: true, definitions: true },
+    { completedSales: true, skuProfit: true },
   ]);
   windowListeners.get("afterprint")();
   assert.equal(completedSales.open, false);
   assert.equal(skuProfit.open, false);
-  assert.equal(definitions.open, false);
 
   completedSales.open = true;
   skuProfit.open = false;
-  definitions.open = false;
   windowListeners.get("beforeprint")();
   assert.equal(completedSales.open, true);
   assert.equal(skuProfit.open, true);
-  assert.equal(definitions.open, true);
   windowListeners.get("afterprint")();
   assert.equal(completedSales.open, true);
   assert.equal(skuProfit.open, false);
-  assert.equal(definitions.open, false);
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {
@@ -1367,7 +1488,11 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
     "$8.00",
   );
   assert.equal(
-    document.querySelector("#performance-rows").children[0].children[5].textContent,
+    document.querySelector("#performance-rows").children[0].children[4].textContent,
+    "$8.00",
+  );
+  assert.equal(
+    document.querySelector("#performance-rows").children[0].children[6].textContent,
     "$8.00",
   );
   assert.match(allText(document.querySelector("#most-profitable-items")), /\$7\.00/);
@@ -1823,12 +1948,6 @@ test("post-stream AOV uses Gross Item Sales divided by completed sales", () => {
     value: "$10.00",
     note: "Captured completed-order prices",
   });
-  assert.equal(
-    reportPage.DEFAULT_DEFINITIONS.find(
-      (definition) => definition.term === "Gross Item Sales",
-    )?.description,
-    "The sum of captured sold prices for orders marked Payment complete. Buyer-paid shipping is not included.",
-  );
 });
 
 test("post-stream AOV displays zero when there are no completed sales", () => {
@@ -1873,12 +1992,6 @@ test("post-stream TikTok fee card rounds both compact-GMV values to approximate 
       ],
       note: "Approximate values calculated from Total GMV",
     },
-  );
-  assert.equal(
-    reportPage.DEFAULT_DEFINITIONS.find(
-      (definition) => definition.term === "TikTok 6% Fees",
-    )?.description,
-    "Approximate fees paid and GMV after fees, calculated from TikTok Attributed GMV at 6% and rounded to the nearest whole dollar.",
   );
 });
 
@@ -1927,12 +2040,6 @@ test("post-stream estimated profit after fees uses unrounded 94% GMV minus mappe
     note: "Total GMV after 6% fee, minus mapped item costs",
     warning: false,
   });
-  assert.equal(
-    reportPage.DEFAULT_DEFINITIONS.find(
-      (definition) => definition.term === "Est. Profit After Fees",
-    )?.description,
-    "TikTok Attributed GMV after the estimated 6% fee, minus unit costs saved in this report for mapped completed sales. Unmapped completed sales make this estimate incomplete. It is not net profit.",
-  );
 });
 
 test("post-stream estimated profit after fees shows incomplete counts and permits a loss", () => {
