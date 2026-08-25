@@ -1546,6 +1546,14 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   );
   assert.match(
     styleSource,
+    /\.card-meta\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto[\s\S]*?gap: 8px/,
+  );
+  assert.match(
+    styleSource,
+    /\.size-value\s*\{[\s\S]*?white-space: nowrap/,
+  );
+  assert.match(
+    styleSource,
     /\.inventory-size-listbox\s*\{[\s\S]*?position: fixed[\s\S]*?overflow-y: auto/,
   );
   assert.match(

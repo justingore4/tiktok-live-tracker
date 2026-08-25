@@ -2302,9 +2302,9 @@ button {
 
 .card-meta {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 12px;
+  gap: 8px;
   margin-top: 20px;
   color: var(--text-muted);
   font-size: 12px;
@@ -2328,6 +2328,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .inventory-card[data-multiple-sizes="true"] .size-label {
