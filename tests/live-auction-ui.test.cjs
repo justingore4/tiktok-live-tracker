@@ -236,6 +236,7 @@ test("side panel places a compact live auction panel directly after Variation", 
   assert.match(css, /\.live-auction-values \[data-tone="positive"\]/);
   assert.match(css, /\.live-auction-values \[data-tone="negative"\]/);
   assert.match(css, /\.live-auction-indicator[\s\S]*?#667386/);
+  assert.doesNotMatch(css, /\.current-auction::after/);
   assert.match(source, /function renderLiveAuction\(view\)/);
   assert.match(source, /liveBidClient\.getLiveBid\(\)/);
   assert.match(source, /liveAuctionTitle\.textContent = display\.variationLabel/);
@@ -244,5 +245,40 @@ test("side panel places a compact live auction panel directly after Variation", 
     source,
     /isLiveBidChangedNotification\(message, sender\)[\s\S]*?scheduleLiveBidRefresh\(\)[\s\S]*?return false;[\s\S]*?isCaptureStateChangedNotification/,
     "live bid notifications must bypass the full reconciliation refresh",
+  );
+});
+
+test("live order sale results stay compact and replace unavailable values with dashes", () => {
+  const directory = path.join(__dirname, "..", "extension", "tagger");
+  const html = fs.readFileSync(path.join(directory, "sidepanel.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "sidepanel.css"), "utf8");
+  const source = fs.readFileSync(path.join(directory, "sidepanel.js"), "utf8");
+  const resultsStart = html.indexOf('<div id="sale-results" class="sale-results">');
+  const resultsEnd = html.indexOf("</dl>", resultsStart);
+  const results = html.slice(resultsStart, resultsEnd);
+  const renderStart = source.indexOf("function renderSaleResults(view)");
+  const renderEnd = source.indexOf("function getInventoryTagLabel", renderStart);
+  const renderSource = source.slice(renderStart, renderEnd);
+
+  assert.ok(resultsStart >= 0);
+  assert.doesNotMatch(results, /\shidden/);
+  assert.equal((results.match(/&mdash;/g) ?? []).length, 4);
+  assert.doesNotMatch(source, /saleResults\.hidden/);
+  assert.match(renderSource, /soldPriceCents === null[\s\S]*?\? "—"/);
+  assert.match(renderSource, /unitCostCents === null[\s\S]*?\? "—"/);
+  assert.match(renderSource, /profit\?\.label \?\? "—"/);
+  assert.match(renderSource, /profit\?\.tone \?\? "neutral"/);
+  assert.match(renderSource, /Number\.isSafeInteger\([\s\S]*?remainingQuantity[\s\S]*?: "—"/);
+  assert.match(
+    css,
+    /\.sale-results dl\s*\{[\s\S]*?grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width:\s*560px\)[\s\S]*?\.sale-results dl\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+  );
+  assert.match(
+    css,
+    /\.sale-results dd\s*\{[\s\S]*?min-height:\s*1\.25em;[\s\S]*?white-space:\s*nowrap;/,
   );
 });

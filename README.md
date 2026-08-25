@@ -155,12 +155,13 @@ auctioned again, the employee maps its new variation number.
   worker-made local stream ID
   survives side-panel, browser, and service-worker restarts, while End keeps
   reconciliation history and does not act on TikTok LIVE.
-- A report-aware **End Stream Tracking** flow. Confirmation projects the current durable
-  stream and baseline into one strict local report before the active-session pointer is
-  cleared, then opens its extension-owned report page. Unresolved payment states,
-  pending reservations, unmapped completed sales, capture conflicts, an active bidding
-  marker, or oversold inventory never block End; they appear as explicit attention
-  notices and counts in the report.
+- An explicit **End Stream Tracking** flow. Its confirmation offers the normal
+  **End and create report** action plus a smaller **End without report** choice. Normal
+  End projects the current durable stream and baseline into one strict local report
+  before the active-session pointer is cleared, then opens its extension-owned report
+  page. Unresolved payment states, pending reservations, unmapped completed sales,
+  capture conflicts, an active bidding marker, or oversold inventory never block report
+  creation; they appear as explicit attention notices and counts in the report.
 - A two-tier local report library. **Business Records** keeps up to five current reports;
   **Archived stream reports** keeps up to 25 more, subject to a conservative combined cap
   of approximately 4 MiB in `chrome.storage.local`. Saving a sixth Business Record
@@ -708,7 +709,9 @@ misconfigured build fail before requesting Google authorization.
     **End and create report**. TikTok LIVE must remain unaffected, the local stream must
     end only after its report is saved, and the new report must open in a separate tab.
     If report creation or local storage fails, normal End must leave the active stream in
-    place and offer the explicit **End without report** recovery action.
+    place and offer the explicit **End without report** recovery action. Repeat with a
+    disposable tracker stream and choose the small **End without report** action directly
+    from the confirmation; tracking must end without adding or opening a report.
 20. In the report, verify its attention notices match the unresolved conditions. A clean
     stream with no active bidding marker, unresolved/fixing order, pending reservation,
     unmapped completed sale, conflict, or oversold/recount condition must show no

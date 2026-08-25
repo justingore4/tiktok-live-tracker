@@ -582,13 +582,15 @@ screen test-user run does not complete those release reviews.
 13. Correct a historical completed variation to another SKU and confirm the old SKU is
     restored, the new SKU is decremented, and cost and gross profit recalculate together.
     Repeat these checks across later tracker streams and imported baselines.
-14. Select **End Stream Tracking**. Confirm the dialog says **End and create the stream
-    report?**, lists each pending, fixing, unmapped, conflicting, or oversold attention
-    count without a Final/Provisional label, and does not block End for any of them. Select
-    **Keep stream active** once, then reopen and select **End and create report**. The local
-    stream must end only after its report is saved; TikTok LIVE must not change. If report
-    persistence is deliberately failed, normal End must retain the active stream and
-    expose **End without report** as the explicit fallback.
+14. Select **End Stream Tracking**. Confirm the compact panel lists each pending, fixing,
+    unmapped, conflicting, or oversold attention count without a Final/Provisional label,
+    and offers both **End and create report** and
+    **End without report** action. Select **Keep stream active** once, then reopen and
+    select **End and create report**. The local stream must end only after its report is
+    saved; TikTok LIVE must not change. If report persistence is deliberately failed,
+    normal End must retain the active stream and expose **End without report** as the
+    explicit fallback. On a disposable tracker stream, select **End without report**
+    directly and confirm no report is added or opened.
 15. Confirm the report opens in a new extension tab. Verify its start/end timestamps,
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
@@ -740,11 +742,12 @@ Until a later identity stage finds such an ID, follow these rules:
   reservations, completed sales without items, and every other reconciliation exception
   do not block the confirmation; the readiness area lists them as attention counts. The
   employee can End without first resuming the inventory workspace.
-- Normal End freezes and saves the local report before it clears the active stream. A
-  report/storage failure leaves the stream active and exposes **End without report** as a
-  deliberate recovery choice. Neither action ends TikTok LIVE. Ended streams cannot yet
-  be reopened in the tagger, so employees should make corrections before End when
-  practical even though the UI does not enforce that workflow.
+- Normal End freezes and saves the local report before it clears the active stream. The
+  same confirmation also offers **End without report** as a deliberate direct choice, and
+  a report/storage failure leaves the stream active with that choice still available for
+  recovery. Neither action ends TikTok LIVE. Ended streams cannot yet be reopened in the
+  tagger, so employees should make corrections before End when practical even though the
+  UI does not enforce that workflow.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
   new stream rather than displaying stale prior rows, and only then Start a new local
   tracker stream.

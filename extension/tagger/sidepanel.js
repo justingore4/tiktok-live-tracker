@@ -8,6 +8,7 @@
   const CAPTURE_STATE_NOTIFICATION_VERSION = 1;
   const CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed";
   const CAPTURE_REFRESH_DELAY_MS = 150;
+  const ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS = 4_000;
   const OBSERVED_PAYMENT_STATUSES = new Set([
     "not_observed",
     "payment_processing",
@@ -183,6 +184,9 @@
   const cancelEndStreamButton = document.querySelector("#cancel-end-stream");
   const confirmEndStreamButton = document.querySelector(
     "#confirm-end-stream",
+  );
+  const confirmEndStreamWithoutReportButton = document.querySelector(
+    "#confirm-end-stream-without-report",
   );
   const streamSessionError = document.querySelector("#stream-session-error");
   const streamSessionErrorTitle = document.querySelector(
@@ -383,7 +387,6 @@
   );
   const paymentPrice = document.querySelector("#payment-price");
   const mappingStatus = document.querySelector('[data-field="mapping-status"]');
-  const saleResults = document.querySelector("#sale-results");
   const soldPriceResult = document.querySelector('[data-field="sold-price"]');
   const unitCostResult = document.querySelector('[data-field="unit-cost"]');
   const grossProfitResult = document.querySelector(
@@ -519,6 +522,8 @@
   let focusInventoryImportAfterRetry = false;
   let activeStreamInventoryUpdateOpen = false;
   let activeStreamInventoryUpdateBusy = false;
+  let activeStreamInventoryUpdateFeedbackTimerId = null;
+  let activeStreamInventoryUpdateFeedbackSequence = 0;
   let streamReportSummaries = [];
   let archivedReportSummaries = [];
   let streamReportsLoading = false;
@@ -1250,8 +1255,32 @@
   }
 
   function clearActiveStreamInventoryUpdateFeedback() {
+    activeStreamInventoryUpdateFeedbackSequence += 1;
+
+    if (activeStreamInventoryUpdateFeedbackTimerId !== null) {
+      window.clearTimeout(activeStreamInventoryUpdateFeedbackTimerId);
+      activeStreamInventoryUpdateFeedbackTimerId = null;
+    }
+
     activeStreamInventoryUpdateFeedback.hidden = true;
     activeStreamInventoryUpdateFeedback.textContent = "";
+  }
+
+  function showActiveStreamInventoryUpdateFeedback(message) {
+    clearActiveStreamInventoryUpdateFeedback();
+    const sequence = activeStreamInventoryUpdateFeedbackSequence;
+
+    activeStreamInventoryUpdateFeedback.textContent = message;
+    activeStreamInventoryUpdateFeedback.hidden = false;
+    activeStreamInventoryUpdateFeedbackTimerId = window.setTimeout(() => {
+      if (sequence !== activeStreamInventoryUpdateFeedbackSequence) {
+        return;
+      }
+
+      activeStreamInventoryUpdateFeedbackTimerId = null;
+      activeStreamInventoryUpdateFeedback.hidden = true;
+      activeStreamInventoryUpdateFeedback.textContent = "";
+    }, ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS);
   }
 
   function setActiveStreamInventoryUpdateError(message, options = {}) {
@@ -2680,35 +2709,39 @@
 
   function renderSaleResults(view) {
     const auction = view.auction;
-    const committed = auction?.status === "committed";
-
-    saleResults.hidden = !committed;
-
-    if (!committed) {
-      return;
-    }
-
-    const selectedInventory = view.inventory.find(
-      (entry) => entry.sku === auction.sku,
-    );
+    const selectedInventory = auction?.sku
+      ? view.inventory.find((entry) => entry.sku === auction.sku)
+      : null;
+    const soldPriceCents = Number.isSafeInteger(auction?.soldPriceCents)
+      ? auction.soldPriceCents
+      : null;
+    const unitCostCents = Number.isSafeInteger(
+      auction?.committedUnitCostCents,
+    )
+      ? auction.committedUnitCostCents
+      : Number.isSafeInteger(selectedInventory?.unitCostCents)
+        ? selectedInventory.unitCostCents
+        : null;
     const remainingQuantity =
       selectedInventory?.remainingQuantity ??
-      auction.inventory?.remainingQuantity;
-    const profit = viewModel.getProfitDisplay(auction.profitCents);
+      auction?.inventory?.remainingQuantity;
+    const profit = Number.isSafeInteger(auction?.profitCents)
+      ? viewModel.getProfitDisplay(auction.profitCents)
+      : null;
 
-    soldPriceResult.textContent = viewModel.formatUsdCents(
-      auction.soldPriceCents,
-    );
-    unitCostResult.textContent = viewModel.formatUsdCents(
-      auction.committedUnitCostCents,
-    );
-    grossProfitResult.textContent = profit.label;
-    grossProfitResult.dataset.tone = profit.tone;
+    soldPriceResult.textContent = soldPriceCents === null
+      ? "—"
+      : viewModel.formatUsdCents(soldPriceCents);
+    unitCostResult.textContent = unitCostCents === null
+      ? "—"
+      : viewModel.formatUsdCents(unitCostCents);
+    grossProfitResult.textContent = profit?.label ?? "—";
+    grossProfitResult.dataset.tone = profit?.tone ?? "neutral";
     remainingInventoryResult.textContent = Number.isSafeInteger(
       remainingQuantity,
     )
       ? `${remainingQuantity} remaining`
-      : "Inventory unavailable";
+      : "—";
   }
 
   function getInventoryTagLabel(auction) {
@@ -3153,6 +3186,7 @@
     resumeStreamButton.disabled = busy;
     endStreamButton.disabled = busy;
     confirmEndStreamButton.disabled = busy;
+    confirmEndStreamWithoutReportButton.disabled = busy;
     cancelEndStreamButton.disabled = busy;
     endStreamWithoutReportButton.hidden = true;
     endStreamWithoutReportButton.disabled = busy;
@@ -4051,8 +4085,7 @@
             addedSkus.length === 1 ? "SKU" : "SKUs"
           }. Existing variations and mappings were preserved.`;
 
-      activeStreamInventoryUpdateFeedback.textContent = message;
-      activeStreamInventoryUpdateFeedback.hidden = false;
+      showActiveStreamInventoryUpdateFeedback(message);
       mappingAnnouncement.textContent = message;
     } catch (error) {
       if (
@@ -4354,7 +4387,15 @@
       });
   });
 
-  endStreamWithoutReportButton.addEventListener("click", () => {
+  function endActiveStreamWithoutReport() {
+    if (streamSnapshot.busy) {
+      mappingAnnouncement.textContent =
+        "Wait for the current tracker stream change to finish before ending.";
+      return;
+    }
+
+    endConfirmationOpen = false;
+    streamSessionEndConfirmation.hidden = true;
     streamSessionError.hidden = true;
     streamSessionStatus.hidden = false;
     streamSessionStatusTitle.textContent = "Ending without a report...";
@@ -4380,7 +4421,16 @@
           error,
         );
       });
-  });
+  }
+
+  confirmEndStreamWithoutReportButton.addEventListener(
+    "click",
+    endActiveStreamWithoutReport,
+  );
+  endStreamWithoutReportButton.addEventListener(
+    "click",
+    endActiveStreamWithoutReport,
+  );
 
   retryStreamReportsButton.addEventListener("click", () => {
     Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {

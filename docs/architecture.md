@@ -488,9 +488,11 @@ Normal **End and create report** is one serialized lifecycle operation:
 4. end that exact local stream; and
 5. mark the same report record `finalized`.
 
-If preparation or persistence fails, normal report-aware End fails closed and leaves the
-stream active. The UI then exposes **End without report** so a local-storage problem can
-never trap the employee in an active tracker session. A worker restart repairs a
+The End confirmation also exposes a deliberate **End without report** action that skips
+report preparation and persistence. If preparation or persistence fails, normal
+report-aware End fails closed and leaves the stream active with the same no-report action
+available for recovery, so a local-storage problem can never trap the employee in an
+active tracker session. A worker restart repairs a
 `pending_end` record: it finalizes it when the matching stream is no longer active and
 keeps it pending when the stream still exists. One stream has at most one report.
 
@@ -697,8 +699,10 @@ Shared tagger behavior includes:
   the employee can map, correct, or clear that reference without affecting accounting.
 - A **Payment complete - item needed** exception when shared state receives payment before
   the employee mapping; choosing an item immediately commits that sale.
-- A captured final price as soon as payment completes, even while unmapped; unit cost,
-  gross profit/loss, and remaining inventory appear only when an item is assigned.
+- A compact, permanently reserved sale-results grid that prevents inventory-list layout
+  shifts: unavailable values render as dashes, the final price appears when captured,
+  mapped unit cost and remaining inventory appear when an item is assigned, and gross
+  profit/loss appears after both the final price and committed cost are known.
 - A bottom **Metrics** section labels `totals.completedGmvCents` as **Gross Item Sales**:
   the stream-scoped sum of sold prices from priced `Payment complete` records, whether
   mapped or unmapped. An **AOV** card derives

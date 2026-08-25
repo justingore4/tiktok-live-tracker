@@ -352,7 +352,7 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
   assert.match(
     html,
-    /id="stream-session-end-confirmation"[\s\S]+aria-labelledby="stream-session-end-title"[\s\S]+End and create the stream report\?/,
+    /id="stream-session-end-confirmation"[\s\S]+role="group"[\s\S]+aria-label="End stream tracking options"/,
   );
   assert.match(
     html,
@@ -360,6 +360,10 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(html, />\s*Keep stream active\s*</);
   assert.match(html, />\s*End and create report\s*</);
+  assert.match(
+    html,
+    /id="confirm-end-stream-without-report"[\s\S]+type="button"[\s\S]+End without report/,
+  );
   assert.match(html, /id="end-stream-without-report"[\s\S]+End without report/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
   assert.match(
@@ -394,16 +398,14 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
   assert.match(html, /Waiting for a live auction variation/);
-  assert.match(
-    html,
-    /Unresolved\s+variations never block End/i,
-  );
-  assert.match(html, /freeze a local business report before ending/i);
-  assert.match(html, /appear in its attention list/i);
   const endConfirmation = html.match(
     /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
   )?.[0];
   assert.ok(endConfirmation);
+  assert.doesNotMatch(
+    endConfirmation,
+    /stream-session-end-title|Create a local business report|Unresolved variations never block/,
+  );
   assert.doesNotMatch(endConfirmation, /\b(?:final|provisional)\b/i);
   assert.match(
     html,
@@ -473,7 +475,11 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /id="payment-price"[^>]+hidden/);
   assert.match(html, /<dt>Inventory tag<\/dt>/);
   assert.match(html, /data-field="mapping-status"[\s\S]+No item selected/);
-  assert.match(html, /data-field="gross-profit"/);
+  assert.match(
+    html,
+    /id="sale-results"\s+class="sale-results">[\s\S]+data-field="sold-price">&mdash;<[\s\S]+data-field="unit-cost">&mdash;<[\s\S]+data-field="gross-profit"\s+data-tone="neutral">&mdash;<[\s\S]+data-field="remaining-inventory">&mdash;</,
+  );
+  assert.doesNotMatch(html, /id="sale-results"[^>]*\shidden/);
   assert.match(html, />\s*Live session\s*</);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
@@ -529,6 +535,22 @@ test("active streams expose an append-only Google Sheets inventory action", () =
     /Added \$\{addedSkus\.length\} new[\s\S]+Existing variations and mappings were preserved/,
   );
   assert.match(actionSource, /No new SKUs were found\. Nothing changed\./);
+  assert.match(
+    actionSource,
+    /showActiveStreamInventoryUpdateFeedback\(message\)/,
+  );
+  assert.match(
+    panelSource,
+    /const ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS = 4_000;/,
+  );
+  assert.match(
+    panelSource,
+    /function clearActiveStreamInventoryUpdateFeedback\(\)[\s\S]+window\.clearTimeout\(activeStreamInventoryUpdateFeedbackTimerId\)[\s\S]+activeStreamInventoryUpdateFeedback\.hidden = true;[\s\S]+activeStreamInventoryUpdateFeedback\.textContent = "";/,
+  );
+  assert.match(
+    panelSource,
+    /function showActiveStreamInventoryUpdateFeedback\(message\)[\s\S]+window\.setTimeout\([\s\S]+activeStreamInventoryUpdateFeedback\.hidden = true;[\s\S]+activeStreamInventoryUpdateFeedback\.textContent = "";[\s\S]+ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS/,
+  );
   assert.match(actionSource, /outcomeUncertain/);
   assert.match(
     panelSource,
@@ -1357,11 +1379,13 @@ test("End Stream confirmation is not gated by unresolved payment or mapping stat
     confirmHandlerSource,
     /persistentController\.|unmapSelectedVariation|markSelectedUnpaid|chrome\.storage|\.clear\(|\.remove\(/,
   );
-  assert.match(html, /Unresolved\s+variations never block End/i);
-  assert.match(html, /appear in its attention list/i);
 });
 
 test("tagger lists, opens, refreshes, and safely bypasses local stream reports", () => {
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
   const styleSource = fs.readFileSync(
     path.join(extensionDirectory, "tagger", "sidepanel.css"),
     "utf8",
@@ -1376,9 +1400,17 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   const reportLinkSource = panelSource.match(
     /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderStreamReportsPanel/,
   )?.[0];
+  const endWithoutReportSource = panelSource.match(
+    /function endActiveStreamWithoutReport\(\)[\s\S]*?retryStreamReportsButton\.addEventListener/,
+  )?.[0];
+  const endConfirmation = html.match(
+    /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
+  )?.[0];
 
   assert.ok(readinessSource);
   assert.ok(reportLinkSource);
+  assert.ok(endWithoutReportSource);
+  assert.ok(endConfirmation);
   assert.match(
     readinessSource,
     /No captured issues currently require attention\./,
@@ -1431,8 +1463,40 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
     /Promise\.resolve\(\)\.then\(\(\) => refreshStreamReports\(\)\)/,
   );
   assert.match(
+    endConfirmation,
+    /id="confirm-end-stream-without-report"[\s\S]+End without report[\s\S]+id="confirm-end-stream"[\s\S]+stream-session-full-end-action[\s\S]+End and create report/,
+  );
+  assert.match(
+    styleSource,
+    /\.stream-session-full-end-action\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/,
+  );
+  assert.match(
+    styleSource,
+    /\.stream-session-end-confirmation\s*\{[\s\S]*?margin-top:\s*8px;[\s\S]*?padding:\s*9px;/,
+  );
+  assert.match(
+    styleSource,
+    /\.stream-session-end-confirmation \.end-report-readiness\s*\{[\s\S]*?margin:\s*0;[\s\S]*?line-height:\s*1\.35;/,
+  );
+  assert.doesNotMatch(styleSource, /\.stream-session-end-confirmation h3/);
+  assert.match(endWithoutReportSource, /if \(streamSnapshot\.busy\)/);
+  assert.match(endWithoutReportSource, /endConfirmationOpen = false/);
+  assert.match(
+    endWithoutReportSource,
+    /streamSessionController\.endActiveStreamWithoutReport\(\)/,
+  );
+  assert.match(endWithoutReportSource, /ended without a new report/);
+  assert.doesNotMatch(
+    endWithoutReportSource,
+    /refreshStreamReports|openStreamReport|\.endActiveStream\(\)/,
+  );
+  assert.match(
     panelSource,
-    /endStreamWithoutReportButton\.addEventListener\("click",[\s\S]+streamSessionController\.endActiveStreamWithoutReport\(\)[\s\S]+ended without a new report/,
+    /confirmEndStreamWithoutReportButton\.addEventListener\(\s*"click",\s*endActiveStreamWithoutReport/,
+  );
+  assert.match(
+    panelSource,
+    /endStreamWithoutReportButton\.addEventListener\(\s*"click",\s*endActiveStreamWithoutReport/,
   );
 });
 

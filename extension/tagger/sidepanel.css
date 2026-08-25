@@ -493,7 +493,6 @@ button {
 .stream-session-status h3,
 .stream-session-status p,
 .stream-session-safety-note,
-.stream-session-end-confirmation h3,
 .stream-session-end-confirmation p,
 .stream-session-error h3,
 .stream-session-error p {
@@ -624,39 +623,30 @@ button {
 }
 
 .stream-session-end-confirmation {
-  margin-top: 11px;
-  padding: 12px;
+  margin-top: 8px;
+  padding: 9px;
   border: 1px solid rgb(255 143 152 / 35%);
   border-radius: 10px;
   background: rgb(255 143 152 / 7%);
 }
 
-.stream-session-end-confirmation h3 {
-  color: #ffdce0;
-  font-size: 12px;
-  font-weight: 760;
-}
-
-.stream-session-end-confirmation p {
-  margin-top: 4px;
-  color: #e7b9bd;
-  font-size: 10px;
-  line-height: 1.45;
-}
-
 .stream-session-end-confirmation .end-report-readiness {
-  margin-top: 9px;
-  padding-top: 9px;
-  border-top: 1px solid rgb(255 143 152 / 20%);
+  margin: 0;
   color: #ffd6a1;
+  font-size: 10px;
   font-weight: 680;
+  line-height: 1.35;
 }
 
 .stream-session-confirm-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
+}
+
+.stream-session-full-end-action {
+  grid-column: 1 / -1;
 }
 
 .stream-session-error {
@@ -1221,18 +1211,6 @@ button {
   box-shadow: var(--shadow);
 }
 
-.current-auction::after {
-  position: absolute;
-  top: -82px;
-  right: -45px;
-  width: 175px;
-  height: 175px;
-  border: 30px solid rgb(39 211 180 / 7%);
-  border-radius: 50%;
-  content: "";
-  pointer-events: none;
-}
-
 .current-auction > * {
   position: relative;
   z-index: 1;
@@ -1556,7 +1534,7 @@ button {
 
 .pending-mapping {
   margin-top: 14px;
-  padding: 16px;
+  padding: 14px;
   border: 1px solid rgb(39 211 180 / 28%);
   border-radius: var(--radius-medium);
   background: linear-gradient(145deg, rgb(39 211 180 / 9%), transparent 70%),
@@ -1578,9 +1556,9 @@ button {
 
 .pending-card {
   display: grid;
-  gap: 13px;
-  margin-top: 12px;
-  padding-top: 12px;
+  gap: 9px;
+  margin-top: 9px;
+  padding-top: 9px;
   border-top: 1px solid rgb(42 52 66 / 72%);
 }
 
@@ -1709,8 +1687,8 @@ button {
 }
 
 .sale-results {
-  margin-top: 14px;
-  padding: 13px;
+  margin-top: 10px;
+  padding: 10px 12px;
   border: 1px solid rgb(39 211 180 / 23%);
   border-radius: 11px;
   background: rgb(7 24 28 / 48%);
@@ -1718,8 +1696,8 @@ button {
 
 .sale-results dl {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 13px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 16px;
   margin: 0;
 }
 
@@ -1736,10 +1714,14 @@ button {
 }
 
 .sale-results dd {
-  margin: 4px 0 0;
+  min-height: 1.25em;
+  margin: 2px 0 0;
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   font-weight: 760;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .sale-results [data-tone="positive"] {
@@ -1751,8 +1733,8 @@ button {
 }
 
 .sale-results > p {
-  margin: 12px 0 0;
-  padding-top: 10px;
+  margin: 8px 0 0;
+  padding-top: 7px;
   border-top: 1px solid rgb(42 52 66 / 62%);
   color: var(--text-subtle);
   font-size: 10px;
@@ -2555,6 +2537,12 @@ button {
 
 [hidden] {
   display: none !important;
+}
+
+@media (max-width: 560px) {
+  .sale-results dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 420px) {

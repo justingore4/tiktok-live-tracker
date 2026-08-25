@@ -3098,6 +3098,55 @@ test("normal End saves and finalizes a report before clearing the active session
   ]);
 });
 
+test("End without report skips report creation and ends only the local tracker stream", async () => {
+  const activeSession = {
+    streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-08T20:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({
+    initialActiveSession: activeSession,
+    nextItemQueueClearResult: { status: "cleared" },
+    usePreparedState: true,
+  });
+  const request = harness.send(
+    harness.createStreamMessage({
+      type:
+        harness.streamCoordinatorModule.COMMAND_TYPES
+          .END_STREAM_WITHOUT_REPORT,
+      streamId: activeSession.streamId,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: {
+      state: { version: 1, activeSession: null },
+      result: {
+        status: "ended_without_report",
+        reportId: null,
+        reportLifecycleStatus: null,
+      },
+    },
+  });
+  assert.deepEqual(
+    harness.reportCalls
+      .filter(({ type }) => ["discard", "prepare", "finalize"].includes(type))
+      .map(({ type }) => type),
+    ["discard"],
+  );
+  assert.deepEqual(
+    harness.streamDispatchCalls.map(({ type }) => type),
+    [
+      harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+      harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
+    ],
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    { type: "clear_for_stream", streamId: activeSession.streamId },
+  ]);
+});
+
 test("a report save failure leaves the stream active and exposes End without report", async () => {
   const activeSession = {
     streamId: "local-stream:11111111-1111-4111-8111-111111111111",

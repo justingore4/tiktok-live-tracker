@@ -259,15 +259,9 @@
           id="stream-session-end-confirmation"
           class="stream-session-end-confirmation"
           role="group"
-          aria-labelledby="stream-session-end-title"
+          aria-label="End stream tracking options"
           hidden
         >
-          <h3 id="stream-session-end-title">End and create the stream report?</h3>
-          <p>
-            The tracker will freeze a local business report before ending. Unresolved
-            variations never block End; they appear in its attention list. Ending stops
-            new capture for this local tracker stream and does not end TikTok LIVE.
-          </p>
           <p
             id="end-report-readiness"
             class="end-report-readiness"
@@ -286,8 +280,15 @@
               Keep stream active
             </button>
             <button
-              id="confirm-end-stream"
+              id="confirm-end-stream-without-report"
               class="danger-action"
+              type="button"
+            >
+              End without report
+            </button>
+            <button
+              id="confirm-end-stream"
+              class="danger-action stream-session-full-end-action"
               type="button"
             >
               End and create report
@@ -472,23 +473,23 @@
           </dl>
         </div>
 
-        <div id="sale-results" class="sale-results" hidden>
+        <div id="sale-results" class="sale-results">
           <dl>
             <div>
               <dt>Sold for</dt>
-              <dd data-field="sold-price"></dd>
+              <dd data-field="sold-price">&mdash;</dd>
             </div>
             <div>
               <dt>Unit cost</dt>
-              <dd data-field="unit-cost"></dd>
+              <dd data-field="unit-cost">&mdash;</dd>
             </div>
             <div>
               <dt>Gross profit</dt>
-              <dd data-field="gross-profit"></dd>
+              <dd data-field="gross-profit" data-tone="neutral">&mdash;</dd>
             </div>
             <div>
               <dt>Inventory</dt>
-              <dd data-field="remaining-inventory"></dd>
+              <dd data-field="remaining-inventory">&mdash;</dd>
             </div>
           </dl>
           <p>Gross profit excludes platform fees, shipping, refunds, and taxes.</p>

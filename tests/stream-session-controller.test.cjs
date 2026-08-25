@@ -133,6 +133,31 @@ test("ends a restored tracker stream without resuming its saved workspace", asyn
   ]);
 });
 
+test("ends an active tracker stream without creating a report", async () => {
+  const { calls, client } = createClient({
+    getSession() {
+      calls.push(["get"]);
+      return Promise.resolve(response(SESSION));
+    },
+    endStreamWithoutReport(options) {
+      calls.push(["end_without_report", { ...options }]);
+      return Promise.resolve(response(null, "ended_without_report"));
+    },
+  });
+  const controller = controllerModule.createStreamSessionController({ client });
+
+  await controller.start();
+  const ended = await controller.endActiveStreamWithoutReport();
+
+  assert.equal(ended.phase, "ready");
+  assert.equal(ended.activeSession, null);
+  assert.equal(ended.resumed, false);
+  assert.deepEqual(calls, [
+    ["get"],
+    ["end_without_report", { streamId: SESSION.streamId }],
+  ]);
+});
+
 test("starts, publishes, and ends one durable tracker stream", async () => {
   const { calls, client } = createClient();
   const controller = controllerModule.createStreamSessionController({ client });
