@@ -64,9 +64,68 @@
 
     function normalizeSearchText(value) {
       return String(value ?? "")
+        .normalize("NFC")
         .trim()
         .replace(/\s+/g, " ")
         .toLocaleLowerCase("en-US");
+    }
+
+    const inventorySizeCollator = new Intl.Collator("en-US", {
+      numeric: true,
+      sensitivity: "base",
+    });
+
+    function createInventoryGroupKey(item, style) {
+      return JSON.stringify([
+        normalizeSearchText(item),
+        normalizeSearchText(style),
+      ]);
+    }
+
+    function compareInventoryGroupEntries(left, right) {
+      const sizeComparison = inventorySizeCollator.compare(
+        String(left?.size ?? ""),
+        String(right?.size ?? ""),
+      );
+
+      if (sizeComparison !== 0) {
+        return sizeComparison;
+      }
+
+      return inventorySizeCollator.compare(
+        String(left?.sku ?? ""),
+        String(right?.sku ?? ""),
+      );
+    }
+
+    function groupInventoryEntries(entries) {
+      if (!Array.isArray(entries)) {
+        throw new TypeError("Inventory entries must be an array.");
+      }
+
+      const groupsByKey = new Map();
+
+      entries.forEach((entry) => {
+        const key = createInventoryGroupKey(entry?.item, entry?.style);
+        let group = groupsByKey.get(key);
+
+        if (!group) {
+          group = {
+            key,
+            item: entry?.item ?? "",
+            style: entry?.style ?? "",
+            entries: [],
+          };
+          groupsByKey.set(key, group);
+        }
+
+        group.entries.push(entry);
+      });
+
+      return [...groupsByKey.values()].map((group) => ({
+        ...group,
+        entries: [...group.entries].sort(compareInventoryGroupEntries),
+      }));
     }
 
     function getRemainingQuantity(entry) {
@@ -119,8 +178,37 @@
 
       return entries.filter((entry) => {
         const searchableTerms = normalizeSearchText(
-          [entry.item, entry.style, entry.size].join(" "),
+          [entry.sku, entry.item, entry.style, entry.size].join(" "),
         ).split(" ");
+
+        return searchTerms.every((term) =>
+          searchableTerms.some((candidate) => candidate.startsWith(term)),
+        );
+      });
+    }
+
+    function filterInventoryGroups(groups, query) {
+      if (!Array.isArray(groups)) {
+        throw new TypeError("Inventory groups must be an array.");
+      }
+
+      const normalizedQuery = normalizeSearchText(query);
+
+      if (!normalizedQuery) {
+        return [...groups];
+      }
+
+      const searchTerms = normalizedQuery.split(" ");
+
+      return groups.filter((group) => {
+        const searchableTerms = normalizeSearchText([
+          group?.item,
+          group?.style,
+          ...(group?.entries ?? []).flatMap((entry) => [
+            entry?.sku,
+            entry?.size,
+          ]),
+        ].join(" ")).split(" ");
 
         return searchTerms.every((term) =>
           searchableTerms.some((candidate) => candidate.startsWith(term)),
@@ -183,6 +271,62 @@
       };
     }
 
+    function getInventoryGroupStockDisplay(group) {
+      if (!Array.isArray(group?.entries) || group.entries.length === 0) {
+        return getStockDisplay({
+          remainingQuantity: 0,
+          availableToTagQuantity: 0,
+          reservedQuantity: 0,
+          oversoldQuantity: 0,
+        });
+      }
+
+      const aggregate = group.entries.reduce(
+        (totals, entry) => {
+          const stock = getStockDisplay(entry);
+
+          totals.remainingQuantity += Math.max(0, stock.remainingQuantity);
+          totals.availableToTagQuantity +=
+            stock.displayedAvailableToTagQuantity;
+          totals.reservedQuantity += stock.reservedQuantity;
+          totals.oversoldQuantity += stock.oversoldQuantity;
+
+          return totals;
+        },
+        {
+          remainingQuantity: 0,
+          availableToTagQuantity: 0,
+          reservedQuantity: 0,
+          oversoldQuantity: 0,
+        },
+      );
+
+      return getStockDisplay(aggregate);
+    }
+
+    function getPreferredInventoryGroupEntry(
+      group,
+      { selectedSku = null, currentMappedSku = null, queuedSku = null } = {},
+    ) {
+      if (!Array.isArray(group?.entries)) {
+        return null;
+      }
+
+      for (const sku of [selectedSku, currentMappedSku, queuedSku]) {
+        if (typeof sku !== "string" || sku.trim() === "") {
+          continue;
+        }
+
+        const entry = group.entries.find((candidate) => candidate.sku === sku);
+
+        if (entry) {
+          return entry;
+        }
+      }
+
+      return null;
+    }
+
     function formatUsdCents(value) {
       if (!Number.isSafeInteger(value)) {
         throw new TypeError("Currency value must be a safe integer number of cents.");
@@ -241,12 +385,17 @@
     return {
       LEGACY_RECOVERY_INVENTORY,
       calculateAverageOrderValueCents,
+      createInventoryGroupKey,
       filterInventoryEntries,
+      filterInventoryGroups,
       formatUsdCents,
       getAvailableToTagQuantity,
+      getInventoryGroupStockDisplay,
+      getPreferredInventoryGroupEntry,
       getProfitDisplay,
       getRemainingQuantity,
       getStockDisplay,
+      groupInventoryEntries,
       normalizeSearchText,
     };
   },

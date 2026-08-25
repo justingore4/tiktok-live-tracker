@@ -58,6 +58,8 @@
     globalThis.TikTokLiveTrackerNextItemQueueProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
+  const MAX_REPORT_DISPLAY_NAME_LENGTH =
+    streamReportProtocol?.MAX_REPORT_DISPLAY_NAME_LENGTH ?? 80;
   const streamReportClientModule =
     globalThis.TikTokLiveTrackerStreamReportClient;
   const liveBidClientModule =
@@ -294,6 +296,19 @@
   const confirmReportActionButton = document.querySelector(
     "#confirm-report-action",
   );
+  const reportRenameDialog = document.querySelector(
+    "#report-rename-dialog",
+  );
+  const reportRenameForm = document.querySelector("#report-rename-form");
+  const reportRenameInput = document.querySelector("#report-rename-input");
+  const reportRenameError = document.querySelector("#report-rename-error");
+  const cancelReportRenameButton = document.querySelector(
+    "#cancel-report-rename",
+  );
+  const resetReportNameButton = document.querySelector(
+    "#reset-report-name",
+  );
+  const saveReportNameButton = document.querySelector("#save-report-name");
   const trackerWorkspace = document.querySelector("#tracker-workspace");
   const variationContext = document.querySelector("#variation-context");
   const variationSelectShell = document.querySelector(
@@ -319,6 +334,9 @@
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
+  const inventorySizeListbox = document.querySelector(
+    "#inventory-size-listbox",
+  );
   const inventorySelectionNote = document.querySelector(
     "#inventory-selection-note",
   );
@@ -401,6 +419,10 @@
 
   if (
     !viewModel ||
+    typeof viewModel.groupInventoryEntries !== "function" ||
+    typeof viewModel.filterInventoryGroups !== "function" ||
+    typeof viewModel.getInventoryGroupStockDisplay !== "function" ||
+    typeof viewModel.getPreferredInventoryGroupEntry !== "function" ||
     !tiktokFeeCalculator ||
     typeof tiktokFeeCalculator.calculateSixPercentGmvFees !== "function" ||
     typeof tiktokFeeCalculator.calculateEstimatedProfitAfterFees !==
@@ -514,6 +536,9 @@
   let liveBidRefreshScheduled = false;
   let liveBidRefreshInFlight = false;
   let queuedNextItemSku = null;
+  let inventorySizeMenuState = null;
+  let deferredInventoryRender = null;
+  let activeInventorySizeSku = null;
   let nextItemQueueRefreshGeneration = 0;
   let nextItemQueueMutationGeneration = 0;
   let nextItemQueueMutationBusy = false;
@@ -536,6 +561,8 @@
   let reportMutationBusy = false;
   let pendingReportDeletion = null;
   let pendingReportDeletionReturnFocus = null;
+  let pendingReportRename = null;
+  let reportRenameBusy = false;
 
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -796,10 +823,10 @@
   }
 
   function getFocusedInventorySku() {
-    const button = document.activeElement?.closest?.("button[data-sku]");
+    const button = document.activeElement?.closest?.(".inventory-card");
 
     return button && inventoryGrid.contains(button)
-      ? button.dataset.sku
+      ? button.dataset.sku ?? button.dataset.focusSku ?? null
       : null;
   }
 
@@ -1111,6 +1138,7 @@
     clearCaptureRefreshTimer();
     resetLiveBidTracking();
     resetNextItemQueueDisplay();
+    resetInventorySizeMenu();
     resetVariationSelector();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
@@ -1175,14 +1203,14 @@
       (Boolean(busy) && !activeInventoryUpdateRefresh) ||
       streamSnapshot.busy ||
       streamUnavailable;
-    const keepVariationSelectorInteractive =
-      variationSelectorLock.isLocked() &&
+    const keepOpenPickerInteractive =
+      (variationSelectorLock.isLocked() || inventorySizeMenuState !== null) &&
       snapshotIsBackgroundRefresh(savedSnapshot) &&
       !streamSnapshot.busy &&
       !streamUnavailable &&
       !endConfirmationOpen;
     const shouldBeInert =
-      (shouldBeBusy && !keepVariationSelectorInteractive) ||
+      (shouldBeBusy && !keepOpenPickerInteractive) ||
       savedSnapshot?.phase === "error" ||
       endConfirmationOpen;
 
@@ -1572,6 +1600,101 @@
     (archived ? archivedReportsError : streamReportsError).focus();
   }
 
+  function getReportDisplayName(summary) {
+    return typeof summary?.displayName === "string" &&
+      summary.displayName.trim() !== ""
+      ? summary.displayName
+      : formatReportTimestamp(summary?.endedAt);
+  }
+
+  function setReportRenameError(message = null) {
+    const hasError = typeof message === "string" && message !== "";
+
+    reportRenameError.hidden = !hasError;
+    reportRenameError.textContent = hasError ? message : "";
+    reportRenameInput.setAttribute("aria-invalid", String(hasError));
+  }
+
+  function setReportRenameBusy(busy) {
+    reportRenameBusy = busy;
+    reportRenameForm.setAttribute("aria-busy", String(busy));
+    reportRenameInput.disabled = busy;
+    cancelReportRenameButton.disabled = busy;
+    resetReportNameButton.disabled = busy;
+    saveReportNameButton.disabled = busy;
+  }
+
+  function findReportMoreButton(reportId) {
+    return Array.from(document.querySelectorAll(".report-more-button")).find(
+      (button) => button.dataset.reportId === reportId,
+    ) ?? null;
+  }
+
+  function requestReportRename(summary, returnFocusTarget) {
+    if (reportRenameBusy || reportMutationBusy) {
+      return;
+    }
+
+    const defaultName = formatReportTimestamp(summary.endedAt);
+    const customName = typeof summary.displayName === "string"
+      ? summary.displayName
+      : null;
+
+    pendingReportRename = {
+      reportId: summary.reportId,
+      defaultName,
+      customName,
+      returnFocusTarget,
+    };
+    reportRenameInput.value = customName ?? defaultName;
+    resetReportNameButton.hidden = customName === null;
+    setReportRenameError();
+    setReportRenameBusy(false);
+    reportRenameDialog.showModal();
+    reportRenameInput.focus();
+    reportRenameInput.select();
+  }
+
+  async function savePendingReportName(displayName) {
+    const pending = pendingReportRename;
+
+    if (!pending || reportRenameBusy) {
+      return;
+    }
+
+    setReportRenameError();
+    setReportRenameBusy(true);
+
+    try {
+      await streamReportClient.renameReport({
+        reportId: pending.reportId,
+        displayName,
+      });
+      streamReportSummaries = streamReportSummaries.map((summary) =>
+        summary.reportId === pending.reportId
+          ? { ...summary, displayName }
+          : summary,
+      );
+      await refreshStreamReports();
+      pending.returnFocusTarget =
+        findReportMoreButton(pending.reportId) ?? pending.returnFocusTarget;
+      setReportRenameBusy(false);
+      announceReportMutation(
+        displayName === null
+          ? "The report is using its default name."
+          : `Report renamed to ${displayName}.`,
+        false,
+      );
+      reportRenameDialog.close("saved");
+    } catch (error) {
+      setReportRenameBusy(false);
+      setReportRenameError(
+        error?.message ?? "The report name could not be saved. Nothing was changed.",
+      );
+      reportRenameInput.focus();
+    }
+  }
+
   function createStreamReportLink(summary, options = {}) {
     const archived = options.archived === true;
     const selectionEnabled = archived && archivedSelectionMode;
@@ -1588,7 +1711,7 @@
     const totalCount = Number.isSafeInteger(summary.totalSalesCount)
       ? summary.totalSalesCount
       : 0;
-    const formattedTimestamp = formatReportTimestamp(summary.endedAt);
+    const reportDisplayName = getReportDisplayName(summary);
     const menuId = `report-actions-${archived ? "archived" : "dashboard"}-${summary.reportId.replace(/[^a-z0-9_-]/gi, "-")}`;
 
     wrapper.className = "stream-report-row";
@@ -1608,7 +1731,7 @@
       checkbox.disabled = reportMutationBusy;
       checkbox.setAttribute(
         "aria-label",
-        `Select stream report from ${formattedTimestamp}`,
+        `Select ${reportDisplayName}`,
       );
       checkboxMark.className = "archive-report-checkbox-mark";
       checkboxMark.setAttribute("aria-hidden", "true");
@@ -1630,11 +1753,11 @@
     button.dataset.reportId = summary.reportId;
     button.setAttribute(
       "aria-label",
-      `Open stream report from ${formattedTimestamp}`,
+      `Open ${reportDisplayName}`,
     );
 
     title.className = "stream-report-link-title";
-    title.textContent = formattedTimestamp;
+    title.textContent = reportDisplayName;
     meta.className = "stream-report-link-meta";
     meta.textContent =
       `${completedCount}/${totalCount} completed - ` +
@@ -1648,13 +1771,14 @@
 
     moreButton.type = "button";
     moreButton.className = "report-more-button";
+    moreButton.dataset.reportId = summary.reportId;
     moreButton.disabled = reportMutationBusy;
     moreButton.setAttribute("aria-haspopup", "menu");
     moreButton.setAttribute("aria-expanded", "false");
     moreButton.setAttribute("aria-controls", menuId);
     moreButton.setAttribute(
       "aria-label",
-      `More actions for stream report from ${formattedTimestamp}`,
+      `More actions for ${reportDisplayName}`,
     );
     moreGlyph.className = "report-more-glyph";
     moreGlyph.setAttribute("aria-hidden", "true");
@@ -1664,11 +1788,14 @@
     menu.id = menuId;
     menu.className = "report-actions-menu";
     menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", `Actions for report from ${formattedTimestamp}`);
+    menu.setAttribute("aria-label", `Actions for ${reportDisplayName}`);
     menu.hidden = true;
 
     if (!archived) {
       menu.append(
+        createReportMenuAction("Rename", "rename", () => {
+          requestReportRename(summary, moreButton);
+        }),
         createReportMenuAction("Archive", "archive", () => {
           void runReportMutation("archive", [summary.reportId]);
         }),
@@ -2005,22 +2132,30 @@
     return entry.style ? `${entry.item} - ${entry.style}` : entry.item;
   }
 
-  function createInventoryCard(entry, view) {
+  function createInventoryCard(group, view) {
     const auction = view.auction;
     const canceled = auction?.paymentStatus === "canceled";
     const variationNumber = view.variationNumber;
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const button = wrapper.querySelector(".inventory-card");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
-    const stock = viewModel.getStockDisplay(entry);
+    const stock = viewModel.getInventoryGroupStockDisplay(group);
     const stockAriaLabel = stock.ariaLabel ?? stock.label;
-    const selected = entry.selected;
-    const queued = entry.sku === queuedNextItemSku;
-    const itemName = formatItemName(entry);
+    const selectedEntry = group.entries.find((entry) => entry.selected) ?? null;
+    const selected = selectedEntry !== null;
+    const queuedEntry = group.entries.find(
+      (entry) => entry.sku === queuedNextItemSku,
+    ) ?? null;
+    const queued = queuedEntry !== null;
+    const itemName = formatItemName(group);
+    const multipleSizes = group.entries.length > 1;
+    const selectionAllowed = group.entries.some(
+      (entry) => entry.selectionAllowed,
+    );
     const canTagSelectedVariation = hasSelectedRecordedVariation(view);
     const canUseCurrentContextAction =
       canTagSelectedVariation &&
-      entry.selectionAllowed &&
+      selectionAllowed &&
       Number.isSafeInteger(view.currentVariationNumber) &&
       view.currentVariationNumber > 0;
     const reviewingHistory =
@@ -2028,58 +2163,104 @@
       view.selectedVariationNumber !== view.currentVariationNumber;
     const currentMappedSku = getCurrentVariationMappedSku(view);
     const mappedToCurrent =
-      reviewingHistory && entry.sku === currentMappedSku;
+      reviewingHistory &&
+      group.entries.some((entry) => entry.sku === currentMappedSku);
     const currentVariationMapped = isCurrentVariationMapped(view);
+    const preferredEntry = viewModel.getPreferredInventoryGroupEntry(group, {
+      selectedSku: selectedEntry?.sku ?? null,
+      currentMappedSku,
+      queuedSku: queuedNextItemSku,
+    });
+    const representativeEntry = preferredEntry ?? group.entries[0];
     const historyPreservedDescription = reviewingHistory
       ? ` Variation ${view.selectedVariationNumber} will remain open.`
       : "";
 
-    button.dataset.sku = entry.sku;
+    button.dataset.groupKey = group.key;
+    button.dataset.variantSkus = JSON.stringify(
+      group.entries.map((entry) => entry.sku),
+    );
+    button.dataset.focusSku = representativeEntry?.sku ?? "";
+    button.dataset.multipleSizes = String(multipleSizes);
+
+    if (!multipleSizes && representativeEntry) {
+      button.dataset.sku = representativeEntry.sku;
+    }
+
     button.dataset.stockState = stock.state;
-    button.dataset.selectionReason = entry.selectionReason;
+    button.dataset.selectionReason =
+      group.entries.find((entry) => entry.selectionAllowed)?.selectionReason ??
+      group.entries[0]?.selectionReason ??
+      "";
     button.dataset.queued = String(queued);
     button.dataset.currentMapped = String(mappedToCurrent);
-    button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
-    button.setAttribute("aria-pressed", String(selected));
+    button.dataset.selected = String(selected);
+    button.disabled = !selectionAllowed || !canTagSelectedVariation;
+
+    if (multipleSizes) {
+      button.setAttribute("role", "combobox");
+      button.setAttribute("aria-haspopup", "listbox");
+      button.setAttribute("aria-controls", "inventory-size-listbox");
+      button.setAttribute("aria-expanded", "false");
+      button.setAttribute("aria-autocomplete", "none");
+    } else {
+      button.setAttribute("aria-pressed", String(selected));
+    }
 
     if (!canTagSelectedVariation) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
-      );
-    } else if (selected && canceled) {
-      button.setAttribute(
-        "aria-label",
-        `${itemName}, size ${entry.size}, is the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
-      );
-    } else if (selected) {
-      button.setAttribute(
-        "aria-label",
-        `${itemName}, size ${entry.size}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
-      );
-    } else if (canceled) {
-      button.setAttribute(
-        "aria-label",
-        auction?.sku
-          ? `Change canceled variation ${variationNumber} to reference ${itemName}, size ${entry.size}, ${stockAriaLabel}. No inventory will be changed.`
-          : `Select ${itemName}, size ${entry.size}, as the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
+        multipleSizes
+          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Wait for a live auction variation before tagging.`
+          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
 
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${entry.size}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
+        multipleSizes
+          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`
+          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
+      );
+    } else if (multipleSizes) {
+      const selectedDescription = selectedEntry
+        ? ` Size ${selectedEntry.size} is selected for variation ${variationNumber}.`
+        : "";
+      const canceledDescription = canceled
+        ? " This is a reference-only selection; inventory and metrics will not change."
+        : "";
+
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}.${selectedDescription}${canceledDescription} Click to choose a size for variation ${variationNumber}.`,
+      );
+    } else if (selected && canceled) {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${representativeEntry?.size ?? ""}, is the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
+      );
+    } else if (selected) {
+      button.setAttribute(
+        "aria-label",
+        `${itemName}, size ${representativeEntry?.size ?? ""}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
+      );
+    } else if (canceled) {
+      button.setAttribute(
+        "aria-label",
+        auction?.sku
+          ? `Change canceled variation ${variationNumber} to reference ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. No inventory will be changed.`
+          : `Select ${itemName}, size ${representativeEntry?.size ?? ""}, as the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
       );
     } else if (auction?.sku) {
       button.setAttribute(
         "aria-label",
-        `Correct variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}.`,
+        `Correct variation ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
       );
     } else {
       button.setAttribute(
         "aria-label",
-        `Map variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}.`,
+        `Map variation ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
       );
     }
 
@@ -2124,9 +2305,14 @@
       );
     }
 
-    wrapper.querySelector('[data-field="item"]').textContent = entry.item;
-    wrapper.querySelector('[data-field="style"]').textContent = entry.style;
-    wrapper.querySelector('[data-field="size"]').textContent = entry.size;
+    wrapper.querySelector('[data-field="item"]').textContent = group.item;
+    wrapper.querySelector('[data-field="style"]').textContent = group.style;
+    wrapper.querySelector('[data-field="size-caption"]').hidden = multipleSizes;
+    wrapper.querySelector('[data-field="size"]').textContent = multipleSizes
+      ? preferredEntry
+        ? preferredEntry.size || "No size"
+        : "Choose size"
+      : representativeEntry?.size ?? "";
     wrapper.querySelector('[data-field="stock-primary"]').textContent =
       stock.primaryLabel ?? stock.label;
 
@@ -2151,15 +2337,25 @@
 
   function formatResultCount(visibleCount, totalCount, hasQuery) {
     if (!hasQuery) {
-      return `${totalCount} inventory ${totalCount === 1 ? "entry" : "entries"}`;
+      return `${totalCount} inventory ${totalCount === 1 ? "item" : "items"}`;
     }
 
     return `${visibleCount} of ${totalCount} ${visibleCount === 1 ? "match" : "matches"}`;
   }
 
   function restoreCardFocus(sku) {
-    const button = [...inventoryGrid.querySelectorAll("button[data-sku]")].find(
-      (candidate) => candidate.dataset.sku === sku,
+    const button = [...inventoryGrid.querySelectorAll(".inventory-card")].find(
+      (candidate) => {
+        if (candidate.dataset.sku === sku) {
+          return true;
+        }
+
+        try {
+          return JSON.parse(candidate.dataset.variantSkus ?? "[]").includes(sku);
+        } catch (_error) {
+          return false;
+        }
+      },
     );
 
     if (button && !button.disabled) {
@@ -2167,6 +2363,410 @@
     } else {
       searchInput.focus();
     }
+  }
+
+  function findInventoryGroup(view, groupKey) {
+    return viewModel.groupInventoryEntries(view?.inventory ?? []).find(
+      (group) => group.key === groupKey,
+    ) ?? null;
+  }
+
+  function getInventorySizeOptionRows() {
+    return [...inventorySizeListbox.querySelectorAll('[role="option"]')];
+  }
+
+  function createInventorySizeBadge(label, tone) {
+    const badge = document.createElement("span");
+
+    badge.className = "inventory-size-option-badge";
+    badge.dataset.tone = tone;
+    badge.textContent = label;
+
+    return badge;
+  }
+
+  function getInventorySizeOptionActionDescription(entry, view, intent) {
+    if (intent === "ordinary") {
+      return entry.selected
+        ? `Unmap this size from variation ${view.selectedVariationNumber}`
+        : `Map variation ${view.selectedVariationNumber} to this size`;
+    }
+
+    const reviewingHistory =
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber;
+
+    if (reviewingHistory) {
+      return entry.sku === getCurrentVariationMappedSku(view)
+        ? `Unmap this size from current variation ${view.currentVariationNumber}; the historical variation will stay open`
+        : `Map current variation ${view.currentVariationNumber} to this size; the historical variation will stay open`;
+    }
+
+    if (!isCurrentVariationMapped(view)) {
+      return `Map current variation ${view.currentVariationNumber} to this size`;
+    }
+
+    return entry.sku === queuedNextItemSku
+      ? "Remove this size from the next variation queue"
+      : "Queue this size for the next variation without changing the current mapping";
+  }
+
+  function renderInventorySizeOptions(group, view, intent) {
+    const fragment = document.createDocumentFragment();
+    const reviewingHistory =
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber;
+    const currentMappedSku = getCurrentVariationMappedSku(view);
+
+    group.entries.forEach((entry, index) => {
+      const stock = viewModel.getStockDisplay(entry);
+      const option = document.createElement("div");
+      const copy = document.createElement("span");
+      const size = document.createElement("span");
+      const detail = document.createElement("span");
+      const side = document.createElement("span");
+      const stockLabel = document.createElement("span");
+      const badges = document.createElement("span");
+      const selected = entry.selected === true;
+      const mappedToCurrent = reviewingHistory && entry.sku === currentMappedSku;
+      const queued = entry.sku === queuedNextItemSku;
+      const statusDescriptions = [];
+
+      option.id = `inventory-size-option-${index}`;
+      option.className = "inventory-size-option";
+      option.dataset.sku = entry.sku;
+      option.dataset.stockState = stock.state;
+      option.dataset.disabled = String(!entry.selectionAllowed);
+      option.dataset.active = "false";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(selected));
+      option.setAttribute("aria-disabled", String(!entry.selectionAllowed));
+
+      copy.className = "inventory-size-option-copy";
+      size.className = "inventory-size-option-size";
+      size.textContent = entry.size || "No size";
+      detail.className = "inventory-size-option-detail";
+      detail.textContent = `SKU: ${entry.sku}`;
+      copy.append(size, detail);
+
+      side.className = "inventory-size-option-side";
+      stockLabel.className = "inventory-size-option-stock";
+      stockLabel.textContent = stock.label;
+      badges.className = "inventory-size-option-badges";
+
+      if (selected) {
+        badges.append(createInventorySizeBadge("Selected", "selected"));
+        statusDescriptions.push("selected for the variation being viewed");
+      }
+
+      if (mappedToCurrent) {
+        badges.append(createInventorySizeBadge("Live", "current"));
+        statusDescriptions.push("mapped to the current live variation");
+      }
+
+      if (queued) {
+        badges.append(createInventorySizeBadge("Queued", "queued"));
+        statusDescriptions.push("queued for the next variation");
+      }
+
+      side.append(stockLabel);
+
+      if (badges.childElementCount > 0) {
+        side.append(badges);
+      }
+
+      option.setAttribute(
+        "aria-label",
+        [
+          `Size ${entry.size || "not provided"}`,
+          `SKU ${entry.sku}`,
+          stock.ariaLabel,
+          ...statusDescriptions,
+          entry.selectionAllowed
+            ? getInventorySizeOptionActionDescription(entry, view, intent)
+            : entry.selectionReason,
+        ]
+          .filter(Boolean)
+          .join(", "),
+      );
+      option.append(copy, side);
+      fragment.append(option);
+    });
+
+    inventorySizeListbox.replaceChildren(fragment);
+  }
+
+  function hideInventorySizeListbox() {
+    try {
+      if (
+        typeof inventorySizeListbox.hidePopover === "function" &&
+        inventorySizeListbox.matches(":popover-open")
+      ) {
+        inventorySizeListbox.hidePopover();
+      }
+    } catch (error) {
+      console.error(
+        "[TikTok Live Tracker] Inventory size listbox could not be hidden.",
+        error,
+      );
+    }
+
+    inventorySizeListbox.hidden = true;
+    inventorySizeListbox.removeAttribute("data-fallback-open");
+  }
+
+  function positionInventorySizeListbox() {
+    if (!inventorySizeMenuState) {
+      return;
+    }
+
+    const triggerRect =
+      inventorySizeMenuState.trigger.getBoundingClientRect();
+    const viewportWidth = Math.max(
+      document.documentElement?.clientWidth ?? 0,
+      window.innerWidth ?? 0,
+    );
+    const viewportHeight = Math.max(
+      document.documentElement?.clientHeight ?? 0,
+      window.innerHeight ?? 0,
+    );
+    const viewportMargin = 8;
+    const popupGap = 4;
+    const popupWidth = Math.max(
+      0,
+      Math.min(
+        Math.max(triggerRect.width, 220),
+        viewportWidth - viewportMargin * 2,
+      ),
+    );
+    const popupLeft = Math.min(
+      Math.max(viewportMargin, triggerRect.left),
+      Math.max(viewportMargin, viewportWidth - viewportMargin - popupWidth),
+    );
+    const spaceBelow = Math.max(
+      0,
+      viewportHeight - triggerRect.bottom - popupGap - viewportMargin,
+    );
+    const spaceAbove = Math.max(
+      0,
+      triggerRect.top - popupGap - viewportMargin,
+    );
+    const heightCap = Math.min(360, Math.floor(viewportHeight * 0.52));
+    const openAbove =
+      spaceBelow < Math.min(150, heightCap) && spaceAbove > spaceBelow;
+    const availableHeight = openAbove ? spaceAbove : spaceBelow;
+
+    inventorySizeListbox.style.width = `${popupWidth}px`;
+    inventorySizeListbox.style.left = `${popupLeft}px`;
+    inventorySizeListbox.style.maxHeight = `${Math.max(
+      1,
+      Math.min(heightCap, availableHeight),
+    )}px`;
+
+    if (openAbove) {
+      inventorySizeListbox.style.top = "auto";
+      inventorySizeListbox.style.bottom = `${
+        viewportHeight - triggerRect.top + popupGap
+      }px`;
+    } else {
+      inventorySizeListbox.style.top = `${triggerRect.bottom + popupGap}px`;
+      inventorySizeListbox.style.bottom = "auto";
+    }
+  }
+
+  function showInventorySizeListbox() {
+    inventorySizeListbox.hidden = false;
+    positionInventorySizeListbox();
+
+    try {
+      if (typeof inventorySizeListbox.showPopover === "function") {
+        inventorySizeListbox.showPopover();
+      } else {
+        inventorySizeListbox.dataset.fallbackOpen = "true";
+      }
+    } catch (error) {
+      inventorySizeListbox.dataset.fallbackOpen = "true";
+      console.error(
+        "[TikTok Live Tracker] Inventory size listbox could not enter the top layer.",
+        error,
+      );
+    }
+  }
+
+  function setActiveInventorySize(sku, options = {}) {
+    const { scroll = true } = options;
+    const rows = getInventorySizeOptionRows().filter(
+      (row) => row.dataset.disabled !== "true",
+    );
+    const nextRow = rows.find((row) => row.dataset.sku === sku) ?? rows[0] ?? null;
+    const trigger = inventorySizeMenuState?.trigger ?? null;
+
+    if (!nextRow || !trigger) {
+      activeInventorySizeSku = null;
+      trigger?.removeAttribute("aria-activedescendant");
+      return false;
+    }
+
+    getInventorySizeOptionRows().forEach((row) => {
+      row.dataset.active = String(row === nextRow);
+    });
+    activeInventorySizeSku = nextRow.dataset.sku;
+    trigger.setAttribute("aria-activedescendant", nextRow.id);
+
+    if (scroll && typeof nextRow.scrollIntoView === "function") {
+      nextRow.scrollIntoView({ block: "nearest" });
+    }
+
+    return true;
+  }
+
+  function moveActiveInventorySize(offset) {
+    const rows = getInventorySizeOptionRows().filter(
+      (row) => row.dataset.disabled !== "true",
+    );
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const currentIndex = rows.findIndex(
+      (row) => row.dataset.sku === activeInventorySizeSku,
+    );
+    const nextIndex = Math.min(
+      rows.length - 1,
+      Math.max(0, (currentIndex < 0 ? 0 : currentIndex) + offset),
+    );
+
+    setActiveInventorySize(rows[nextIndex].dataset.sku);
+  }
+
+  function moveActiveInventorySizeToBoundary(boundary) {
+    const rows = getInventorySizeOptionRows().filter(
+      (row) => row.dataset.disabled !== "true",
+    );
+    const row = boundary === "end" ? rows.at(-1) : rows[0];
+
+    if (row) {
+      setActiveInventorySize(row.dataset.sku);
+    }
+  }
+
+  function releaseInventorySizeMenu(options = {}) {
+    const { restoreFocus = false, flush = true } = options;
+    const state = inventorySizeMenuState;
+    const focusSku = state?.trigger?.dataset.focusSku ?? null;
+    const deferred = deferredInventoryRender;
+
+    if (state?.trigger) {
+      state.trigger.setAttribute("aria-expanded", "false");
+      state.trigger.removeAttribute("aria-activedescendant");
+    }
+
+    inventorySizeMenuState = null;
+    activeInventorySizeSku = null;
+    hideInventorySizeListbox();
+
+    if (flush && deferred?.view) {
+      deferredInventoryRender = null;
+      renderInventory(deferred.view, null);
+    } else if (flush) {
+      deferredInventoryRender = null;
+    }
+
+    setWorkspaceBusy(savedSnapshot?.busy === true);
+
+    if (restoreFocus) {
+      if (focusSku) {
+        restoreCardFocus(focusSku);
+      } else if (state?.trigger?.isConnected && !state.trigger.disabled) {
+        state.trigger.focus();
+      }
+    }
+  }
+
+  function flushDeferredInventoryRender() {
+    if (inventorySizeMenuState || !deferredInventoryRender?.view) {
+      return;
+    }
+
+    const deferred = deferredInventoryRender;
+    const focusedInventorySku = getFocusedInventorySku();
+    const focusFellBackToDocument =
+      document.activeElement === null ||
+      document.activeElement === document.body;
+    const focusSku = focusedInventorySku ?? (
+      focusFellBackToDocument ? deferred.focusSku : null
+    );
+
+    deferredInventoryRender = null;
+    renderInventory(deferred.view, focusSku);
+  }
+
+  function resetInventorySizeMenu() {
+    inventorySizeMenuState?.trigger?.setAttribute("aria-expanded", "false");
+    inventorySizeMenuState?.trigger?.removeAttribute("aria-activedescendant");
+    inventorySizeMenuState = null;
+    activeInventorySizeSku = null;
+    deferredInventoryRender = null;
+    hideInventorySizeListbox();
+  }
+
+  function openInventorySizeMenu(trigger, intent, options = {}) {
+    const view = getActiveView();
+    const group = findInventoryGroup(view, trigger.dataset.groupKey);
+
+    if (!view || !group || group.entries.length < 2 || trigger.disabled) {
+      return false;
+    }
+
+    if (
+      inventorySizeMenuState?.trigger === trigger &&
+      inventorySizeMenuState.intent === intent
+    ) {
+      releaseInventorySizeMenu({ restoreFocus: true });
+      return false;
+    }
+
+    if (inventorySizeMenuState) {
+      releaseInventorySizeMenu({ flush: false });
+    }
+
+    if (variationSelectorOpen) {
+      releaseVariationSelector();
+    }
+
+    inventorySizeMenuState = {
+      groupKey: group.key,
+      intent,
+      trigger,
+      streamId: mountedStreamId,
+      selectedVariationNumber: view.selectedVariationNumber,
+      currentVariationNumber: view.currentVariationNumber,
+    };
+    renderInventorySizeOptions(group, view, intent);
+    trigger.setAttribute("aria-expanded", "true");
+    showInventorySizeListbox();
+
+    const reviewingHistory =
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber;
+    const selectedSku = group.entries.find((entry) => entry.selected)?.sku;
+    const currentMappedSku = getCurrentVariationMappedSku(view);
+    const preferredSku =
+      intent === "ordinary"
+        ? selectedSku
+        : reviewingHistory
+          ? currentMappedSku
+          : queuedNextItemSku ?? selectedSku;
+
+    if (options.boundary === "start" || options.boundary === "end") {
+      moveActiveInventorySizeToBoundary(options.boundary);
+    } else {
+      setActiveInventorySize(preferredSku);
+    }
+
+    setWorkspaceBusy(savedSnapshot?.busy === true);
+    return true;
   }
 
   function getVariationOptionDisplay(option) {
@@ -2365,6 +2965,10 @@
       return false;
     }
 
+    if (inventorySizeMenuState) {
+      releaseInventorySizeMenu();
+    }
+
     variationSelectorLock.lock();
     variationSelectorOpen = true;
     variationSelectShell.dataset.open = "true";
@@ -2488,17 +3092,23 @@
   }
 
   function renderInventory(view, focusSku = null) {
+    if (inventorySizeMenuState) {
+      deferredInventoryRender = { view, focusSku };
+      return;
+    }
+
     const canceled = view.auction?.paymentStatus === "canceled";
     const query = searchInput.value;
     const normalizedQuery = viewModel.normalizeSearchText(query);
-    const filteredInventory = viewModel.filterInventoryEntries(
-      view.inventory,
+    const inventoryGroups = viewModel.groupInventoryEntries(view.inventory);
+    const filteredInventory = viewModel.filterInventoryGroups(
+      inventoryGroups,
       query,
     );
     const fragment = document.createDocumentFragment();
 
-    filteredInventory.forEach((entry) => {
-      fragment.append(createInventoryCard(entry, view));
+    filteredInventory.forEach((group) => {
+      fragment.append(createInventoryCard(group, view));
     });
 
     inventoryGrid.replaceChildren(fragment);
@@ -2512,7 +3122,7 @@
     clearSearchButton.hidden = normalizedQuery.length === 0;
     const nextResultCount = formatResultCount(
       filteredInventory.length,
-      view.inventory.length,
+      inventoryGroups.length,
       normalizedQuery.length > 0,
     );
 
@@ -3678,6 +4288,7 @@
 
   window.addEventListener("resize", () => {
     positionVariationListbox();
+    positionInventorySizeListbox();
   });
 
   document.addEventListener(
@@ -3685,6 +4296,13 @@
     (event) => {
       if (variationSelectorOpen && event.target !== variationListbox) {
         positionVariationListbox();
+      }
+
+      if (
+        inventorySizeMenuState &&
+        event.target !== inventorySizeListbox
+      ) {
+        positionInventorySizeListbox();
       }
     },
     true,
@@ -3729,16 +4347,18 @@
   });
 
   function saveOrdinaryInventorySelection(button, view) {
-    const selected = button.getAttribute("aria-pressed") === "true";
+    const sku = button.dataset.sku;
+    const selected =
+      view.inventory.find((entry) => entry.sku === sku)?.selected === true;
 
     runSavedMutation(
       () => selected
         ? persistentController.unmapSelectedVariation()
-        : persistentController.mapSelectedSku(button.dataset.sku),
+        : persistentController.mapSelectedSku(sku),
       {
         type: selected ? "unmap_variation" : "map_variation",
         variationNumber: view.selectedVariationNumber,
-        focusSku: button.dataset.sku,
+        focusSku: sku,
       },
     );
   }
@@ -3887,8 +4507,101 @@
     }
   }
 
+  function selectInventorySizeFromPicker(sku) {
+    const state = inventorySizeMenuState;
+    const view = getActiveView();
+    const entry = view?.inventory.find((candidate) => candidate.sku === sku);
+
+    if (
+      state &&
+      (
+        state.streamId !== mountedStreamId ||
+        state.selectedVariationNumber !== view?.selectedVariationNumber ||
+        state.currentVariationNumber !== view?.currentVariationNumber
+      )
+    ) {
+      releaseInventorySizeMenu();
+      mappingAnnouncement.textContent =
+        "The live variation changed while you were choosing a size. Open the item again to apply the size to the correct variation.";
+      return;
+    }
+
+    if (!state || !view || !entry || !entry.selectionAllowed) {
+      releaseInventorySizeMenu({ restoreFocus: true });
+      mappingAnnouncement.textContent =
+        entry?.selectionReason ?? "That inventory size cannot be selected.";
+      return;
+    }
+
+    const intent = state.intent;
+    const actionTarget = { dataset: { sku } };
+
+    releaseInventorySizeMenu();
+
+    if (intent === "ordinary") {
+      saveOrdinaryInventorySelection(actionTarget, view);
+      return;
+    }
+
+    if (
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber
+    ) {
+      void mapCurrentVariationFromHistory(actionTarget, view);
+      return;
+    }
+
+    void toggleNextItemQueue(actionTarget, view);
+  }
+
+  function commitActiveInventorySize() {
+    if (activeInventorySizeSku === null) {
+      releaseInventorySizeMenu({ restoreFocus: true });
+      return;
+    }
+
+    selectInventorySizeFromPicker(activeInventorySizeSku);
+  }
+
+  function handleInventorySizeMenuKeydown(event) {
+    if (!inventorySizeMenuState) {
+      return false;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      releaseInventorySizeMenu({ restoreFocus: true });
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActiveInventorySize(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActiveInventorySize(-1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveActiveInventorySizeToBoundary("start");
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveActiveInventorySizeToBoundary("end");
+    } else if (
+      event.key === " " ||
+      event.key === "Spacebar" ||
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+      commitActiveInventorySize();
+    } else if (event.key === "Tab") {
+      releaseInventorySizeMenu({ flush: false });
+      window.setTimeout(flushDeferredInventoryRender, 0);
+    } else {
+      return false;
+    }
+
+    return true;
+  }
+
   inventoryGrid.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-sku]");
+    const button = event.target.closest?.(".inventory-card");
 
     if (!button || button.disabled || !inventoryGrid.contains(button)) {
       return;
@@ -3902,11 +4615,20 @@
       return;
     }
 
+    if (button.dataset.multipleSizes === "true") {
+      openInventorySizeMenu(button, "ordinary");
+      return;
+    }
+
+    if (inventorySizeMenuState) {
+      releaseInventorySizeMenu();
+    }
+
     saveOrdinaryInventorySelection(button, view);
   });
 
   inventoryGrid.addEventListener("contextmenu", (event) => {
-    const button = event.target.closest?.("button[data-sku]");
+    const button = event.target.closest?.(".inventory-card");
 
     if (!button || !inventoryGrid.contains(button)) {
       return;
@@ -3926,6 +4648,15 @@
       return;
     }
 
+    if (button.dataset.multipleSizes === "true") {
+      openInventorySizeMenu(button, "context");
+      return;
+    }
+
+    if (inventorySizeMenuState) {
+      releaseInventorySizeMenu();
+    }
+
     if (
       view.isReviewingHistory ||
       view.selectedVariationNumber !== view.currentVariationNumber
@@ -3935,6 +4666,103 @@
     }
 
     void toggleNextItemQueue(button, view);
+  });
+
+  inventoryGrid.addEventListener("keydown", (event) => {
+    const button = event.target.closest?.(".inventory-card");
+
+    if (!button || button.disabled || !inventoryGrid.contains(button)) {
+      return;
+    }
+
+    if (inventorySizeMenuState?.trigger === button) {
+      handleInventorySizeMenuKeydown(event);
+      return;
+    }
+
+    if (button.dataset.multipleSizes !== "true") {
+      return;
+    }
+
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault();
+      openInventorySizeMenu(button, "context");
+    } else if (
+      event.key === "ArrowDown" ||
+      event.key === "ArrowUp" ||
+      event.key === "Home" ||
+      event.key === "End"
+    ) {
+      event.preventDefault();
+      openInventorySizeMenu(button, "ordinary", {
+        boundary: event.key === "End" ? "end" : "start",
+      });
+    }
+  });
+
+  inventorySizeListbox.addEventListener("keydown", (event) => {
+    handleInventorySizeMenuKeydown(event);
+  });
+
+  inventorySizeListbox.addEventListener("pointerdown", (event) => {
+    if (event.button === 0 && event.target.closest?.('[role="option"]')) {
+      event.preventDefault();
+    }
+  });
+
+  inventorySizeListbox.addEventListener("click", (event) => {
+    const option = event.target.closest?.('[role="option"]');
+
+    if (
+      !inventorySizeMenuState ||
+      !option ||
+      !inventorySizeListbox.contains(option) ||
+      option.dataset.disabled === "true"
+    ) {
+      return;
+    }
+
+    selectInventorySizeFromPicker(option.dataset.sku);
+  });
+
+  inventorySizeListbox.addEventListener("toggle", (event) => {
+    if (event.newState === "closed" && inventorySizeMenuState) {
+      releaseInventorySizeMenu();
+    }
+  });
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (
+        !inventorySizeMenuState ||
+        inventorySizeListbox.contains(event.target) ||
+        inventorySizeMenuState.trigger.contains(event.target)
+      ) {
+        return;
+      }
+
+      const nextInventoryCard = event.target.closest?.(".inventory-card");
+
+      if (!nextInventoryCard || !inventoryGrid.contains(nextInventoryCard)) {
+        releaseInventorySizeMenu();
+      }
+    },
+    true,
+  );
+
+  document.addEventListener("focusin", (event) => {
+    if (
+      inventorySizeMenuState &&
+      !inventorySizeListbox.contains(event.target) &&
+      !inventorySizeMenuState.trigger.contains(event.target)
+    ) {
+      const nextInventoryCard = event.target.closest?.(".inventory-card");
+
+      if (!nextInventoryCard || !inventoryGrid.contains(nextInventoryCard)) {
+        releaseInventorySizeMenu();
+      }
+    }
   });
 
   searchInput.addEventListener("input", () => renderAll());
@@ -4521,6 +5349,80 @@
       !returnFocusTarget.disabled
     ) {
       returnFocusTarget.focus();
+    }
+  });
+
+  reportRenameForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    if (!pendingReportRename || reportRenameBusy) {
+      return;
+    }
+
+    const displayName = reportRenameInput.value.trim();
+
+    if (
+      displayName.length < 1 ||
+      displayName.length > MAX_REPORT_DISPLAY_NAME_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(displayName)
+    ) {
+      setReportRenameError(
+        `Enter a report name between 1 and ${MAX_REPORT_DISPLAY_NAME_LENGTH} characters.`,
+      );
+      reportRenameInput.focus();
+      return;
+    }
+
+    reportRenameInput.value = displayName;
+    const savedDisplayName =
+      pendingReportRename.customName === null &&
+      displayName === pendingReportRename.defaultName
+        ? null
+        : displayName;
+    void savePendingReportName(savedDisplayName);
+  });
+
+  reportRenameInput.addEventListener("input", () => {
+    setReportRenameError();
+  });
+
+  cancelReportRenameButton.addEventListener("click", () => {
+    if (!reportRenameBusy) {
+      reportRenameDialog.close("cancel");
+    }
+  });
+
+  resetReportNameButton.addEventListener("click", () => {
+    void savePendingReportName(null);
+  });
+
+  reportRenameDialog.addEventListener("cancel", (event) => {
+    if (reportRenameBusy) {
+      event.preventDefault();
+    }
+  });
+
+  reportRenameDialog.addEventListener("close", () => {
+    const pending = pendingReportRename;
+    const reportId = pending?.reportId ?? null;
+    const returnFocusTarget = pending?.returnFocusTarget ?? null;
+
+    pendingReportRename = null;
+    setReportRenameBusy(false);
+    setReportRenameError();
+    reportRenameInput.value = "";
+
+    const currentMoreButton = reportId === null
+      ? null
+      : findReportMoreButton(reportId);
+    const focusTarget = currentMoreButton ?? returnFocusTarget;
+
+    if (
+      focusTarget?.isConnected &&
+      !focusTarget.hidden &&
+      !focusTarget.disabled
+    ) {
+      focusTarget.focus();
     }
   });
 

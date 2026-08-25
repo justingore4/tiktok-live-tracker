@@ -25,15 +25,22 @@ Each auction has a sequential variation number such as `#203`. Based on the sell
 current workflow, variation numbers restart for each stream, and each variation
 represents one auction of one physical item.
 
-While the item is on screen, an employee selects its item, style, and size from the
-tracker's inventory menu. The tracker stores that selection as a mapping; it does not
-enter a price or perform any action on TikTok. Clicking the selected inventory card
-again removes only that item mapping and leaves TikTok's payment result unchanged.
-On the current/newest variation, right-click maps it when it has no item and then toggles
-one SKU for automatic mapping to the next newer live variation. While an older variation
-is displayed, right-click instead maps, corrects, or unmaps only the current/newest
-variation and never changes the queue; left-click continues to edit the displayed
-historical variation.
+Each size remains a separate Google Sheets inventory row with its own unique SKU. In the
+live inventory menu, rows whose normalized item and style match are presented as one
+card; capitalization, repeated whitespace, and equivalent Unicode do not create duplicate
+cards. A one-size card keeps direct click behavior. A multi-size card first shows
+**Choose size** and opens a naturally sorted list with each size's exact SKU and stock;
+after a mapped, live-mapped, or queued size applies to that card, its compact control
+shows only the exact size, such as `8` or `S`.
+
+The tracker stores the exact chosen size-level SKU as the mapping; it does not enter a
+price or perform any action on TikTok. Left-clicking a single-size card, or choosing a
+size after left-clicking a grouped card, maps or unmaps the variation being viewed. On
+the current/newest variation, right-click uses the exact chosen size to map it when it
+has no item and then to toggle one SKU for automatic mapping to the next newer live
+variation. While an older variation is displayed, right-click followed by a size choice
+instead maps, corrects, or unmaps only the current/newest variation and never changes the
+queue; the historical variation remains open.
 
 The tracker counts the sale only after TikTok shows the final price with the green
 `Payment complete` badge in the **Sold items** panel:
@@ -70,7 +77,7 @@ auctioned again, the employee maps its new variation number.
   exact `https://shop.tiktok.com` host and activates only on the exact TikTok LIVE
   dashboard path.
 - A responsive Chrome side-panel prototype with imported Google Sheets inventory, search, pending reservations,
-  zero-stock and oversold states, one-click item mapping and unmapping, and an accessible
+  zero-stock and oversold states, exact-size item mapping and unmapping, and an accessible
   current/previous variation combobox and listbox. The active on-video auction is labeled
   `bidding` and can be mapped before the sale reaches Sold Items. Payment wording is yellow
   for bidding, processing, fixing, and temporary failure; red for cancellation; green for
@@ -80,17 +87,28 @@ auctioned again, the employee maps its new variation number.
   automatically. A manually selected historical variation stays selected while newer
   auctions continue being captured. Opening the listbox freezes only its visible options
   and scroll position; capture and persistence continue, and the newest queued option view
-  is applied once when the employee selects or dismisses the listbox. Inventory cards show
-  remaining stock separately from pending reservations.
+  is applied once when the employee selects or dismisses the listbox. Inventory rows with
+  the same normalized item and style share one live card without changing their separate
+  SKUs. Singleton cards retain direct actions; multi-size cards show **Choose size** before
+  selection and a compact exact size afterward. The card shows stock aggregated across
+  its sizes, while its naturally sorted size list shows per-size stock, SKU, and exact
+  selected/live/queued state. Search matches item, style, size, and every underlying SKU,
+  and a match retains the complete group rather than hiding its other size options. An
+  open size list keeps its visible options stable during live refreshes and applies the
+  newest deferred card render once it closes. If a genuinely newer variation arrives
+  before a size is chosen, the stale choice is rejected and the employee reopens the
+  card, preventing that size from being applied to the wrong variation.
 - A one-item **next variation** shortcut on those inventory cards. On the current/newest
-  variation, right-click maps it when unmapped; after it has any mapping, right-click
-  queues or unqueues that SKU without changing the current selection. While history
-  remains displayed, right-click maps or remaps the worker-verified current/newest
-  variation; right-clicking its selected SKU again unmaps it. This action cannot create,
-  replace, or clear a queue. Left-click always maps or unmaps the variation actually
-  displayed. During historical review, the displayed mapping stays green, the mapped
-  current/newest variation stays blue even between auctions, and a shared SKU uses a
-  split green/blue outline. A pre-existing queue remains active and red. The queue survives
+  variation, right-click maps the exact selected size when unmapped; after it has any
+  mapping, right-click queues or unqueues that size's SKU without changing the current
+  selection. While history remains displayed, right-click maps or remaps the
+  worker-verified current/newest variation with the chosen size; choosing its selected
+  SKU again unmaps it. This action cannot create, replace, or clear a queue. Left-click
+  always maps or unmaps the exact size on the variation actually displayed. During
+  historical review, the displayed mapping stays green, the mapped current/newest
+  variation stays blue even between auctions, and a shared card uses split outlines when
+  its underlying sizes have multiple roles. The size list identifies the exact green,
+  blue, or red SKU. A pre-existing queue remains active and red. The queue survives
   side-panel closure, TikTok page reload, and service-worker suspension within the same
   tracker stream, applies only to the next genuinely newer live bidding variation, never
   overwrites an existing mapping, and is cleared by End or an extension reload.
@@ -103,6 +121,11 @@ auctioned again, the employee maps its new variation number.
   completed count, and pending reservation; a mismatch or changed stream saves nothing.
   Keep the TikTok dashboard open until the bounded Sheet check finishes because worker
   writes and End briefly queue behind that request, then catch up in order.
+- A newly confirmed baseline between streams treats the latest Sheet as the source of
+  truth, so SKU and item/style/size names may change for the next stream. The prior
+  stream's inventory handoff must be completed before renaming. Existing baselines and
+  saved reports retain their original names; renaming is never applied to an active
+  stream.
 - A compact **Live auction** panel that stays visible throughout an active local tracker
   stream, including while an employee reviews an older variation. A newly detected
   on-video auction immediately changes its heading to `Variation #N` and clears the prior
@@ -183,7 +206,10 @@ auctioned again, the employee maps its new variation number.
   the employee can confirm terminal cancellation or enter the seller-verified final price
   and mark the order complete. The worker updates canonical inventory/payment state and
   regenerates the same report rather than editing display text alone. Current reports can
-  be archived manually when space permits.
+  be renamed from **More actions** or archived manually when space permits. A renamed
+  title is local display metadata only: the existing timestamp remains the default, the
+  immutable stream reference does not change, and the name follows the report through
+  archive and restore.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
@@ -384,7 +410,8 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   to the nearest cent for display.
 - **Gross margin** is SKU gross profit divided by SKU mapped revenue. **Sell-through** is
   the current stream's mapped completed units for that SKU divided by its opening
-  quantity in the pinned baseline.
+  quantity in the pinned baseline, capped at 100% when completed sales exceed opening
+  stock. Oversold quantities and recount notices still retain the full shortage.
 
 The inventory handoff covers every row in the pinned baseline, not only SKUs sold during
 the stream. The report table displays every SKU's saved unit cost (including `$0.00`),
@@ -552,8 +579,10 @@ misconfigured build fail before requesting Google authorization.
    [`docs/google-sheets-inventory-template.csv`](docs/google-sheets-inventory-template.csv):
    use **File -> Import -> Upload**, import the CSV into the workbook, and rename the tab
    exactly `Inventory`. Keep the exact six headers and replace the dummy rows with the
-   physical opening count and unit cost for each SKU. Share the spreadsheet with the
-   Google account that will authorize the extension if it does not already own it.
+   physical opening count and unit cost for each SKU. Every size requires its own unique
+   SKU row; use the same item and style values for sizes that should share one live card.
+   Share the spreadsheet with the Google account that will authorize the extension if it
+   does not already own it.
 8. With no local tracker stream active, confirm **Google Sheets inventory** appears before
    the **Local stream session** Start controls. Paste the Sheet ID or its HTTPS
    `docs.google.com` sharing link into **Google Sheets inventory**, then select **Connect
@@ -620,6 +649,23 @@ misconfigured build fail before requesting Google authorization.
     button must disappear after returning, must not change any mapping, inventory, payment,
     or persisted auction data, and automatic switching must resume for the following
     auction. Do not refresh TikTok, close the panel, or choose Resume again.
+    With Sheet rows for one singleton and one item/style in sizes `7`, `8`, `9`, and `10`,
+    confirm the singleton remains a direct-action card and the four matching rows become
+    one card even when their quantities or unit costs differ. Before a size is chosen the
+    grouped card must show **Choose size**. Open it and confirm natural size order, each
+    exact SKU and per-size stock value, and any Selected, Live, or Queued badge. Choose
+    size `8` and confirm the compact card value is only `8`, without the word `selected`,
+    while the card's stock remains the aggregate across all four sizes. Search by item,
+    style, `10`, and each underlying SKU in turn; every match must retain all four options
+    in the reopened size list. Leave that list open while a payment, inventory, or queue
+    refresh arrives. Its visible rows and scroll position must stay fixed; after closing,
+    the newest aggregate and per-size state must render once.
+    Verify left-click plus a size maps, corrects, or unmaps only that exact SKU on the
+    displayed current or historical variation. Verify right-click plus a size follows the
+    same current-mapping/next-queue rules below, and while history is open it changes only
+    the worker-verified current/newest variation. Confirm the selected size's own unit
+    cost drives live profit, completed COGS, and profit even when another size in the same
+    card has a different cost.
     Before TikTok exposes any live variation, confirm the compact **Live auction** panel is
     present with `Variation # -` and dashes. During fast bidding, confirm it reaches the
     latest bid without visibly stepping through stale intermediate prices. A new variation
@@ -770,7 +816,11 @@ misconfigured build fail before requesting Google authorization.
     move the oldest finalized report into **Archived stream reports**, without deleting
     or changing it. Open that archived report and verify its report/PDF/CSV output is
     unchanged.
-24. Use **More actions** on a Business Record to archive it manually. The action must fail
+24. Use **More actions -> Rename** on a Business Record, save a test name, and verify that
+    the dashboard title and report-page **Report name** update while the original stream
+    reference remains in the report footer. Reload the extension, then archive and restore
+    the record to verify the name persists. Use **Use default** to restore its automatic
+    timestamp title. Then use **More actions -> Archive** to archive it manually. The action must fail
     without changing anything if the 25 archive slots or shared byte cap are full. With
     an open Business Records slot, select archived reports and use **Restore selected**;
     the complete selection must move back atomically. If the selection is larger than the
@@ -828,7 +878,7 @@ depend on Google after the baseline is confirmed locally. The report's copy and 
 actions prepare a local clipboard payload or file only after the employee chooses them;
 there is no Sheets write request.
 
-The inventory template contains only stable SKU, employee-facing item/style/size,
+The inventory template contains only baseline-local SKU, employee-facing item/style/size,
 physical quantity on hand at import, and unit cost. It intentionally excludes buyer,
 variation, payment, stream, and credential data. The quantity is a confirmed opening
 stock baseline; it is not a running value to edit after each sale. The importer validates
@@ -843,7 +893,8 @@ report-only unit-cost correction updates neither that baseline nor its fingerpri
 End-of-stream reports are also stored only in `chrome.storage.local`. A report contains
 the local stream reference and timestamps, inventory SKUs/item/style/size, unit costs and
 quantities, captured sale prices/status aggregates, calculated profit, and report
-notices. It contains no buyer identity, Google Sheet ID or sharing link, OAuth token, or
+notices, plus an optional locally assigned display name. It contains no buyer identity,
+Google Sheet ID or sharing link, OAuth token, or
 raw TikTok DOM text. Printing/Save as PDF and CSV download create local files only when
 the employee requests them; the extension does not upload those files.
 

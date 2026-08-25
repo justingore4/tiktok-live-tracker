@@ -584,12 +584,12 @@
         <div class="search-field">
           <span class="search-icon" aria-hidden="true"></span>
           <label class="visually-hidden" for="inventory-search">
-            Search inventory by item, style, or size
+            Search inventory by SKU, item, style, or size
           </label>
           <input
             id="inventory-search"
             type="search"
-            placeholder="Search item, style, or size"
+            placeholder="Search SKU, item, style, or size"
             autocomplete="off"
             spellcheck="false"
           >
@@ -606,10 +606,23 @@
 
         <div id="inventory-grid" class="inventory-grid" role="list"></div>
 
+        <span id="inventory-size-listbox-label" class="visually-hidden">
+          Choose an inventory size
+        </span>
+        <div
+          id="inventory-size-listbox"
+          class="inventory-size-listbox"
+          role="listbox"
+          tabindex="-1"
+          aria-labelledby="inventory-size-listbox-label"
+          popover="manual"
+          hidden
+        ></div>
+
         <div id="empty-state" class="empty-state" hidden>
           <div class="empty-state-icon" aria-hidden="true"></div>
           <h3>No inventory matches <strong id="empty-query"></strong></h3>
-          <p>Try a different item, style, or size.</p>
+          <p>Try a different SKU, item, style, or size.</p>
         </div>
       </section>
 
@@ -914,6 +927,54 @@
         </form>
       </dialog>
 
+      <dialog
+        id="report-rename-dialog"
+        class="report-action-confirmation report-rename-dialog"
+        aria-labelledby="report-rename-title"
+        aria-describedby="report-rename-description report-rename-error"
+      >
+        <form id="report-rename-form">
+          <h2 id="report-rename-title">Rename report</h2>
+          <p id="report-rename-description">
+            This changes only the saved report name. Its stream data and reference
+            stay the same.
+          </p>
+          <label for="report-rename-input">Report name</label>
+          <input
+            id="report-rename-input"
+            name="reportName"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            required
+          />
+          <p id="report-rename-error" class="field-error" role="alert" hidden></p>
+          <div class="report-action-confirmation-actions report-rename-actions">
+            <button
+              id="cancel-report-rename"
+              class="secondary-action"
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              id="reset-report-name"
+              class="secondary-action"
+              type="button"
+            >
+              Use default
+            </button>
+            <button
+              id="save-report-name"
+              class="primary-action"
+              type="submit"
+            >
+              Save name
+            </button>
+          </div>
+        </form>
+      </dialog>
+
       <footer class="app-footer" role="status" aria-live="polite" aria-atomic="true" hidden>
         <span class="status-dot" aria-hidden="true"></span>
         <span id="session-footer-label">Saved locally</span>
@@ -930,7 +991,7 @@
 
     <template id="inventory-card-template">
       <div class="inventory-card-wrapper" role="listitem">
-        <button class="inventory-card" type="button" aria-pressed="false">
+        <button class="inventory-card" type="button">
           <span class="card-heading">
             <span class="card-title">
               <span data-field="item"></span>
@@ -942,8 +1003,11 @@
           </span>
           <span class="card-meta">
             <span class="size-label">
-              <span>Size</span>
-              <strong data-field="size"></strong>
+              <span data-field="size-caption">Size</span>
+              <strong class="size-value">
+                <span data-field="size"></span>
+                <span class="size-chevron" aria-hidden="true"></span>
+              </strong>
             </span>
             <span class="stock-label" data-field="stock">
               <span class="stock-line" data-field="stock-primary"></span>

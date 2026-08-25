@@ -20,12 +20,14 @@ test("creates strict read and archive-management stream-report messages", () => 
     RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
     LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",
     UPDATE_REPORT_UNIT_COST: "update_report_unit_cost",
+    RENAME_REPORT: "rename_report",
     ARCHIVE_REPORTS: "archive_reports",
     RESTORE_REPORTS: "restore_reports",
     DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
   });
   assert.equal(protocol.MAX_ACTIVE_REPORTS, 5);
   assert.equal(protocol.MAX_ARCHIVED_REPORTS, 25);
+  assert.equal(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH, 80);
   assert.equal(protocol.MAX_TOTAL_REPORTS, 30);
 
   assert.deepEqual(
@@ -104,6 +106,38 @@ test("creates strict read and archive-management stream-report messages", () => 
   );
   assert.deepEqual(
     protocol.createStreamReportMessage({
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: "August launch stream",
+    }),
+    {
+      channel: protocol.MESSAGE_CHANNEL,
+      version: 1,
+      command: {
+        type: "rename_report",
+        reportId: REPORT_ID,
+        displayName: "August launch stream",
+      },
+    },
+  );
+  assert.deepEqual(
+    protocol.createStreamReportMessage({
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: null,
+    }),
+    {
+      channel: protocol.MESSAGE_CHANNEL,
+      version: 1,
+      command: {
+        type: "rename_report",
+        reportId: REPORT_ID,
+        displayName: null,
+      },
+    },
+  );
+  assert.deepEqual(
+    protocol.createStreamReportMessage({
       type: "archive_reports",
       reportIds: [REPORT_ID],
     }),
@@ -159,6 +193,42 @@ test("rejects malformed report messages and IDs", () => {
       unitCostCents: Number.MAX_SAFE_INTEGER + 1,
     },
     {
+      type: "rename_report",
+      reportId: "bad",
+      displayName: "Launch stream",
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: "",
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: " Launch stream",
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: "Launch\nstream",
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: "x".repeat(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH + 1),
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: 42,
+    },
+    {
+      type: "rename_report",
+      reportId: REPORT_ID,
+      displayName: null,
+      extra: true,
+    },
+    {
       type: "resolve_payment_fixing_order",
       reportId: REPORT_ID,
       variationNumber: 0,
@@ -206,6 +276,12 @@ test("rejects malformed report messages and IDs", () => {
       (error) => error instanceof protocol.StreamReportProtocolError,
     );
   });
+
+  assert.doesNotThrow(() => protocol.createStreamReportMessage({
+    type: "rename_report",
+    reportId: REPORT_ID,
+    displayName: "x".repeat(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH),
+  }));
 
   const valid = protocol.createStreamReportMessage({ type: "list_reports" });
   assert.throws(

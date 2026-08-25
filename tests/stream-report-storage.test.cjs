@@ -65,21 +65,98 @@ test("saves and restores a detached bounded report archive", async () => {
   const loaded = await store.loadRecords();
   assert.equal(loaded[0].report.metadata.streamId.startsWith("local-stream:"), true);
   assert.equal(storage.LEGACY_STORAGE_SCHEMA_VERSION, 1);
-  assert.equal(storage.STORAGE_SCHEMA_VERSION, 2);
+  assert.equal(storage.PREVIOUS_STORAGE_SCHEMA_VERSION, 2);
+  assert.equal(storage.STORAGE_SCHEMA_VERSION, 3);
   assert.equal(storage.MAX_ACTIVE_REPORTS, 5);
   assert.equal(storage.MAX_ARCHIVED_REPORTS, 25);
+  assert.equal(storage.MAX_REPORT_DISPLAY_NAME_LENGTH, 80);
   assert.equal(storage.MAX_TOTAL_REPORTS, 30);
   assert.equal(storage.TARGET_ARCHIVE_BYTES, 4 * 1024 * 1024);
   assert.equal(storage.LEGACY_MIGRATION_HEADROOM_BYTES, 4 * 1024);
+  assert.equal(storage.REPORT_DISPLAY_NAME_HEADROOM_BYTES, 4 * 1024);
   assert.equal(
-    storage.MAX_ARCHIVE_BYTES,
+    storage.PREVIOUS_MAX_ARCHIVE_BYTES,
     storage.TARGET_ARCHIVE_BYTES +
       storage.LEGACY_MIGRATION_HEADROOM_BYTES,
+  );
+  assert.equal(
+    storage.MAX_ARCHIVE_BYTES,
+    storage.PREVIOUS_MAX_ARCHIVE_BYTES +
+      storage.REPORT_DISPLAY_NAME_HEADROOM_BYTES,
   );
   assert.equal(
     storageArea.values[storage.STORAGE_KEY].schemaVersion,
     storage.STORAGE_SCHEMA_VERSION,
   );
+  assert.equal(Object.hasOwn(loaded[0], "displayName"), false);
+  assert.equal(
+    Object.hasOwn(
+      storageArea.values[storage.STORAGE_KEY].records[0],
+      "displayName",
+    ),
+    false,
+  );
+});
+
+test("persists validated custom report names while leaving default names implicit", async () => {
+  const storageArea = createStorageArea();
+  const store = storage.createStreamReportStore({ storageArea, streamReport });
+  const namedReport = createReport(1);
+  const defaultReport = createReport(2);
+  const records = [
+    {
+      reportId: namedReport.reportId,
+      lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+      archived: false,
+      displayName: "August launch stream",
+      report: namedReport,
+    },
+    {
+      reportId: defaultReport.reportId,
+      lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+      archived: false,
+      report: defaultReport,
+    },
+  ];
+
+  const saved = await store.saveRecords(records);
+  assert.equal(saved[0].displayName, "August launch stream");
+  assert.equal(Object.hasOwn(saved[1], "displayName"), false);
+
+  const reloaded = await storage.createStreamReportStore({
+    storageArea,
+    streamReport,
+  }).loadRecords();
+  assert.equal(reloaded[0].displayName, "August launch stream");
+  assert.equal(Object.hasOwn(reloaded[1], "displayName"), false);
+});
+
+test("rejects invalid saved custom report names", async () => {
+  const invalidNames = [
+    null,
+    "",
+    " padded",
+    "line\nbreak",
+    "x".repeat(storage.MAX_REPORT_DISPLAY_NAME_LENGTH + 1),
+  ];
+
+  for (const displayName of invalidNames) {
+    const storageArea = createStorageArea();
+    const store = storage.createStreamReportStore({ storageArea, streamReport });
+    const report = createReport();
+
+    await assert.rejects(
+      store.saveRecords([{
+        reportId: report.reportId,
+        lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+        archived: false,
+        displayName,
+        report,
+      }]),
+      (error) => error.code === "INVALID_REPORT_ARCHIVE",
+    );
+    assert.deepEqual(storageArea.values, {});
+  }
 });
 
 test("rejects mismatched wrapper IDs, duplicate streams, and oversized archives", async () => {
@@ -159,6 +236,31 @@ test("migrates legacy reports to active Business Records without data loss", asy
   );
 });
 
+test("migrates v2 reports to v3 without materializing default display names", async () => {
+  const report = createReport();
+  const previousRecord = {
+    reportId: report.reportId,
+    lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+    archived: true,
+    report,
+  };
+  const storageArea = createStorageArea({
+    [storage.STORAGE_KEY]: {
+      schemaVersion: storage.PREVIOUS_STORAGE_SCHEMA_VERSION,
+      records: [previousRecord],
+    },
+  });
+  const store = storage.createStreamReportStore({ storageArea, streamReport });
+  const loaded = await store.loadRecords();
+
+  assert.deepEqual(loaded, [previousRecord]);
+  assert.equal(Object.hasOwn(loaded[0], "displayName"), false);
+  assert.deepEqual(storageArea.values[storage.STORAGE_KEY], {
+    schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+    records: [previousRecord],
+  });
+});
+
 test("migration headroom keeps a near-cap legacy report archive-manageable", async () => {
   const report = createReport();
   const legacyRecord = {
@@ -207,11 +309,26 @@ test("migration headroom keeps a near-cap legacy report archive-manageable", asy
 });
 
 test("rejects stored envelopes that exceed their version-specific byte ceiling", async () => {
-  for (const legacy of [true, false]) {
-    const report = createReport(legacy ? 1 : 2);
-    report.padding = "x".repeat(
-      legacy ? storage.TARGET_ARCHIVE_BYTES : storage.MAX_ARCHIVE_BYTES,
-    );
+  const cases = [
+    {
+      schemaVersion: storage.LEGACY_STORAGE_SCHEMA_VERSION,
+      maxBytes: storage.TARGET_ARCHIVE_BYTES,
+    },
+    {
+      schemaVersion: storage.PREVIOUS_STORAGE_SCHEMA_VERSION,
+      maxBytes: storage.PREVIOUS_MAX_ARCHIVE_BYTES,
+    },
+    {
+      schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+      maxBytes: storage.MAX_ARCHIVE_BYTES,
+    },
+  ];
+
+  for (const [index, testCase] of cases.entries()) {
+    const legacy =
+      testCase.schemaVersion === storage.LEGACY_STORAGE_SCHEMA_VERSION;
+    const report = createReport(index + 1);
+    report.padding = "x".repeat(testCase.maxBytes);
     const record = {
       reportId: report.reportId,
       lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
@@ -220,9 +337,7 @@ test("rejects stored envelopes that exceed their version-specific byte ceiling",
     };
     const storageArea = createStorageArea({
       [storage.STORAGE_KEY]: {
-        schemaVersion: legacy
-          ? storage.LEGACY_STORAGE_SCHEMA_VERSION
-          : storage.STORAGE_SCHEMA_VERSION,
+        schemaVersion: testCase.schemaVersion,
         records: [record],
       },
     });

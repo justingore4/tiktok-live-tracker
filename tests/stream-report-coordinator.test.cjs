@@ -136,6 +136,9 @@ function createSavedRecord(index, options = {}) {
     reportId: report.reportId,
     lifecycleStatus: options.lifecycleStatus ?? "finalized",
     archived: options.archived ?? false,
+    ...(options.displayName === undefined
+      ? {}
+      : { displayName: options.displayName }),
     report,
   };
 }
@@ -169,6 +172,7 @@ test("prepares before End, finalizes idempotently, and exposes strict reads", as
   assert.deepEqual(await coordinator.dispatch({ type: "list_reports" }), {
     reports: [{
       reportId: prepared.reportId,
+      displayName: null,
       startedAt: STARTED_AT,
       endedAt: "2026-08-10T12:00:00.000Z",
       completeness: "final",
@@ -200,6 +204,7 @@ test("finds the newest finalized report across active and archived tiers", async
     {
       reportId: newestArchived.reportId,
       lifecycleStatus: "finalized",
+      displayName: null,
       report: newestArchived.report,
     },
   );
@@ -538,6 +543,124 @@ test("archive, restore, and permanent delete mutations are atomic and keep repor
   assert.deepEqual(store.read().map((record) => record.reportId), [
     records[2].reportId,
   ]);
+});
+
+test("renames an active finalized report and preserves the name through archive and restore", async () => {
+  const target = createSavedRecord(1);
+  const neighbor = createSavedRecord(2);
+  const originalReport = clone(target.report);
+  const store = createStore({ records: [target, neighbor] });
+  const coordinator = createCoordinator(store);
+  const rename = {
+    reportId: target.reportId,
+    displayName: "August launch stream",
+  };
+
+  assert.deepEqual(await coordinator.renameReport(rename), rename);
+  assert.equal(store.read()[0].displayName, rename.displayName);
+  assert.deepEqual(store.read()[0].report, originalReport);
+  assert.equal(
+    (await coordinator.listReports()).reports.find(
+      (summary) => summary.reportId === target.reportId,
+    ).displayName,
+    rename.displayName,
+  );
+  assert.equal(
+    (await coordinator.getReport(target.reportId)).displayName,
+    rename.displayName,
+  );
+
+  const saveCountAfterRename = store.saves.length;
+  assert.deepEqual(await coordinator.renameReport(rename), rename);
+  assert.equal(store.saves.length, saveCountAfterRename);
+
+  await coordinator.archiveReports([target.reportId]);
+  assert.equal(
+    (await coordinator.listArchivedReports()).reports.find(
+      (summary) => summary.reportId === target.reportId,
+    ).displayName,
+    rename.displayName,
+  );
+  assert.equal(
+    (await coordinator.getReport(target.reportId)).displayName,
+    rename.displayName,
+  );
+
+  await coordinator.restoreReports([target.reportId]);
+  assert.equal(
+    (await coordinator.listReports()).reports.find(
+      (summary) => summary.reportId === target.reportId,
+    ).displayName,
+    rename.displayName,
+  );
+
+  assert.deepEqual(
+    await coordinator.dispatch({
+      type: protocol.COMMAND_TYPES.RENAME_REPORT,
+      reportId: target.reportId,
+      displayName: null,
+    }),
+    { reportId: target.reportId, displayName: null },
+  );
+  assert.equal(Object.hasOwn(store.read()[0], "displayName"), false);
+  assert.equal(
+    (await coordinator.getReport(target.reportId)).displayName,
+    null,
+  );
+  assert.deepEqual(store.read()[0].report, originalReport);
+  assert.deepEqual(store.read()[1], neighbor);
+});
+
+test("rename rejects non-active reports and failed saves leave every record unchanged", async () => {
+  const active = createSavedRecord(1);
+  const archived = createSavedRecord(2, { archived: true });
+  const pending = createSavedRecord(3, { lifecycleStatus: "pending_end" });
+  const records = [active, archived, pending];
+  const store = createStore({ records });
+  const coordinator = createCoordinator(store);
+
+  await assert.rejects(
+    coordinator.renameReport({
+      reportId: archived.reportId,
+      displayName: "Archived report",
+    }),
+    (error) => error.code === "REPORT_NOT_ACTIVE",
+  );
+  await assert.rejects(
+    coordinator.renameReport({
+      reportId: pending.reportId,
+      displayName: "Pending report",
+    }),
+    (error) => error.code === "REPORT_NOT_FINALIZED",
+  );
+  await assert.rejects(
+    coordinator.renameReport({
+      reportId: active.reportId,
+      displayName: " padded",
+    }),
+    (error) => error.code === "INVALID_REPORT_DISPLAY_NAME",
+  );
+  await assert.rejects(
+    coordinator.renameReport({
+      reportId: "stream-report:99999999-1111-4111-8111-111111111111",
+      displayName: "Missing report",
+    }),
+    (error) => error.code === "REPORT_NOT_FOUND",
+  );
+  assert.deepEqual(store.read(), records);
+  assert.equal(store.saves.length, 0);
+
+  const failingStore = createStore({ records: [active], failSave: true });
+  const failingCoordinator = createCoordinator(failingStore);
+  await assert.rejects(
+    failingCoordinator.renameReport({
+      reportId: active.reportId,
+      displayName: "New report name",
+    }),
+    (error) => error.code === "STORAGE_WRITE_FAILED",
+  );
+  assert.deepEqual(failingStore.read(), [active]);
+  assert.equal(failingStore.saves.length, 0);
 });
 
 test("restore and archive capacity failures preserve every selected record", async () => {

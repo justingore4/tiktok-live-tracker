@@ -17,6 +17,7 @@
     const MAX_ARCHIVED_REPORTS = 25;
     const MAX_TOTAL_REPORTS =
       MAX_ACTIVE_REPORTS + MAX_ARCHIVED_REPORTS;
+    const MAX_REPORT_DISPLAY_NAME_LENGTH = 80;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const COMMAND_TYPES = Object.freeze({
@@ -27,6 +28,7 @@
       RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
       LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",
       UPDATE_REPORT_UNIT_COST: "update_report_unit_cost",
+      RENAME_REPORT: "rename_report",
       ARCHIVE_REPORTS: "archive_reports",
       RESTORE_REPORTS: "restore_reports",
       DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
@@ -50,6 +52,7 @@
         "type",
         "unitCostCents",
       ],
+      [COMMAND_TYPES.RENAME_REPORT]: ["displayName", "reportId", "type"],
       [COMMAND_TYPES.ARCHIVE_REPORTS]: ["reportIds", "type"],
       [COMMAND_TYPES.RESTORE_REPORTS]: ["reportIds", "type"],
       [COMMAND_TYPES.DELETE_ARCHIVED_REPORTS]: ["reportIds", "type"],
@@ -123,6 +126,7 @@
           COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
           COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
           COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+          COMMAND_TYPES.RENAME_REPORT,
         ].includes(command.type) &&
         (
           typeof command.reportId !== "string" ||
@@ -193,6 +197,23 @@
             "unitCostCents must be a nonnegative safe integer.",
           );
         }
+      }
+
+      if (
+        command.type === COMMAND_TYPES.RENAME_REPORT &&
+        command.displayName !== null &&
+        (
+          typeof command.displayName !== "string" ||
+          command.displayName.length < 1 ||
+          command.displayName.length > MAX_REPORT_DISPLAY_NAME_LENGTH ||
+          command.displayName !== command.displayName.trim() ||
+          /[\u0000-\u001f\u007f]/.test(command.displayName)
+        )
+      ) {
+        fail(
+          "INVALID_REPORT_DISPLAY_NAME",
+          `displayName must be null or a trimmed name of at most ${MAX_REPORT_DISPLAY_NAME_LENGTH} characters.`,
+        );
       }
 
       if (REPORT_ID_LIST_COMMANDS.has(command.type)) {
@@ -288,6 +309,7 @@
       COMMAND_TYPES,
       MAX_ACTIVE_REPORTS,
       MAX_ARCHIVED_REPORTS,
+      MAX_REPORT_DISPLAY_NAME_LENGTH,
       MAX_TOTAL_REPORTS,
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,

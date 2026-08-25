@@ -250,7 +250,8 @@ profitable by gross profit, with all ties preserved. Average sale price is mappe
 completed-sale revenue divided by mapped completed units for that SKU and is rounded to
 the nearest cent for display. SKU gross margin is gross profit divided by mapped revenue;
 sell-through is that stream's mapped completed units divided by the baseline opening
-quantity.
+quantity and is capped at 100% for display. Oversold quantities and recount warnings keep
+the full shortage.
 The report's **AOV** uses the same current-stream formula and nearest-cent rounding as the
 live card, and displays `$0.00` when no eligible completion exists.
 The report also derives **TikTok 6% Fees** from its frozen Attributed GMV display using the
@@ -360,7 +361,8 @@ fails closed until that public placeholder is replaced.
 4. Import [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv)
    into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
    headers, and replace the dummy rows with the physical opening count and unit cost.
-   Give the authorizing Google account read access.
+   Keep every size on its own unique-SKU row; repeat the same item and style for sizes that
+   should share one live card. Give the authorizing Google account read access.
 5. With no local tracker stream active, open the side panel, which defaults to **Live
    session**. Paste the Sheet ID or its
    HTTPS `docs.google.com` sharing link, and select **Connect and preview**. The manifest
@@ -411,12 +413,19 @@ dashboard observer can continue collecting sanitized facts while the Sheet is ch
 but worker persistence, mapping commands, and End remain briefly queued behind that
 bounded request; keep the TikTok dashboard open until the result appears.
 
+Grouping in the live side panel is presentation-only. Rows with the same normalized item
+and style share a card, but each size retains its exact Sheet SKU, count, and unit cost for
+mapping, queueing, reconciliation, reports, and the Sheet handoff. Search can match any
+group item, style, size, or underlying SKU and keeps the whole matched group available.
+
 After End, the local report can copy or download an exact six-column replacement
 table for an employee to paste/import manually. A new physical recount is another
-pre-stream import after End; it cannot alter the opening quantity, SKU identity, or pin
-of an active or historical stream. A saved report's separate cost control edits only that
-report and its copy/CSV handoff, even when the report is older or archived or another
-stream is active.
+pre-stream import after End. It may rename SKU or item/style/size values for future
+streams, but it cannot alter the opening quantity, identifiers, or pin of an active or
+historical stream. Complete the prior report's handoff before renaming so its older
+six-column export cannot restore the previous names. A saved report's separate cost
+control edits only that report and its copy/CSV handoff, even when the report is older or
+archived or another stream is active.
 
 For distribution, the OAuth client must use the final Chrome Web Store item ID rather
 than a temporary unpacked ID. The Store listing also needs accurate privacy disclosures
@@ -479,27 +488,46 @@ screen test-user run does not complete those release reviews.
    then disappear and resume automatic follow. Confirm this navigation does not alter any
    mapping, inventory, payment, or persisted auction data. A later status-only update must
    not steal selection.
-   On that current/newest variation, right-click an inventory card while no item is
-   selected and confirm it maps the current variation. Right-click the same card again and
-   confirm its outline becomes half selected-green and half queue-red without changing
-   the current mapping; a third right-click must remove only the red queue half.
-   Queue another SKU and confirm it has a red-only outline, then left-click the currently
-   selected card to unmap it: the queued outline must remain. Let the next newer live
+   Include one singleton and four unique-SKU Sheet rows with the same item/style and sizes
+   `7`, `8`, `9`, and `10`; vary their quantities and at least two unit costs. Confirm one
+   grouped card plus one singleton card appears. The singleton must retain direct click
+   behavior. The grouped card must show aggregate stock and **Choose size** until a
+   relevant size is selected. Open it and verify natural numeric order, exact SKU and
+   per-size stock for every option, plus exact Selected, Live, and Queued badges. Choose
+   size `8` and confirm the collapsed card shows only `8`, not `selected`.
+   Search by item, style, one size, and each SKU in turn. Each match must retain all four
+   size options. Keep the size list open and scrolled while a payment, mapping, inventory,
+   or queue refresh arrives; its visible options must remain unchanged. Close it and
+   confirm the latest aggregate/per-size render applies once.
+   Reopen the size list, let a genuinely newer variation arrive, then try the frozen
+   option. Confirm no mapping or queue changes, a retry message appears, and reopening
+   the refreshed card targets the new variation normally.
+   On the current/newest variation, right-click an inventory card while no item is
+   selected, choose an exact size when required, and confirm that SKU maps the current
+   variation. Right-click the same card and choose that size again; confirm its outline
+   becomes half selected-green and half queue-red without changing the current mapping.
+   Repeat the right-click and exact size choice to remove only the red queue half.
+   Queue another exact size/SKU and confirm its card has a red-only or combined outline,
+   with the Queued badge on only that option. Then left-click the currently selected card
+   and choose its mapped size to unmap it: the queued outline must remain. Let the next newer live
    bidding variation arrive and confirm the queued SKU maps exactly once and the red
    outline clears. Repeat with an already manually mapped next variation and confirm the
-   queue never overwrites it. While reviewing history, confirm left-click still maps or
-   unmaps only that displayed historical variation. Right-click a card and confirm the
-   worker-verified current/newest variation is mapped or remapped while history stays
-   selected; repeating the blue current SKU must unmap it and remove the blue outline,
-   while another right-click maps it again. No historical right-click may create, replace,
-   or clear a queue. Confirm the historical SKU has a green outline, the mapped
-   current/newest SKU has a blue outline during bidding and between auctions, and one
+   queue never overwrites it. While reviewing history, confirm left-click plus a size
+   maps or unmaps only that exact SKU on the displayed historical variation. Right-click
+   a card, then left-click a size, and confirm the worker-verified current/newest variation
+   is mapped or remapped while history stays selected; repeating the blue current size
+   must unmap it and remove the blue role, while another right-click and size choice maps
+   it again. No historical right-click may create, replace, or clear a queue. Confirm the
+   historical SKU has a green outline, the mapped current/newest SKU has a blue outline
+   during bidding and between auctions, and one
    shared SKU uses the combined green/blue outline. A queue armed before opening history
    must remain active and retain
    its red role. If a newer variation arrives before the worker handles the command,
    confirm the stale request changes neither mapping nor queue and the panel refreshes.
    Reopen the panel and reload the TikTok page during the same stream to confirm the queue
-   remains; successful End must clear it.
+   remains; successful End must clear it. Complete a sale for a grouped size whose unit
+   cost differs from its siblings and confirm live profit, committed COGS, report rows,
+   and inventory decrement all use only that exact SKU and cost.
    Reloading the extension itself must also clear it. Chrome's normal context menu should
    remain available everywhere except directly on an inventory card.
    Before the first auction, confirm the compact **Live auction** panel shows
@@ -660,7 +688,11 @@ screen test-user run does not complete those release reviews.
     only the newest five should remain in Business Records, while the oldest finalized
     one must move intact to **Archived stream reports**. Open that archived report and
     verify its Print/Save-as-PDF and inventory CSV actions still work.
-18. Exercise **More actions -> Archive** on a current report. In the archive, use Select,
+18. Exercise **More actions -> Rename** on a current report. Verify its custom title appears
+    on the dashboard and report cover, its original stream reference appears in the report
+    footer unchanged, and the name persists after reload plus archive/restore. Restore the
+    automatic timestamp title with **Use default**. Then exercise **More actions -> Archive**
+    on that current report. In the archive, use Select,
     Select all, and Clear selection. Restore a selection no larger than the available
     Business Records slots and verify every selected report moves atomically. Attempt an
     oversized restore and verify none moves. Select disposable archived records, choose
@@ -677,10 +709,12 @@ Only the persisted `activeBiddingVariationNumber` from the strict on-video card 
 the current bidding auction. A changed marker is selected automatically only while the
 employee is viewing the previously current auction. While the employee reviews a
 historical variation, new markers and status changes continue being captured but do not
-change its selection. Visible option mutations are deferred while the accessible listbox
-is open so a background refresh cannot close it or reset its scroll position. Only the
-newest deferred saved view is retained and applied once when the employee selects or
-dismisses the listbox. A
+change its selection. Visible option mutations are deferred while the accessible variation
+listbox is open so a background refresh cannot close it or reset its scroll position. Only
+the newest deferred saved view is retained and applied once when the employee selects or
+dismisses the listbox. The inventory size list uses the same visible-stability rule:
+canonical and queue refreshes may continue, but its visible size/SKU options remain fixed
+until close, when the newest deferred inventory render is applied once. A
 compact **Return to live item** action is visible only in that historical-review state. It
 targets the active bidding variation when available and otherwise the newest captured
 variation; selecting it resumes automatic follow without a mapping, inventory, payment,
@@ -806,6 +840,15 @@ node --test .\tests\inventory-import-client.test.cjs
 node --test .\tests\inventory-import-controller.test.cjs
 ```
 
+Run the grouped inventory presentation and exact-SKU interaction checks directly with:
+
+```powershell
+node --test .\tests\inventory-view-model.test.cjs
+node --test .\tests\extension-sidepanel.test.cjs
+node --test .\tests\mapping-workflow.test.cjs
+node --test .\tests\next-item-queue-state.test.cjs
+```
+
 These tests use fixtures and in-memory storage. They do not require TikTok, Google
 Sheets network access, an OAuth client, or a live stream.
 
@@ -887,6 +930,9 @@ outbound Sheets writes remain intentionally absent.
   and scroll position while capture and persistence continue, then applies the newest
   deferred saved view once after selection or dismissal. The same mapping
   remains attached when Sold Items payment truth arrives.
+- An open multi-size inventory list similarly freezes its visible options during
+  canonical or queue refresh and applies the newest deferred inventory render on close;
+  underlying capture and persistence are not paused.
 - There is no visible capture connection, retry, or queue-drained indicator yet.
 - Browser or process suspension can delay scans and delivery retries.
 - The retained live-auction display is temporary session state rather than reconciliation

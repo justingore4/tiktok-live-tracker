@@ -317,9 +317,13 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   const footerSource = html.match(
     /<footer class="app-footer"[\s\S]*?<\/footer>/,
   )?.[0];
+  const inventoryCardTemplateSource = html.match(
+    /<template id="inventory-card-template">[\s\S]*?<\/template>/,
+  )?.[0];
 
   assert.ok(headerSource);
   assert.ok(footerSource);
+  assert.ok(inventoryCardTemplateSource);
   assert.match(html, /<label[^>]+for="inventory-search"/);
   assert.match(html, /id="variation-selector-label"[^>]+visually-hidden/);
   assert.doesNotMatch(headerSource, /<button/);
@@ -452,7 +456,8 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /id="result-count"[^>]+aria-live="polite"/);
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
-  assert.match(html, /<button class="inventory-card"[^>]+aria-pressed="false"/);
+  assert.match(inventoryCardTemplateSource, /<button class="inventory-card" type="button">/);
+  assert.doesNotMatch(inventoryCardTemplateSource, /aria-pressed|role="combobox"/);
   assert.match(
     html,
     /data-field="stock"[\s\S]+data-field="stock-primary"[\s\S]+data-field="stock-secondary"[\s\S]+hidden/,
@@ -791,7 +796,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.ok(inventoryClickHandler);
   assert.match(
     panelSource,
-    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+    /const selectionAllowed = group\.entries\.some\([\s\S]*?entry\.selectionAllowed[\s\S]*?button\.disabled = !selectionAllowed \|\| !canTagSelectedVariation/,
   );
   assert.match(
     panelSource,
@@ -844,7 +849,11 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     /\.return-to-current-live\s*\{[\s\S]*?min-height: 34px;[\s\S]*?font-size: 10px;/,
   );
   assert.match(panelSource, /view\.selectedVariationNumber/);
-  assert.match(panelSource, /setAttribute\("aria-pressed", String\(selected\)\)/);
+  assert.match(panelSource, /button\.dataset\.selected = String\(selected\)/);
+  assert.match(
+    panelSource,
+    /if \(multipleSizes\) \{[\s\S]*?button\.setAttribute\("role", "combobox"\)[\s\S]*?\} else \{[\s\S]*?button\.setAttribute\("aria-pressed", String\(selected\)\)/,
+  );
   assert.match(panelSource, /Click to unselect this item/);
   assert.match(
     panelSource,
@@ -1233,7 +1242,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     styleSource,
-    /\.inventory-card\[aria-pressed="true"\]\[data-queued="true"\]\s*\{[\s\S]+linear-gradient\([\s\S]+90deg,[\s\S]+var\(--cyan\) 0 50%,[\s\S]+#ff737e 50% 100%/,
+    /\.inventory-card\[data-selected="true"\]\[data-queued="true"\]\s*\{[\s\S]+linear-gradient\([\s\S]+90deg,[\s\S]+var\(--cyan\) 0 50%,[\s\S]+#ff737e 50% 100%/,
   );
   assert.match(
     styleSource,
@@ -1241,7 +1250,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     styleSource,
-    /\.inventory-card\[aria-pressed="true"\]\[data-current-mapped="true"\]\s*\{[\s\S]+var\(--cyan\) 0 50%[\s\S]+#62aaff 50% 100%/,
+    /\.inventory-card\[data-selected="true"\]\[data-current-mapped="true"\]\s*\{[\s\S]+var\(--cyan\) 0 50%[\s\S]+#62aaff 50% 100%/,
   );
   assert.match(
     styleSource,
@@ -1249,9 +1258,308 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     styleSource,
-    /\.inventory-card\[aria-pressed="true"\]\[data-current-mapped="true"\]\[data-queued="true"\]\s*\{[\s\S]+var\(--cyan\) 0 33\.333%[\s\S]+#62aaff 33\.333% 66\.666%[\s\S]+#ff737e 66\.666% 100%/,
+    /\.inventory-card\[data-selected="true"\]\[data-current-mapped="true"\]\[data-queued="true"\]\s*\{[\s\S]+var\(--cyan\) 0 33\.333%[\s\S]+#62aaff 33\.333% 66\.666%[\s\S]+#ff737e 66\.666% 100%/,
   );
   assert.doesNotMatch(html, /data-field="queued"|class="queued-label"/);
+});
+
+test("grouped multi-size inventory cards keep exact-SKU mapping and queue actions accessible", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const cardSource = panelSource.slice(
+    panelSource.indexOf("function createInventoryCard(group, view)"),
+    panelSource.indexOf("function formatResultCount("),
+  );
+  const sizeActionDescriptionSource = panelSource.slice(
+    panelSource.indexOf("function getInventorySizeOptionActionDescription("),
+    panelSource.indexOf("function renderInventorySizeOptions("),
+  );
+  const sizeOptionsSource = panelSource.slice(
+    panelSource.indexOf("function renderInventorySizeOptions(group, view, intent)"),
+    panelSource.indexOf("function hideInventorySizeListbox()"),
+  );
+  const activeSizeSource = panelSource.slice(
+    panelSource.indexOf("function setActiveInventorySize(sku, options = {})"),
+    panelSource.indexOf("function moveActiveInventorySize(offset)"),
+  );
+  const releaseSource = panelSource.slice(
+    panelSource.indexOf("function releaseInventorySizeMenu(options = {})"),
+    panelSource.indexOf("function resetInventorySizeMenu()"),
+  );
+  const deferredFlushSource = panelSource.slice(
+    panelSource.indexOf("function flushDeferredInventoryRender()"),
+    panelSource.indexOf("function resetInventorySizeMenu()"),
+  );
+  const openSizeMenuSource = panelSource.slice(
+    panelSource.indexOf("function openInventorySizeMenu(trigger, intent"),
+    panelSource.indexOf("function getVariationOptionDisplay("),
+  );
+  const inventoryRenderer = panelSource.slice(
+    panelSource.indexOf("function renderInventory(view, focusSku = null)"),
+    panelSource.indexOf("function renderMetrics(view)"),
+  );
+  const pickerActionSource = panelSource.slice(
+    panelSource.indexOf("function selectInventorySizeFromPicker(sku)"),
+    panelSource.indexOf("function commitActiveInventorySize()"),
+  );
+  const pickerKeyboardSource = panelSource.slice(
+    panelSource.indexOf("function handleInventorySizeMenuKeydown(event)"),
+    panelSource.indexOf('searchInput.addEventListener("input"'),
+  );
+  const inventoryClickSource = panelSource.slice(
+    panelSource.indexOf('inventoryGrid.addEventListener("click"'),
+    panelSource.indexOf('inventoryGrid.addEventListener("contextmenu"'),
+  );
+  const inventoryContextSource = panelSource.slice(
+    panelSource.indexOf('inventoryGrid.addEventListener("contextmenu"'),
+    panelSource.indexOf('inventoryGrid.addEventListener("keydown"'),
+  );
+
+  assert.ok(cardSource.length > 0);
+  assert.ok(sizeActionDescriptionSource.length > 0);
+  assert.ok(sizeOptionsSource.length > 0);
+  assert.ok(activeSizeSource.length > 0);
+  assert.ok(releaseSource.length > 0);
+  assert.ok(deferredFlushSource.length > 0);
+  assert.ok(openSizeMenuSource.length > 0);
+  assert.ok(inventoryRenderer.length > 0);
+  assert.ok(pickerActionSource.length > 0);
+  assert.ok(pickerKeyboardSource.length > 0);
+
+  assert.match(
+    html,
+    /id="inventory-size-listbox-label"[\s\S]*?Choose an inventory size[\s\S]*?id="inventory-size-listbox"[\s\S]*?role="listbox"[\s\S]*?tabindex="-1"[\s\S]*?aria-labelledby="inventory-size-listbox-label"[\s\S]*?popover="manual"[\s\S]*?hidden/,
+  );
+  assert.match(
+    html,
+    /Search inventory by SKU, item, style, or size[\s\S]*?placeholder="Search SKU, item, style, or size"/,
+  );
+
+  assertTextOrder(
+    inventoryRenderer,
+    [
+      "viewModel.groupInventoryEntries(view.inventory)",
+      "viewModel.filterInventoryGroups(",
+      "filteredInventory.forEach((group)",
+      "createInventoryCard(group, view)",
+    ],
+    "inventory rows must be grouped before a query filters and renders whole groups",
+  );
+  assert.match(
+    inventoryRenderer,
+    /if \(inventorySizeMenuState\) \{[\s\S]*?deferredInventoryRender = \{ view, focusSku \};[\s\S]*?return;/,
+  );
+
+  assert.match(cardSource, /const multipleSizes = group\.entries\.length > 1/);
+  assert.match(
+    cardSource,
+    /button\.dataset\.variantSkus = JSON\.stringify\([\s\S]*?group\.entries\.map\(\(entry\) => entry\.sku\)/,
+  );
+  assert.match(
+    cardSource,
+    /if \(!multipleSizes && representativeEntry\) \{[\s\S]*?button\.dataset\.sku = representativeEntry\.sku/,
+  );
+  assert.match(
+    cardSource,
+    /if \(multipleSizes\) \{[\s\S]*?setAttribute\("role", "combobox"\)[\s\S]*?aria-haspopup", "listbox"[\s\S]*?aria-controls", "inventory-size-listbox"[\s\S]*?aria-expanded", "false"[\s\S]*?aria-autocomplete", "none"/,
+  );
+  assert.match(
+    inventoryClickSource,
+    /button\.dataset\.multipleSizes === "true"[\s\S]*?openInventorySizeMenu\(button, "ordinary"\)[\s\S]*?saveOrdinaryInventorySelection\(button, view\)/,
+  );
+  assert.match(
+    inventoryContextSource,
+    /button\.dataset\.multipleSizes === "true"[\s\S]*?openInventorySizeMenu\(button, "context"\)[\s\S]*?mapCurrentVariationFromHistory\(button, view\)[\s\S]*?toggleNextItemQueue\(button, view\)/,
+  );
+
+  assert.match(
+    cardSource,
+    /const selectedEntry = group\.entries\.find\(\(entry\) => entry\.selected\) \?\? null/,
+  );
+  assert.match(
+    cardSource,
+    /const queuedEntry = group\.entries\.find\([\s\S]*?entry\.sku === queuedNextItemSku/,
+  );
+  assert.match(
+    cardSource,
+    /const mappedToCurrent =[\s\S]*?group\.entries\.some\(\(entry\) => entry\.sku === currentMappedSku\)/,
+  );
+  assert.match(cardSource, /button\.dataset\.queued = String\(queued\)/);
+  assert.match(
+    cardSource,
+    /button\.dataset\.currentMapped = String\(mappedToCurrent\)/,
+  );
+  assert.match(
+    cardSource,
+    /button\.dataset\.selected = String\(selected\)/,
+  );
+  assert.match(
+    cardSource,
+    /if \(multipleSizes\) \{[\s\S]*?button\.setAttribute\("role", "combobox"\)[\s\S]*?\} else \{[\s\S]*?button\.setAttribute\("aria-pressed", String\(selected\)\)/,
+  );
+  assert.doesNotMatch(
+    cardSource.slice(
+      cardSource.indexOf("if (multipleSizes)"),
+      cardSource.indexOf("} else {", cardSource.indexOf("if (multipleSizes)")),
+    ),
+    /aria-pressed/,
+    "multi-size combobox cards must not expose the button-only aria-pressed state",
+  );
+  assert.match(
+    cardSource,
+    /\[data-field="size-caption"\]'\)\.hidden = multipleSizes/,
+  );
+  assert.match(
+    cardSource,
+    /\[data-field="size"\]'\)\.textContent = multipleSizes[\s\S]*?\? preferredEntry[\s\S]*?\? preferredEntry\.size \|\| "No size"[\s\S]*?: "Choose size"/,
+  );
+
+  assert.match(
+    sizeActionDescriptionSource,
+    /intent === "ordinary"[\s\S]*?Unmap this size from variation[\s\S]*?Map variation[\s\S]*?if \(reviewingHistory\)[\s\S]*?Unmap this size from current variation[\s\S]*?Map current variation[\s\S]*?Remove this size from the next variation queue[\s\S]*?Queue this size for the next variation without changing the current mapping/,
+  );
+  assert.match(
+    sizeOptionsSource,
+    /function renderInventorySizeOptions\(group, view, intent\)/,
+  );
+  assert.match(sizeOptionsSource, /option\.dataset\.sku = entry\.sku/);
+  assert.match(
+    sizeOptionsSource,
+    /option\.setAttribute\("role", "option"\)[\s\S]*?aria-selected[\s\S]*?aria-disabled/,
+  );
+  assert.match(
+    sizeOptionsSource,
+    /if \(selected\)[\s\S]*?createInventorySizeBadge\("Selected", "selected"\)[\s\S]*?if \(mappedToCurrent\)[\s\S]*?createInventorySizeBadge\("Live", "current"\)[\s\S]*?if \(queued\)[\s\S]*?createInventorySizeBadge\("Queued", "queued"\)/,
+  );
+  assert.match(
+    sizeOptionsSource,
+    /entry\.selectionAllowed[\s\S]*?getInventorySizeOptionActionDescription\(entry, view, intent\)[\s\S]*?: entry\.selectionReason/,
+  );
+  assert.match(
+    activeSizeSource,
+    /trigger\.setAttribute\("aria-activedescendant", nextRow\.id\)/,
+  );
+  assert.match(
+    panelSource,
+    /inventorySizeListbox\.addEventListener\("click",[\s\S]*?selectInventorySizeFromPicker\(option\.dataset\.sku\)/,
+  );
+  assert.match(
+    pickerActionSource,
+    /view\?\.inventory\.find\(\(candidate\) => candidate\.sku === sku\)[\s\S]*?const actionTarget = \{ dataset: \{ sku \} \}/,
+  );
+  assert.match(
+    openSizeMenuSource,
+    /inventorySizeMenuState = \{[\s\S]*?groupKey: group\.key,[\s\S]*?intent,[\s\S]*?trigger,[\s\S]*?streamId: mountedStreamId,[\s\S]*?selectedVariationNumber: view\.selectedVariationNumber,[\s\S]*?currentVariationNumber: view\.currentVariationNumber[\s\S]*?\};[\s\S]*?renderInventorySizeOptions\(group, view, intent\)/,
+  );
+  assert.match(
+    pickerActionSource,
+    /state\.streamId !== mountedStreamId \|\|[\s\S]*?state\.selectedVariationNumber !== view\?\.selectedVariationNumber \|\|[\s\S]*?state\.currentVariationNumber !== view\?\.currentVariationNumber/,
+  );
+  assertTextOrder(
+    pickerActionSource,
+    [
+      "state.streamId !== mountedStreamId",
+      "releaseInventorySizeMenu()",
+      "The live variation changed while you were choosing a size",
+      "return;",
+      "if (!state || !view || !entry || !entry.selectionAllowed)",
+      "const intent = state.intent",
+    ],
+    "a size action must be refused before mapping if its pinned stream or variation context changed",
+  );
+  assertTextOrder(
+    pickerActionSource,
+    [
+      'if (intent === "ordinary")',
+      "saveOrdinaryInventorySelection(actionTarget, view)",
+      "view.isReviewingHistory",
+      "mapCurrentVariationFromHistory(actionTarget, view)",
+      "toggleNextItemQueue(actionTarget, view)",
+    ],
+    "an exact child SKU must route to ordinary mapping, historical live mapping, or current queueing",
+  );
+
+  assertTextOrder(
+    releaseSource,
+    [
+      "const deferred = deferredInventoryRender",
+      "inventorySizeMenuState = null",
+      "hideInventorySizeListbox()",
+      "if (flush && deferred?.view)",
+      "deferredInventoryRender = null",
+      "renderInventory(deferred.view, null)",
+    ],
+    "closing the size picker must flush only its latest deferred inventory view",
+  );
+  assert.doesNotMatch(
+    releaseSource.slice(0, releaseSource.indexOf("if (flush && deferred?.view)")),
+    /deferredInventoryRender = null/,
+    "flush=false must preserve a deferred view while switching directly to another card",
+  );
+  assert.match(
+    releaseSource,
+    /if \(flush && deferred\?\.view\) \{[\s\S]*?deferredInventoryRender = null;[\s\S]*?renderInventory\(deferred\.view, null\)[\s\S]*?\} else if \(flush\) \{[\s\S]*?deferredInventoryRender = null/,
+  );
+  assert.match(
+    openSizeMenuSource,
+    /if \(inventorySizeMenuState\) \{[\s\S]*?releaseInventorySizeMenu\(\{ flush: false \}\)/,
+  );
+  assert.match(
+    deferredFlushSource,
+    /if \(inventorySizeMenuState \|\| !deferredInventoryRender\?\.view\) \{[\s\S]*?return;[\s\S]*?const deferred = deferredInventoryRender;[\s\S]*?const focusedInventorySku = getFocusedInventorySku\(\);[\s\S]*?const focusSku = focusedInventorySku \?\?[\s\S]*?deferred\.focusSku[\s\S]*?deferredInventoryRender = null;[\s\S]*?renderInventory\(deferred\.view, focusSku\)/,
+  );
+  assert.match(
+    pickerKeyboardSource,
+    /event\.key === "Escape"[\s\S]*?event\.key === "ArrowDown"[\s\S]*?event\.key === "ArrowUp"[\s\S]*?event\.key === "Home"[\s\S]*?event\.key === "End"[\s\S]*?event\.key === "Enter"[\s\S]*?event\.key === "Tab"/,
+  );
+  assert.match(
+    pickerKeyboardSource,
+    /event\.key === "Tab"[\s\S]*?releaseInventorySizeMenu\(\{ flush: false \}\)[\s\S]*?window\.setTimeout\(flushDeferredInventoryRender, 0\)/,
+  );
+  assert.match(
+    pickerKeyboardSource,
+    /event\.key === "ContextMenu" \|\| \(event\.shiftKey && event\.key === "F10"\)[\s\S]*?openInventorySizeMenu\(button, "context"\)/,
+  );
+  assert.match(
+    pickerKeyboardSource,
+    /document\.addEventListener\([\s\S]*?"pointerdown"[\s\S]*?!inventorySizeListbox\.contains\(event\.target\)[\s\S]*?releaseInventorySizeMenu\(/,
+  );
+  assert.match(
+    pickerKeyboardSource,
+    /document\.addEventListener\("focusin",[\s\S]*?!inventorySizeListbox\.contains\(event\.target\)[\s\S]*?releaseInventorySizeMenu\(\)/,
+  );
+
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-multiple-sizes="true"\] \.size-chevron\s*\{[\s\S]*?display: inline-block/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-size-listbox\s*\{[\s\S]*?position: fixed[\s\S]*?overflow-y: auto/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-size-option\[data-active="true"\][\s\S]*?background:/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-size-option-badge\[data-tone="selected"\][\s\S]*?var\(--cyan\)[\s\S]*?\.inventory-size-option-badge\[data-tone="current"\][\s\S]*?#62aaff[\s\S]*?\.inventory-size-option-badge\[data-tone="queued"\][\s\S]*?#ff737e/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-selected="true"\]\[data-current-mapped="true"\]\[data-queued="true"\][\s\S]*?var\(--cyan\) 0 33\.333%[\s\S]*?#62aaff 33\.333% 66\.666%[\s\S]*?#ff737e 66\.666% 100%/,
+  );
 });
 
 test("canceled variation cards stay selectable for reference-only item changes", () => {
@@ -1269,7 +1577,7 @@ test("canceled variation cards stay selectable for reference-only item changes",
     "utf8",
   );
   const cardSource = panelSource.match(
-    /function createInventoryCard\(entry, view\) \{[\s\S]*?\n  \}/,
+    /function createInventoryCard\(group, view\) \{[\s\S]*?function formatResultCount/,
   )?.[0];
   const clickSource = panelSource.match(
     /function saveOrdinaryInventorySelection\(button, view\)[\s\S]*?searchInput\.addEventListener\("input"/,
@@ -1281,7 +1589,7 @@ test("canceled variation cards stay selectable for reference-only item changes",
   assert.doesNotMatch(workflowSource, /CANCELED_VARIATION_IMMUTABLE/);
   assert.match(
     cardSource,
-    /button\.disabled = !entry\.selectionAllowed \|\| !canTagSelectedVariation/,
+    /const selectionAllowed = group\.entries\.some\([\s\S]*?entry\.selectionAllowed[\s\S]*?button\.disabled = !selectionAllowed \|\| !canTagSelectedVariation/,
   );
   assert.match(cardSource, /Click to unselect this reference item/);
   assert.match(cardSource, /No inventory (?:is|will be) changed/);
@@ -1441,7 +1749,9 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
     reportLinkSource,
     /summary\.completedPaymentCount[\s\S]+summary\.totalSalesCount[\s\S]+summary\.completedGmvCents/,
   );
-  assert.match(reportLinkSource, /Open stream report from/);
+  assert.match(reportLinkSource, /const reportDisplayName = getReportDisplayName\(summary\)/);
+  assert.match(reportLinkSource, /title\.textContent = reportDisplayName/);
+  assert.match(reportLinkSource, /`Open \$\{reportDisplayName\}`/);
   assert.doesNotMatch(
     reportLinkSource,
     /summary\.completeness|stream-report-link-state|data-completeness|\b(?:Final|Provisional)\b/,
@@ -1500,6 +1810,75 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
 });
 
+test("dashboard report names use the saved custom name with the timestamp as the default", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const displayNameSource = panelSource.match(
+    /function getReportDisplayName\(summary\)[\s\S]*?function setReportRenameError/,
+  )?.[0];
+  const requestRenameSource = panelSource.match(
+    /function requestReportRename\(summary, returnFocusTarget\)[\s\S]*?async function savePendingReportName/,
+  )?.[0];
+  const saveRenameSource = panelSource.match(
+    /async function savePendingReportName\(displayName\)[\s\S]*?function createStreamReportLink/,
+  )?.[0];
+  const renameSubmitSource = panelSource.match(
+    /reportRenameForm\.addEventListener\("submit"[\s\S]*?reportRenameInput\.addEventListener\("input"/,
+  )?.[0];
+
+  assert.ok(displayNameSource);
+  assert.ok(requestRenameSource);
+  assert.ok(saveRenameSource);
+  assert.ok(renameSubmitSource);
+  assert.match(
+    displayNameSource,
+    /typeof summary\?\.displayName === "string"[\s\S]+summary\.displayName\.trim\(\) !== ""[\s\S]+\? summary\.displayName[\s\S]+: formatReportTimestamp\(summary\?\.endedAt\)/,
+  );
+  assert.match(
+    requestRenameSource,
+    /const defaultName = formatReportTimestamp\(summary\.endedAt\)/,
+  );
+  assert.match(
+    requestRenameSource,
+    /reportRenameInput\.value = customName \?\? defaultName/,
+  );
+  assert.match(requestRenameSource, /resetReportNameButton\.hidden = customName === null/);
+  assert.match(requestRenameSource, /reportRenameDialog\.showModal\(\)/);
+  assert.match(requestRenameSource, /reportRenameInput\.focus\(\)/);
+  assert.match(requestRenameSource, /reportRenameInput\.select\(\)/);
+
+  assert.match(
+    saveRenameSource,
+    /streamReportClient\.renameReport\(\{[\s\S]+reportId: pending\.reportId,[\s\S]+displayName,[\s\S]+\}\)/,
+  );
+  assert.match(
+    saveRenameSource,
+    /streamReportSummaries = streamReportSummaries\.map\([\s\S]+\{ \.\.\.summary, displayName \}/,
+  );
+  assert.match(saveRenameSource, /await refreshStreamReports\(\)/);
+  assert.match(
+    saveRenameSource,
+    /displayName === null[\s\S]+The report is using its default name\.[\s\S]+Report renamed to \$\{displayName\}\./,
+  );
+  assert.match(saveRenameSource, /reportRenameDialog\.close\("saved"\)/);
+
+  assert.match(renameSubmitSource, /const displayName = reportRenameInput\.value\.trim\(\)/);
+  assert.match(renameSubmitSource, /displayName\.length < 1/);
+  assert.match(renameSubmitSource, /displayName\.length > MAX_REPORT_DISPLAY_NAME_LENGTH/);
+  assert.match(renameSubmitSource, /\[\\u0000-\\u001f\\u007f\]/);
+  assert.match(
+    renameSubmitSource,
+    /pendingReportRename\.customName === null[\s\S]+displayName === pendingReportRename\.defaultName[\s\S]+\? null[\s\S]+: displayName/,
+  );
+  assert.match(renameSubmitSource, /savePendingReportName\(savedDisplayName\)/);
+  assert.match(
+    panelSource,
+    /resetReportNameButton\.addEventListener\("click"[\s\S]+savePendingReportName\(null\)/,
+  );
+});
+
 test("Business Records exposes a dedicated accessible archived-report dashboard", () => {
   const html = fs.readFileSync(
     path.join(extensionDirectory, "tagger", "sidepanel.html"),
@@ -1539,6 +1918,18 @@ test("Business Records exposes a dedicated accessible archived-report dashboard"
   );
   assert.match(
     html,
+    /id="report-rename-dialog"[\s\S]+aria-labelledby="report-rename-title"[\s\S]+aria-describedby="report-rename-description report-rename-error"/,
+  );
+  assert.match(
+    html,
+    /id="report-rename-input"[\s\S]+type="text"[\s\S]+maxlength="80"[\s\S]+required/,
+  );
+  assert.match(html, /id="report-rename-error"[\s\S]+role="alert"[\s\S]+hidden/);
+  assert.match(html, /id="cancel-report-rename"[\s\S]*?>\s*Cancel\s*</);
+  assert.match(html, /id="reset-report-name"[\s\S]*?>\s*Use default\s*</);
+  assert.match(html, /id="save-report-name"[\s\S]*?>\s*Save name\s*</);
+  assert.match(
+    html,
     /permanently deletes the saved report from this Chrome profile[\s\S]+cannot be undone[\s\S]+TikTok LIVE and Google Sheets will not be changed/i,
   );
 
@@ -1576,9 +1967,13 @@ test("archived-report actions enforce dashboard capacity and remain keyboard ope
   assert.match(reportLinkSource, /aria-haspopup/);
   assert.match(reportLinkSource, /aria-expanded/);
   assert.match(reportLinkSource, /aria-controls/);
-  assert.match(reportLinkSource, /More actions for stream report from/);
+  assert.match(reportLinkSource, /`More actions for \$\{reportDisplayName\}`/);
   assert.match(reportLinkSource, /role", "menu"/);
   assert.match(panelSource, /button\.setAttribute\("role", "menuitem"\)/);
+  assert.match(
+    reportLinkSource,
+    /if \(!archived\) \{[\s\S]+createReportMenuAction\("Rename", "rename"[\s\S]+requestReportRename\(summary, moreButton\)[\s\S]+createReportMenuAction\("Archive", "archive"/,
+  );
   assert.match(reportLinkSource, /"Archive", "archive"/);
   assert.match(reportLinkSource, /"Restore", "restore"/);
   assert.match(reportLinkSource, /"Delete forever", "delete"/);

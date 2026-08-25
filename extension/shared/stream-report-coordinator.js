@@ -248,12 +248,18 @@
 
       function createPublicRecord(record) {
         if (!record) {
-          return { reportId: null, lifecycleStatus: null, report: null };
+          return {
+            reportId: null,
+            lifecycleStatus: null,
+            displayName: null,
+            report: null,
+          };
         }
 
         return cloneSerializable({
           reportId: record.reportId,
           lifecycleStatus: record.lifecycleStatus,
+          displayName: record.displayName ?? null,
           report: record.report,
         });
       }
@@ -336,6 +342,7 @@
       function createSummary(record) {
         return {
           reportId: record.reportId,
+          displayName: record.displayName ?? null,
           startedAt: record.report.metadata.startedAt,
           endedAt: record.report.metadata.endedAt,
           completeness: record.report.completeness.status,
@@ -785,6 +792,60 @@
         return { reportIds: [...reportIds] };
       }
 
+      async function renameReport(input) {
+        await ensureLoaded();
+        const command = protocol.validateCommand({
+          type: protocol.COMMAND_TYPES.RENAME_REPORT,
+          ...input,
+        });
+        const existing = findByReportId(command.reportId);
+
+        if (!existing) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        if (!isFinalized(existing)) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "A report awaiting End recovery cannot be renamed.",
+          );
+        }
+
+        if (existing.archived) {
+          fail(
+            "REPORT_NOT_ACTIVE",
+            "Only active Business Records can be renamed.",
+          );
+        }
+
+        const currentDisplayName = existing.displayName ?? null;
+
+        if (currentDisplayName === command.displayName) {
+          return {
+            reportId: existing.reportId,
+            displayName: currentDisplayName,
+          };
+        }
+
+        const replacement = { ...existing };
+
+        if (command.displayName === null) {
+          delete replacement.displayName;
+        } else {
+          replacement.displayName = command.displayName;
+        }
+
+        await persist(
+          records.map((record) =>
+            record.reportId === existing.reportId ? replacement : record,
+          ),
+        );
+        return {
+          reportId: existing.reportId,
+          displayName: command.displayName,
+        };
+      }
+
       function snapshotReportIdCommand(type, reportIds) {
         const command = cloneSerializable({ type, reportIds });
         return protocol.validateCommand(command);
@@ -800,6 +861,11 @@
             return listArchivedReports();
           case protocol.COMMAND_TYPES.GET_REPORT:
             return getReport(validated.reportId);
+          case protocol.COMMAND_TYPES.RENAME_REPORT:
+            return renameReport({
+              reportId: validated.reportId,
+              displayName: validated.displayName,
+            });
           case protocol.COMMAND_TYPES.ARCHIVE_REPORTS:
             return archiveReports(validated.reportIds);
           case protocol.COMMAND_TYPES.RESTORE_REPORTS:
@@ -906,6 +972,23 @@
         },
         repairPendingReports(activeStreamId) {
           return enqueue(() => repairPendingReports(activeStreamId));
+        },
+        renameReport(input) {
+          let command;
+
+          try {
+            command = protocol.validateCommand({
+              type: protocol.COMMAND_TYPES.RENAME_REPORT,
+              ...cloneSerializable(input),
+            });
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => renameReport({
+            reportId: command.reportId,
+            displayName: command.displayName,
+          }));
         },
         replaceFinalizedReport(input) {
           let snapshot;

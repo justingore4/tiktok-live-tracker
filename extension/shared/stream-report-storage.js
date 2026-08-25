@@ -13,15 +13,20 @@
 
     const STORAGE_KEY = "tiktokLiveTracker.streamReports";
     const LEGACY_STORAGE_SCHEMA_VERSION = 1;
-    const STORAGE_SCHEMA_VERSION = 2;
+    const PREVIOUS_STORAGE_SCHEMA_VERSION = 2;
+    const STORAGE_SCHEMA_VERSION = 3;
     const MAX_ACTIVE_REPORTS = 5;
     const MAX_ARCHIVED_REPORTS = 25;
     const MAX_TOTAL_REPORTS =
       MAX_ACTIVE_REPORTS + MAX_ARCHIVED_REPORTS;
+    const MAX_REPORT_DISPLAY_NAME_LENGTH = 80;
     const TARGET_ARCHIVE_BYTES = 4 * 1024 * 1024;
     const LEGACY_MIGRATION_HEADROOM_BYTES = 4 * 1024;
-    const MAX_ARCHIVE_BYTES =
+    const PREVIOUS_MAX_ARCHIVE_BYTES =
       TARGET_ARCHIVE_BYTES + LEGACY_MIGRATION_HEADROOM_BYTES;
+    const REPORT_DISPLAY_NAME_HEADROOM_BYTES = 4 * 1024;
+    const MAX_ARCHIVE_BYTES =
+      PREVIOUS_MAX_ARCHIVE_BYTES + REPORT_DISPLAY_NAME_HEADROOM_BYTES;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const LIFECYCLE_STATUSES = Object.freeze({
@@ -124,12 +129,25 @@
 
     function hydrateRecord(streamReport, record, index, options = {}) {
       const path = `records[${index}]`;
-      const legacy = options.legacy === true;
+      const schemaVersion = options.schemaVersion ?? STORAGE_SCHEMA_VERSION;
+      const legacy = schemaVersion === LEGACY_STORAGE_SCHEMA_VERSION;
+      const hasDisplayName =
+        isPlainRecord(record) &&
+        Object.prototype.hasOwnProperty.call(record, "displayName");
       const expectedKeys = legacy
         ? ["lifecycleStatus", "report", "reportId"]
-        : ["archived", "lifecycleStatus", "report", "reportId"];
+        : [
+            "archived",
+            ...(hasDisplayName ? ["displayName"] : []),
+            "lifecycleStatus",
+            "report",
+            "reportId",
+          ];
 
-      if (!hasExactKeys(record, expectedKeys)) {
+      if (
+        !hasExactKeys(record, expectedKeys) ||
+        (schemaVersion < STORAGE_SCHEMA_VERSION && hasDisplayName)
+      ) {
         fail(
           "INVALID_REPORT_ARCHIVE",
           `${path} has an invalid saved report shape.`,
@@ -154,6 +172,22 @@
 
       if (typeof archived !== "boolean") {
         fail("INVALID_REPORT_ARCHIVE", `${path}.archived is invalid.`);
+      }
+
+      if (
+        hasDisplayName &&
+        (
+          typeof record.displayName !== "string" ||
+          record.displayName.length < 1 ||
+          record.displayName.length > MAX_REPORT_DISPLAY_NAME_LENGTH ||
+          record.displayName !== record.displayName.trim() ||
+          /[\u0000-\u001f\u007f]/.test(record.displayName)
+        )
+      ) {
+        fail(
+          "INVALID_REPORT_ARCHIVE",
+          `${path}.displayName is invalid.`,
+        );
       }
 
       if (
@@ -189,6 +223,7 @@
         reportId: record.reportId,
         lifecycleStatus: record.lifecycleStatus,
         archived,
+        ...(hasDisplayName ? { displayName: record.displayName } : {}),
         report: cloneSerializable(report),
       };
     }
@@ -352,6 +387,7 @@
 
         if (
           envelope.schemaVersion !== STORAGE_SCHEMA_VERSION &&
+          envelope.schemaVersion !== PREVIOUS_STORAGE_SCHEMA_VERSION &&
           envelope.schemaVersion !== LEGACY_STORAGE_SCHEMA_VERSION
         ) {
           fail(
@@ -362,22 +398,30 @@
 
         const legacy =
           envelope.schemaVersion === LEGACY_STORAGE_SCHEMA_VERSION;
+        const previous =
+          envelope.schemaVersion === PREVIOUS_STORAGE_SCHEMA_VERSION;
         requireSafeEnvelopeSize(
           envelope,
-          legacy ? TARGET_ARCHIVE_BYTES : MAX_ARCHIVE_BYTES,
+          legacy
+            ? TARGET_ARCHIVE_BYTES
+            : previous
+              ? PREVIOUS_MAX_ARCHIVE_BYTES
+              : MAX_ARCHIVE_BYTES,
         );
         const hydratedRecords = hydrateRecords(
           streamReport,
           envelope.records,
-          { legacy },
+          { schemaVersion: envelope.schemaVersion },
         );
         // Existing records migrate without eviction. The effective ceiling
-        // includes a small fixed headroom for the v2 archive flags.
+        // includes a small fixed headroom for the v2 archive flags. Default
+        // report names remain implicit, so the v3 migration adds no per-record
+        // display-name payload.
         const migratedEnvelope = requireSafeEnvelopeSize(
           createEnvelope(hydratedRecords),
         );
 
-        if (legacy) {
+        if (envelope.schemaVersion !== STORAGE_SCHEMA_VERSION) {
           try {
             await storageArea.set({ [STORAGE_KEY]: migratedEnvelope });
           } catch (error) {
@@ -422,6 +466,10 @@
       MAX_ARCHIVE_BYTES,
       MAX_ARCHIVED_REPORTS,
       MAX_TOTAL_REPORTS,
+      MAX_REPORT_DISPLAY_NAME_LENGTH,
+      PREVIOUS_MAX_ARCHIVE_BYTES,
+      PREVIOUS_STORAGE_SCHEMA_VERSION,
+      REPORT_DISPLAY_NAME_HEADROOM_BYTES,
       REPORT_ID_PATTERN,
       STORAGE_KEY,
       STORAGE_SCHEMA_VERSION,

@@ -238,9 +238,12 @@ test("pointer and keyboard selector paths preserve refresh data and release safe
     "the chosen variation must be captured before deferred DOM work flushes",
   );
 
-  assert.match(busyRenderer, /variationSelectorLock\.isLocked\(\)/);
+  assert.match(
+    busyRenderer,
+    /variationSelectorLock\.isLocked\(\) \|\| inventorySizeMenuState !== null/,
+  );
   assert.match(busyRenderer, /snapshotIsBackgroundRefresh\(savedSnapshot\)/);
-  assert.match(busyRenderer, /shouldBeBusy && !keepVariationSelectorInteractive/);
+  assert.match(busyRenderer, /shouldBeBusy && !keepOpenPickerInteractive/);
   assert.match(
     busyRenderer,
     /trackerWorkspace\.setAttribute\("aria-busy", String\(shouldBeBusy\)\)/,

@@ -561,7 +561,7 @@ function createWorkerHarness(options = {}) {
     TARGET_ARCHIVE_BYTES: 4 * 1024 * 1024,
     LEGACY_MIGRATION_HEADROOM_BYTES: 4 * 1024,
     MAX_ARCHIVE_BYTES: (4 * 1024 * 1024) + (4 * 1024),
-    STORAGE_SCHEMA_VERSION: 2,
+    STORAGE_SCHEMA_VERSION: 3,
     StreamReportStorageError: FakeStreamReportStorageError,
     createStreamReportStore(receivedOptions) {
       reportCalls.push({ type: "create_store", options: receivedOptions });
@@ -601,6 +601,7 @@ function createWorkerHarness(options = {}) {
         currentPaymentReportRecord ?? {
           reportId: null,
           lifecycleStatus: null,
+          displayName: null,
           report: null,
         },
       ));
@@ -611,6 +612,7 @@ function createWorkerHarness(options = {}) {
         options.latestReportRecord ?? currentPaymentReportRecord ?? {
           reportId: null,
           lifecycleStatus: null,
+          displayName: null,
           report: null,
         },
       ));
@@ -662,6 +664,7 @@ function createWorkerHarness(options = {}) {
       lastPreparedReport = {
         reportId: `stream-report:${uuid}`,
         lifecycleStatus: "pending_end",
+        displayName: null,
         report: {
           reportId: `stream-report:${uuid}`,
           metadata: {
@@ -706,6 +709,7 @@ function createWorkerHarness(options = {}) {
       return options.existingReport ?? {
         reportId: null,
         lifecycleStatus: null,
+        displayName: null,
         report: null,
       };
     },
@@ -733,13 +737,23 @@ function createWorkerHarness(options = {}) {
           streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
         ].includes(command.type)
           ? { reports: [] }
+          : command.type === streamReportProtocol.COMMAND_TYPES.RENAME_REPORT
+            ? {
+                reportId: command.reportId,
+                displayName: command.displayName,
+              }
           : [
               streamReportProtocol.COMMAND_TYPES.ARCHIVE_REPORTS,
               streamReportProtocol.COMMAND_TYPES.RESTORE_REPORTS,
               streamReportProtocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
             ].includes(command.type)
             ? { reportIds: [...command.reportIds] }
-            : { reportId: null, lifecycleStatus: null, report: null }
+            : {
+                reportId: null,
+                lifecycleStatus: null,
+                displayName: null,
+                report: null,
+              }
       );
     },
   };
@@ -3310,7 +3324,12 @@ test("report reads and archive mutations enforce exact extension senders", async
   });
   assert.deepEqual(await reportPageGet.response, {
     ok: true,
-    data: { reportId: null, lifecycleStatus: null, report: null },
+    data: {
+      reportId: null,
+      lifecycleStatus: null,
+      displayName: null,
+      report: null,
+    },
   });
   assert.deepEqual(await dashboardRead.response, {
     ok: false,
@@ -3348,6 +3367,32 @@ test("report reads and archive mutations enforce exact extension senders", async
       },
     });
   }
+
+  const renameMessage = harness.createReportMessage({
+    type: "rename_report",
+    reportId,
+    displayName: "August launch stream",
+  });
+  const sidePanelRename = harness.send(renameMessage);
+  const reportPageRename = harness.send(
+    renameMessage,
+    harness.createSender({ url: `${harness.reportPageUrl}#saved` }),
+  );
+
+  assert.deepEqual(await sidePanelRename.response, {
+    ok: true,
+    data: {
+      reportId,
+      displayName: "August launch stream",
+    },
+  });
+  assert.deepEqual(await reportPageRename.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message: "The packaged report page has read-only report access.",
+    },
+  });
 
   const unrelatedExtensionPage = harness.send(
     harness.createReportMessage({

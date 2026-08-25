@@ -168,7 +168,7 @@ test("a sixth Business Record archives the oldest report without changing its co
   );
 
   const envelope = savedEnvelope(storageArea);
-  assert.equal(envelope.schemaVersion, 2);
+  assert.equal(envelope.schemaVersion, storage.STORAGE_SCHEMA_VERSION);
   assert.equal(envelope.records.length, 6);
   assert.equal(
     envelope.records.find((record) => record.reportId === reportIdFor(1))
@@ -233,6 +233,62 @@ test("archive moves are atomic, restore uses only available slots, and deletion 
   assert.deepEqual(
     await listIds(coordinator, protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS),
     [],
+  );
+});
+
+test("a custom report name survives real storage archive and restore, then resets to the implicit default", async () => {
+  const { coordinator, reportStore, storageArea } = createHarness();
+  await prepareAndFinalize(coordinator, 1);
+  const reportId = reportIdFor(1);
+
+  assert.deepEqual(
+    await coordinator.dispatch({
+      type: protocol.COMMAND_TYPES.RENAME_REPORT,
+      reportId,
+      displayName: "August launch stream",
+    }),
+    { reportId, displayName: "August launch stream" },
+  );
+  assert.equal(
+    (await reportStore.loadRecords())[0].displayName,
+    "August launch stream",
+  );
+
+  await coordinator.dispatch({
+    type: protocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+    reportIds: [reportId],
+  });
+  assert.equal(
+    (await coordinator.dispatch({
+      type: protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
+    })).reports[0].displayName,
+    "August launch stream",
+  );
+
+  await coordinator.dispatch({
+    type: protocol.COMMAND_TYPES.RESTORE_REPORTS,
+    reportIds: [reportId],
+  });
+  assert.equal(
+    (await coordinator.dispatch({
+      type: protocol.COMMAND_TYPES.GET_REPORT,
+      reportId,
+    })).displayName,
+    "August launch stream",
+  );
+
+  await coordinator.dispatch({
+    type: protocol.COMMAND_TYPES.RENAME_REPORT,
+    reportId,
+    displayName: null,
+  });
+  const savedRecord = savedEnvelope(storageArea).records[0];
+  assert.equal(Object.hasOwn(savedRecord, "displayName"), false);
+  assert.equal(
+    (await coordinator.dispatch({
+      type: protocol.COMMAND_TYPES.LIST_REPORTS,
+    })).reports[0].displayName,
+    null,
   );
 });
 
@@ -403,6 +459,7 @@ test("a near-cap legacy record migrates before explicit archive and delete opera
   const expectedPublicRecord = {
     reportId: report.reportId,
     lifecycleStatus: storage.LIFECYCLE_STATUSES.FINALIZED,
+    displayName: null,
     report: clone(report),
   };
 
@@ -410,7 +467,10 @@ test("a near-cap legacy record migrates before explicit archive and delete opera
     await listIds(coordinator, protocol.COMMAND_TYPES.LIST_REPORTS),
     [report.reportId],
   );
-  assert.equal(savedEnvelope(storageArea).schemaVersion, 2);
+  assert.equal(
+    savedEnvelope(storageArea).schemaVersion,
+    storage.STORAGE_SCHEMA_VERSION,
+  );
   assert.equal(measure(savedEnvelope(storageArea)) > storage.TARGET_ARCHIVE_BYTES, true);
   assert.equal(measure(savedEnvelope(storageArea)) <= storage.MAX_ARCHIVE_BYTES, true);
 

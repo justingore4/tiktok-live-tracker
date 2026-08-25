@@ -2129,8 +2129,14 @@ test("revalidates the normalized inventory contract at baseline creation", () =>
   });
 });
 
-test("keeps imported SKU identities stable across immutable baselines", () => {
+test("allows imported SKU and product identities to change across new baselines", () => {
   const state = createState();
+  const firstBaselineId =
+    "inventory-baseline:10000000-0000-4000-8000-000000000000";
+  const changedProductBaselineId =
+    "inventory-baseline:20000000-0000-4000-8000-000000000000";
+  const reassignedSkuBaselineId =
+    "inventory-baseline:30000000-0000-4000-8000-000000000000";
   const firstInventory = [{
     sku: "BLACK-TEE-M",
     item: "Black Tee",
@@ -2141,29 +2147,60 @@ test("keeps imported SKU identities stable across immutable baselines", () => {
   }];
 
   createInventoryBaseline(state, {
-    baselineId: "inventory-baseline:10000000-0000-4000-8000-000000000000",
+    baselineId: firstBaselineId,
     sourceFingerprint: "fnv1a64:1234567890abcdef",
     inventory: firstInventory,
   });
-  const before = JSON.parse(JSON.stringify(state));
+  const firstBaseline = JSON.parse(JSON.stringify(activeBaseline(state)));
+  const changedProduct = [{
+    ...firstInventory[0],
+    item: "White Tee",
+    style: "white",
+  }];
 
-  assertErrorCode(
-    () => createInventoryBaseline(state, {
-      baselineId: "inventory-baseline:20000000-0000-4000-8000-000000000000",
+  assert.deepEqual(
+    createInventoryBaseline(state, {
+      baselineId: changedProductBaselineId,
       sourceFingerprint: "fnv1a64:2234567890abcdef",
-      inventory: [{ ...firstInventory[0], style: "white" }],
+      inventory: changedProduct,
     }),
-    "SKU_IDENTITY_CONFLICT",
+    {
+      status: "created",
+      baselineId: changedProductBaselineId,
+    },
   );
-  assertErrorCode(
-    () => createInventoryBaseline(state, {
-      baselineId: "inventory-baseline:30000000-0000-4000-8000-000000000000",
+
+  const reassignedSku = [{ ...firstInventory[0], sku: "OTHER-SKU" }];
+
+  assert.deepEqual(
+    createInventoryBaseline(state, {
+      baselineId: reassignedSkuBaselineId,
       sourceFingerprint: "fnv1a64:3234567890abcdef",
-      inventory: [{ ...firstInventory[0], sku: "OTHER-SKU" }],
+      inventory: reassignedSku,
     }),
-    "INVENTORY_IDENTITY_CONFLICT",
+    {
+      status: "created",
+      baselineId: reassignedSkuBaselineId,
+    },
   );
-  assert.deepEqual(state, before);
+
+  assert.deepEqual(
+    state.inventoryBaselines.find(
+      (baseline) => baseline.baselineId === changedProductBaselineId,
+    ).inventory,
+    changedProduct,
+  );
+  assert.deepEqual(activeBaseline(state).inventory, reassignedSku);
+  assert.deepEqual(
+    state.inventoryBaselines.find(
+      (baseline) => baseline.baselineId === firstBaselineId,
+    ),
+    firstBaseline,
+  );
+  assert.deepEqual(
+    hydrateReconciliationState(JSON.parse(JSON.stringify(state))),
+    state,
+  );
 });
 
 test("extends a shared active baseline without changing allocations or auctions", () => {

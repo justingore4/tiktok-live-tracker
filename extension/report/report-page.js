@@ -118,6 +118,23 @@
       }).format(date);
     }
 
+    function formatDefaultReportName(value) {
+      if (typeof value !== "string") {
+        return "Saved stream";
+      }
+
+      const date = new Date(value);
+
+      if (Number.isNaN(date.getTime())) {
+        return "Saved stream";
+      }
+
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+    }
+
     function createFileStamp(value) {
       const date = new Date(value);
       const safeDate = Number.isNaN(date.getTime()) ? new Date(0) : date;
@@ -748,6 +765,21 @@
       })}%`;
     }
 
+    function formatSellThroughPercentage(soldQuantity, openingQuantity) {
+      if (
+        !Number.isSafeInteger(soldQuantity) ||
+        !Number.isSafeInteger(openingQuantity) ||
+        openingQuantity <= 0
+      ) {
+        return formatPercentage(soldQuantity, openingQuantity);
+      }
+
+      return formatPercentage(
+        Math.min(soldQuantity, openingQuantity),
+        openingQuantity,
+      );
+    }
+
     function getAverageSalePriceCents(entry) {
       const revenueCents = entry?.revenueCents;
       const soldQuantity = entry?.soldQuantity;
@@ -837,7 +869,7 @@
           }),
           createTableCell(
             document,
-            formatPercentage(entry?.soldQuantity, openingQuantity),
+            formatSellThroughPercentage(entry?.soldQuantity, openingQuantity),
             { className: "number-cell" },
           ),
           createTableCell(
@@ -1024,8 +1056,17 @@
         formatTimestamp(metadata.startedAt);
       document.querySelector("#stream-ended").textContent =
         formatTimestamp(metadata.endedAt);
+      document.querySelector("#report-name").textContent =
+        typeof record.displayName === "string" &&
+        record.displayName.trim() !== ""
+          ? record.displayName
+          : formatDefaultReportName(metadata.endedAt);
       document.querySelector("#stream-reference").textContent =
-        typeof metadata.streamId === "string" ? metadata.streamId : "Unavailable";
+        `Stream reference: ${
+          typeof metadata.streamId === "string"
+            ? metadata.streamId
+            : "Unavailable"
+        }`;
       document.querySelector("#report-generated-at").textContent =
         `Generated ${formatTimestamp(metadata.generatedAt)}.`;
 
@@ -1366,6 +1407,7 @@
         return {
           reportId: response.reportId,
           lifecycleStatus: response.lifecycleStatus,
+          displayName: response.displayName ?? null,
           report,
         };
       };

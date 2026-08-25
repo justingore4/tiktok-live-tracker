@@ -939,35 +939,6 @@
             };
           },
         );
-        const importedSkuIdentities = new Map();
-        const importedIdentitySkus = new Map();
-
-        inventoryBaselines
-          .filter((baseline) => baseline.sourceFingerprint !== null)
-          .forEach((baseline, baselineIndex) => {
-            baseline.inventory.forEach((entry) => {
-              const identity = [entry.item, entry.style, entry.size]
-                .map((value) => value.toLocaleLowerCase("en-US"))
-                .join("\u0000");
-              const previousIdentity = importedSkuIdentities.get(entry.sku);
-              const previousSku = importedIdentitySkus.get(identity);
-
-              if (previousIdentity !== undefined && previousIdentity !== identity) {
-                failInvalidState(
-                  `state.inventoryBaselines[${baselineIndex}] recycles SKU ${entry.sku}.`,
-                );
-              }
-
-              if (previousSku !== undefined && previousSku !== entry.sku) {
-                failInvalidState(
-                  `state.inventoryBaselines[${baselineIndex}] reassigns an inventory identity.`,
-                );
-              }
-
-              importedSkuIdentities.set(entry.sku, identity);
-              importedIdentitySkus.set(identity, entry.sku);
-            });
-          });
         let activeInventoryBaselineId = null;
 
         if (candidate.activeInventoryBaselineId !== null) {
@@ -1175,53 +1146,6 @@
       return { baselineId, sourceFingerprint, inventory };
     }
 
-    function requireStableImportedInventoryIdentities(state, inventory) {
-      const importedHistory = state.inventoryBaselines.filter(
-        (baseline) => baseline.sourceFingerprint !== null,
-      );
-
-      for (const historicalBaseline of importedHistory) {
-        for (const historicalItem of historicalBaseline.inventory) {
-          const matchingSku = inventory.find(
-            (item) => item.sku === historicalItem.sku,
-          );
-
-          if (
-            matchingSku &&
-            (
-              matchingSku.item !== historicalItem.item ||
-              matchingSku.style !== historicalItem.style ||
-              matchingSku.size !== historicalItem.size
-            )
-          ) {
-            fail(
-              "SKU_IDENTITY_CONFLICT",
-              `Inventory SKU ${historicalItem.sku} cannot identify a different item, style, or size.`,
-            );
-          }
-
-          const historicalIdentity = [
-            historicalItem.item,
-            historicalItem.style,
-            historicalItem.size,
-          ].map((value) => value.toLocaleLowerCase("en-US")).join("\u0000");
-          const reassignedIdentity = inventory.find((item) =>
-            [item.item, item.style, item.size]
-              .map((value) => value.toLocaleLowerCase("en-US"))
-              .join("\u0000") === historicalIdentity &&
-            item.sku !== historicalItem.sku,
-          );
-
-          if (reassignedIdentity) {
-            fail(
-              "INVENTORY_IDENTITY_CONFLICT",
-              "An imported item, style, and size cannot be reassigned to another SKU.",
-            );
-          }
-        }
-      }
-    }
-
     function inventoryItemsMatch(first, second) {
       return (
         first.sku === second.sku &&
@@ -1281,8 +1205,6 @@
           "The inventory baseline ID already identifies different inventory.",
         );
       }
-
-      requireStableImportedInventoryIdentities(state, inventory);
 
       state.inventoryBaselines.push(candidate);
       state.activeInventoryBaselineId = baselineId;

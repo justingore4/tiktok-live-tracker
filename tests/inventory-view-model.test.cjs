@@ -4,11 +4,16 @@ const test = require("node:test");
 const {
   LEGACY_RECOVERY_INVENTORY,
   calculateAverageOrderValueCents,
+  createInventoryGroupKey,
   filterInventoryEntries,
+  filterInventoryGroups,
   formatUsdCents,
+  getInventoryGroupStockDisplay,
+  getPreferredInventoryGroupEntry,
   getProfitDisplay,
   getRemainingQuantity,
   getStockDisplay,
+  groupInventoryEntries,
   normalizeSearchText,
 } = require("../extension/tagger/inventory-view-model.js");
 
@@ -66,6 +71,257 @@ test("supports partial words and multi-word styles", () => {
   assert.deepEqual(
     results.map((entry) => entry.sku),
     ["DENIM-SHORTS-WASHED-BLUE-32"],
+  );
+});
+
+test("groups inventory by normalized item and style while preserving every size SKU", () => {
+  const entries = [
+    {
+      sku: "RUNNER-BLACK-10",
+      item: "Runner",
+      style: "Core Black",
+      size: "10",
+      quantityReceived: 2,
+      unitCostCents: 2200,
+    },
+    {
+      sku: "RUNNER-BLACK-8",
+      item: "Runner",
+      style: "Core Black",
+      size: "8",
+      quantityReceived: 4,
+      unitCostCents: 1800,
+    },
+    {
+      sku: "RUNNER-WHITE-8",
+      item: "Runner",
+      style: "White",
+      size: "8",
+      quantityReceived: 1,
+      unitCostCents: 1900,
+    },
+    {
+      sku: "HOODIE-BLACK-M",
+      item: "Hoodie",
+      style: "Core Black",
+      size: "M",
+      quantityReceived: 3,
+      unitCostCents: 2500,
+    },
+  ];
+  const originalSkuOrder = entries.map((entry) => entry.sku);
+  const groups = groupInventoryEntries(entries);
+
+  assert.deepEqual(
+    groups.map(({ item, style }) => ({ item, style })),
+    [
+      { item: "Runner", style: "Core Black" },
+      { item: "Runner", style: "White" },
+      { item: "Hoodie", style: "Core Black" },
+    ],
+  );
+  assert.deepEqual(
+    groups[0].entries.map(({ sku, size, unitCostCents }) => ({
+      sku,
+      size,
+      unitCostCents,
+    })),
+    [
+      { sku: "RUNNER-BLACK-8", size: "8", unitCostCents: 1800 },
+      { sku: "RUNNER-BLACK-10", size: "10", unitCostCents: 2200 },
+    ],
+  );
+  assert.deepEqual(
+    entries.map((entry) => entry.sku),
+    originalSkuOrder,
+    "grouping must not reorder the per-SKU inventory input",
+  );
+});
+
+test("normalizes only the item and style pair used as the inventory group key", () => {
+  const composed = createInventoryGroupKey("  Caf\u00e9   Runner ", " CORE  BLACK ");
+  const decomposed = createInventoryGroupKey(
+    "cafe\u0301 runner",
+    "core black",
+  );
+
+  assert.equal(composed, decomposed);
+  assert.notEqual(
+    composed,
+    createInventoryGroupKey("Caf\u00e9 Runner", "Core White"),
+  );
+  assert.notEqual(
+    composed,
+    createInventoryGroupKey("Caf\u00e9 Hoodie", "Core Black"),
+  );
+});
+
+test("sorts numeric sizes naturally within a grouped item", () => {
+  const group = groupInventoryEntries(
+    [10, 7, 9, 8].map((size) => ({
+      sku: `RUNNER-${size}`,
+      item: "Runner",
+      style: "Black",
+      size: String(size),
+      quantityReceived: 1,
+      unitCostCents: 1000 + size,
+    })),
+  )[0];
+
+  assert.deepEqual(
+    group.entries.map((entry) => entry.size),
+    ["7", "8", "9", "10"],
+  );
+  assert.deepEqual(
+    group.entries.map((entry) => entry.sku),
+    ["RUNNER-7", "RUNNER-8", "RUNNER-9", "RUNNER-10"],
+  );
+});
+
+test("group search matches item, style, any size, and any underlying SKU", () => {
+  const groups = groupInventoryEntries([
+    {
+      sku: "RUNNER-BLACK-8",
+      item: "Runner",
+      style: "Core Black",
+      size: "8",
+      quantityReceived: 4,
+      unitCostCents: 1800,
+    },
+    {
+      sku: "RUNNER-BLACK-10",
+      item: "Runner",
+      style: "Core Black",
+      size: "10",
+      quantityReceived: 2,
+      unitCostCents: 2200,
+    },
+    {
+      sku: "HOODIE-GREY-M",
+      item: "Hoodie",
+      style: "Heather Grey",
+      size: "M",
+      quantityReceived: 3,
+      unitCostCents: 2500,
+    },
+  ]);
+  const runnerSkus = ["RUNNER-BLACK-8", "RUNNER-BLACK-10"];
+
+  for (const query of [
+    "runner",
+    "core black",
+    "10",
+    "runner-black-8",
+  ]) {
+    const results = filterInventoryGroups(groups, query);
+
+    assert.equal(results.length, 1, `expected one group for ${query}`);
+    assert.deepEqual(
+      results[0].entries.map((entry) => entry.sku),
+      runnerSkus,
+      `matching ${query} must retain every size in the group`,
+    );
+  }
+
+  const blankResults = filterInventoryGroups(groups, "   ");
+
+  assert.deepEqual(blankResults, groups);
+  assert.notEqual(blankResults, groups);
+});
+
+test("aggregates grouped stock without one oversold size hiding other available sizes", () => {
+  const group = groupInventoryEntries([
+    {
+      sku: "RUNNER-7",
+      item: "Runner",
+      style: "Black",
+      size: "7",
+      remainingQuantity: 5,
+      availableToTagQuantity: 4,
+      reservedQuantity: 1,
+      oversoldQuantity: 0,
+    },
+    {
+      sku: "RUNNER-8",
+      item: "Runner",
+      style: "Black",
+      size: "8",
+      remainingQuantity: 0,
+      availableToTagQuantity: -1,
+      reservedQuantity: 1,
+      oversoldQuantity: 1,
+    },
+    {
+      sku: "RUNNER-10",
+      item: "Runner",
+      style: "Black",
+      size: "10",
+      remainingQuantity: 2,
+      availableToTagQuantity: 2,
+      reservedQuantity: 0,
+      oversoldQuantity: 0,
+    },
+  ])[0];
+  const stock = getInventoryGroupStockDisplay(group);
+
+  assert.equal(stock.remainingQuantity, 7);
+  assert.equal(stock.availableToTagQuantity, 6);
+  assert.equal(stock.displayedAvailableToTagQuantity, 6);
+  assert.equal(stock.reservedQuantity, 2);
+  assert.equal(stock.oversoldQuantity, 1);
+  assert.equal(stock.state, "oversold");
+  assert.equal(stock.primaryLabel, "6 left");
+  assert.match(stock.secondaryLabel, /2 pending/);
+  assert.match(stock.secondaryLabel, /Oversold by 1/);
+});
+
+test("prefers the viewed selection, then current mapping, then queued size", () => {
+  const group = groupInventoryEntries([
+    {
+      sku: "RUNNER-7",
+      item: "Runner",
+      style: "Black",
+      size: "7",
+    },
+    {
+      sku: "RUNNER-8",
+      item: "Runner",
+      style: "Black",
+      size: "8",
+    },
+    {
+      sku: "RUNNER-9",
+      item: "Runner",
+      style: "Black",
+      size: "9",
+    },
+  ])[0];
+
+  assert.equal(
+    getPreferredInventoryGroupEntry(group, {
+      selectedSku: "RUNNER-7",
+      currentMappedSku: "RUNNER-8",
+      queuedSku: "RUNNER-9",
+    }).sku,
+    "RUNNER-7",
+  );
+  assert.equal(
+    getPreferredInventoryGroupEntry(group, {
+      currentMappedSku: "RUNNER-8",
+      queuedSku: "RUNNER-9",
+    }).sku,
+    "RUNNER-8",
+  );
+  assert.equal(
+    getPreferredInventoryGroupEntry(group, { queuedSku: "RUNNER-9" }).sku,
+    "RUNNER-9",
+  );
+  assert.equal(
+    getPreferredInventoryGroupEntry(group, {
+      selectedSku: "OTHER-SKU",
+      currentMappedSku: "MISSING-SKU",
+    }),
+    null,
   );
 });
 

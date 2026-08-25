@@ -879,6 +879,11 @@ button:disabled {
   font-size: 10px;
 }
 
+.report-footer p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .action-feedback {
   position: fixed;
   right: 22px;

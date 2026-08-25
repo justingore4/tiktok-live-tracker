@@ -82,6 +82,7 @@ const REPORT_SELECTORS = [
   "#report-error",
   "#report-error-message",
   "#report-generated-at",
+  "#report-name",
   "#report-loading",
   "#report-warnings",
   "#retry-report",
@@ -375,7 +376,11 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
   assert.equal((html.match(/id="print-report"/g) ?? []).length, 1);
   assert.match(
     cover,
-    /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?id="stream-reference"[\s\S]*?<\/dl>/,
+    /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?<dt>Report name<\/dt>[\s\S]*?id="report-name"[\s\S]*?<\/dl>/,
+  );
+  assert.match(
+    html,
+    /<footer class="report-footer">[\s\S]*?<p id="stream-reference">Stream reference: Unavailable<\/p>[\s\S]*?id="report-generated-at"[\s\S]*?<\/footer>/,
   );
   assert.equal((html.match(/class="report-meta"/g) ?? []).length, 1);
   assert.doesNotMatch(
@@ -403,6 +408,45 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
     printCss,
     /\.report-cover\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?padding:\s*0\.18in;[\s\S]*?\.report-cover h1\s*\{[\s\S]*?font-size:\s*20pt;/,
   );
+});
+
+test("report name replaces the header reference while the footer and filename retain stream identity", () => {
+  const report = createReport();
+  const expectedDocumentTitle = reportPage
+    .createReportFilename(report, "Stream-Report", "pdf")
+    .replace(/\.pdf$/i, "");
+  const customDocument = new FakeDocument();
+
+  reportPage.renderReport(customDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    displayName: "Sunday evening stream",
+    report,
+  });
+
+  assert.equal(
+    customDocument.querySelector("#report-name").textContent,
+    "Sunday evening stream",
+  );
+  assert.equal(
+    customDocument.querySelector("#stream-reference").textContent,
+    `Stream reference: ${report.metadata.streamId}`,
+  );
+  assert.equal(customDocument.title, expectedDocumentTitle);
+
+  const defaultDocument = new FakeDocument();
+  reportPage.renderReport(defaultDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    displayName: null,
+    report,
+  });
+
+  assert.equal(
+    defaultDocument.querySelector("#report-name").textContent,
+    reportPage.formatTimestamp(report.metadata.endedAt),
+  );
+  assert.equal(defaultDocument.title, expectedDocumentTitle);
 });
 
 test("report notices stay compact inside Stream summary and disappear when empty", () => {
@@ -1074,6 +1118,67 @@ test("SKU performance sorts sold SKUs by profit with signed color-coded profit/l
   assert.equal(document.querySelector("#performance-empty").hidden, true);
   assert.equal(rows[0].children[1].textContent, "Profit tee A - black");
   assert.equal(rows[0].children[2].textContent, "L");
+});
+
+test("SKU sell-through caps at 100% while retaining the oversold quantity", () => {
+  const document = new FakeDocument();
+  const report = createReport({
+    totals: {
+      ...createReport().totals,
+      completedPaymentCount: 2,
+      totalSalesCount: 2,
+      canceledOrderCount: 0,
+    },
+    canceledOrders: [],
+    itemPerformance: [
+      {
+        sku: "SKU-OVER",
+        item: "Oversold tee",
+        style: "black",
+        size: "OS",
+        soldQuantity: 2,
+        revenueCents: 3000,
+        costOfGoodsCents: 1000,
+        grossProfitCents: 2000,
+      },
+    ],
+    inventory: [
+      {
+        sku: "SKU-OVER",
+        item: "Oversold tee",
+        style: "black",
+        size: "OS",
+        unitCostCents: 500,
+        openingQuantity: 1,
+        streamSoldQuantity: 2,
+        baselineSoldQuantity: 2,
+        pendingQuantity: 0,
+        replacementQuantity: 0,
+        oversoldQuantity: 1,
+      },
+    ],
+    warnings: [
+      { code: "inventory_recount_required", count: 1, sku: "SKU-OVER" },
+    ],
+  });
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  const performanceRow =
+    document.querySelector("#performance-rows").children[0];
+  const inventoryRow = document.querySelector("#inventory-rows").children[0];
+
+  assert.equal(performanceRow.children[8].textContent, "100.0%");
+  assert.equal(performanceRow.children[9].textContent, "66.7%");
+  assert.equal(inventoryRow.children[9].textContent, "1");
+  assert.match(
+    allText(document.querySelector("#report-warnings")),
+    /allocated beyond its opening quantity/,
+  );
 });
 
 test("report action notifications dismiss after four seconds and newer messages restart the timer", async () => {
@@ -2174,6 +2279,7 @@ test("stream report client strictly parses list and hydrates an exact GET respon
               reports: [
                 {
                   reportId: REPORT_ID,
+                  displayName: "Sunday evening stream",
                   startedAt: STARTED_AT,
                   endedAt: ENDED_AT,
                   completeness: "provisional",
@@ -2191,6 +2297,7 @@ test("stream report client strictly parses list and hydrates an exact GET respon
           data: {
             reportId: REPORT_ID,
             lifecycleStatus: "finalized",
+            displayName: "Sunday evening stream",
             report,
           },
         };
@@ -2202,6 +2309,8 @@ test("stream report client strictly parses list and hydrates an exact GET respon
   const record = await client.getReport({ reportId: REPORT_ID });
 
   assert.equal(listing.reports[0].reportId, REPORT_ID);
+  assert.equal(listing.reports[0].displayName, "Sunday evening stream");
+  assert.equal(record.displayName, "Sunday evening stream");
   assert.deepEqual(record.report, report);
   assert.equal(sent[0].channel, protocol.MESSAGE_CHANNEL);
   assert.equal(sent[0].version, protocol.MESSAGE_VERSION);
@@ -2251,6 +2360,7 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
           data: {
             reportId: REPORT_ID,
             lifecycleStatus: "finalized",
+            displayName: null,
             report,
           },
         };
@@ -2269,7 +2379,12 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
       resolution: "payment_complete",
       soldPriceCents: 1825,
     }),
-    { reportId: REPORT_ID, lifecycleStatus: "finalized", report },
+    {
+      reportId: REPORT_ID,
+      lifecycleStatus: "finalized",
+      displayName: null,
+      report,
+    },
   );
   assert.deepEqual(sentCommands, [
     {
@@ -2374,6 +2489,7 @@ test("stream report client strictly lists and updates report unit costs", async 
           data: {
             reportId: REPORT_ID,
             lifecycleStatus: "finalized",
+            displayName: null,
             report,
           },
         };
@@ -2391,7 +2507,12 @@ test("stream report client strictly lists and updates report unit costs", async 
       sku: "SKU-UNSOLD",
       unitCostCents: 0,
     }),
-    { reportId: REPORT_ID, lifecycleStatus: "finalized", report },
+    {
+      reportId: REPORT_ID,
+      lifecycleStatus: "finalized",
+      displayName: null,
+      report,
+    },
   );
   assert.deepEqual(sentCommands, [
     {
@@ -2454,6 +2575,7 @@ test("stream report client lists archived reports and strictly echoes archive mu
   const sentCommands = [];
   const summary = {
     reportId: REPORT_ID,
+    displayName: null,
     startedAt: STARTED_AT,
     endedAt: ENDED_AT,
     completeness: "provisional",
@@ -2509,6 +2631,84 @@ test("stream report client lists archived reports and strictly echoes archive mu
   ]);
 });
 
+test("stream report client strictly renames a report and can restore its default name", async () => {
+  const sentCommands = [];
+  const client = createClient({
+    runtime: {
+      async sendMessage(message) {
+        sentCommands.push(message.command);
+        return {
+          ok: true,
+          data: {
+            reportId: message.command.reportId,
+            displayName: message.command.displayName,
+          },
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await client.renameReport({
+      reportId: REPORT_ID,
+      displayName: "Sunday evening stream",
+    }),
+    { reportId: REPORT_ID, displayName: "Sunday evening stream" },
+  );
+  assert.deepEqual(
+    await client.renameReport({ reportId: REPORT_ID, displayName: null }),
+    { reportId: REPORT_ID, displayName: null },
+  );
+  assert.deepEqual(sentCommands, [
+    {
+      type: protocol.COMMAND_TYPES.RENAME_REPORT,
+      reportId: REPORT_ID,
+      displayName: "Sunday evening stream",
+    },
+    {
+      type: protocol.COMMAND_TYPES.RENAME_REPORT,
+      reportId: REPORT_ID,
+      displayName: null,
+    },
+  ]);
+
+  const deliveryCount = sentCommands.length;
+  for (const invalid of [
+    { reportId: REPORT_ID, displayName: "" },
+    { reportId: REPORT_ID, displayName: " padded" },
+    { reportId: REPORT_ID, displayName: "line\nbreak" },
+    {
+      reportId: REPORT_ID,
+      displayName: "x".repeat(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH + 1),
+    },
+    { reportId: "not-a-report", displayName: "Valid name" },
+  ]) {
+    await assert.rejects(
+      client.renameReport(invalid),
+      (error) => error.code === "INVALID_CLIENT_COMMAND",
+    );
+  }
+  assert.equal(sentCommands.length, deliveryCount);
+
+  const alteredResponseClient = createClient({
+    runtime: {
+      async sendMessage() {
+        return {
+          ok: true,
+          data: { reportId: REPORT_ID, displayName: "Altered name" },
+        };
+      },
+    },
+  });
+  await assert.rejects(
+    alteredResponseClient.renameReport({
+      reportId: REPORT_ID,
+      displayName: "Requested name",
+    }),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
+});
+
 test("stream report client rejects invalid mutation requests and altered mutation results", async () => {
   let deliveryCount = 0;
   const invalidRequestClient = createClient({
@@ -2551,6 +2751,7 @@ test("stream report client enforces separate dashboard and archived list limits"
   function createSummary(index) {
     return {
       reportId: `stream-report:${String(index + 1).padStart(8, "0")}-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      displayName: null,
       startedAt: STARTED_AT,
       endedAt: new Date(Date.parse(ENDED_AT) - index * 1000).toISOString(),
       completeness: "provisional",
@@ -2613,6 +2814,7 @@ test("stream report client rejects malformed summaries and mismatched records", 
           data: {
             reportId: "stream-report:22222222-2222-4222-8222-222222222222",
             lifecycleStatus: "finalized",
+            displayName: null,
             report: createReport(),
           },
         };

@@ -400,6 +400,85 @@ test("a worker restart discards its in-memory preview authorization", async () =
   assert.equal(restartedWorker.fetchCalls.length, 0);
 });
 
+test("separate pre-stream confirmations allow an SKU rename without changing the historical baseline", async () => {
+  const storage = {};
+  const headers = TEMPLATE_ROWS[0];
+  const originalRows = [
+    headers,
+    ["TRAVIS", "travis", "tee", "OS", 40, 16],
+  ];
+  const renamedRows = [
+    headers,
+    ["TRAVIS-TEE", "travis", "tee", "OS", 40, 16],
+  ];
+  const worker = createRealWorkerHarness({
+    storage,
+    payloads: [
+      createGridPayload(originalRows),
+      createGridPayload(originalRows),
+      createGridPayload(renamedRows),
+      createGridPayload(renamedRows),
+    ],
+  });
+  const clients = createClients(worker.runtime);
+  const firstPreview = await clients.inventory.previewReference(SPREADSHEET_ID);
+  const firstConfirmation = await clients.inventory.confirmPreview(
+    firstPreview.previewToken,
+  );
+  const afterFirstConfirmation = await clients.reconciliation.getState();
+  const historicalBaseline = clone(
+    afterFirstConfirmation.state.inventoryBaselines.find(
+      (baseline) => baseline.baselineId === firstConfirmation.baselineId,
+    ),
+  );
+
+  const renamedPreview = await clients.inventory.previewReference(SPREADSHEET_ID);
+  const renamedConfirmation = await clients.inventory.confirmPreview(
+    renamedPreview.previewToken,
+  );
+  const afterRename = await clients.reconciliation.getState();
+  const retainedHistoricalBaseline = afterRename.state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === firstConfirmation.baselineId,
+  );
+  const renamedBaseline = afterRename.state.inventoryBaselines.find(
+    (baseline) => baseline.baselineId === renamedConfirmation.baselineId,
+  );
+
+  assert.notEqual(renamedConfirmation.baselineId, firstConfirmation.baselineId);
+  assert.equal(
+    afterRename.state.activeInventoryBaselineId,
+    renamedConfirmation.baselineId,
+  );
+  assert.deepEqual(retainedHistoricalBaseline, historicalBaseline);
+  assert.deepEqual(
+    historicalBaseline.inventory.map(({ sku, item, style, size }) => ({
+      sku,
+      item,
+      style,
+      size,
+    })),
+    [{ sku: "TRAVIS", item: "travis", style: "tee", size: "OS" }],
+  );
+  assert.deepEqual(
+    renamedBaseline.inventory.map(({ sku, item, style, size }) => ({
+      sku,
+      item,
+      style,
+      size,
+    })),
+    [{ sku: "TRAVIS-TEE", item: "travis", style: "tee", size: "OS" }],
+  );
+
+  const restartedWorker = createRealWorkerHarness({ storage });
+  const restored = await createClients(restartedWorker.runtime)
+    .reconciliation.getState();
+
+  assert.deepEqual(restored.state, afterRename.state);
+  assert.equal(restartedWorker.fetchCalls.length, 0);
+  assert.deepEqual(worker.workerErrors, []);
+  assert.deepEqual(restartedWorker.workerErrors, []);
+});
+
 test("an active Sheet append preserves mappings and survives worker restart", async () => {
   const storage = {};
   const expandedRows = [...TEMPLATE_ROWS, LIMITED_SKU_ROW];

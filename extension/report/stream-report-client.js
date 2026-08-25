@@ -31,6 +31,7 @@
       "RESOLVE_PAYMENT_FIXING_ORDER",
       "LIST_REPORT_UNIT_COSTS",
       "UPDATE_REPORT_UNIT_COST",
+      "RENAME_REPORT",
       "ARCHIVE_REPORTS",
       "RESTORE_REPORTS",
       "DELETE_ARCHIVED_REPORTS",
@@ -118,6 +119,8 @@
         protocol.MAX_ACTIVE_REPORTS < 1 ||
         !Number.isSafeInteger(protocol.MAX_ARCHIVED_REPORTS) ||
         protocol.MAX_ARCHIVED_REPORTS < 1 ||
+        !Number.isSafeInteger(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH) ||
+        protocol.MAX_REPORT_DISPLAY_NAME_LENGTH < 1 ||
         typeof protocol.createStreamReportMessage !== "function"
       ) {
         throw new TypeError("A valid stream-report message protocol is required.");
@@ -269,6 +272,35 @@
       return { reportIds };
     }
 
+    function requireRenameOptions(value, protocol) {
+      if (
+        !hasExactKeys(value, ["displayName", "reportId"]) ||
+        typeof value.reportId !== "string" ||
+        !protocol.REPORT_ID_PATTERN.test(value.reportId) ||
+        (
+          value.displayName !== null &&
+          (
+            typeof value.displayName !== "string" ||
+            value.displayName.length < 1 ||
+            value.displayName.length >
+              protocol.MAX_REPORT_DISPLAY_NAME_LENGTH ||
+            value.displayName !== value.displayName.trim() ||
+            /[\u0000-\u001f\u007f]/.test(value.displayName)
+          )
+        )
+      ) {
+        fail(
+          "INVALID_CLIENT_COMMAND",
+          `Report rename options require a valid report ID and null or a trimmed name of at most ${protocol.MAX_REPORT_DISPLAY_NAME_LENGTH} characters.`,
+        );
+      }
+
+      return {
+        reportId: value.reportId,
+        displayName: value.displayName,
+      };
+    }
+
     function requireResolutionOptions(value, protocol) {
       if (
         !hasExactKeys(value, [
@@ -377,6 +409,7 @@
             "completedGmvCents",
             "completedPaymentCount",
             "completeness",
+            "displayName",
             "endedAt",
             "reportId",
             "startedAt",
@@ -389,6 +422,17 @@
             summary.attributedGmvDisplay === null ||
             (typeof summary.attributedGmvDisplay === "string" &&
               ATTRIBUTED_GMV_PATTERN.test(summary.attributedGmvDisplay))
+          ) ||
+          !(
+            summary.displayName === null ||
+            (
+              typeof summary.displayName === "string" &&
+              summary.displayName.length >= 1 &&
+              summary.displayName.length <=
+                protocol.MAX_REPORT_DISPLAY_NAME_LENGTH &&
+              summary.displayName === summary.displayName.trim() &&
+              !/[\u0000-\u001f\u007f]/.test(summary.displayName)
+            )
           )
         ) {
           fail(
@@ -434,6 +478,7 @@
         priorEndedAt = endedAt;
         return {
           reportId: summary.reportId,
+          displayName: summary.displayName,
           startedAt,
           endedAt,
           completeness: summary.completeness,
@@ -463,6 +508,25 @@
       }
 
       return { reportIds: [...data.reportIds] };
+    }
+
+    function parseRenameData(data, protocol, requested) {
+      if (
+        !hasExactKeys(data, ["displayName", "reportId"]) ||
+        data.reportId !== requested.reportId ||
+        data.displayName !== requested.displayName ||
+        !protocol.REPORT_ID_PATTERN.test(data.reportId)
+      ) {
+        fail(
+          "INVALID_RESPONSE",
+          "The stream-report service returned an invalid rename result.",
+        );
+      }
+
+      return {
+        reportId: data.reportId,
+        displayName: data.displayName,
+      };
     }
 
     function parsePaymentFixingOrdersData(data, protocol, requestedReportId) {
@@ -602,7 +666,14 @@
     }
 
     function parseGetData(data, protocol, streamReport, requestedReportId) {
-      if (!hasExactKeys(data, ["lifecycleStatus", "report", "reportId"])) {
+      if (
+        !hasExactKeys(data, [
+          "displayName",
+          "lifecycleStatus",
+          "report",
+          "reportId",
+        ])
+      ) {
         fail(
           "INVALID_RESPONSE",
           "The stream-report service returned an invalid saved report.",
@@ -616,6 +687,7 @@
       ) {
         if (
           data.reportId !== null ||
+          data.displayName !== null ||
           data.lifecycleStatus !== null ||
           data.report !== null
         ) {
@@ -625,14 +697,30 @@
           );
         }
 
-        return { reportId: null, lifecycleStatus: null, report: null };
+        return {
+          reportId: null,
+          lifecycleStatus: null,
+          displayName: null,
+          report: null,
+        };
       }
 
       if (
         typeof data.reportId !== "string" ||
         !protocol.REPORT_ID_PATTERN.test(data.reportId) ||
         data.reportId !== requestedReportId ||
-        !["finalized", "pending_end"].includes(data.lifecycleStatus)
+        !["finalized", "pending_end"].includes(data.lifecycleStatus) ||
+        !(
+          data.displayName === null ||
+          (
+            typeof data.displayName === "string" &&
+            data.displayName.length >= 1 &&
+            data.displayName.length <=
+              protocol.MAX_REPORT_DISPLAY_NAME_LENGTH &&
+            data.displayName === data.displayName.trim() &&
+            !/[\u0000-\u001f\u007f]/.test(data.displayName)
+          )
+        )
       ) {
         fail(
           "INVALID_RESPONSE",
@@ -662,6 +750,7 @@
         {
           reportId: data.reportId,
           lifecycleStatus: data.lifecycleStatus,
+          displayName: data.displayName,
           report,
         },
         "INVALID_RESPONSE",
@@ -775,6 +864,21 @@
           },
           (data) =>
             parseGetData(data, protocol, streamReport, requestedReportId),
+        );
+      }
+
+      function renameReport(optionsValue) {
+        let requested;
+
+        return enqueueCommand(
+          () => {
+            requested = requireRenameOptions(optionsValue, protocol);
+            return {
+              type: protocol.COMMAND_TYPES.RENAME_REPORT,
+              ...requested,
+            };
+          },
+          (data) => parseRenameData(data, protocol, requested),
         );
       }
 
@@ -931,6 +1035,7 @@
         listPaymentFixingOrders,
         listReportUnitCosts,
         listReports,
+        renameReport,
         resolvePaymentFixingOrder,
         restoreReports,
         updateReportUnitCost,
