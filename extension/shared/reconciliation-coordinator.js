@@ -18,6 +18,8 @@
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
       CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
+      EXTEND_STREAM_INVENTORY_BASELINE:
+        "extend_stream_inventory_baseline",
       PIN_STREAM_TO_INVENTORY_BASELINE:
         "pin_stream_to_inventory_baseline",
       OBSERVE_VARIATIONS: "observe_variations",
@@ -35,6 +37,14 @@
         "baselineId",
         "inventory",
         "sourceFingerprint",
+        "type",
+      ],
+      [COMMAND_TYPES.EXTEND_STREAM_INVENTORY_BASELINE]: [
+        "baselineId",
+        "expectedBaselineId",
+        "inventory",
+        "sourceFingerprint",
+        "streamId",
         "type",
       ],
       [COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE]: [
@@ -83,6 +93,7 @@
       "createReconciliationState",
       "createEmptyReconciliationState",
       "createInventoryBaseline",
+      "extendStreamInventoryBaseline",
       "hydrateReconciliationState",
       "mapVariation",
       "observePaymentStatuses",
@@ -203,6 +214,26 @@
           fail(
             "INVALID_COMMAND",
             "create_inventory_baseline requires an ID, fingerprint, and nonempty inventory.",
+          );
+        }
+      }
+
+      if (command.type === COMMAND_TYPES.EXTEND_STREAM_INVENTORY_BASELINE) {
+        if (
+          typeof command.baselineId !== "string" ||
+          command.baselineId.trim() === "" ||
+          typeof command.expectedBaselineId !== "string" ||
+          command.expectedBaselineId.trim() === "" ||
+          typeof command.sourceFingerprint !== "string" ||
+          command.sourceFingerprint.trim() === "" ||
+          typeof command.streamId !== "string" ||
+          command.streamId.trim() === "" ||
+          !Array.isArray(command.inventory) ||
+          command.inventory.length === 0
+        ) {
+          fail(
+            "INVALID_COMMAND",
+            "extend_stream_inventory_baseline requires a stream, expected and new baseline IDs, fingerprint, and nonempty inventory.",
           );
         }
       }
@@ -462,6 +493,16 @@
             return initializeState(command);
           case COMMAND_TYPES.CREATE_INVENTORY_BASELINE:
             return createInventoryBaseline(command);
+          case COMMAND_TYPES.EXTEND_STREAM_INVENTORY_BASELINE:
+            return mutateState((state) =>
+              reconciliation.extendStreamInventoryBaseline(state, {
+                streamId: command.streamId,
+                expectedBaselineId: command.expectedBaselineId,
+                baselineId: command.baselineId,
+                sourceFingerprint: command.sourceFingerprint,
+                inventory: command.inventory,
+              }),
+            );
           case COMMAND_TYPES.PIN_STREAM_TO_INVENTORY_BASELINE:
             return mutateState((state) =>
               reconciliation.pinStreamToInventoryBaseline(state, {

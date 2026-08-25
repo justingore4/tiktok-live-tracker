@@ -176,9 +176,11 @@
       }
 
       const {
+        assertActiveStream,
         assertNoActiveStream,
         createBaseline,
         createUuid,
+        extendStreamBaseline,
         fetchImpl,
         getActiveBaseline,
         identityApi,
@@ -187,12 +189,20 @@
         oauthClientId,
       } = options;
 
+      if (typeof assertActiveStream !== "function") {
+        throw new TypeError("assertActiveStream must be a function.");
+      }
+
       if (typeof assertNoActiveStream !== "function") {
         throw new TypeError("assertNoActiveStream must be a function.");
       }
 
       if (typeof createBaseline !== "function") {
         throw new TypeError("createBaseline must be a function.");
+      }
+
+      if (typeof extendStreamBaseline !== "function") {
+        throw new TypeError("extendStreamBaseline must be a function.");
       }
 
       if (typeof createUuid !== "function") {
@@ -232,11 +242,13 @@
 
       return {
         abortController: options.abortController ?? globalThis.AbortController,
+        assertActiveStream,
         assertNoActiveStream,
         clearTimeoutImpl: options.clearTimeoutImpl ??
           ((...args) => globalThis.clearTimeout(...args)),
         createBaseline,
         createUuid,
+        extendStreamBaseline,
         fetchImpl,
         getActiveBaseline,
         identityApi,
@@ -904,6 +916,146 @@
         return cloneSerializable(record.confirmedResult);
       }
 
+      function inventoriesMatchBySku(first, second) {
+        if (
+          !Array.isArray(first) ||
+          !Array.isArray(second) ||
+          first.length !== second.length
+        ) {
+          return false;
+        }
+
+        const secondBySku = new Map(
+          second.map((item) => [item?.sku, item]),
+        );
+
+        return (
+          secondBySku.size === second.length &&
+          first.every((item) => {
+            const match = secondBySku.get(item?.sku);
+
+            return (
+              match &&
+              item.item === match.item &&
+              item.style === match.style &&
+              item.size === match.size &&
+              item.quantityOnHandAtImport ===
+                match.quantityOnHandAtImport &&
+              item.unitCostCents === match.unitCostCents
+            );
+          })
+        );
+      }
+
+      async function addActiveStreamSkusFromGoogleSheet(
+        spreadsheetId,
+        context,
+      ) {
+        if (
+          !isPlainRecord(context) ||
+          Object.keys(context).sort().join("\u0000") !==
+            ["expectedBaselineId", "streamId"].sort().join("\u0000") ||
+          typeof context.streamId !== "string" ||
+          context.streamId.trim() === "" ||
+          typeof context.expectedBaselineId !== "string" ||
+          !BASELINE_ID_PATTERN.test(context.expectedBaselineId)
+        ) {
+          fail(
+            "INVALID_ACTIVE_STREAM_CONTEXT",
+            "The active stream inventory could not be verified.",
+          );
+        }
+
+        const streamId = context.streamId.trim();
+        const expectedBaselineId = context.expectedBaselineId;
+
+        await dependencies.assertActiveStream(streamId);
+        const readResult = await readSnapshot(spreadsheetId, true);
+        await dependencies.assertActiveStream(streamId);
+
+        if (!readResult.valid) {
+          return {
+            status: "invalid",
+            issues: readResult.issues,
+          };
+        }
+
+        const nextBaselineId = makeIdentifier(
+          "inventory-baseline",
+          BASELINE_ID_PATTERN,
+        );
+        const durableResponse = await dependencies.extendStreamBaseline({
+          streamId,
+          expectedBaselineId,
+          baselineId: nextBaselineId,
+          sourceFingerprint: readResult.snapshot.fingerprint,
+          inventory: cloneSerializable(readResult.snapshot.inventory),
+        });
+        const result = durableResponse?.result;
+        const state = durableResponse?.state;
+        const extended = result?.status === "extended";
+        const alreadyCurrent = result?.status === "already_current";
+        const persistedBaselineId = extended
+          ? nextBaselineId
+          : expectedBaselineId;
+        const persistedBaseline = Array.isArray(state?.inventoryBaselines)
+          ? state.inventoryBaselines.find(
+              (baseline) => baseline?.baselineId === persistedBaselineId,
+            )
+          : null;
+        const persistedStream = Array.isArray(state?.streams)
+          ? state.streams.find((stream) => stream?.streamId === streamId)
+          : null;
+        const addedSkus = Array.isArray(result?.addedSkus)
+          ? result.addedSkus
+          : null;
+        const persistedSnapshotMatches =
+          persistedBaseline?.sourceFingerprint ===
+            readResult.snapshot.fingerprint &&
+          (
+            extended
+              ? JSON.stringify(persistedBaseline?.inventory) ===
+                JSON.stringify(readResult.snapshot.inventory)
+              : inventoriesMatchBySku(
+                  persistedBaseline?.inventory,
+                  readResult.snapshot.inventory,
+                )
+          );
+
+        if (
+          (!extended && !alreadyCurrent) ||
+          result?.baselineId !== persistedBaselineId ||
+          result?.previousBaselineId !== expectedBaselineId ||
+          !addedSkus ||
+          (extended && addedSkus.length === 0) ||
+          (alreadyCurrent && addedSkus.length !== 0) ||
+          state?.activeInventoryBaselineId !== persistedBaselineId ||
+          persistedStream?.inventoryBaselineId !== persistedBaselineId ||
+          !persistedBaseline ||
+          !persistedSnapshotMatches ||
+          (
+            extended &&
+            state.streams.some(
+              (stream) =>
+                stream?.inventoryBaselineId === expectedBaselineId,
+            )
+          )
+        ) {
+          fail(
+            "ACTIVE_INVENTORY_UPDATE_FAILED",
+            "The new live-stream inventory could not be verified.",
+          );
+        }
+
+        return {
+          status: result.status,
+          baselineId: persistedBaselineId,
+          sourceFingerprint: readResult.snapshot.fingerprint,
+          summary: cloneSerializable(readResult.snapshot.summary),
+          addedSkus: cloneSerializable(addedSkus),
+        };
+      }
+
       async function getImportStatus() {
         const baseline = await dependencies.getActiveBaseline();
 
@@ -947,6 +1099,7 @@
       }
 
       return Object.freeze({
+        addActiveStreamSkusFromGoogleSheet,
         confirmGoogleSheetImport,
         getImportStatus,
         invalidatePreviews,

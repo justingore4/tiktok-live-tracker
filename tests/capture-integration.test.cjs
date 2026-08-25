@@ -105,6 +105,7 @@ function createHarness(options = {}) {
   const stateCalls = [];
   const liveBidCalls = [];
   const liveBidSyncCalls = [];
+  const nextItemQueueCalls = [];
   let activeState = options.activeState ?? createActiveState();
   const activeStreamCoordinator = {
     async dispatch(command) {
@@ -154,10 +155,27 @@ function createHarness(options = {}) {
         },
       }
     : undefined;
+  const nextItemQueueCoordinator = options.withNextItemQueueCoordinator
+    ? {
+        async applyToObservedBiddingVariation(value) {
+          nextItemQueueCalls.push(clone(value));
+
+          if (options.nextItemQueueError) {
+            throw options.nextItemQueueError;
+          }
+
+          return options.nextItemQueueResult ?? {
+            status: "no_queue",
+            state: value.state,
+          };
+        },
+      }
+    : undefined;
   const integration = createCaptureIntegration({
     activeStreamCoordinator,
     captureProtocol,
     ...(liveBidCoordinator ? { liveBidCoordinator } : {}),
+    ...(nextItemQueueCoordinator ? { nextItemQueueCoordinator } : {}),
     reconciliationCoordinator,
     stateCoordinator,
     streamSession,
@@ -169,6 +187,7 @@ function createHarness(options = {}) {
     integration,
     liveBidCalls,
     liveBidSyncCalls,
+    nextItemQueueCalls,
     setActiveState(state) {
       activeState = state;
     },
@@ -401,6 +420,101 @@ test("canonical capture responses synchronize the cached active marker", async (
     { streamId: STREAM_ONE, state },
   ]);
   assert.equal(harness.integration.consumeLiveBidChanged(), true);
+});
+
+test("applies a queued item only after the next bidding variation is persisted", async () => {
+  const observedState = { version: 7, marker: "observed" };
+  const mappedState = { version: 7, marker: "queued item mapped" };
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    withNextItemQueueCoordinator: true,
+    stateResponse: { state: observedState, result: null },
+    nextItemQueueResult: { status: "mapped", state: mappedState },
+  });
+
+  assert.deepEqual(
+    await harness.integration.dispatch({
+      type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+      variationNumber: 253,
+    }),
+    { status: "accepted" },
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    {
+      streamId: STREAM_ONE,
+      variationNumber: 253,
+      state: observedState,
+    },
+  ]);
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    { streamId: STREAM_ONE, state: mappedState },
+  ]);
+  assert.equal(harness.integration.consumeNextItemQueueChanged(), true);
+  assert.equal(harness.integration.consumeNextItemQueueChanged(), false);
+});
+
+test("does not apply the next-item queue for status, backfill, or price events", async () => {
+  const harness = createHarness({
+    withLiveBidCoordinator: true,
+    withNextItemQueueCoordinator: true,
+  });
+
+  await harness.integration.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_VARIATIONS,
+    variationNumbers: [253],
+  });
+  await harness.integration.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
+    statuses: [
+      {
+        variationNumber: 252,
+        observedPaymentStatus: "payment_processing",
+      },
+    ],
+  });
+  await harness.integration.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE,
+    variationNumber: 253,
+    bidPriceCents: 1200,
+  });
+
+  assert.deepEqual(harness.nextItemQueueCalls, []);
+  assert.equal(harness.integration.consumeNextItemQueueChanged(), false);
+});
+
+test("retains retry pressure when applying a queued item fails", async () => {
+  const queueError = new Error("queued mapping could not be saved");
+  const harness = createHarness({
+    withNextItemQueueCoordinator: true,
+    nextItemQueueError: queueError,
+  });
+
+  await assert.rejects(
+    () =>
+      harness.integration.dispatch({
+        type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+        variationNumber: 253,
+      }),
+    queueError,
+  );
+  assert.equal(harness.stateCalls.length, 2);
+  assert.equal(harness.integration.consumeNextItemQueueChanged(), false);
+});
+
+test("a queue that is still waiting does not request a UI invalidation", async () => {
+  const state = { version: 7, streams: [] };
+  const harness = createHarness({
+    withNextItemQueueCoordinator: true,
+    stateResponse: { state, result: null },
+    nextItemQueueResult: { status: "waiting", state },
+  });
+
+  await harness.integration.dispatch({
+    type: captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+    variationNumber: 252,
+  });
+
+  assert.equal(harness.integration.consumeNextItemQueueChanged(), false);
 });
 
 test("transient synchronization failure cannot reject durable canonical capture", async () => {

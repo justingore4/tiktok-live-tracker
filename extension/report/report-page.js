@@ -22,7 +22,6 @@
         protocol: root.TikTokLiveTrackerStreamReportProtocol,
         reportModule: root.TikTokLiveTrackerStreamReport,
         clientModule: root.TikTokLiveTrackerStreamReportClient,
-        addEventListener: root.addEventListener.bind(root),
         confirm: root.confirm.bind(root),
         print: () => root.print(),
         Blob: root.Blob,
@@ -737,19 +736,46 @@
         : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
-    function renderSkuProfitLoss(document, report) {
-      const body = document.querySelector("#sku-profit-rows");
-      const empty = document.querySelector("#sku-profit-empty");
-      const count = document.querySelector("#sku-profit-count");
+    function formatPercentage(numerator, denominator) {
+      if (!Number.isSafeInteger(numerator) || !Number.isSafeInteger(denominator) || denominator <= 0) {
+        return "—";
+      }
+
+      const percentage = (numerator / denominator) * 100;
+      return `${percentage.toLocaleString("en-US", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })}%`;
+    }
+
+    function getAverageSalePriceCents(entry) {
+      const revenueCents = entry?.revenueCents;
+      const soldQuantity = entry?.soldQuantity;
+
+      if (
+        !Number.isSafeInteger(revenueCents) ||
+        !Number.isSafeInteger(soldQuantity) ||
+        soldQuantity <= 0
+      ) {
+        return null;
+      }
+
+      return Math.round(revenueCents / soldQuantity);
+    }
+
+    function renderSkuPerformance(document, report) {
+      const body = document.querySelector("#performance-rows");
+      const empty = document.querySelector("#performance-empty");
+      const count = document.querySelector("#performance-row-count");
+      const inventoryBySku = new Map(
+        (Array.isArray(report?.inventory) ? report.inventory : []).map(
+          (entry) => [entry.sku, entry],
+        ),
+      );
       const performance = (Array.isArray(report?.itemPerformance)
         ? report.itemPerformance
         : [])
-        .filter(
-          (entry) =>
-            typeof entry?.sku === "string" &&
-            entry.sku.trim() !== "" &&
-            safeInteger(entry?.soldQuantity) > 0,
-        )
+        .filter((entry) => safeInteger(entry?.soldQuantity) > 0)
         .slice()
         .sort((left, right) => {
           const leftProfit = Number.isSafeInteger(left?.grossProfitCents)
@@ -769,12 +795,14 @@
             return leftProfit > rightProfit ? -1 : 1;
           }
 
-          const leftSku = left.sku.trim();
-          const rightSku = right.sku.trim();
+          const leftSku = typeof left?.sku === "string" ? left.sku.trim() : "";
+          const rightSku = typeof right?.sku === "string" ? right.sku.trim() : "";
           return leftSku < rightSku ? -1 : leftSku > rightSku ? 1 : 0;
         });
       const rows = performance.map((entry) => {
         const row = document.createElement("tr");
+        const inventoryEntry = inventoryBySku.get(entry.sku);
+        const openingQuantity = getOpeningQuantity(inventoryEntry);
         const grossProfitCents = Number.isSafeInteger(entry?.grossProfitCents)
           ? entry.grossProfitCents
           : null;
@@ -783,53 +811,6 @@
           : grossProfitCents !== null && grossProfitCents < 0
             ? "profit-negative"
             : "profit-neutral";
-        row.append(
-          createTableCell(document, entry.sku.trim(), { className: "sku-cell" }),
-          createTableCell(document, getItemDescription(entry)),
-          createTableCell(document, safeInteger(entry?.soldQuantity), {
-            className: "number-cell",
-          }),
-          createTableCell(document, formatSignedUsdCents(grossProfitCents), {
-            className: `number-cell ${profitClass}`,
-          }),
-        );
-        return row;
-      });
-
-      replaceChildren(body, rows);
-      empty.hidden = rows.length !== 0;
-      count.textContent = `${rows.length} sold SKU${rows.length === 1 ? "" : "s"}`;
-    }
-
-    function formatPercentage(numerator, denominator) {
-      if (!Number.isSafeInteger(numerator) || !Number.isSafeInteger(denominator) || denominator <= 0) {
-        return "—";
-      }
-
-      const percentage = (numerator / denominator) * 100;
-      return `${percentage.toLocaleString("en-US", {
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
-      })}%`;
-    }
-
-    function renderSkuPerformance(document, report) {
-      const body = document.querySelector("#performance-rows");
-      const empty = document.querySelector("#performance-empty");
-      const count = document.querySelector("#performance-row-count");
-      const inventoryBySku = new Map(
-        (Array.isArray(report?.inventory) ? report.inventory : []).map(
-          (entry) => [entry.sku, entry],
-        ),
-      );
-      const performance = (Array.isArray(report?.itemPerformance)
-        ? report.itemPerformance
-        : [])
-        .filter((entry) => safeInteger(entry?.soldQuantity) > 0);
-      const rows = performance.map((entry) => {
-        const row = document.createElement("tr");
-        const inventoryEntry = inventoryBySku.get(entry.sku);
-        const openingQuantity = getOpeningQuantity(inventoryEntry);
         row.append(
           createTableCell(document, entry?.sku ?? "", { className: "sku-cell" }),
           createTableCell(
@@ -845,25 +826,28 @@
           createTableCell(document, formatUsdCents(inventoryEntry?.unitCostCents), {
             className: "number-cell",
           }),
+          createTableCell(document, formatUsdCents(getAverageSalePriceCents(entry)), {
+            className: "number-cell",
+          }),
           createTableCell(document, formatUsdCents(entry?.revenueCents), {
             className: "number-cell",
           }),
           createTableCell(document, formatUsdCents(entry?.costOfGoodsCents), {
             className: "number-cell",
           }),
-          createTableCell(document, formatUsdCents(entry?.grossProfitCents), {
-            className: "number-cell",
-          }),
-          createTableCell(
-            document,
-            formatPercentage(entry?.grossProfitCents, entry?.revenueCents),
-            { className: "number-cell" },
-          ),
           createTableCell(
             document,
             formatPercentage(entry?.soldQuantity, openingQuantity),
             { className: "number-cell" },
           ),
+          createTableCell(
+            document,
+            formatPercentage(entry?.grossProfitCents, entry?.revenueCents),
+            { className: "number-cell" },
+          ),
+          createTableCell(document, formatSignedUsdCents(grossProfitCents), {
+            className: `number-cell ${profitClass}`,
+          }),
         );
         return row;
       });
@@ -1077,7 +1061,6 @@
         "#most-profitable-products",
         "#most-profitable-products-card",
       );
-      renderSkuProfitLoss(document, report);
       renderItemVariations(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
@@ -1150,42 +1133,6 @@
       return reportId;
     }
 
-    function createPrintDisclosureController(document) {
-      const disclosures = [
-        document?.querySelector?.("#completed-sales-disclosure"),
-        document?.querySelector?.("#sku-profit-disclosure"),
-      ].filter(Boolean);
-      let priorOpenStates = null;
-
-      const prepare = () => {
-        if (disclosures.length === 0) {
-          return;
-        }
-
-        if (priorOpenStates === null) {
-          priorOpenStates = disclosures.map(
-            (disclosure) => disclosure.open === true,
-          );
-        }
-        disclosures.forEach((disclosure) => {
-          disclosure.open = true;
-        });
-      };
-
-      const restore = () => {
-        if (priorOpenStates === null) {
-          return;
-        }
-
-        disclosures.forEach((disclosure, index) => {
-          disclosure.open = priorOpenStates[index];
-        });
-        priorOpenStates = null;
-      };
-
-      return Object.freeze({ prepare, restore });
-    }
-
     function validateMountDependencies(options) {
       if (!isPlainRecord(options)) {
         throw new TypeError("Report-page options are required.");
@@ -1256,7 +1203,6 @@
       let loadSequence = 0;
       let actionFeedbackSequence = 0;
       let actionFeedbackTimerId = null;
-      const printDisclosure = createPrintDisclosureController(document);
       const inventoryInstructions = document.querySelector("#inventory-instructions");
       const inventoryInstructionsToggle = document.querySelector(
         "#toggle-inventory-instructions",
@@ -1273,11 +1219,6 @@
       };
 
       setInventoryInstructionsExpanded(false);
-
-      if (typeof dependencies.addEventListener === "function") {
-        dependencies.addEventListener("beforeprint", printDisclosure.prepare);
-        dependencies.addEventListener("afterprint", printDisclosure.restore);
-      }
 
       const feedback = (message) => {
         const target = document.querySelector("#action-feedback");
@@ -1715,13 +1656,7 @@
       );
       document.querySelector("#print-report").addEventListener("click", () => {
         if (currentRecord) {
-          printDisclosure.prepare();
-          try {
-            dependencies.print();
-          } catch (error) {
-            printDisclosure.restore();
-            throw error;
-          }
+          dependencies.print();
         }
       });
       inventoryInstructionsToggle.addEventListener("click", () => {
@@ -1766,7 +1701,6 @@
 
     return Object.freeze({
       SHEET_HEADERS,
-      createPrintDisclosureController,
       createFileStamp,
       createReportFilename,
       createSummaryMetrics,

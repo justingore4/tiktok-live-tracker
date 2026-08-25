@@ -281,3 +281,80 @@ test("serializes client commands so confirm cannot overtake preview", async () =
     protocol.COMMAND_TYPES.CONFIRM_GOOGLE_SHEET_IMPORT,
   ]);
 });
+
+test("adds active-stream SKUs through an exact worker-owned command", async () => {
+  const messages = [];
+  const resultData = {
+    status: "extended",
+    baselineId: BASELINE_ID,
+    sourceFingerprint: FINGERPRINT,
+    summary: {
+      rowCount: 2,
+      totalQuantityOnHandAtImport: 5,
+      totalInventoryCostCents: 4750,
+    },
+    addedSkus: ["NEW-SKU"],
+  };
+  const client = createInventoryImportClient({
+    protocol,
+    runtime: {
+      sendMessage(message) {
+        messages.push(message);
+        return Promise.resolve(ok(resultData));
+      },
+    },
+  });
+
+  const result = await client.addActiveStreamSkusReference(
+    `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`,
+  );
+
+  assert.deepEqual(result, resultData);
+  assert.deepEqual(messages, [
+    protocol.createInventoryImportMessage({
+      type:
+        protocol.COMMAND_TYPES.ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+      spreadsheetId: SHEET_ID,
+    }),
+  ]);
+  assert.equal(JSON.stringify(messages).includes("streamId"), false);
+  assert.equal(JSON.stringify(messages).includes("baselineId"), false);
+});
+
+test("strictly parses active-stream SKU update responses", async () => {
+  const invalidSheetClient = createInventoryImportClient({
+    protocol,
+    runtime: {
+      sendMessage: () => Promise.resolve(ok({
+        status: "invalid",
+        issues: [{
+          code: "REQUIRED_VALUE",
+          rowNumber: 3,
+          column: "sku",
+          message: "sku is required.",
+        }],
+      })),
+    },
+  });
+  await assert.rejects(
+    invalidSheetClient.addActiveStreamSkusReference(SHEET_ID),
+    (error) => error.code === "INVALID_INVENTORY_SHEET",
+  );
+
+  const malformedClient = createInventoryImportClient({
+    protocol,
+    runtime: {
+      sendMessage: () => Promise.resolve(ok({
+        status: "already_current",
+        baselineId: BASELINE_ID,
+        sourceFingerprint: FINGERPRINT,
+        summary: SUMMARY,
+        addedSkus: ["IMPOSSIBLE-ADDITION"],
+      })),
+    },
+  });
+  await assert.rejects(
+    malformedClient.addActiveStreamSkusReference(SHEET_ID),
+    (error) => error.code === "INVALID_RESPONSE",
+  );
+});

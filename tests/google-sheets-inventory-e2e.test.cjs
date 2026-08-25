@@ -51,6 +51,14 @@ const TEMPLATE_ROWS = Object.freeze([
   ["CARHARTT-JACKET-BROWN-M", "Carhartt jacket", "brown", "M", 4, 18],
   ["DENIM-SHORTS-WASHED-BLUE-32", "Denim shorts", "washed blue", "32", 0, 9],
 ]);
+const LIMITED_SKU_ROW = Object.freeze([
+  "LIMITED-HOODIE-SILVER-OS",
+  "Limited hoodie",
+  "silver",
+  "OS",
+  3,
+  20,
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -390,4 +398,89 @@ test("a worker restart discards its in-memory preview authorization", async () =
   assert.equal(RECONCILIATION_STORAGE_KEY in storage, false);
   assert.equal(restartedWorker.authCalls.length, 0);
   assert.equal(restartedWorker.fetchCalls.length, 0);
+});
+
+test("an active Sheet append preserves mappings and survives worker restart", async () => {
+  const storage = {};
+  const expandedRows = [...TEMPLATE_ROWS, LIMITED_SKU_ROW];
+  const worker = createRealWorkerHarness({
+    storage,
+    payloads: [
+      createGridPayload(),
+      createGridPayload(),
+      createGridPayload(expandedRows),
+    ],
+  });
+  const clients = createClients(worker.runtime);
+  const preview = await clients.inventory.previewReference(SPREADSHEET_ID);
+
+  await clients.inventory.confirmPreview(preview.previewToken);
+  const started = await clients.stream.startStream();
+  const streamId = started.state.activeSession.streamId;
+
+  await clients.reconciliation.mapVariation({
+    streamId,
+    variationNumber: 77,
+    sku: "STUSSY-TEE-BLACK-L",
+  });
+  const before = await clients.reconciliation.getState();
+  const beforeStream = before.state.streams.find(
+    (stream) => stream.streamId === streamId,
+  );
+  const previousBaselineId = beforeStream.inventoryBaselineId;
+  const variationSnapshot = clone(beforeStream.variations);
+
+  const result = await clients.inventory.addActiveStreamSkusReference(
+    `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`,
+  );
+  const after = await clients.reconciliation.getState();
+  const afterStream = after.state.streams.find(
+    (stream) => stream.streamId === streamId,
+  );
+  const activeBaseline = after.state.inventoryBaselines.find(
+    (baseline) =>
+      baseline.baselineId === after.state.activeInventoryBaselineId,
+  );
+
+  assert.equal(result.status, "extended");
+  assert.deepEqual(result.addedSkus, [LIMITED_SKU_ROW[0]]);
+  assert.notEqual(afterStream.inventoryBaselineId, previousBaselineId);
+  assert.equal(
+    afterStream.inventoryBaselineId,
+    after.state.activeInventoryBaselineId,
+  );
+  assert.deepEqual(afterStream.variations, variationSnapshot);
+  assert.equal(
+    activeBaseline.inventory.find((item) => item.sku === LIMITED_SKU_ROW[0])
+      .quantityOnHandAtImport,
+    3,
+  );
+  assert.deepEqual(worker.authCalls, [
+    { interactive: true },
+    { interactive: false },
+    { interactive: true },
+  ]);
+  assert.equal(worker.fetchCalls.length, 3);
+
+  const restartedWorker = createRealWorkerHarness({ storage });
+  const restartedClients = createClients(restartedWorker.runtime);
+  const restored = await restartedClients.reconciliation.getState();
+  const restoredStream = restored.state.streams.find(
+    (stream) => stream.streamId === streamId,
+  );
+  const restoredBaseline = restored.state.inventoryBaselines.find(
+    (baseline) =>
+      baseline.baselineId === restored.state.activeInventoryBaselineId,
+  );
+
+  assert.deepEqual(restoredStream.variations, variationSnapshot);
+  assert.ok(
+    restoredBaseline.inventory.some(
+      (item) => item.sku === LIMITED_SKU_ROW[0],
+    ),
+  );
+  assert.equal(restartedWorker.fetchCalls.length, 0);
+  assert.equal(JSON.stringify(storage).includes(SPREADSHEET_ID), false);
+  assert.deepEqual(worker.workerErrors, []);
+  assert.deepEqual(restartedWorker.workerErrors, []);
 });

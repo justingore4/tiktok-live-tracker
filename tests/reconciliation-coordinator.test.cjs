@@ -185,6 +185,54 @@ function paymentCommand(variationNumber, soldPriceCents = 4800) {
   };
 }
 
+function createImportedExtensionState() {
+  const state = reconciliation.createEmptyReconciliationState();
+  const baselineId =
+    "inventory-baseline:71000000-0000-4000-8000-000000000000";
+  const inventory = [{
+    sku: "BLACK-TEE-M",
+    item: "Black Tee",
+    style: "black",
+    size: "M",
+    quantityOnHandAtImport: 5,
+    unitCostCents: 1200,
+  }];
+
+  reconciliation.createInventoryBaseline(state, {
+    baselineId,
+    sourceFingerprint: "fnv1a64:7134567890abcdef",
+    inventory,
+  });
+  reconciliation.observeVariations(state, {
+    streamId: "stream-1",
+    variationNumbers: [1],
+  });
+
+  return { baselineId, inventory, state };
+}
+
+function extendBaselineCommand(previousBaselineId, inventory) {
+  return {
+    type: COMMAND_TYPES.EXTEND_STREAM_INVENTORY_BASELINE,
+    streamId: "stream-1",
+    expectedBaselineId: previousBaselineId,
+    baselineId:
+      "inventory-baseline:72000000-0000-4000-8000-000000000000",
+    sourceFingerprint: "fnv1a64:7234567890abcdef",
+    inventory: [
+      ...inventory,
+      {
+        sku: "LIMITED-HOODIE-OS",
+        item: "Limited Hoodie",
+        style: "silver",
+        size: "OS",
+        quantityOnHandAtImport: 3,
+        unitCostCents: 1800,
+      },
+    ],
+  };
+}
+
 async function assertErrorCode(action, code, ErrorType = Error) {
   await assert.rejects(action, (error) => {
     assert.ok(error instanceof ErrorType);
@@ -1268,6 +1316,84 @@ test("a failed payment fixing resolution save leaves canonical state unresolved"
 
   assert.equal(auction.paymentStatus, "unknown");
   assert.equal(auction.observedPaymentStatus, "payment_fixing");
+});
+
+test("persists an active-stream inventory extension in one atomic write", async () => {
+  const fixture = createImportedExtensionState();
+  const memoryStore = createMemoryStateStore(fixture.state);
+  const coordinator = createCoordinator(memoryStore);
+  const command = extendBaselineCommand(fixture.baselineId, fixture.inventory);
+  const response = await coordinator.dispatch(command);
+
+  assert.deepEqual(response.result, {
+    status: "extended",
+    baselineId: command.baselineId,
+    previousBaselineId: fixture.baselineId,
+    addedSkus: ["LIMITED-HOODIE-OS"],
+  });
+  assert.equal(memoryStore.calls.save.length, 1);
+  assert.equal(response.state.activeInventoryBaselineId, command.baselineId);
+  assert.equal(
+    response.state.streams[0].inventoryBaselineId,
+    command.baselineId,
+  );
+  assert.equal(response.state.streams[0].variations[0].variationNumber, 1);
+  assert.deepEqual(memoryStore.getPersistedState(), response.state);
+
+  const restored = await createCoordinator(memoryStore).dispatch(
+    getStateCommand(),
+  );
+
+  assert.deepEqual(restored.state, response.state);
+});
+
+test("rolls back an inventory extension when its durable save fails", async () => {
+  const fixture = createImportedExtensionState();
+  const before = clone(fixture.state);
+  const memoryStore = createMemoryStateStore(fixture.state);
+  const coordinator = createCoordinator(memoryStore);
+
+  memoryStore.failNextSave(new ReconciliationStorageError(
+    "STORAGE_WRITE_FAILED",
+    "write failed",
+  ));
+
+  await assertErrorCode(
+    () => coordinator.dispatch(
+      extendBaselineCommand(fixture.baselineId, fixture.inventory),
+    ),
+    "STORAGE_WRITE_FAILED",
+    ReconciliationStorageError,
+  );
+
+  const after = await coordinator.dispatch(getStateCommand());
+
+  assert.deepEqual(after.state, before);
+  assert.deepEqual(memoryStore.getPersistedState(), before);
+});
+
+test("validates the exact inventory-extension command shape before loading", async () => {
+  const fixture = createImportedExtensionState();
+  const valid = extendBaselineCommand(fixture.baselineId, fixture.inventory);
+  const invalidCommands = [
+    { ...valid, extra: true },
+    { ...valid, expectedBaselineId: "" },
+    { ...valid, streamId: "" },
+    { ...valid, inventory: [] },
+  ];
+
+  for (const command of invalidCommands) {
+    const memoryStore = createMemoryStateStore(fixture.state);
+    const coordinator = createCoordinator(memoryStore);
+
+    await assertErrorCode(
+      () => coordinator.dispatch(command),
+      "INVALID_COMMAND",
+      ReconciliationCoordinatorError,
+    );
+    assert.equal(memoryStore.calls.load, 0);
+    assert.equal(memoryStore.calls.save.length, 0);
+  }
 });
 
 test("validates coordinator dependencies immediately", () => {

@@ -1116,39 +1116,7 @@
       });
     }
 
-    function createEmptyReconciliationState() {
-      return {
-        version: STATE_VERSION,
-        activeInventoryBaselineId: null,
-        inventoryBaselines: [],
-        streams: [],
-      };
-    }
-
-    function createReconciliationState(inventory = []) {
-      if (!Array.isArray(inventory)) {
-        fail("INVALID_INVENTORY", "Inventory must be an array.");
-      }
-
-      const normalizedInventory = inventory.map(cloneLegacyInventoryItem);
-
-      requireUniqueInventorySkus(normalizedInventory);
-
-      return {
-        version: STATE_VERSION,
-        activeInventoryBaselineId: LEGACY_INVENTORY_BASELINE_ID,
-        inventoryBaselines: [{
-          baselineId: LEGACY_INVENTORY_BASELINE_ID,
-          sourceFingerprint: null,
-          inventory: normalizedInventory,
-        }],
-        streams: [],
-      };
-    }
-
-    function createInventoryBaseline(state, input) {
-      requireState(state);
-
+    function prepareInventoryBaselineCandidate(input) {
       if (!isPlainRecord(input)) {
         fail("INVALID_INVENTORY_BASELINE", "An inventory baseline is required.");
       }
@@ -1204,22 +1172,10 @@
         fail("INVALID_INVENTORY_BASELINE", contractIssue);
       }
 
-      const candidate = { baselineId, sourceFingerprint, inventory };
-      const existing = state.inventoryBaselines.find(
-        (baseline) => baseline.baselineId === baselineId,
-      );
+      return { baselineId, sourceFingerprint, inventory };
+    }
 
-      if (existing) {
-        if (JSON.stringify(existing) === JSON.stringify(candidate)) {
-          return { status: "already_exists", baselineId };
-        }
-
-        fail(
-          "BASELINE_ID_CONFLICT",
-          "The inventory baseline ID already identifies different inventory.",
-        );
-      }
-
+    function requireStableImportedInventoryIdentities(state, inventory) {
       const importedHistory = state.inventoryBaselines.filter(
         (baseline) => baseline.sourceFingerprint !== null,
       );
@@ -1264,6 +1220,69 @@
           }
         }
       }
+    }
+
+    function inventoryItemsMatch(first, second) {
+      return (
+        first.sku === second.sku &&
+        first.item === second.item &&
+        first.style === second.style &&
+        first.size === second.size &&
+        first.quantityOnHandAtImport === second.quantityOnHandAtImport &&
+        first.unitCostCents === second.unitCostCents
+      );
+    }
+
+    function createEmptyReconciliationState() {
+      return {
+        version: STATE_VERSION,
+        activeInventoryBaselineId: null,
+        inventoryBaselines: [],
+        streams: [],
+      };
+    }
+
+    function createReconciliationState(inventory = []) {
+      if (!Array.isArray(inventory)) {
+        fail("INVALID_INVENTORY", "Inventory must be an array.");
+      }
+
+      const normalizedInventory = inventory.map(cloneLegacyInventoryItem);
+
+      requireUniqueInventorySkus(normalizedInventory);
+
+      return {
+        version: STATE_VERSION,
+        activeInventoryBaselineId: LEGACY_INVENTORY_BASELINE_ID,
+        inventoryBaselines: [{
+          baselineId: LEGACY_INVENTORY_BASELINE_ID,
+          sourceFingerprint: null,
+          inventory: normalizedInventory,
+        }],
+        streams: [],
+      };
+    }
+
+    function createInventoryBaseline(state, input) {
+      requireState(state);
+      const candidate = prepareInventoryBaselineCandidate(input);
+      const { baselineId, inventory } = candidate;
+      const existing = state.inventoryBaselines.find(
+        (baseline) => baseline.baselineId === baselineId,
+      );
+
+      if (existing) {
+        if (JSON.stringify(existing) === JSON.stringify(candidate)) {
+          return { status: "already_exists", baselineId };
+        }
+
+        fail(
+          "BASELINE_ID_CONFLICT",
+          "The inventory baseline ID already identifies different inventory.",
+        );
+      }
+
+      requireStableImportedInventoryIdentities(state, inventory);
 
       state.inventoryBaselines.push(candidate);
       state.activeInventoryBaselineId = baselineId;
@@ -1300,6 +1319,120 @@
       );
 
       return baseline?.inventory.find((item) => item.sku === sku) ?? null;
+    }
+
+    function extendStreamInventoryBaseline(state, input) {
+      requireState(state);
+
+      if (!isPlainRecord(input)) {
+        fail(
+          "INVALID_INVENTORY_BASELINE_EXTENSION",
+          "An inventory baseline extension is required.",
+        );
+      }
+
+      const actualKeys = Object.keys(input).sort();
+      const expectedKeys = [
+        "baselineId",
+        "expectedBaselineId",
+        "inventory",
+        "sourceFingerprint",
+        "streamId",
+      ].sort();
+
+      if (
+        actualKeys.length !== expectedKeys.length ||
+        actualKeys.some((key, index) => key !== expectedKeys[index])
+      ) {
+        fail(
+          "INVALID_INVENTORY_BASELINE_EXTENSION",
+          "The inventory baseline extension has an invalid shape.",
+        );
+      }
+
+      const streamId = requireStreamId(input.streamId);
+      const expectedBaselineId = requireNonEmptyString(
+        input.expectedBaselineId,
+        "expectedBaselineId",
+      );
+      const candidate = prepareInventoryBaselineCandidate({
+        baselineId: input.baselineId,
+        sourceFingerprint: input.sourceFingerprint,
+        inventory: input.inventory,
+      });
+      const activeBaseline = requireActiveInventoryBaseline(state);
+
+      if (activeBaseline.baselineId !== expectedBaselineId) {
+        fail(
+          "ACTIVE_INVENTORY_BASELINE_CHANGED",
+          "The active inventory baseline changed before new SKUs could be added.",
+        );
+      }
+
+      const stream = findStream(state, streamId);
+
+      if (!stream) {
+        fail("UNKNOWN_STREAM", `Stream ${streamId} does not exist.`);
+      }
+
+      if (stream.inventoryBaselineId !== expectedBaselineId) {
+        fail(
+          "STREAM_BASELINE_CONFLICT",
+          "The stream is not pinned to the expected inventory baseline.",
+        );
+      }
+
+      const incomingBySku = new Map(
+        candidate.inventory.map((item) => [item.sku, item]),
+      );
+
+      for (const existingItem of activeBaseline.inventory) {
+        const incomingItem = incomingBySku.get(existingItem.sku);
+
+        if (!incomingItem || !inventoryItemsMatch(existingItem, incomingItem)) {
+          fail(
+            "INVENTORY_BASELINE_NOT_APPEND_ONLY",
+            "Existing inventory rows cannot be changed, renamed, or removed while a stream is active.",
+          );
+        }
+      }
+
+      const existingSkus = new Set(
+        activeBaseline.inventory.map((item) => item.sku),
+      );
+      const addedSkus = candidate.inventory
+        .filter((item) => !existingSkus.has(item.sku))
+        .map((item) => item.sku);
+
+      if (addedSkus.length === 0) {
+        return {
+          status: "already_current",
+          baselineId: expectedBaselineId,
+          previousBaselineId: expectedBaselineId,
+          addedSkus: [],
+        };
+      }
+
+      if (findInventoryBaseline(state, candidate.baselineId)) {
+        fail(
+          "BASELINE_ID_CONFLICT",
+          "The new inventory baseline ID is already in use.",
+        );
+      }
+
+      createInventoryBaseline(state, candidate);
+      state.streams.forEach((candidateStream) => {
+        if (candidateStream.inventoryBaselineId === expectedBaselineId) {
+          candidateStream.inventoryBaselineId = candidate.baselineId;
+        }
+      });
+
+      return {
+        status: "extended",
+        baselineId: candidate.baselineId,
+        previousBaselineId: expectedBaselineId,
+        addedSkus,
+      };
     }
 
     function findStream(state, streamId) {
@@ -2349,6 +2482,7 @@
       createEmptyReconciliationState,
       createReconciliationState,
       createInventoryBaseline,
+      extendStreamInventoryBaseline,
       hydrateReconciliationState,
       getInventoryAvailability,
       pinStreamToInventoryBaseline,

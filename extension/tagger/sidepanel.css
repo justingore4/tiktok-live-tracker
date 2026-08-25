@@ -1994,12 +1994,101 @@ button {
   letter-spacing: -0.025em;
 }
 
+.inventory-heading-actions {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.inventory-heading-actions .text-action {
+  white-space: nowrap;
+}
+
+.inventory-heading-actions .text-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .result-count {
   flex: none;
   padding-bottom: 1px;
   color: var(--text-muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.active-stream-inventory-update-form {
+  display: grid;
+  gap: 8px;
+  margin: -2px 0 13px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.active-stream-inventory-update-form[aria-busy="true"] {
+  cursor: progress;
+}
+
+.active-stream-inventory-update-description {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.active-stream-inventory-update-form label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.active-stream-inventory-update-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  outline: none;
+  color: var(--text);
+  background: var(--background);
+  font-size: 11px;
+}
+
+.active-stream-inventory-update-form input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px rgb(141 204 255 / 14%);
+}
+
+.active-stream-inventory-update-form input[aria-invalid="true"] {
+  border-color: var(--amber);
+}
+
+.active-stream-inventory-update-form .field-error {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.active-stream-inventory-update-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.active-stream-inventory-update-feedback {
+  margin: -2px 0 13px;
+  padding: 9px 10px;
+  border: 1px solid rgb(39 211 180 / 36%);
+  border-radius: 9px;
+  color: #adf4e7;
+  background: rgb(39 211 180 / 8%);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .search-field {
@@ -2266,6 +2355,93 @@ button {
   color: #ffd88a;
 }
 
+.inventory-card[data-current-mapped="true"] {
+  border-color: #62aaff;
+  background:
+    linear-gradient(145deg, rgb(98 170 255 / 11%), transparent 62%),
+    var(--surface-raised);
+  box-shadow:
+    0 0 0 2px rgb(98 170 255 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
+.inventory-card[aria-pressed="true"][data-current-mapped="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(145deg, rgb(39 211 180 / 11%), transparent 62%) padding-box,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
+    linear-gradient(
+      90deg,
+      var(--cyan) 0 50%,
+      #62aaff 50% 100%
+    ) border-box;
+  box-shadow:
+    -1px 0 0 1px rgb(39 211 180 / 14%),
+    1px 0 0 1px rgb(98 170 255 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
+.inventory-card[data-queued="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(145deg, rgb(255 115 126 / 10%), transparent 62%) padding-box,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
+    linear-gradient(#ff737e, #ff737e) border-box;
+  box-shadow:
+    0 0 0 2px rgb(255 115 126 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
+.inventory-card[aria-pressed="true"][data-queued="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(145deg, rgb(39 211 180 / 11%), transparent 62%) padding-box,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
+    linear-gradient(
+      90deg,
+      var(--cyan) 0 50%,
+      #ff737e 50% 100%
+    ) border-box;
+  box-shadow:
+    -1px 0 0 1px rgb(39 211 180 / 14%),
+    1px 0 0 1px rgb(255 115 126 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
+.inventory-card[data-current-mapped="true"][data-queued="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(145deg, rgb(98 170 255 / 11%), transparent 62%) padding-box,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
+    linear-gradient(
+      90deg,
+      #62aaff 0 50%,
+      #ff737e 50% 100%
+    ) border-box;
+  box-shadow:
+    -1px 0 0 1px rgb(98 170 255 / 16%),
+    1px 0 0 1px rgb(255 115 126 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
+.inventory-card[aria-pressed="true"][data-current-mapped="true"][data-queued="true"] {
+  border-color: transparent;
+  background:
+    linear-gradient(145deg, rgb(39 211 180 / 11%), transparent 62%) padding-box,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) padding-box,
+    linear-gradient(
+      90deg,
+      var(--cyan) 0 33.333%,
+      #62aaff 33.333% 66.666%,
+      #ff737e 66.666% 100%
+    ) border-box;
+  box-shadow:
+    -1px 0 0 1px rgb(39 211 180 / 14%),
+    0 0 0 1px rgb(98 170 255 / 12%),
+    1px 0 0 1px rgb(255 115 126 / 16%),
+    0 10px 25px rgb(0 0 0 / 18%);
+}
+
 .empty-state {
   margin-top: 17px;
   padding: 30px 18px;
@@ -2440,6 +2616,14 @@ button {
     align-items: flex-start;
     flex-direction: column;
     gap: 5px;
+  }
+
+  .inventory-heading-actions {
+    align-items: flex-start;
+  }
+
+  .active-stream-inventory-update-actions {
+    grid-template-columns: 1fr;
   }
 
   .inventory-grid {

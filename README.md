@@ -16,8 +16,8 @@ tracker combines those facts to calculate inventory and gross profit.
 > isolated **Attributed GMV** display under the active stream. Ending tracking now freezes
 > a local business report, opens a printable/Save-as-PDF page, and provides a complete
 > six-column Inventory table plus a Google Sheets-ready CSV. A dedicated employee work
-> queue, verified TikTok stream identity, and automatic Google Sheets writes are not
-> implemented yet.
+> queue beyond the single next-item shortcut, verified TikTok stream identity, and
+> automatic Google Sheets writes are not implemented yet.
 
 ## How it works
 
@@ -29,6 +29,11 @@ While the item is on screen, an employee selects its item, style, and size from 
 tracker's inventory menu. The tracker stores that selection as a mapping; it does not
 enter a price or perform any action on TikTok. Clicking the selected inventory card
 again removes only that item mapping and leaves TikTok's payment result unchanged.
+On the current/newest variation, right-click maps it when it has no item and then toggles
+one SKU for automatic mapping to the next newer live variation. While an older variation
+is displayed, right-click instead maps, corrects, or unmaps only the current/newest
+variation and never changes the queue; left-click continues to edit the displayed
+historical variation.
 
 The tracker counts the sale only after TikTok shows the final price with the green
 `Payment complete` badge in the **Sold items** panel:
@@ -77,6 +82,27 @@ auctioned again, the employee maps its new variation number.
   and scroll position; capture and persistence continue, and the newest queued option view
   is applied once when the employee selects or dismisses the listbox. Inventory cards show
   remaining stock separately from pending reservations.
+- A one-item **next variation** shortcut on those inventory cards. On the current/newest
+  variation, right-click maps it when unmapped; after it has any mapping, right-click
+  queues or unqueues that SKU without changing the current selection. While history
+  remains displayed, right-click maps or remaps the worker-verified current/newest
+  variation; right-clicking its selected SKU again unmaps it. This action cannot create,
+  replace, or clear a queue. Left-click always maps or unmaps the variation actually
+  displayed. During historical review, the displayed mapping stays green, the mapped
+  current/newest variation stays blue even between auctions, and a shared SKU uses a
+  split green/blue outline. A pre-existing queue remains active and red. The queue survives
+  side-panel closure, TikTok page reload, and service-worker suspension within the same
+  tracker stream, applies only to the next genuinely newer live bidding variation, never
+  overwrites an existing mapping, and is cleared by End or an extension reload.
+- An active-stream **Add new SKUs from Sheet** action for unplanned items. The employee
+  adds the rows to the same `Inventory` tab, pastes that Sheet link or ID, and explicitly
+  checks and adds them without ending tracking. The Sheet must be a complete append-only
+  snapshot: row order may change, but every existing SKU and its item, style, size,
+  opening quantity, and unit cost must be unchanged. Only brand-new SKU rows are accepted.
+  A successful update preserves every captured variation, payment state, mapping,
+  completed count, and pending reservation; a mismatch or changed stream saves nothing.
+  Keep the TikTok dashboard open until the bounded Sheet check finishes because worker
+  writes and End briefly queue behind that request, then catch up in order.
 - A compact **Live auction** panel that stays visible throughout an active local tracker
   stream, including while an employee reviews an older variation. A newly detected
   on-video auction immediately changes its heading to `Variation #N` and clears the prior
@@ -160,10 +186,10 @@ auctioned again, the employee maps its new variation number.
   Archived reports can be restored only into available Business Records slots, with a
   multi-selection restore performed atomically. Archive deletion supports Select, Select
   all, Clear selection, and one explicit permanent-delete confirmation; canceling or a
-  failed request changes nothing. The **Item variations this stream** and **Profit/Loss by
-  SKU** sections are collapsed by default for screen browsing and always expanded in
-  printed/PDF output. The screen-only **Correct SKU Unit Cost** disclosure appears at the
-  bottom of the report.
+  failed request changes nothing. The **Item variations this stream** section is collapsed
+  by default for screen browsing and remains collapsed in printed/PDF output unless the
+  user opens **Show details** before printing. The screen-only **Correct SKU Unit Cost**
+  disclosure appears at the bottom of the report.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
@@ -226,9 +252,12 @@ auctioned again, the employee maps its new variation number.
   scopes separate. Canonical stream assignment is instead performed by the worker.
 - A parser for variation number, final US-dollar price, and `Payment complete` text.
 - An offline reconciliation engine that:
-  - stores immutable inventory baselines and pins each tracker stream to exactly one;
-  - scopes stock, pending reservations, and committed costs to the pinned baseline so a
+  - stores immutable inventory snapshots and assigns each tracker stream to one
+    physical-count baseline lineage;
+  - scopes stock, pending reservations, and committed costs to that lineage so a
     later physical recount does not subtract historical sales twice;
+  - derives an expanded immutable snapshot for a strict active-stream SKU append and
+    advances the entire shared lineage without changing any existing row or allocation;
   - accepts employee mapping and payment events in either order;
   - prevents identical events from deducting inventory twice;
   - calculates remaining inventory, Gross Item Sales, and gross profit;
@@ -258,12 +287,15 @@ auctioned again, the employee maps its new variation number.
   the outer storage envelope remains schema version 1.
 - A service-worker coordinator that loads stored state once per worker lifetime,
   processes commands in order, saves before publishing changes, and keeps the last good
-  state when a command or write fails. Baseline creation is blocked while a local tracker
-  stream is active.
+  state when a command or write fails. Full recount-baseline creation is blocked while a
+  local tracker stream is active; the separate append-only action can derive and verify
+  an expanded baseline for that active stream without changing existing rows.
 - A browser-managed Google OAuth import flow that reads only the selected spreadsheet's
   exact `Inventory` tab with the read-only Sheets scope. The side panel accepts a Sheet
   ID or safe `docs.google.com` sharing link, displays a detached normalized preview and
-  summary, and creates an immutable baseline only after explicit confirmation.
+  summary, and creates an immutable opening baseline only after explicit confirmation.
+  During tracking, the employee may paste the same reference again to append validated
+  new SKUs; neither flow writes to Google Sheets.
 - A race-safe confirmation boundary: previews are short-lived and worker-memory-only;
   confirmation re-reads the Sheet and rejects a changed or expired preview without
   importing partial data. Import, Start, and active-stream checks share the worker's
@@ -271,7 +303,9 @@ auctioned again, the employee maps its new variation number.
 - A separate versioned active-stream record and coordinator. The worker generates its
   `local-stream:<uuid>` identity, saves it before reporting Start, restores it for Resume,
   requires the expected ID before End so a stale panel cannot end a newer session, and
-  verifies or repairs the active stream's immutable baseline pin on Start and Resume. A
+  verifies or repairs the active stream's inventory-baseline association on Start and
+  Resume. A validated append-only Sheet update moves the entire shared baseline cohort to
+  one derived immutable snapshot so prior allocations remain in the same count scope. A
   guarded Retry also repairs an older active session whose reconciliation state was
   never initialized, without replacing any existing canonical data.
 - A strict tagger runtime client and controller that send employee mutations through
@@ -336,14 +370,17 @@ reports, the live tracker, or future streams. Its figures are deliberately separ
   Canceled rows show the mapped or unmapped reference item but use no sale price, unit
   cost, or gross profit and never affect inventory or any metric. Compatible older reports
   retain their aggregate canceled count even when canceled row details are unavailable.
-- **Exact-SKU performance** groups mapped completed sales by SKU. **Product performance**
-  groups those same sales by `item + style` across all sizes/SKUs. Most-sold ranks use
-  completed units; most-profitable ranks use gross profit; every tie is retained.
-- The report's native **Profit/Loss by SKU** disclosure lists only mapped SKUs with at
-  least one completed sale in that report stream, sorted from highest gross profit to
-  largest loss. Positive values are green, losses are red, and zero is neutral; pending,
-  canceled, unmapped, and unsold entries are excluded. It starts collapsed on screen and
-  expands for print/PDF output.
+  Printing preserves this disclosure's current state, so rows appear in the PDF only when
+  the user opens **Show details** first.
+- **Exact-SKU performance** groups mapped completed sales by SKU, lists only mapped SKUs
+  with at least one completed sale in that report stream, and sorts rows from highest gross
+  profit to largest loss. Its final **Gross profit/loss** column uses signed values:
+  positive values are green, losses are red, and zero is neutral. Pending, canceled,
+  unmapped, and unsold entries are excluded. **Product performance** groups those same
+  sales by `item + style` across all sizes/SKUs. Most-sold ranks use completed units;
+  most-profitable ranks use gross profit; every tie is retained. **Avg. sale price** is
+  that SKU's mapped completed-sale revenue divided by its mapped completed units, rounded
+  to the nearest cent for display.
 - **Gross margin** is SKU gross profit divided by SKU mapped revenue. **Sell-through** is
   the current stream's mapped completed units for that SKU divided by its opening
   quantity in the pinned baseline.
@@ -377,8 +414,9 @@ before updating the Sheet.
   keeps any selected unit reserved until priced completion or exact cancellation.
 - A verified TikTok room/session identity and automatic association of the local tracker
   stream with the correct real TikTok LIVE.
-- Automatic Google Sheets writes. The Google connection remains pre-stream and
-  read-only; the report instead provides a local six-column copy/CSV handoff.
+- Automatic Google Sheets writes. The Google connection supports pre-stream import and
+  explicit active-stream SKU additions, but always remains read-only; the report instead
+  provides a local six-column copy/CSV handoff.
 - General Post-End editing or reopening an ended stream in the tagger. The report page can
   resolve fixing/temporary-failed payments only on the newest safe report. Any finalized
   saved or archived report can correct its own SKU unit costs, but it cannot edit mappings,
@@ -424,8 +462,9 @@ before updating the Sheet.
 5. Connect Google Sheets inventory in three focused stages:
    1. **Completed:** define the exact inventory contract, atomic validation boundary,
       opening-baseline semantics, and a Google Sheets-compatible CSV template;
-   2. **Completed:** version immutable inventory baselines, pin each tracker stream to
-      one baseline, and scope stock, reservations, and costs to that pin; and
+   2. **Completed:** version immutable inventory baselines, scope each stream's stock,
+      reservations, and costs to one physical-count lineage, and support atomic
+      append-only live SKU additions; and
    3. **Completed:** authorize read-only access, preview and confirm the selected Sheet,
       and initialize a new immutable inventory baseline.
 6. **Completed:** freeze an end-of-stream business report with narrowly guarded payment
@@ -525,7 +564,7 @@ misconfigured build fail before requesting Google authorization.
    larger Sheets fail as a whole rather than rendering or importing a partial list.
 10. Select **Start stream**. A new live tracker stream requires a confirmed imported
     baseline. The worker starts the local
-    stream and permanently pins it to that baseline. This does not start TikTok LIVE.
+    stream in that baseline's inventory scope. This does not start TikTok LIVE.
     Until capture records an on-video bidding variation or a Sold Items row, confirm the
     variation selector waits for a live auction variation and inventory mapping is
     unavailable. After Start, confirm the Variation workspace is the first section below
@@ -533,6 +572,13 @@ misconfigured build fail before requesting Google authorization.
     it shows the tracker-active date row with its **Active** pill and the **End Stream
     Tracking** button, without repeating the section heading or safety note. The single
     saved-state footer indicator follows it.
+
+    To add an unplanned item during this stream, first append its new unique-SKU row to
+    the same Sheet without editing or deleting any existing row. In the Inventory heading,
+    select **Add new SKUs from Sheet**, paste the same link or ID, and select **Check and
+    add**. Wait for the success message before mapping that SKU. Reordered rows are safe;
+    a changed existing SKU, item, style, size, opening quantity, or unit cost rejects the
+    entire update and preserves the tracker exactly as it was.
 11. Close and reopen the side panel. Select **Resume active stream** and confirm the same
     local stream is restored without creating a fake live variation.
 12. Keep that local stream active, open
@@ -674,8 +720,10 @@ misconfigured build fail before requesting Google authorization.
     canceled total without having canceled row details. Verify the SKU and combined product
     rankings retain ties and the inventory table contains every SKU from the pinned
     baseline.
-    Use **Print / Save as PDF**, choose Chrome's **Save as PDF** destination, and save a
-    copy outside the extension if the report must be retained.
+    With **Item variations this stream** collapsed, use **Print / Save as PDF** and confirm
+    its rows stay omitted. Open **Show details** and print again to confirm the rows are
+    included. Choose Chrome's **Save as PDF** destination and save a copy outside the
+    extension if the report must be retained.
     For a newest test report containing one `Payment fixing` or temporary
     `Payment failed` order, verify **Finish unresolved payments** appears. Cancel one
     confirmation and verify nothing changes. Mark a mapped test order complete only after
@@ -688,7 +736,8 @@ misconfigured build fail before requesting Google authorization.
     selector includes every report inventory SKU, including unsold SKUs. Correct a sold
     SKU and confirm the
     same report recalculates completed-order cost/profit, COGS, gross profit, margin,
-    Est. Profit After Fees, top-profit rankings, Profit/Loss by SKU, and the Sheet handoff
+    Est. Profit After Fees, top-profit rankings, SKU performance gross profit/loss values,
+    and the Sheet handoff
     without changing prices, status counts, quantities, Gross Item Sales, AOV, or fees.
     Correct an unsold SKU and confirm this report's financial metrics stay unchanged while
     its handoff cost changes. Cancel one confirmation and verify nothing changes. Confirm

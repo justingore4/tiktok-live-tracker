@@ -503,8 +503,82 @@
             <p class="eyebrow">Inventory</p>
             <h2 id="inventory-title">Waiting for a live auction variation</h2>
           </div>
-          <p id="result-count" class="result-count" aria-live="polite"></p>
+          <div class="inventory-heading-actions">
+            <p id="result-count" class="result-count" aria-live="polite"></p>
+            <button
+              id="add-active-stream-skus"
+              class="text-action"
+              type="button"
+              aria-expanded="false"
+              aria-controls="active-stream-inventory-update-form"
+              hidden
+            >
+              Add new SKUs from Sheet
+            </button>
+          </div>
         </div>
+
+        <form
+          id="active-stream-inventory-update-form"
+          class="active-stream-inventory-update-form"
+          aria-busy="false"
+          novalidate
+          hidden
+        >
+          <p
+            id="active-stream-inventory-update-description"
+            class="active-stream-inventory-update-description"
+          >
+            Paste the same Google Sheet link or ID used for this stream. Only
+            brand-new SKU rows will be added. Every existing SKU, item, style,
+            size, opening quantity, and unit cost must remain unchanged. Current
+            variations and mappings will be preserved.
+          </p>
+          <label for="active-stream-inventory-sheet-reference">
+            Google Sheet ID or sharing link
+          </label>
+          <input
+            id="active-stream-inventory-sheet-reference"
+            name="active-stream-inventory-sheet-reference"
+            type="text"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Paste the same Google Sheet link or ID"
+            aria-describedby="active-stream-inventory-update-description active-stream-inventory-update-error"
+          >
+          <p
+            id="active-stream-inventory-update-error"
+            class="field-error"
+            role="alert"
+            hidden
+          ></p>
+          <div class="active-stream-inventory-update-actions">
+            <button
+              id="cancel-active-stream-inventory-update"
+              class="secondary-action"
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              id="confirm-active-stream-inventory-update"
+              class="primary-action"
+              type="submit"
+            >
+              Check and add
+            </button>
+          </div>
+        </form>
+
+        <p
+          id="active-stream-inventory-update-feedback"
+          class="active-stream-inventory-update-feedback"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          hidden
+        ></p>
 
         <div class="search-field">
           <span class="search-icon" aria-hidden="true"></span>
@@ -889,12 +963,14 @@
     <script src="../shared/inventory-import-protocol.js"></script>
     <script src="../shared/stream-report-protocol.js"></script>
     <script src="../shared/live-bid-protocol.js"></script>
+    <script src="../shared/next-item-queue-protocol.js"></script>
     <script src="reconciliation-client.js"></script>
     <script src="stream-session-client.js"></script>
     <script src="stream-session-controller.js"></script>
     <script src="inventory-import-client.js"></script>
     <script src="inventory-import-controller.js"></script>
     <script src="live-bid-client.js"></script>
+    <script src="next-item-queue-client.js"></script>
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="live-auction-view-model.js"></script>

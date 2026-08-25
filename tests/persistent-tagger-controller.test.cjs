@@ -1294,6 +1294,11 @@ test("clearing the active marker keeps the same current variation before fallbac
     streamId: STREAM_ID,
     variationNumber: 252,
   });
+  reconciliation.mapVariation(state, {
+    streamId: STREAM_ID,
+    variationNumber: 252,
+    sku: "BLACK-TEE-L",
+  });
   const memory = createMemoryClient(state);
   const controller = createController(memory.client);
   const loaded = await controller.start();
@@ -1330,6 +1335,18 @@ test("clearing the active marker keeps the same current variation before fallbac
   assert.equal(fallbackCurrent.bidding, false);
   assert.equal(fallbackCurrent.current, true);
   assert.equal(fallbackCurrent.selected, true);
+  assert.equal(fallbackCurrent.sku, "BLACK-TEE-L");
+
+  const historical = controller.selectVariation(203);
+  const newestWhileReviewingHistory = historical.view.variations.find(
+    (variation) => variation.variationNumber === 252,
+  );
+
+  assert.equal(historical.view.isReviewingHistory, true);
+  assert.equal(newestWhileReviewingHistory.current, true);
+  assert.equal(newestWhileReviewingHistory.sku, "BLACK-TEE-L");
+
+  controller.selectVariation(252);
 
   const nextState = memory.getState();
   reconciliation.observeVariations(nextState, {

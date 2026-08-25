@@ -41,11 +41,15 @@ Stussy tee / black / size M
 ```
 
 The employee-facing interface displays item, style, and size. The hidden `sku` only
-ensures that the correct inventory row is updated. Each tracker stream is permanently
-pinned to one immutable baseline. A later recount appends a different baseline for
-future streams; it never rewrites the opening count or cost used by an active or
-historical stream. A report-only cost correction changes one saved report without
-mutating that canonical baseline.
+ensures that the correct inventory row is updated. Each tracker stream belongs to one
+immutable physical-count baseline lineage. A later recount appends a different lineage
+for future streams; it never rewrites the opening count or cost used by an active or
+historical stream. During an active stream, a strict append-only Sheet refresh may derive
+an expanded immutable snapshot in the same lineage. It may add new SKU rows only; all six
+stored fields of every existing row must match. Every stream sharing the prior snapshot
+is moved to the derived snapshot atomically so completed and reserved counts keep one
+scope. A report-only cost correction changes one saved report without mutating canonical
+inventory.
 
 ## 2. Payment and mapping are independent
 
@@ -159,7 +163,9 @@ Implemented behavior includes:
 
 - Appending validated, immutable inventory baselines from unique SKUs, confirmed opening
   quantities, and unit costs, then activating the newest baseline for future streams.
-- Pinning each tracker stream to exactly one baseline and rejecting attempts to repin it.
+- Pinning each tracker stream to one physical-count baseline lineage and rejecting an
+  arbitrary repin or recount. A validated live append derives a new immutable snapshot
+  and atomically advances every stream sharing the old snapshot.
 - Allowing two distinct baseline IDs to carry the same source fingerprint so two genuine
   physical recounts with equivalent contents remain separate business events. Reusing a
   baseline ID with identical contents is idempotent; reusing it with different contents
@@ -541,19 +547,20 @@ eyebrow. Its count is completed plus canceled variations, including legacy aggre
 cancellations whose row details are unavailable, and a **Status** column distinguishes the
 two outcomes. Canceled rows expose reference identity only: sold price, unit cost, and
 gross profit are unavailable, and the rows do not contribute to inventory or any metric.
+Print/PDF preserves the disclosure's user-selected state, so a collapsed variation table
+stays collapsed and an explicitly opened table prints in full.
 
-Exact-SKU performance groups mapped completions by SKU. Combined product performance
-groups those same SKU totals by exact employee-facing `item + style` across sizes. Both
-retain sold quantity, revenue, COGS, and gross profit; top-sold and top-profitable results
-retain every tie. The report page derives SKU gross margin as gross profit divided by
-mapped revenue and sell-through as current-stream mapped completed units divided by that
-SKU's opening quantity.
-
-The report page also projects those exact-SKU totals into a native **Profit/Loss by SKU**
-disclosure. It includes only mapped SKUs with completed sales in that report stream and
-sorts them from highest gross profit to largest loss. Positive, negative, and zero values
-use distinct green, red, and neutral presentation. Pending, canceled, unmapped, and unsold
-entries are excluded.
+Exact-SKU performance groups mapped completions by SKU, includes only mapped SKUs with
+completed sales in that report stream, and sorts rows from highest gross profit to largest
+loss. Its final **Gross profit/loss** column uses signed values with distinct green, red,
+and neutral presentation for positive, negative, and zero results. Pending, canceled,
+unmapped, and unsold entries are excluded. Combined product performance groups those same
+SKU totals by exact employee-facing `item + style` across sizes. Both retain sold quantity,
+revenue, COGS, and gross profit; top-sold and top-profitable results retain every tie. The
+report page derives SKU gross margin as gross profit divided by mapped revenue, average
+sale price as mapped completed-sale revenue divided by mapped completed units and rounded
+to the nearest cent, and sell-through as current-stream mapped completed units divided by
+that SKU's opening quantity.
 
 The baseline-wide inventory handoff contains every pinned-baseline SKU with opening
 quantity, current-stream sold quantity, all completed sales under the shared baseline,
@@ -595,11 +602,12 @@ reference, lifecycle, and archive tier. Cost correction updates
 completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
 top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
 change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
-other reports, the live tracker, or future streams. The stream-variations and Profit/Loss
-by SKU disclosures start collapsed on screen, but print styling always includes every
-available completed/canceled variation row, every SKU profit/loss row, and repeated
-column headers. The screen-only unit-cost correction disclosure is the final report
-section. These are employee-initiated local outputs, not Google API writes.
+other reports, the live tracker, or future streams. The stream-variations disclosure starts
+collapsed on screen. Printing preserves its state and includes its rows only when the
+employee opened **Show details**. The SKU performance table is part of the normal screen
+and printed report output, and printed tables retain repeated column headers. The
+screen-only unit-cost correction disclosure is the final report section. These are
+employee-initiated local outputs, not Google API writes.
 
 The seller reports that completed rows remain scrollable during a stream, but broader
 live testing must still determine whether the entire list is always rendered or
@@ -662,12 +670,25 @@ Shared tagger behavior includes:
   the latest requested view replaces any older deferred view and is applied once on close.
 - Responsive, employee-facing inventory cards using the stream's pinned Google Sheets
   inventory baseline.
+- A compact **Add new SKUs from Sheet** action that appears only in a loaded active
+  workspace. It accepts the same Sheet link/ID, reads the complete `Inventory` tab, and
+  adds only new SKU identities. The form alone is busy during the request; capture and
+  the rest of the live workspace remain active.
 - Search across item, style, and size.
 - Engine-derived remaining, pending, available, and oversold states. Cards show a pending
   reservation from mapping during bidding until completion or cancellation. Zero-stock
   cards remain enabled and show `Oversold by N` when over-allocated.
 - One-click mapping and correction of the selected current or previous variation;
   clicking the selected inventory card again removes that mapping.
+- One stream-scoped next-item queue driven by inventory-card `contextmenu` input. On the
+  current/newest variation, right-click maps the clicked SKU when current is unmapped;
+  once current has any mapping, it toggles exactly one queued SKU and never changes that
+  mapping. While a historical variation is displayed, a distinct right-click command
+  maps or remaps the worker-verified current/newest variation and cannot mutate the queue;
+  repeating its existing SKU unmaps that current variation. Left-click continues to map or unmap only the
+  displayed variation. Historical selection, the mapped current/newest variation, and a
+  pre-existing queue are exposed independently through green, blue, and red card-outline roles,
+  including combined outlines when one card has multiple roles.
 - A separate visible **TikTok payment** row for processing, fixing, failed, canceled,
   complete, unrecognized, or not-yet-observed state, independent of the **Inventory tag**
   row.
@@ -743,8 +764,12 @@ and durably saving a `local-stream:<uuid>` identity. It then pins that stream to
 baseline.
 
 Reopening the panel offers Resume for the same identity; the worker verifies or repairs
-its missing pin before returning the active session. Capture also verifies the pin before
-recording a fact. An existing pin can never be changed. Compatibility remains deliberately
+its missing baseline association before returning the active session. Capture also
+verifies that association before recording a fact. It cannot be changed arbitrarily.
+The one exception is a worker-owned append-only operation: it requires the current
+active stream and expected active baseline, validates a full exact superset, creates a
+derived immutable snapshot, and advances every stream sharing the previous snapshot so
+committed and reserved inventory remain continuous. Compatibility remains deliberately
 narrow: an already-active legacy session may resume with its existing baseline, and a
 fixed legacy recovery baseline is used only to repair a previously active legacy session whose
 reconciliation record is truly absent. That recovery path cannot seed a new stream or
@@ -753,8 +778,9 @@ replace non-null canonical state.
 End first freezes and durably archives the report described above, then clears only the
 active-session pointer and finalizes the same report record. It does not delete the
 stream, its pin, baselines, or reconciliation history, and it does not start or end
-TikTok LIVE. Creating or activating another baseline is blocked while any local tracker
-stream is active, so a session cannot cross a recount boundary. End is available for a
+TikTok LIVE. Creating or activating a recount baseline is blocked while any local tracker
+stream is active, so a session cannot cross a physical-count boundary. Adding brand-new
+SKUs through the strict append-only action stays inside that same boundary. End is available for a
 known active local stream, including before the inventory workspace is resumed and while
 pending reservations or completed sales without items remain unresolved; those states
 are retained as attention notices rather than blockers. If report persistence itself
@@ -856,7 +882,9 @@ Reconciliation state is version 7. Report-only unit-cost correction does not alt
 state and requires neither a state-version migration nor a report-version migration. The
 outer storage envelope deliberately remains schema version 1. Version 4 replaced the mutable top-level inventory array with an
 append-only `inventoryBaselines` collection, an active-baseline pointer for future
-streams, and an immutable `inventoryBaselineId` pin on every stream. Version 5 adds the
+streams, and an `inventoryBaselineId` association on every stream. The append-only live
+inventory operation can advance a whole shared cohort to a derived immutable snapshot
+without changing the persisted schema. Version 5 adds the
 nullable, sanitized `attributedGmvDisplay` field to each stream. Version 6 adds the
 nullable `activeBiddingVariationNumber`, which must reference a variation in the same
 stream. Version 7 removes persisted manual unpaid decisions from the Live lifecycle.
@@ -1075,13 +1103,35 @@ Reopening the panel still
 rebuilds its view from the durable snapshot. The tagger never calls `chrome.storage`
 directly.
 
+The next-item queue follows the same worker-owned boundary. Its strict side-panel commands
+include the expected active stream, current/newest variation, and SKU, but the worker
+verifies all three against canonical reconciliation state before saving anything. The
+current-view toggle command atomically chooses between mapping an unmapped current
+variation and toggling the queue for an already mapped current variation. The separate
+historical-view command maps or remaps current, unmaps it when the selected SKU is
+repeated, and never reads or writes queue storage. This separation prevents historical UI state or
+an intervening newer auction from redirecting a write or accidentally arming a queue.
+Mapping current sends a data-free canonical-state invalidation while the historical
+selection remains open. The session record contains only
+`{streamId, sku, armedAfterVariationNumber}` in
+`chrome.storage.session`. A queued SKU is considered only after a strictly newer
+`observe_bidding_variation` has been saved; Sold Items backfill and payment/status updates
+cannot consume it. The worker maps it only when that target remains unmapped, otherwise
+keeps the existing manual mapping and clears the queue. Mapping precedes queue clearing,
+so a worker interruption between those writes is idempotent on retry. Queue state survives
+panel closure, dashboard reload, and worker suspension within the same stream, is cleared
+after a successful End, and is naturally discarded by an extension reload or another
+session-storage reset. Queue-change notices contain no stream, variation, SKU, inventory,
+or DOM data and only tell the panel to refetch.
+
 The tagger runtime client deliberately exposes no payment-complete command. The capture
 runtime client has the inverse narrow authority: it may submit
 only Sold Items variation numbers, one current bidding variation number, sanitized
 payment-status codes, completed variation/price facts, and the sanitized Attributed GMV
 display, never mappings, stream
-lifecycle commands, raw badge or analytics text, or arbitrary state. The pre-stream
-Sheets reader is a separate worker-owned boundary. The local report may serialize a
+lifecycle commands, raw badge or analytics text, or arbitrary state. The Sheets reader
+is a separate worker-owned boundary used for pre-stream confirmation and explicit
+active-stream SKU additions. The local report may serialize a
 six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
 to a later stage.
 
@@ -1091,7 +1141,7 @@ rather than reversing a `payment_complete` record.
 
 ### Google Sheets
 
-Google Sheets is implemented as the pre-stream inventory import source. The employee
+Google Sheets is implemented as the inventory import source. The employee
 authorizes a Google account through Chrome, supplies one spreadsheet ID, reviews the
 normalized `Inventory` preview, and explicitly confirms it as a new durable local
 baseline. The service worker owns authorization, network access, preview state, baseline
@@ -1099,8 +1149,10 @@ creation, and all active-stream checks; neither the dashboard content script nor
 panel receives an access token.
 
 Google Sheets is not the live transactional source of truth. Once confirmed, the local
-baseline and stream pin drive tagging, inventory, and basic profit without another Google
-request. At End, the tracker saves its report locally first and can copy or download a
+baseline scope drives tagging, inventory, and basic profit without automatic Google
+requests. An employee may explicitly re-read the same full `Inventory` tab during an
+active stream to append new SKU rows under the strict rules below. At End, the tracker
+saves its report locally first and can copy or download a
 Google Sheets-ready six-column replacement table. It does not call the Sheets write API.
 A future automatic-sync stage must keep the local report as its durable source, then
 batch and retry writes so a temporary connection problem cannot interrupt tagging or
@@ -1161,10 +1213,11 @@ remainingQuantity = quantity_on_hand_at_import - completed mapped sales under th
 
 Pending reservations affect `availableToTagQuantity`, not the opening baseline or
 remaining quantity. A later physical recount creates a new versioned baseline for a
-future stream; it cannot overwrite the baseline pinned to an active or historical
-stream. Old sales remain scoped to their original pin, so they are not subtracted again
-from the fresh physical count. New baseline creation is blocked while a local tracker
-stream is active.
+future stream; it cannot overwrite the baseline lineage used by an active or historical
+stream. Old sales remain scoped to their original lineage, so they are not subtracted
+again from the fresh physical count. Recount-baseline creation is blocked while a local
+tracker stream is active. A live append may add a new row with its own opening quantity,
+but it cannot modify, rename, or remove any row already in that lineage.
 
 `unit_cost` is the per-unit cost snapshot used for basic gross-profit calculations. The
 adapter converts it exactly to the engine's integer `unitCostCents` value (`12.00`
@@ -1188,7 +1241,10 @@ The normalized preview is detached data. Merely opening or previewing a Sheet mu
 start a stream, activate a baseline, alter reconciliation state, or persist a partial
 baseline. A separate explicit employee confirmation creates a fresh baseline identity,
 appends the complete baseline, and activates it only for future streams; existing
-baseline identity, entries, quantities, costs, and stream pins remain immutable. The
+baseline entries, quantities, and costs remain immutable. The live append operation is
+separate: it accepts only a full order-independent superset, creates a derived immutable
+snapshot, and advances every stream sharing the prior snapshot so its accounting scope
+does not split. The
 later report-only unit-cost correction is a separate saved-report operation, not an
 import mutation.
 
@@ -1219,7 +1275,7 @@ non-Google and lookalike hosts, insecure URLs, unexpected paths, and malformed I
 the extracted ID crosses the strict versioned inventory-import message boundary. The
 worker accepts that boundary only from the exact extension side-panel URL; the dashboard
 content script cannot read Sheets or create a baseline, and the general reconciliation
-boundary refuses direct baseline-creation commands from the panel.
+boundary refuses direct baseline-creation and baseline-extension commands from the panel.
 
 The Manifest V3 worker uses `chrome.identity` and the public OAuth client configured in
 `manifest.json`. It requests only
@@ -1251,6 +1307,13 @@ Preview and confirmation are distinct operations:
    the internal atomic baseline-creation command. A same-worker retry is idempotent; if
    the worker restarts after persistence, import status discovers the already durable
    active baseline rather than relying on the lost preview.
+5. During an active stream, **Add new SKUs from Sheet** sends only the extracted Sheet ID.
+   The worker derives the active stream and expected baseline itself, checks that stream
+   before and after the network read, and passes the complete validated snapshot to the
+   internal append-only command. Every existing row must match by SKU across all six
+   fields; order may differ, but a rename, edit, or deletion rejects the whole operation.
+   New rows are committed in one derived baseline and every stream sharing the prior
+   baseline is advanced atomically. An exact no-change Sheet is a successful no-op.
 
 Inventory import, active-stream lifecycle, capture, and baseline mutation commands share
 one worker FIFO. Import checks active state before and after each network read, while
@@ -1260,8 +1323,9 @@ baseline or wins first and causes the import to fail closed; a preview also cann
 a complete intervening Start/End cycle. Start cannot pin a detached preview or a
 partially imported Sheet.
 
-The side panel also hides import controls while a stream is active, but worker checks are
-authoritative.
+The side panel hides the pre-stream preview/confirmation controls while a stream is
+active and exposes only the narrow append action after its saved workspace loads. Worker
+checks remain authoritative.
 
 ### Inventory-import privacy boundary
 
@@ -1394,9 +1458,9 @@ Browser support beyond Chrome is a later decision.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening
       baseline contract;
-   2. **Completed:** immutable versioned inventory baselines, permanent tracker-stream
-      pins, baseline-scoped inventory/cost accounting, report-only cost correction, and
-      strict legacy migration; and
+   2. **Completed:** immutable versioned inventory baselines, physical-count-lineage
+      associations, baseline-scoped inventory/cost accounting, atomic append-only live
+      SKU additions, report-only cost correction, and strict legacy migration; and
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
 8. **Completed:** strict end-of-stream projection, report-aware End/recovery,

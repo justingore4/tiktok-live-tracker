@@ -378,6 +378,7 @@ test("projects observed payment labels and captured prices without an inventory 
   assert.equal(view.auction.observedPaymentStatusLabel, "Payment fixing");
   assert.equal(option.observedPaymentStatus, "payment_fixing");
   assert.equal(option.observedPaymentStatusLabel, "Payment fixing");
+  assert.equal(option.sku, null);
   assert.equal(option.soldPriceCents, null);
   assert.deepEqual(option.conflicts, []);
 
@@ -396,6 +397,7 @@ test("projects observed payment labels and captured prices without an inventory 
   assert.equal(view.auction.observedPaymentStatusLabel, "Payment complete");
   assert.equal(view.auction.soldPriceCents, 700);
   assert.equal(option.observedPaymentStatusLabel, "Payment complete");
+  assert.equal(option.sku, null);
   assert.equal(option.soldPriceCents, 700);
 });
 
@@ -537,6 +539,7 @@ test("projects the active bidding variation as current and keeps it mappable", (
   biddingOption = view.variations.find(
     ({ variationNumber }) => variationNumber === biddingVariationNumber,
   );
+  assert.equal(biddingOption.sku, "STUSSY-TEE-BLACK-L");
   assert.equal(biddingOption.item, "Stussy tee");
   assert.equal(biddingOption.style, "black");
   assert.equal(biddingOption.size, "L");

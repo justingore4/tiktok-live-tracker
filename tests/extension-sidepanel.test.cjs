@@ -59,6 +59,9 @@ test("service worker opens the side panel from the toolbar action", () => {
   class FakeLiveBidProtocolError extends Error {}
   class FakeLiveBidStorageError extends Error {}
   class FakeLiveBidCoordinatorError extends Error {}
+  class FakeNextItemQueueProtocolError extends Error {}
+  class FakeNextItemQueueStorageError extends Error {}
+  class FakeNextItemQueueCoordinatorError extends Error {}
   const sandbox = {
     importScripts() {},
     TikTokLiveTrackerReconciliation: {
@@ -138,6 +141,35 @@ test("service worker opens the side panel from the toolbar action", () => {
       LiveBidCoordinatorError: FakeLiveBidCoordinatorError,
       createLiveBidCoordinator() {
         return { dispatch: () => Promise.resolve({ liveAuction: null }) };
+      },
+    },
+    TikTokLiveTrackerNextItemQueueProtocol: {
+      MESSAGE_CHANNEL: "tiktok-live-tracker.next-item-queue",
+      NextItemQueueProtocolError: FakeNextItemQueueProtocolError,
+      createQueueChangedNotification() {
+        return {
+          channel: "tiktok-live-tracker.next-item-queue",
+          version: 1,
+          event: { type: "queue_changed" },
+        };
+      },
+      isQueueChangedNotification() {
+        return false;
+      },
+    },
+    TikTokLiveTrackerNextItemQueueStorage: {
+      NextItemQueueStorageError: FakeNextItemQueueStorageError,
+      createNextItemQueueStore() {
+        return {};
+      },
+    },
+    TikTokLiveTrackerNextItemQueueCoordinator: {
+      NextItemQueueCoordinatorError: FakeNextItemQueueCoordinatorError,
+      createNextItemQueueCoordinator() {
+        return {
+          clearForStream: () => Promise.resolve({ status: "unchanged" }),
+          dispatch: () => Promise.resolve({ queuedSku: null }),
+        };
       },
     },
     TikTokLiveTrackerInventorySheetImport: {},
@@ -249,12 +281,14 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/inventory-import-protocol.js",
     "../shared/stream-report-protocol.js",
     "../shared/live-bid-protocol.js",
+    "../shared/next-item-queue-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
     "inventory-import-client.js",
     "inventory-import-controller.js",
     "live-bid-client.js",
+    "next-item-queue-client.js",
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "live-auction-view-model.js",
@@ -443,6 +477,88 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, />\s*Live session\s*</);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("active streams expose an append-only Google Sheets inventory action", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const actionSource = panelSource.match(
+    /addActiveStreamSkusButton\.addEventListener\("click",[\s\S]*?inventorySheetReference\.addEventListener\("input"/,
+  )?.[0];
+
+  assert.ok(actionSource);
+  assert.match(
+    html,
+    /id="add-active-stream-skus"[\s\S]+aria-expanded="false"[\s\S]+aria-controls="active-stream-inventory-update-form"[\s\S]+Add new SKUs from Sheet/,
+  );
+  assert.match(
+    html,
+    /id="active-stream-inventory-update-form"[\s\S]+aria-busy="false"[\s\S]+novalidate[\s\S]+hidden/,
+  );
+  assert.match(
+    html,
+    /Only[\s\S]+brand-new SKU rows will be added[\s\S]+opening quantity[\s\S]+unit cost must remain unchanged[\s\S]+variations and mappings will be preserved/i,
+  );
+  assert.match(
+    html,
+    /id="active-stream-inventory-update-error"[\s\S]+role="alert"[\s\S]+hidden/,
+  );
+  assert.match(
+    html,
+    /id="active-stream-inventory-update-feedback"[\s\S]+role="status"[\s\S]+aria-live="polite"[\s\S]+aria-atomic="true"[\s\S]+hidden/,
+  );
+  assert.match(actionSource, /inventoryImportClient\s*\.addActiveStreamSkusReference\(reference\)/);
+  assert.match(actionSource, /refreshedSnapshot = await mountedController\.refresh\(\)/);
+  assert.match(
+    actionSource,
+    /refreshedSnapshot\?\.phase !== "ready"[\s\S]+refreshedSnapshot\?\.operation !== "refresh"/,
+  );
+  assert.match(
+    actionSource,
+    /Added \$\{addedSkus\.length\} new[\s\S]+Existing variations and mappings were preserved/,
+  );
+  assert.match(actionSource, /No new SKUs were found\. Nothing changed\./);
+  assert.match(actionSource, /outcomeUncertain/);
+  assert.match(
+    panelSource,
+    /The inventory update could not be confirmed\.[\s\S]+Refresh or retry; retrying is safe\./,
+  );
+  assert.match(panelSource, /No SKUs were added\. \$\{message\}/);
+  assert.match(
+    panelSource,
+    /const available =\s*streamSnapshot\.activeSession !== null &&\s*streamSnapshot\.resumed === true &&\s*persistentController !== null &&\s*savedSnapshot\?\.view !== null/,
+  );
+  assert.match(
+    panelSource,
+    /addActiveStreamSkusButton\.disabled\s*=\s*activeStreamInventoryUpdateBusy \|\| !available/,
+  );
+  assert.match(
+    panelSource,
+    /activeStreamInventorySheetReference\.disabled\s*=\s*activeStreamInventoryUpdateBusy/,
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /setWorkspaceBusy\(activeStreamInventoryUpdateBusy\)/,
+  );
+  assert.match(
+    panelSource,
+    /const activeInventoryUpdateRefresh =\s*activeStreamInventoryUpdateBusy &&\s*snapshotIsBackgroundRefresh\(savedSnapshot\)[\s\S]+Boolean\(busy\) && !activeInventoryUpdateRefresh/,
+  );
+  assert.match(
+    styleSource,
+    /\.active-stream-inventory-update-form\s*\{[\s\S]*?border:[\s\S]*?border-radius:[\s\S]*?background:/,
+  );
 });
 
 test("variation picker keeps its compact layout while coloring status segments", () => {
@@ -940,6 +1056,182 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   );
 });
 
+test("inventory right click maps the current variation from history without changing its queue", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const queueUiSource = panelSource.match(
+    /function saveOrdinaryInventorySelection\(button, view\)[\s\S]*?searchInput\.addEventListener\("input"/,
+  )?.[0];
+  const leftClickSource = panelSource.match(
+    /inventoryGrid\.addEventListener\("click",[\s\S]*?inventoryGrid\.addEventListener\("contextmenu"/,
+  )?.[0];
+  const contextMenuSource = panelSource.match(
+    /inventoryGrid\.addEventListener\("contextmenu",[\s\S]*?\n  \}\);/,
+  )?.[0];
+  const queueMutationSource = panelSource.match(
+    /async function toggleNextItemQueue\(button, view\)[\s\S]*?\n  \}/,
+  )?.[0];
+  const historyMappingSource = panelSource.match(
+    /async function mapCurrentVariationFromHistory\(button, view\)[\s\S]*?\n  \}/,
+  )?.[0];
+  const currentVariationMappedSkuSource = panelSource.match(
+    /function getCurrentVariationMappedSku\(view\)[\s\S]*?\n  \}/,
+  )?.[0];
+
+  assert.ok(queueUiSource);
+  assert.ok(leftClickSource);
+  assert.ok(contextMenuSource);
+  assert.ok(queueMutationSource);
+  assert.ok(historyMappingSource);
+  assert.ok(currentVariationMappedSkuSource);
+  assert.match(
+    html,
+    /src="\.\.\/shared\/next-item-queue-protocol\.js"[\s\S]+src="next-item-queue-client\.js"[\s\S]+src="sidepanel\.js"/,
+  );
+  assert.match(
+    panelSource,
+    /createNextItemQueueClient\(\{[\s\S]+runtime: chrome\.runtime,[\s\S]+protocol: nextItemQueueProtocol/,
+  );
+  assert.match(
+    contextMenuSource,
+    /if \(!button \|\| !inventoryGrid\.contains\(button\)\) \{[\s\S]+return;[\s\S]+event\.preventDefault\(\)/,
+  );
+  assert.match(
+    contextMenuSource,
+    /view\.isReviewingHistory[\s\S]+view\.selectedVariationNumber !== view\.currentVariationNumber[\s\S]+void mapCurrentVariationFromHistory\(button, view\)[\s\S]+return;[\s\S]+void toggleNextItemQueue\(button, view\)/,
+  );
+  assert.doesNotMatch(
+    contextMenuSource,
+    /saveOrdinaryInventorySelection|mapSelectedSku|unmapSelectedVariation|selectVariation/,
+  );
+  assert.doesNotMatch(contextMenuSource, /view\.auction/);
+  assert.match(leftClickSource, /saveOrdinaryInventorySelection\(button, view\)/);
+  assert.doesNotMatch(leftClickSource, /toggleNextItemQueue|toggleQueue/);
+  assert.match(
+    queueMutationSource,
+    /nextItemQueueClient\.toggleQueue\(\{[\s\S]+expectedStreamId,[\s\S]+expectedVariationNumber,[\s\S]+sku/,
+  );
+  assert.match(
+    queueMutationSource,
+    /const expectedVariationNumber = view\.currentVariationNumber/,
+  );
+  assert.match(
+    queueMutationSource,
+    /response\.status === "mapped_current"[\s\S]+Variation #\$\{expectedVariationNumber\} mapped to[\s\S]+scheduleCaptureRefresh\(\)/,
+  );
+  assert.doesNotMatch(
+    queueMutationSource,
+    /mapSelectedSku|unmapSelectedVariation|selectVariation|setWorkspaceBusy/,
+  );
+  assert.match(
+    historyMappingSource,
+    /nextItemQueueClient\.mapCurrent\(\{[\s\S]+expectedStreamId,[\s\S]+expectedVariationNumber,[\s\S]+sku/,
+  );
+  assert.match(
+    historyMappingSource,
+    /response\.status === "unmapped_current"[\s\S]+was unselected from current variation #\$\{expectedVariationNumber\}\. Variation #\$\{historicalVariationNumber\} remains open\.[\s\S]+was mapped to current variation #\$\{expectedVariationNumber\}\. Variation #\$\{historicalVariationNumber\} remains open\.[\s\S]+scheduleCaptureRefresh\(\)/,
+  );
+  assert.doesNotMatch(historyMappingSource, /response\.status === "unchanged"/);
+  assert.doesNotMatch(
+    historyMappingSource,
+    /toggleQueue|getQueue|queuedNextItemSku|scheduleNextItemQueueRefresh|mapSelectedSku|unmapSelectedVariation|selectVariation/,
+  );
+  assert.match(
+    panelSource,
+    /function isCurrentVariationMapped\(view\)[\s\S]+view\.currentVariationNumber[\s\S]+findVariationOption/,
+  );
+  assert.match(
+    panelSource,
+    /Right-click to select this item for current variation \$\{view\.currentVariationNumber\}/,
+  );
+  assert.match(
+    panelSource,
+    /Right-click to unmap it from current variation \$\{view\.currentVariationNumber\}/,
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /Right-clicking it again keeps that current mapping unchanged/,
+  );
+  assert.match(
+    panelSource,
+    /Variation \$\{view\.selectedVariationNumber\} will remain open/,
+  );
+  assert.match(panelSource, /nextItemQueueClient\.getQueue\(\)/);
+  assert.match(
+    panelSource,
+    /nextItemQueueProtocol\.isQueueChangedNotification\(message\)[\s\S]+scheduleNextItemQueueRefresh\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /function unmountPersistentController\(\)[\s\S]+resetNextItemQueueDisplay\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /function mountPersistentController\(activeSession\)[\s\S]+scheduleNextItemQueueRefresh\(\)/,
+  );
+  assert.match(panelSource, /button\.dataset\.queued = String\(queued\)/);
+  assert.match(
+    panelSource,
+    /button\.dataset\.currentMapped = String\(mappedToCurrent\)/,
+  );
+  assert.match(
+    currentVariationMappedSkuSource,
+    /function getCurrentVariationMappedSku\(view\)[\s\S]+view\.activeAuctionMapping\?\.variationNumber ===[\s\S]+view\.currentVariationNumber[\s\S]+return view\.activeAuctionMapping\.sku/,
+  );
+  assert.match(
+    currentVariationMappedSkuSource,
+    /findVariationOption\(\s*view,\s*view\.currentVariationNumber,?\s*\)/,
+  );
+  assert.match(
+    currentVariationMappedSkuSource,
+    /typeof currentVariation(?:\?\.|\.)sku === "string"[\s\S]+return currentVariation\.sku/,
+  );
+  assert.match(
+    panelSource,
+    /Historical right-click does not change that queue\./,
+  );
+  assert.match(
+    panelSource,
+    /Queued for the next variation\.[\s\S]+Right-click to queue this item for the next variation\./,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-queued="true"\]\s*\{[\s\S]+#ff737e/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[aria-pressed="true"\]\[data-queued="true"\]\s*\{[\s\S]+linear-gradient\([\s\S]+90deg,[\s\S]+var\(--cyan\) 0 50%,[\s\S]+#ff737e 50% 100%/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-current-mapped="true"\]\s*\{[\s\S]+#62aaff/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[aria-pressed="true"\]\[data-current-mapped="true"\]\s*\{[\s\S]+var\(--cyan\) 0 50%[\s\S]+#62aaff 50% 100%/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-current-mapped="true"\]\[data-queued="true"\]\s*\{[\s\S]+#62aaff 0 50%[\s\S]+#ff737e 50% 100%/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card\[aria-pressed="true"\]\[data-current-mapped="true"\]\[data-queued="true"\]\s*\{[\s\S]+var\(--cyan\) 0 33\.333%[\s\S]+#62aaff 33\.333% 66\.666%[\s\S]+#ff737e 66\.666% 100%/,
+  );
+  assert.doesNotMatch(html, /data-field="queued"|class="queued-label"/);
+});
+
 test("canceled variation cards stay selectable for reference-only item changes", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const panelSource = fs.readFileSync(
@@ -958,7 +1250,7 @@ test("canceled variation cards stay selectable for reference-only item changes",
     /function createInventoryCard\(entry, view\) \{[\s\S]*?\n  \}/,
   )?.[0];
   const clickSource = panelSource.match(
-    /inventoryGrid\.addEventListener\("click",[\s\S]*?searchInput\.addEventListener\("input"/,
+    /function saveOrdinaryInventorySelection\(button, view\)[\s\S]*?searchInput\.addEventListener\("input"/,
   )?.[0];
 
   assert.ok(cardSource);

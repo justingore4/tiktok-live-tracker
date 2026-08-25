@@ -8,6 +8,7 @@ const {
   calculateSummary,
   createInventoryBaseline,
   createReconciliationState,
+  extendStreamInventoryBaseline,
   getAuction,
   getInventoryAvailability,
   hydrateReconciliationState,
@@ -2161,6 +2162,273 @@ test("keeps imported SKU identities stable across immutable baselines", () => {
       inventory: [{ ...firstInventory[0], sku: "OTHER-SKU" }],
     }),
     "INVENTORY_IDENTITY_CONFLICT",
+  );
+  assert.deepEqual(state, before);
+});
+
+test("extends a shared active baseline without changing allocations or auctions", () => {
+  const state = createState();
+  const previousBaselineId =
+    "inventory-baseline:61000000-0000-4000-8000-000000000000";
+  const nextBaselineId =
+    "inventory-baseline:62000000-0000-4000-8000-000000000000";
+  const importedInventory = activeBaseline(state).inventory.map((item) => ({
+    ...item,
+  }));
+
+  createInventoryBaseline(state, {
+    baselineId: previousBaselineId,
+    sourceFingerprint: "fnv1a64:6134567890abcdef",
+    inventory: importedInventory,
+  });
+  observeVariations(state, {
+    streamId: "prior-stream",
+    variationNumbers: [1, 2],
+  });
+  mapVariation(state, {
+    streamId: "prior-stream",
+    variationNumber: 1,
+    sku: "BLACK-TEE-M",
+  });
+  recordPaymentComplete(state, {
+    streamId: "prior-stream",
+    variationNumber: 1,
+    soldPriceCents: 3000,
+  });
+  mapVariation(state, {
+    streamId: "prior-stream",
+    variationNumber: 2,
+    sku: "BLACK-TEE-L",
+  });
+  observeVariations(state, {
+    streamId: "active-stream",
+    variationNumbers: [3],
+  });
+  mapVariation(state, {
+    streamId: "active-stream",
+    variationNumber: 3,
+    sku: "BLACK-TEE-M",
+  });
+
+  const oldBaselineSnapshot = JSON.parse(JSON.stringify(
+    state.inventoryBaselines.find(
+      (baseline) => baseline.baselineId === previousBaselineId,
+    ),
+  ));
+  const auctionSnapshots = state.streams.map((stream) => ({
+    streamId: stream.streamId,
+    variations: JSON.parse(JSON.stringify(stream.variations)),
+  }));
+  const before = calculateSummary(state, { streamId: "active-stream" });
+  const limitedItem = {
+    sku: "LIMITED-HOODIE-OS",
+    item: "Limited Hoodie",
+    style: "silver",
+    size: "OS",
+    quantityOnHandAtImport: 4,
+    unitCostCents: 1800,
+  };
+  const result = extendStreamInventoryBaseline(state, {
+    streamId: "active-stream",
+    expectedBaselineId: previousBaselineId,
+    baselineId: nextBaselineId,
+    sourceFingerprint: "fnv1a64:6234567890abcdef",
+    inventory: [limitedItem, ...[...importedInventory].reverse()],
+  });
+
+  assert.deepEqual(result, {
+    status: "extended",
+    baselineId: nextBaselineId,
+    previousBaselineId,
+    addedSkus: ["LIMITED-HOODIE-OS"],
+  });
+  assert.equal(state.activeInventoryBaselineId, nextBaselineId);
+  assert.ok(state.streams.every(
+    (stream) => stream.inventoryBaselineId === nextBaselineId,
+  ));
+  assert.deepEqual(
+    state.inventoryBaselines.find(
+      (baseline) => baseline.baselineId === previousBaselineId,
+    ),
+    oldBaselineSnapshot,
+  );
+  assert.deepEqual(
+    state.streams.map((stream) => ({
+      streamId: stream.streamId,
+      variations: stream.variations,
+    })),
+    auctionSnapshots,
+  );
+
+  const after = calculateSummary(state, { streamId: "active-stream" });
+
+  importedInventory.forEach(({ sku }) => {
+    assert.deepEqual(
+      after.inventory.find((item) => item.sku === sku),
+      before.inventory.find((item) => item.sku === sku),
+    );
+  });
+  assert.deepEqual(after.auctions, before.auctions);
+  assert.deepEqual(after.totals, before.totals);
+  assert.equal(
+    after.inventory.find((item) => item.sku === limitedItem.sku)
+      .availableToTagQuantity,
+    4,
+  );
+
+  const beforeRelease = getInventoryAvailability(state, {
+    inventoryBaselineId: nextBaselineId,
+    sku: "BLACK-TEE-L",
+  });
+
+  unmapVariation(state, {
+    streamId: "prior-stream",
+    variationNumber: 2,
+  });
+
+  const afterRelease = getInventoryAvailability(state, {
+    inventoryBaselineId: nextBaselineId,
+    sku: "BLACK-TEE-L",
+  });
+
+  assert.equal(afterRelease.reservedQuantity, beforeRelease.reservedQuantity - 1);
+  assert.equal(
+    afterRelease.availableToTagQuantity,
+    beforeRelease.availableToTagQuantity + 1,
+  );
+});
+
+test("treats an order-independent exact active inventory as already current", () => {
+  const state = createState();
+  const previousBaselineId =
+    "inventory-baseline:63000000-0000-4000-8000-000000000000";
+  const importedInventory = activeBaseline(state).inventory.map((item) => ({
+    ...item,
+  }));
+
+  createInventoryBaseline(state, {
+    baselineId: previousBaselineId,
+    sourceFingerprint: "fnv1a64:6334567890abcdef",
+    inventory: importedInventory,
+  });
+  observeVariations(state, {
+    streamId: "active-stream",
+    variationNumbers: [1],
+  });
+  const before = JSON.parse(JSON.stringify(state));
+  const result = extendStreamInventoryBaseline(state, {
+    streamId: "active-stream",
+    expectedBaselineId: previousBaselineId,
+    baselineId: "inventory-baseline:64000000-0000-4000-8000-000000000000",
+    sourceFingerprint: "fnv1a64:6434567890abcdef",
+    inventory: [...importedInventory].reverse(),
+  });
+
+  assert.deepEqual(result, {
+    status: "already_current",
+    baselineId: previousBaselineId,
+    previousBaselineId,
+    addedSkus: [],
+  });
+  assert.deepEqual(state, before);
+});
+
+test("rejects any non-append-only active inventory change atomically", () => {
+  const mutations = [
+    (inventory) => inventory.slice(1),
+    (inventory) => [{ ...inventory[0], sku: "RENAMED-SKU" }, inventory[1]],
+    (inventory) => [{ ...inventory[0], item: "Changed Item" }, inventory[1]],
+    (inventory) => [{ ...inventory[0], style: "changed" }, inventory[1]],
+    (inventory) => [{ ...inventory[0], size: "S" }, inventory[1]],
+    (inventory) => [{
+      ...inventory[0],
+      quantityOnHandAtImport: inventory[0].quantityOnHandAtImport + 1,
+    }, inventory[1]],
+    (inventory) => [{
+      ...inventory[0],
+      unitCostCents: inventory[0].unitCostCents + 1,
+    }, inventory[1]],
+  ];
+
+  mutations.forEach((mutate, index) => {
+    const state = createState();
+    const previousBaselineId =
+      `inventory-baseline:65000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
+    const importedInventory = activeBaseline(state).inventory.map((item) => ({
+      ...item,
+    }));
+
+    createInventoryBaseline(state, {
+      baselineId: previousBaselineId,
+      sourceFingerprint: "fnv1a64:6534567890abcdef",
+      inventory: importedInventory,
+    });
+    observeVariations(state, {
+      streamId: "active-stream",
+      variationNumbers: [1],
+    });
+    const before = JSON.parse(JSON.stringify(state));
+
+    assertErrorCode(
+      () => extendStreamInventoryBaseline(state, {
+        streamId: "active-stream",
+        expectedBaselineId: previousBaselineId,
+        baselineId:
+          `inventory-baseline:66000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        sourceFingerprint: "fnv1a64:6634567890abcdef",
+        inventory: mutate(importedInventory),
+      }),
+      "INVENTORY_BASELINE_NOT_APPEND_ONLY",
+    );
+    assert.deepEqual(state, before);
+  });
+});
+
+test("rejects a live-extension baseline ID collision atomically", () => {
+  const state = createState();
+  const previousBaselineId =
+    "inventory-baseline:67000000-0000-4000-8000-000000000000";
+  const conflictingBaselineId =
+    "inventory-baseline:68000000-0000-4000-8000-000000000000";
+  const importedInventory = activeBaseline(state).inventory.map((item) => ({
+    ...item,
+  }));
+
+  createInventoryBaseline(state, {
+    baselineId: conflictingBaselineId,
+    sourceFingerprint: "fnv1a64:6834567890abcdef",
+    inventory: importedInventory,
+  });
+  createInventoryBaseline(state, {
+    baselineId: previousBaselineId,
+    sourceFingerprint: "fnv1a64:6734567890abcdef",
+    inventory: importedInventory,
+  });
+  observeVariations(state, {
+    streamId: "active-stream",
+    variationNumbers: [1],
+  });
+  const before = JSON.parse(JSON.stringify(state));
+
+  assertErrorCode(
+    () => extendStreamInventoryBaseline(state, {
+      streamId: "active-stream",
+      expectedBaselineId: previousBaselineId,
+      baselineId: conflictingBaselineId,
+      sourceFingerprint: "fnv1a64:6934567890abcdef",
+      inventory: [
+        ...importedInventory,
+        {
+          sku: "LIMITED-HOODIE-OS",
+          item: "Limited Hoodie",
+          style: "silver",
+          size: "OS",
+          quantityOnHandAtImport: 2,
+          unitCostCents: 1800,
+        },
+      ],
+    }),
+    "BASELINE_ID_CONFLICT",
   );
   assert.deepEqual(state, before);
 });

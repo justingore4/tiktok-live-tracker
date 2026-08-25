@@ -268,6 +268,7 @@
             conflicts: auction?.conflicts?.map((conflict) => ({
               ...conflict,
             })) ?? [],
+            sku: auction?.sku ?? null,
             item: auction?.item ?? null,
             style: auction?.style ?? "",
             size: auction?.size ?? "",

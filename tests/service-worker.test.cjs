@@ -9,6 +9,9 @@ const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
 const liveBidProtocol = require("../extension/shared/live-bid-protocol.js");
+const nextItemQueueProtocol = require(
+  "../extension/shared/next-item-queue-protocol.js",
+);
 const streamReportProtocol = require(
   "../extension/shared/stream-report-protocol.js"
 );
@@ -37,6 +40,7 @@ function createWorkerHarness(options = {}) {
   const inventoryImportCalls = [];
   const reportCalls = [];
   const liveBidSyncCalls = [];
+  const nextItemQueueCalls = [];
   const consoleErrors = [];
   const timerCalls = [];
   const timerReceiverMarker = {};
@@ -94,6 +98,7 @@ function createWorkerHarness(options = {}) {
   let streamStoreOptions = null;
   let streamCoordinatorOptions = null;
   let captureIntegrationOptions = null;
+  let nextItemQueueCoordinatorOptions = null;
   let inventoryImportOptions = null;
   let remainingPinFailures = options.pinFailureCount ?? 0;
   let remainingEndFailures = options.endStreamFailureCount ?? 0;
@@ -185,6 +190,20 @@ function createWorkerHarness(options = {}) {
   }
 
   class FakeLiveBidCoordinatorError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeNextItemQueueStorageError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+
+  class FakeNextItemQueueCoordinatorError extends Error {
     constructor(code, message) {
       super(message);
       this.code = code;
@@ -382,6 +401,8 @@ function createWorkerHarness(options = {}) {
       GET_STATE: "get_state",
       INITIALIZE_STATE: "initialize_state",
       CREATE_INVENTORY_BASELINE: "create_inventory_baseline",
+      EXTEND_STREAM_INVENTORY_BASELINE:
+        "extend_stream_inventory_baseline",
       PIN_STREAM_TO_INVENTORY_BASELINE:
         "pin_stream_to_inventory_baseline",
       OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
@@ -736,6 +757,9 @@ function createWorkerHarness(options = {}) {
     consumeLiveBidChanged() {
       return options.liveBidChanged === true;
     },
+    consumeNextItemQueueChanged() {
+      return options.nextItemQueueChanged === true;
+    },
     async dispatch(event) {
       captureDispatchCalls.push(JSON.parse(JSON.stringify(event)));
 
@@ -809,6 +833,51 @@ function createWorkerHarness(options = {}) {
       return liveBidCoordinator;
     },
   };
+  const nextItemQueueStore = {};
+  const nextItemQueueStorageModule = {
+    NextItemQueueStorageError: FakeNextItemQueueStorageError,
+    createNextItemQueueStore() {
+      return nextItemQueueStore;
+    },
+  };
+  const nextItemQueueCoordinator = {
+    async clearForStream(streamId) {
+      nextItemQueueCalls.push({ type: "clear_for_stream", streamId });
+      return options.nextItemQueueClearResult ?? { status: "unchanged" };
+    },
+    async dispatch(command) {
+      nextItemQueueCalls.push({
+        type: "dispatch",
+        command: JSON.parse(JSON.stringify(command)),
+      });
+
+      if (options.nextItemQueueDispatchError === "known") {
+        throw new FakeNextItemQueueCoordinatorError(
+          "NEXT_ITEM_QUEUE_FAILED",
+          "Could not update the next-item queue.",
+        );
+      }
+
+      if (options.nextItemQueueDispatchError === "unexpected") {
+        throw new Error("sensitive next-item queue failure");
+      }
+
+      if (options.nextItemQueueDispatchResult) {
+        return options.nextItemQueueDispatchResult;
+      }
+
+      return command.type === nextItemQueueProtocol.COMMAND_TYPES.GET_QUEUE
+        ? { queuedSku: null }
+        : { status: "queued", queuedSku: command.sku };
+    },
+  };
+  const nextItemQueueCoordinatorModule = {
+    NextItemQueueCoordinatorError: FakeNextItemQueueCoordinatorError,
+    createNextItemQueueCoordinator(receivedOptions) {
+      nextItemQueueCoordinatorOptions = receivedOptions;
+      return nextItemQueueCoordinator;
+    },
+  };
   const googleSheetsInventoryImportModule = {
     GoogleSheetsInventoryImportError: FakeGoogleSheetsInventoryImportError,
     createGoogleSheetsInventoryImportService(receivedOptions) {
@@ -863,6 +932,32 @@ function createWorkerHarness(options = {}) {
             },
           };
         },
+        async addActiveStreamSkusFromGoogleSheet(spreadsheetId, context) {
+          inventoryImportCalls.push({
+            type: "add_active_stream_skus_from_google_sheet",
+            spreadsheetId,
+            context: JSON.parse(JSON.stringify(context)),
+          });
+          await receivedOptions.assertActiveStream(context.streamId);
+
+          if (options.importExtendCommand) {
+            await receivedOptions.extendStreamBaseline(
+              options.importExtendCommand,
+            );
+          }
+
+          return options.importActiveUpdateResult ?? {
+            status: "already_current",
+            baselineId: context.expectedBaselineId,
+            sourceFingerprint: "fnv1a64:1111111111111111",
+            summary: {
+              rowCount: 1,
+              totalQuantityOnHandAtImport: 1,
+              totalInventoryCostCents: 100,
+            },
+            addedSkus: [],
+          };
+        },
       };
     },
   };
@@ -903,6 +998,10 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerLiveBidProtocol: liveBidProtocolModule,
     TikTokLiveTrackerLiveBidStorage: liveBidStorageModule,
     TikTokLiveTrackerLiveBidCoordinator: liveBidCoordinatorModule,
+    TikTokLiveTrackerNextItemQueueProtocol: nextItemQueueProtocol,
+    TikTokLiveTrackerNextItemQueueStorage: nextItemQueueStorageModule,
+    TikTokLiveTrackerNextItemQueueCoordinator:
+      nextItemQueueCoordinatorModule,
     TikTokLiveTrackerInventorySheetImport: {},
     TikTokLiveTrackerInventoryImportProtocol: inventoryImportProtocol,
     TikTokLiveTrackerGoogleSheetsInventoryImport:
@@ -1080,6 +1179,8 @@ function createWorkerHarness(options = {}) {
     getStreamCoordinatorOptions: () => streamCoordinatorOptions,
     getStreamStoreOptions: () => streamStoreOptions,
     getCaptureIntegrationOptions: () => captureIntegrationOptions,
+    getNextItemQueueCoordinatorOptions: () =>
+      nextItemQueueCoordinatorOptions,
     getInventoryImportOptions: () => inventoryImportOptions,
     imports,
     inventoryImportCalls,
@@ -1089,6 +1190,10 @@ function createWorkerHarness(options = {}) {
     reportPageUrl,
     listeners,
     liveBidSyncCalls,
+    nextItemQueueCalls,
+    nextItemQueueCoordinator,
+    nextItemQueueProtocol,
+    nextItemQueueStore,
     reconciliation,
     runtimeSendMessages,
     send,
@@ -1121,6 +1226,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/live-bid-protocol.js",
     "shared/live-bid-storage.js",
     "shared/live-bid-coordinator.js",
+    "shared/next-item-queue-protocol.js",
+    "shared/next-item-queue-storage.js",
+    "shared/next-item-queue-coordinator.js",
     "shared/capture-protocol.js",
     "shared/capture-integration.js",
     "shared/inventory-sheet-import.js",
@@ -1170,6 +1278,18 @@ test("loads state dependencies and wires the canonical coordinator", () => {
   assert.equal(
     harness.getCaptureIntegrationOptions().captureProtocol,
     harness.captureProtocol,
+  );
+  assert.equal(
+    harness.getCaptureIntegrationOptions().nextItemQueueCoordinator,
+    harness.nextItemQueueCoordinator,
+  );
+  assert.equal(
+    harness.getNextItemQueueCoordinatorOptions().queueStore,
+    harness.nextItemQueueStore,
+  );
+  assert.equal(
+    harness.getNextItemQueueCoordinatorOptions().protocol,
+    harness.nextItemQueueProtocol,
   );
   assert.equal(
     harness.getCaptureIntegrationOptions().reconciliationCoordinator,
@@ -1594,7 +1714,7 @@ test("keeps rejected direct baseline creation behind Start in the worker FIFO", 
     error: {
       code: "UNAUTHORIZED_MESSAGE_SENDER",
       message:
-        "Inventory baselines can be created only through a confirmed Sheet import.",
+        "Inventory baselines can be changed only through a validated Sheet import.",
     },
   });
   assert.equal(
@@ -1633,10 +1753,37 @@ test("does not expose baseline creation directly to the side panel", async () =>
     error: {
       code: "UNAUTHORIZED_MESSAGE_SENDER",
       message:
-        "Inventory baselines can be created only through a confirmed Sheet import.",
+        "Inventory baselines can be changed only through a validated Sheet import.",
     },
   });
   assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("does not expose active baseline extension directly to the side panel", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createMessage({
+      type:
+        harness.coordinatorModule.COMMAND_TYPES
+          .EXTEND_STREAM_INVENTORY_BASELINE,
+      streamId: harness.activeStreamId,
+      expectedBaselineId: harness.activeInventoryBaselineId,
+      baselineId:
+        "inventory-baseline:66666666-6666-4666-8666-666666666666",
+      sourceFingerprint: "fnv1a64:2222222222222222",
+      inventory: [],
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Inventory baselines can be changed only through a validated Sheet import.",
+    },
+  });
   assert.deepEqual(harness.dispatchCalls, []);
 });
 
@@ -1831,6 +1978,100 @@ test("blocks Sheet preview while a tracker stream is active", async () => {
       message: "End the active tracker stream before importing inventory.",
     },
   });
+});
+
+test("adds Sheet SKUs using only worker-owned active stream context", async () => {
+  const streamId =
+    "local-stream:11111111-1111-4111-8111-111111111111";
+  const baselineId =
+    "inventory-baseline:11111111-1111-4111-8111-111111111111";
+  const harness = createWorkerHarness({
+    statefulReconciliation: true,
+    initialActiveSession: {
+      streamId,
+      startedAt: "2026-08-08T20:00:00.000Z",
+      identitySource: "local_session",
+    },
+    initialReconciliationState: {
+      version: 4,
+      activeInventoryBaselineId: baselineId,
+      inventoryBaselines: [{
+        baselineId,
+        sourceFingerprint: "fnv1a64:1111111111111111",
+        inventory: [{
+          sku: "TEST-SKU",
+          item: "Test item",
+          style: "",
+          size: "OS",
+          quantityOnHandAtImport: 1,
+          unitCostCents: 100,
+        }],
+      }],
+      streams: [{
+        streamId,
+        inventoryBaselineId: baselineId,
+        variations: [],
+      }],
+    },
+  });
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES
+          .ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: {
+      status: "already_current",
+      baselineId,
+      sourceFingerprint: "fnv1a64:1111111111111111",
+      summary: {
+        rowCount: 1,
+        totalQuantityOnHandAtImport: 1,
+        totalInventoryCostCents: 100,
+      },
+      addedSkus: [],
+    },
+  });
+  assert.deepEqual(harness.inventoryImportCalls, [{
+    type: "add_active_stream_skus_from_google_sheet",
+    spreadsheetId: "1Abc_def-Ghij234567890",
+    context: { streamId, expectedBaselineId: baselineId },
+  }]);
+  assert.equal(
+    harness.dispatchCalls.filter(
+      (command) =>
+        command.type ===
+          harness.coordinatorModule.COMMAND_TYPES
+            .PIN_STREAM_TO_INVENTORY_BASELINE,
+    ).length,
+    1,
+  );
+});
+
+test("rejects active-stream Sheet additions when no stream is active", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES
+          .ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: false,
+    error: {
+      code: "NO_ACTIVE_STREAM",
+      message: "Start or resume a tracker stream before adding new SKUs.",
+    },
+  });
+  assert.deepEqual(harness.inventoryImportCalls, []);
 });
 
 test("accepts inventory-import messages only from the exact side panel", async () => {
@@ -2081,6 +2322,34 @@ test("a new bidding variation emits canonical and retained-auction invalidations
   ]);
 });
 
+test("an applied queued item emits canonical and queue invalidations", async () => {
+  const harness = createWorkerHarness({ nextItemQueueChanged: true });
+  const request = harness.send(
+    harness.createCaptureMessage({
+      type: harness.captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+      variationNumber: 253,
+    }),
+    harness.createCaptureSender(),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: { status: "accepted" },
+  });
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.next-item-queue",
+      version: 1,
+      event: { type: "queue_changed" },
+    },
+  ]);
+});
+
 test("live bid prices emit only their lightweight data-free invalidation", async () => {
   const harness = createWorkerHarness({ liveBidChanged: true });
   const event = {
@@ -2151,6 +2420,320 @@ test("only the exact side panel can read the transient live bid", async () => {
       },
     },
   );
+});
+
+test("only the exact side panel can read and toggle the next-item queue", async () => {
+  const expected = { status: "queued", queuedSku: "TEST-SKU" };
+  const harness = createWorkerHarness({
+    nextItemQueueDispatchResult: expected,
+  });
+  const message = nextItemQueueProtocol.createNextItemQueueMessage({
+    type: nextItemQueueProtocol.COMMAND_TYPES.TOGGLE_QUEUE,
+    expectedStreamId: harness.activeStreamId,
+    expectedVariationNumber: 252,
+    sku: "TEST-SKU",
+  });
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    {
+      type: "dispatch",
+      command: {
+        type: "toggle_queue",
+        expectedStreamId: harness.activeStreamId,
+        expectedVariationNumber: 252,
+        sku: "TEST-SKU",
+      },
+    },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.next-item-queue",
+      version: 1,
+      event: { type: "queue_changed" },
+    },
+  ]);
+
+  assert.deepEqual(
+    await harness.send(message, harness.createCaptureSender()).response,
+    {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "This extension context cannot issue next-item queue commands.",
+      },
+    },
+  );
+  assert.equal(harness.nextItemQueueCalls.length, 1);
+});
+
+test("mapping the current item from the queue boundary refreshes canonical and live-bid views", async () => {
+  const expected = { status: "mapped_current", queuedSku: null };
+  const canonicalState = {
+    version: 7,
+    marker: "current variation mapped",
+  };
+  const harness = createWorkerHarness({
+    dispatchResult: { state: canonicalState, result: null },
+    liveBidSyncResult: { status: "accepted" },
+    nextItemQueueDispatchResult: expected,
+  });
+  const message = nextItemQueueProtocol.createNextItemQueueMessage({
+    type: nextItemQueueProtocol.COMMAND_TYPES.TOGGLE_QUEUE,
+    expectedStreamId: harness.activeStreamId,
+    expectedVariationNumber: 252,
+    sku: "TEST-SKU",
+  });
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    {
+      type: "dispatch",
+      command: {
+        type: "toggle_queue",
+        expectedStreamId: harness.activeStreamId,
+        expectedVariationNumber: 252,
+        sku: "TEST-SKU",
+      },
+    },
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [{ type: "get_state" }],
+  );
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    {
+      streamId: harness.activeStreamId,
+      state: canonicalState,
+    },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+  assert.equal(
+    harness.runtimeSendMessages.some(
+      (notification) =>
+        notification.channel === "tiktok-live-tracker.next-item-queue",
+    ),
+    false,
+  );
+
+  assert.deepEqual(
+    await harness.send(message, harness.createCaptureSender()).response,
+    {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "This extension context cannot issue next-item queue commands.",
+      },
+    },
+  );
+  assert.equal(harness.nextItemQueueCalls.length, 1);
+});
+
+test("mapping the live item while reviewing history refreshes canonical and live-bid views without changing the queue", async () => {
+  const expected = { status: "mapped_current", sku: "TEST-SKU" };
+  const canonicalState = {
+    version: 7,
+    marker: "historical view mapped the live variation",
+  };
+  const harness = createWorkerHarness({
+    dispatchResult: { state: canonicalState, result: null },
+    liveBidSyncResult: { status: "accepted" },
+    nextItemQueueDispatchResult: expected,
+  });
+  const message = nextItemQueueProtocol.createNextItemQueueMessage({
+    type: nextItemQueueProtocol.COMMAND_TYPES.MAP_CURRENT,
+    expectedStreamId: harness.activeStreamId,
+    expectedVariationNumber: 252,
+    sku: "TEST-SKU",
+  });
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    {
+      type: "dispatch",
+      command: {
+        type: "map_current",
+        expectedStreamId: harness.activeStreamId,
+        expectedVariationNumber: 252,
+        sku: "TEST-SKU",
+      },
+    },
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [{ type: "get_state" }],
+  );
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    {
+      streamId: harness.activeStreamId,
+      state: canonicalState,
+    },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+  assert.equal(
+    harness.runtimeSendMessages.some(
+      (notification) =>
+        notification.channel === "tiktok-live-tracker.next-item-queue",
+    ),
+    false,
+  );
+
+  assert.deepEqual(
+    await harness.send(message, harness.createCaptureSender()).response,
+    {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "This extension context cannot issue next-item queue commands.",
+      },
+    },
+  );
+  assert.equal(harness.nextItemQueueCalls.length, 1);
+});
+
+test("unmapping the live item from history refreshes canonical and live-bid views without changing the queue", async () => {
+  const expected = { status: "unmapped_current", sku: "TEST-SKU" };
+  const canonicalState = {
+    version: 7,
+    marker: "historical view unmapped the live variation",
+  };
+  const harness = createWorkerHarness({
+    dispatchResult: { state: canonicalState, result: null },
+    liveBidSyncResult: { status: "accepted" },
+    nextItemQueueDispatchResult: expected,
+  });
+  const message = nextItemQueueProtocol.createNextItemQueueMessage({
+    type: nextItemQueueProtocol.COMMAND_TYPES.MAP_CURRENT,
+    expectedStreamId: harness.activeStreamId,
+    expectedVariationNumber: 252,
+    sku: "TEST-SKU",
+  });
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    {
+      type: "dispatch",
+      command: {
+        type: "map_current",
+        expectedStreamId: harness.activeStreamId,
+        expectedVariationNumber: 252,
+        sku: "TEST-SKU",
+      },
+    },
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.dispatchCalls)),
+    [{ type: "get_state" }],
+  );
+  assert.deepEqual(harness.liveBidSyncCalls, [
+    {
+      streamId: harness.activeStreamId,
+      state: canonicalState,
+    },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.live-bid",
+      version: 1,
+      event: { type: "live_bid_changed" },
+    },
+    {
+      channel: "tiktok-live-tracker.capture-state",
+      version: 1,
+      event: { type: "capture_state_changed" },
+    },
+  ]);
+  assert.equal(
+    harness.runtimeSendMessages.some(
+      (notification) =>
+        notification.channel === "tiktok-live-tracker.next-item-queue",
+    ),
+    false,
+  );
+});
+
+test("clearing the next-item queue emits only its queue invalidation", async () => {
+  const expected = { status: "cleared", queuedSku: null };
+  const harness = createWorkerHarness({
+    nextItemQueueDispatchResult: expected,
+  });
+  const message = nextItemQueueProtocol.createNextItemQueueMessage({
+    type: nextItemQueueProtocol.COMMAND_TYPES.TOGGLE_QUEUE,
+    expectedStreamId: harness.activeStreamId,
+    expectedVariationNumber: 252,
+    sku: "TEST-SKU",
+  });
+
+  assert.deepEqual(
+    await harness.send(message, harness.createSender()).response,
+    { ok: true, data: expected },
+  );
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.next-item-queue",
+      version: 1,
+      event: { type: "queue_changed" },
+    },
+  ]);
+  assert.deepEqual(harness.liveBidSyncCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+});
+
+test("queue reads do not emit invalidations and queue notifications are not commands", async () => {
+  const harness = createWorkerHarness();
+  const getMessage = nextItemQueueProtocol.createNextItemQueueMessage();
+
+  assert.deepEqual(
+    await harness.send(getMessage, harness.createSender()).response,
+    { ok: true, data: { queuedSku: null } },
+  );
+  assert.equal(harness.runtimeSendMessages.length, 0);
+  assert.equal(
+    harness.listeners[0](
+      nextItemQueueProtocol.createQueueChangedNotification(),
+      harness.createSender(),
+      () => undefined,
+    ),
+    false,
+  );
+  assert.equal(harness.nextItemQueueCalls.length, 1);
 });
 
 test("keeps accepted capture responses independent of notification delivery", async () => {
@@ -2459,6 +3042,7 @@ test("normal End saves and finalizes a report before clearing the active session
   const releaseReportSave = createDeferred();
   const harness = createWorkerHarness({
     initialActiveSession: activeSession,
+    nextItemQueueClearResult: { status: "cleared" },
     usePreparedState: true,
     async beforeReportPrepare() {
       reportSaveStarted.resolve();
@@ -2502,6 +3086,16 @@ test("normal End saves and finalizes a report before clearing the active session
     harness.reportCalls.find(({ type }) => type === "prepare").input.startedAt,
     activeSession.startedAt,
   );
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    { type: "clear_for_stream", streamId: activeSession.streamId },
+  ]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    {
+      channel: "tiktok-live-tracker.next-item-queue",
+      version: 1,
+      event: { type: "queue_changed" },
+    },
+  ]);
 });
 
 test("a report save failure leaves the stream active and exposes End without report", async () => {
@@ -2512,6 +3106,7 @@ test("a report save failure leaves the stream active and exposes End without rep
   };
   const harness = createWorkerHarness({
     initialActiveSession: activeSession,
+    nextItemQueueClearResult: { status: "cleared" },
     usePreparedState: true,
     reportPrepareError: "known",
   });
@@ -2533,6 +3128,7 @@ test("a report save failure leaves the stream active and exposes End without rep
     harness.streamDispatchCalls.map(({ type }) => type),
     [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
   );
+  assert.deepEqual(harness.nextItemQueueCalls, []);
 
   const fallback = harness.send(
     harness.createStreamMessage({
@@ -2554,6 +3150,9 @@ test("a report save failure leaves the stream active and exposes End without rep
       },
     },
   });
+  assert.deepEqual(harness.nextItemQueueCalls, [
+    { type: "clear_for_stream", streamId: activeSession.streamId },
+  ]);
 });
 
 test("End without report removes a pending draft left by a failed session End", async () => {

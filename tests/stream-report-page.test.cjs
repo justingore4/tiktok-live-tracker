@@ -60,10 +60,6 @@ const REPORT_SELECTORS = [
   "#action-feedback",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
-  "#sku-profit-count",
-  "#sku-profit-disclosure",
-  "#sku-profit-empty",
-  "#sku-profit-rows",
   "#copy-inventory",
   "#download-inventory",
   "#inventory-instructions",
@@ -413,6 +409,7 @@ test("report notices stay compact inside Stream summary and disappear when empty
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const printCss = css.slice(css.indexOf("@media print"));
   const summaryStart = html.indexOf(
     '<section class="report-section" aria-labelledby="summary-title">',
   );
@@ -442,6 +439,10 @@ test("report notices stay compact inside Stream summary and disappear when empty
     css,
     /@media \(max-width:\s*720px\)[\s\S]*?\.summary-heading\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?\.summary-notices\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
   );
+  assert.match(
+    printCss,
+    /\.summary-notices\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?grid-template-columns:\s*1fr;/,
+  );
 
   const warningDocument = new FakeDocument();
   reportPage.renderReport(warningDocument, {
@@ -462,7 +463,7 @@ test("report notices stay compact inside Stream summary and disappear when empty
   assert.equal(clearDocument.querySelector("#report-warnings").children.length, 0);
 });
 
-test("completed and canceled item variations share one collapsed disclosure that always prints in full", () => {
+test("completed and canceled item variations print only when the user expands their disclosure", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -505,7 +506,7 @@ test("completed and canceled item variations share one collapsed disclosure that
     /Canceled item mappings are reference-only and do not affect inventory or metrics/,
   );
   assert.match(css, /\.completed-sales-toggle:focus-visible/);
-  assert.match(
+  assert.doesNotMatch(
     printCss,
     /#completed-sales-disclosure:not\(\[open\]\)\s*>\s*#completed-sales-content\s*\{\s*display:\s*block\s*!important;/,
   );
@@ -527,9 +528,9 @@ test("all report tables use a white background and black text on screen and in p
   const screenCss = css.slice(0, printIndex);
   const printCss = css.slice(printIndex);
 
-  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 4);
+  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 3);
   assert.match(html, /<table class="data-table sales-table">/);
-  assert.match(html, /<table class="data-table sku-profit-table">/);
+  assert.doesNotMatch(html, /sku-profit|Profit\/Loss by SKU/);
   assert.match(html, /<table class="data-table performance-table">/);
   assert.match(html, /<table class="data-table inventory-table">/);
   assert.match(
@@ -546,7 +547,7 @@ test("all report tables use a white background and black text on screen and in p
   );
 });
 
-test("SKU performance shows each selling SKU unit cost without crowding screen or print", () => {
+test("SKU performance shows unit cost and average sale price without crowding screen or print", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -563,13 +564,14 @@ test("SKU performance shows each selling SKU unit cost without crowding screen o
     "Size",
     "Units sold",
     "Unit cost",
+    "Avg. sale price",
     "Revenue",
     "COGS",
-    "Gross profit",
-    "Gross margin",
     "Sell-through",
+    "Gross margin",
+    "Gross profit/loss",
   ]);
-  assert.match(css, /\.performance-table\s*\{\s*min-width:\s*960px;/);
+  assert.match(css, /\.performance-table\s*\{\s*min-width:\s*1080px;/);
   assert.match(
     printCss,
     /\.inventory-table,\s*\.performance-table\s*\{\s*min-width:\s*0;/,
@@ -583,8 +585,30 @@ test("SKU performance shows each selling SKU unit cost without crowding screen o
   });
   const cells = document.querySelector("#performance-rows").children[0].children;
 
-  assert.equal(cells.length, 10);
+  assert.equal(cells.length, 11);
   assert.equal(cells[4].textContent, "$6.00");
+  assert.equal(cells[5].textContent, "$15.00");
+  assert.equal(cells[10].textContent, "+$9.00");
+  assert.equal(cells[10].className, "number-cell profit-positive");
+
+  const roundingDocument = new FakeDocument();
+  const roundingReport = createReport();
+  roundingReport.itemPerformance = [{
+    ...roundingReport.itemPerformance[0],
+    soldQuantity: 3,
+    revenueCents: 1001,
+  }];
+
+  reportPage.renderReport(roundingDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: roundingReport,
+  });
+
+  assert.equal(
+    roundingDocument.querySelector("#performance-rows").children[0].children[5].textContent,
+    "$3.34",
+  );
 });
 
 test("updated inventory shows every SKU unit cost with a compact accessible Sold header", () => {
@@ -722,44 +746,19 @@ test("Google Sheets instructions start collapsed beside the handoff actions and 
   );
 });
 
-test("SKU profit and loss uses a collapsed stream-scoped disclosure that prints in full", () => {
-  const directory = path.join(__dirname, "..", "extension", "report");
-  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
-  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
-  const detailsTag = html.match(
-    /<details\s+id="sku-profit-disclosure"[^>]*>/,
-  )?.[0];
-  const summary = html.match(
-    /<summary[\s\S]*?id="sku-profit-toggle"[\s\S]*?<\/summary>/,
-  )?.[0];
-  const printCss = css.slice(css.indexOf("@media print"));
-
-  assert.ok(detailsTag);
-  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
-  assert.ok(summary);
-  assert.match(summary, /aria-controls="sku-profit-content"/);
-  assert.match(summary, /Profit\/Loss by SKU/);
-  assert.match(html, /<table class="data-table sku-profit-table">/);
-  assert.match(html, /id="sku-profit-rows"/);
-  assert.match(css, /\.sku-profit-toggle:focus-visible/);
-  assert.match(
-    printCss,
-    /#sku-profit-disclosure:not\(\[open\]\)\s*>\s*#sku-profit-content\s*\{\s*display:\s*block\s*!important;/,
-  );
-  assert.match(
-    printCss,
-    /#sku-profit-toggle::after\s*\{\s*display:\s*none\s*!important;/,
-  );
-});
-
-test("unit-cost correction is the final report section and definitions are fully removed", () => {
+test("stream variations sit between Sheets handoff and the final correction section", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
   const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
+  const inventoryStart = html.indexOf("inventory-update-section");
+  const variationsStart = html.indexOf('id="completed-sales-disclosure"');
   const correctionStart = html.indexOf('id="unit-cost-correction-section"');
   const footerStart = html.indexOf('<footer class="report-footer">');
 
+  assert.ok(inventoryStart >= 0);
+  assert.ok(variationsStart > inventoryStart);
+  assert.ok(correctionStart > variationsStart);
   assert.ok(correctionStart >= 0);
   assert.ok(footerStart > correctionStart);
   assert.equal(html.lastIndexOf("<section", footerStart), html.lastIndexOf("<section", correctionStart));
@@ -772,43 +771,16 @@ test("unit-cost correction is the final report section and definitions are fully
   assert.doesNotMatch(css, /\.definitions-|\.definition-list|#definitions-/);
 });
 
-test("print disclosures open together and restore their independent prior states", () => {
+test("handoff instructions toggle while Print preserves item-variation state", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
-  const skuProfit = document.querySelector("#sku-profit-disclosure");
-  const controller = reportPage.createPrintDisclosureController(document);
-
-  completedSales.open = false;
-  skuProfit.open = true;
-  controller.prepare();
-  assert.equal(completedSales.open, true);
-  assert.equal(skuProfit.open, true);
-  controller.prepare();
-  controller.restore();
-  assert.equal(completedSales.open, false);
-  assert.equal(skuProfit.open, true);
-
-  completedSales.open = true;
-  skuProfit.open = false;
-  controller.prepare();
-  controller.restore();
-  assert.equal(completedSales.open, true);
-  assert.equal(skuProfit.open, false);
-});
-
-test("handoff instructions toggle while Print expands report tables and restores screen state", async () => {
-  const document = new FakeDocument();
-  const completedSales = document.querySelector("#completed-sales-disclosure");
-  const skuProfit = document.querySelector("#sku-profit-disclosure");
   const inventoryInstructions = document.querySelector("#inventory-instructions");
   const inventoryInstructionsToggle = document.querySelector(
     "#toggle-inventory-instructions",
   );
-  const windowListeners = new Map();
   const printedStates = [];
 
   completedSales.open = false;
-  skuProfit.open = false;
   reportPage.mountStreamReportPage({
     document,
     location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
@@ -833,14 +805,8 @@ test("handoff instructions toggle while Print expands report tables and restores
         };
       },
     },
-    addEventListener(name, listener) {
-      windowListeners.set(name, listener);
-    },
     print() {
-      printedStates.push({
-        completedSales: completedSales.open,
-        skuProfit: skuProfit.open,
-      });
+      printedStates.push(completedSales.open);
     },
   });
 
@@ -858,21 +824,13 @@ test("handoff instructions toggle while Print expands report tables and restores
   assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
 
   document.querySelector("#print-report").click();
-  assert.deepEqual(printedStates, [
-    { completedSales: true, skuProfit: true },
-  ]);
-  windowListeners.get("afterprint")();
+  assert.deepEqual(printedStates, [false]);
   assert.equal(completedSales.open, false);
-  assert.equal(skuProfit.open, false);
 
   completedSales.open = true;
-  skuProfit.open = false;
-  windowListeners.get("beforeprint")();
+  document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [false, true]);
   assert.equal(completedSales.open, true);
-  assert.equal(skuProfit.open, true);
-  windowListeners.get("afterprint")();
-  assert.equal(completedSales.open, true);
-  assert.equal(skuProfit.open, false);
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {
@@ -890,7 +848,6 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#most-sold-products-card").hidden, false);
   assert.equal(document.querySelector("#most-profitable-products-card").hidden, true);
   assert.equal(document.querySelector("#completed-sales-rows").children.length, 3);
-  assert.equal(document.querySelector("#sku-profit-rows").children.length, 1);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
   assert.equal(document.querySelector("#summary-grid").children.length, 11);
@@ -1034,7 +991,7 @@ test("legacy reports retain canceled totals and explain unavailable row details"
   assert.equal(canceledOnlyDocument.querySelector("#variation-details-note").hidden, false);
 });
 
-test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed color-coded values", () => {
+test("SKU performance sorts sold SKUs by profit with signed color-coded profit/loss values", () => {
   const document = new FakeDocument();
   const report = createReport({
     itemPerformance: [
@@ -1077,12 +1034,6 @@ test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed
         grossProfitCents: 99900,
       },
       {
-        sku: "",
-        item: "Unmapped sale",
-        soldQuantity: 1,
-        grossProfitCents: 50000,
-      },
-      {
         sku: "SKU-UNKNOWN",
         item: "Unknown-cost tee",
         soldQuantity: 1,
@@ -1096,7 +1047,7 @@ test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed
     report,
   });
 
-  const rows = document.querySelector("#sku-profit-rows").children;
+  const rows = document.querySelector("#performance-rows").children;
   assert.equal(rows.length, 5);
   assert.deepEqual(rows.map((row) => row.children[0].textContent), [
     "SKU-A",
@@ -1105,23 +1056,24 @@ test("SKU profit and loss includes sold mapped SKUs sorted by profit with signed
     "SKU-LOSS",
     "SKU-UNKNOWN",
   ]);
-  assert.deepEqual(rows.map((row) => row.children[3].textContent), [
+  assert.deepEqual(rows.map((row) => row.children[10].textContent), [
     "+$598.00",
     "+$598.00",
     "$0.00",
     "-$232.00",
     "Not available",
   ]);
-  assert.deepEqual(rows.map((row) => row.children[3].className), [
+  assert.deepEqual(rows.map((row) => row.children[10].className), [
     "number-cell profit-positive",
     "number-cell profit-positive",
     "number-cell profit-neutral",
     "number-cell profit-negative",
     "number-cell profit-neutral",
   ]);
-  assert.equal(document.querySelector("#sku-profit-count").textContent, "5 sold SKUs");
-  assert.equal(document.querySelector("#sku-profit-empty").hidden, true);
-  assert.match(allText(rows[0]), /Profit tee A - black - L/);
+  assert.equal(document.querySelector("#performance-row-count").textContent, "5 selling SKUs");
+  assert.equal(document.querySelector("#performance-empty").hidden, true);
+  assert.equal(rows[0].children[1].textContent, "Profit tee A - black");
+  assert.equal(rows[0].children[2].textContent, "L");
 });
 
 test("report action notifications dismiss after four seconds and newer messages restart the timer", async () => {
@@ -1492,7 +1444,7 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
     "$8.00",
   );
   assert.equal(
-    document.querySelector("#performance-rows").children[0].children[6].textContent,
+    document.querySelector("#performance-rows").children[0].children[7].textContent,
     "$8.00",
   );
   assert.match(allText(document.querySelector("#most-profitable-items")), /\$7\.00/);

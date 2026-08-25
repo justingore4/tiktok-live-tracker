@@ -19,6 +19,7 @@
     const BASELINE_ID_PATTERN =
       /^inventory-baseline:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     const FINGERPRINT_PATTERN = /^fnv1a64:[0-9a-f]{16}$/;
+    const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
 
     class InventoryImportClientError extends Error {
       constructor(code, message, options = {}) {
@@ -275,6 +276,63 @@
       }
 
       if (
+        commandType ===
+          commandTypes.ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET
+      ) {
+        if (
+          hasExactKeys(data, ["issues", "status"]) &&
+          data.status === "invalid" &&
+          Array.isArray(data.issues) &&
+          data.issues.length > 0 &&
+          data.issues.length <= 100 &&
+          data.issues.every(isValidIssue)
+        ) {
+          fail(
+            "INVALID_INVENTORY_SHEET",
+            "The Inventory tab contains values that must be fixed before new SKUs can be added.",
+            { issues: data.issues },
+          );
+        }
+
+        const validStatus = ["extended", "already_current"].includes(
+          data?.status,
+        );
+        const validAddedSkus =
+          Array.isArray(data?.addedSkus) &&
+          data.addedSkus.length <= 1_000 &&
+          data.addedSkus.every(
+            (sku) => typeof sku === "string" && SKU_PATTERN.test(sku),
+          ) &&
+          new Set(data.addedSkus).size === data.addedSkus.length;
+
+        if (
+          !hasExactKeys(data, [
+            "addedSkus",
+            "baselineId",
+            "sourceFingerprint",
+            "status",
+            "summary",
+          ]) ||
+          !validStatus ||
+          typeof data.baselineId !== "string" ||
+          !BASELINE_ID_PATTERN.test(data.baselineId) ||
+          typeof data.sourceFingerprint !== "string" ||
+          !FINGERPRINT_PATTERN.test(data.sourceFingerprint) ||
+          !isValidSummary(data.summary) ||
+          !validAddedSkus ||
+          (data.status === "extended" && data.addedSkus.length === 0) ||
+          (data.status === "already_current" && data.addedSkus.length !== 0)
+        ) {
+          fail(
+            "INVALID_RESPONSE",
+            "The inventory-import service returned invalid data.",
+          );
+        }
+
+        return cloneSerializable(data);
+      }
+
+      if (
         !hasExactKeys(data, [
           "baselineId",
           "sourceFingerprint",
@@ -392,7 +450,25 @@
         });
       }
 
+      function addActiveStreamSkusReference(reference) {
+        let spreadsheetId;
+
+        try {
+          spreadsheetId = normalizeReference(reference);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+
+        return enqueue({
+          type:
+            protocol.COMMAND_TYPES
+              .ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+          spreadsheetId,
+        });
+      }
+
       return Object.freeze({
+        addActiveStreamSkusReference,
         confirmPreview,
         getImportStatus,
         normalizeReference,

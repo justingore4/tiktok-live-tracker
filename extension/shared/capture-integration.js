@@ -46,6 +46,7 @@
         activeStreamCoordinator,
         captureProtocol,
         liveBidCoordinator,
+        nextItemQueueCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -70,6 +71,17 @@
         )
       ) {
         throw new TypeError("A valid live-bid coordinator is required.");
+      }
+
+      if (
+        nextItemQueueCoordinator !== undefined &&
+        (
+          !nextItemQueueCoordinator ||
+          typeof nextItemQueueCoordinator.applyToObservedBiddingVariation !==
+            "function"
+        )
+      ) {
+        throw new TypeError("A valid next-item queue coordinator is required.");
       }
 
       if (
@@ -123,6 +135,7 @@
         activeStreamCoordinator,
         captureProtocol,
         liveBidCoordinator: liveBidCoordinator ?? null,
+        nextItemQueueCoordinator: nextItemQueueCoordinator ?? null,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -135,6 +148,7 @@
         activeStreamCoordinator,
         captureProtocol,
         liveBidCoordinator,
+        nextItemQueueCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -142,6 +156,7 @@
       } = validateDependencies(options);
       let eventTail = Promise.resolve();
       let liveBidChanged = false;
+      let nextItemQueueChanged = false;
 
       async function synchronizeLiveAuction(streamId, state) {
         if (liveBidCoordinator === null) {
@@ -195,6 +210,7 @@
         let command;
 
         liveBidChanged = false;
+        nextItemQueueChanged = false;
 
         if (
           event.type === captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_PRICE
@@ -276,10 +292,33 @@
         }
 
         const response = await stateCoordinator.dispatch(command);
+        let canonicalState = response?.state ?? null;
+
+        if (
+          event.type ===
+            captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION &&
+          nextItemQueueCoordinator !== null
+        ) {
+          const queueOutcome =
+            await nextItemQueueCoordinator.applyToObservedBiddingVariation({
+              streamId,
+              variationNumber: event.variationNumber,
+              state: canonicalState,
+            });
+
+          canonicalState = queueOutcome?.state ?? canonicalState;
+          nextItemQueueChanged = [
+            "stale_queue_cleared",
+            "invalid_sku_cleared",
+            "mapped",
+            "already_mapped",
+            "skipped_existing_mapping",
+          ].includes(queueOutcome?.status);
+        }
 
         const liveAuctionOutcome = await synchronizeLiveAuction(
           streamId,
-          response?.state ?? null,
+          canonicalState,
         );
         liveBidChanged = liveAuctionOutcome?.status === "accepted";
 
@@ -308,7 +347,18 @@
         return changed;
       }
 
-      return Object.freeze({ consumeLiveBidChanged, dispatch });
+      function consumeNextItemQueueChanged() {
+        const changed = nextItemQueueChanged;
+
+        nextItemQueueChanged = false;
+        return changed;
+      }
+
+      return Object.freeze({
+        consumeLiveBidChanged,
+        consumeNextItemQueueChanged,
+        dispatch,
+      });
     }
 
     return Object.freeze({

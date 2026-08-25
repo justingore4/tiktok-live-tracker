@@ -22,7 +22,7 @@ test("creates exact versioned inventory-import messages", () => {
   assert.equal(message.command.spreadsheetId, "1Abc_def-Ghij234567890");
 });
 
-test("accepts only the three exact command shapes", () => {
+test("accepts only the four exact command shapes", () => {
   assert.deepEqual(
     protocol.validateCommand({
       type: protocol.COMMAND_TYPES.GET_IMPORT_STATUS,
@@ -39,6 +39,17 @@ test("accepts only the three exact command shapes", () => {
       type: "confirm_google_sheet_import",
       previewToken:
         "inventory-preview:12345678-1234-4123-8123-123456789abc",
+    },
+  );
+  assert.deepEqual(
+    protocol.validateCommand({
+      type:
+        protocol.COMMAND_TYPES.ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+      spreadsheetId: "1Abc_def-Ghij234567890",
+    }),
+    {
+      type: "add_active_stream_skus_from_google_sheet",
+      spreadsheetId: "1Abc_def-Ghij234567890",
     },
   );
 
@@ -59,6 +70,16 @@ test("accepts only the three exact command shapes", () => {
         spreadsheetId: "https://docs.google.com/spreadsheets/d/not-an-id",
       }),
     (error) => error.code === "INVALID_SPREADSHEET_ID",
+  );
+  assert.throws(
+    () =>
+      protocol.validateCommand({
+        type:
+          protocol.COMMAND_TYPES.ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET,
+        spreadsheetId: "1Abc_def-Ghij234567890",
+        streamId: "caller-controlled-stream",
+      }),
+    (error) => error.code === "INVALID_COMMAND",
   );
 });
 

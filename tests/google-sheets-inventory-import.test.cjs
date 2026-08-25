@@ -62,6 +62,21 @@ function createGridPayload(overrides = {}) {
   };
 }
 
+function appendGridRow(payload, overrides = {}) {
+  payload.sheets[0].data[0].rowData.push({
+    values: [
+      gridCell("stringValue", overrides.sku ?? "SKU-2"),
+      gridCell("stringValue", overrides.item ?? "Limited hoodie"),
+      gridCell("stringValue", overrides.style ?? "blue"),
+      gridCell("stringValue", overrides.size ?? "M"),
+      gridCell("numberValue", overrides.quantity ?? 2),
+      gridCell("numberValue", overrides.unitCost ?? 10),
+    ],
+  });
+
+  return payload;
+}
+
 function createResponse(payload, status = 200, headers = null) {
   return {
     status,
@@ -78,6 +93,8 @@ function createHarness(options = {}) {
   const removedTokens = [];
   const baselineCalls = [];
   const activeChecks = [];
+  const activeStreamChecks = [];
+  const extensionCalls = [];
   let remainingCreateFailures = options.createFailureCount ?? 0;
   const payloads = [...(options.payloads ?? [createGridPayload()])];
   const uuids = [
@@ -142,6 +159,19 @@ function createHarness(options = {}) {
         throw options.activeError;
       }
     },
+    async assertActiveStream(streamId) {
+      activeStreamChecks.push(streamId);
+
+      if (
+        options.activeStreamError &&
+        (
+          options.activeStreamErrorAt === undefined ||
+          options.activeStreamErrorAt === activeStreamChecks.length
+        )
+      ) {
+        throw options.activeStreamError;
+      }
+    },
     async createBaseline(command) {
       baselineCalls.push(JSON.parse(JSON.stringify(command)));
 
@@ -166,6 +196,55 @@ function createHarness(options = {}) {
         result: { status: "created", baselineId: command.baselineId },
       };
     },
+    async extendStreamBaseline(command) {
+      extensionCalls.push(JSON.parse(JSON.stringify(command)));
+
+      if (options.extendError) {
+        throw options.extendError;
+      }
+
+      if (typeof options.extendResponse === "function") {
+        return options.extendResponse(command, extensionCalls.length);
+      }
+
+      const addedSkus = command.inventory
+        .filter((entry) => entry.sku !== "SKU-1")
+        .map((entry) => entry.sku);
+
+      return {
+        state: {
+          version: 7,
+          activeInventoryBaselineId: command.baselineId,
+          inventoryBaselines: [
+            {
+              baselineId: command.expectedBaselineId,
+              sourceFingerprint: "fnv1a64:0000000000000000",
+              inventory: command.inventory.slice(0, 1),
+            },
+            {
+              baselineId: command.baselineId,
+              sourceFingerprint: command.sourceFingerprint,
+              inventory: JSON.parse(JSON.stringify(command.inventory)),
+            },
+          ],
+          streams: [
+            {
+              streamId: command.streamId,
+              inventoryBaselineId: command.baselineId,
+              activeBiddingVariationNumber: null,
+              attributedGmvDisplay: null,
+              variations: [],
+            },
+          ],
+        },
+        result: {
+          status: "extended",
+          baselineId: command.baselineId,
+          previousBaselineId: command.expectedBaselineId,
+          addedSkus,
+        },
+      };
+    },
     async getActiveBaseline() {
       return options.activeBaseline ?? null;
     },
@@ -183,8 +262,10 @@ function createHarness(options = {}) {
 
   return {
     activeChecks,
+    activeStreamChecks,
     authCalls,
     baselineCalls,
+    extensionCalls,
     fetchCalls,
     removedTokens,
     service,
@@ -724,4 +805,200 @@ test("reports readiness only for a persisted imported active baseline", async ()
       totalInventoryCostCents: 3750,
     },
   });
+});
+
+test("adds only a full validated Sheet snapshot to the active stream", async () => {
+  const payload = appendGridRow(createGridPayload());
+  const harness = createHarness({ payloads: [payload] });
+  const context = {
+    streamId: "local-stream:44444444-4444-4444-8444-444444444444",
+    expectedBaselineId:
+      "inventory-baseline:99999999-9999-4999-8999-999999999999",
+  };
+
+  const result = await harness.service.addActiveStreamSkusFromGoogleSheet(
+    SPREADSHEET_ID,
+    context,
+  );
+
+  assert.deepEqual(result, {
+    status: "extended",
+    baselineId:
+      "inventory-baseline:11111111-1111-4111-8111-111111111111",
+    sourceFingerprint: result.sourceFingerprint,
+    summary: {
+      rowCount: 2,
+      totalQuantityOnHandAtImport: 5,
+      totalInventoryCostCents: 5750,
+    },
+    addedSkus: ["SKU-2"],
+  });
+  assert.match(result.sourceFingerprint, /^fnv1a64:[0-9a-f]{16}$/);
+  assert.deepEqual(harness.activeStreamChecks, [
+    context.streamId,
+    context.streamId,
+  ]);
+  assert.deepEqual(harness.authCalls, [{ interactive: true }]);
+  assert.equal(harness.extensionCalls.length, 1);
+  assert.deepEqual(harness.extensionCalls[0], {
+    streamId: context.streamId,
+    expectedBaselineId: context.expectedBaselineId,
+    baselineId: result.baselineId,
+    sourceFingerprint: result.sourceFingerprint,
+    inventory: [
+      {
+        sku: "SKU-1",
+        item: "Stussy tee",
+        style: "black",
+        size: "L",
+        quantityOnHandAtImport: 3,
+        unitCostCents: 1250,
+      },
+      {
+        sku: "SKU-2",
+        item: "Limited hoodie",
+        style: "blue",
+        size: "M",
+        quantityOnHandAtImport: 2,
+        unitCostCents: 1000,
+      },
+    ],
+  });
+});
+
+test("does not mutate when the active stream changes during the Sheet read", async () => {
+  const activeStreamError = new Error("active stream changed");
+  const harness = createHarness({
+    payloads: [appendGridRow(createGridPayload())],
+    activeStreamError,
+    activeStreamErrorAt: 2,
+  });
+
+  await assert.rejects(
+    harness.service.addActiveStreamSkusFromGoogleSheet(
+      SPREADSHEET_ID,
+      {
+        streamId: "local-stream:44444444-4444-4444-8444-444444444444",
+        expectedBaselineId:
+          "inventory-baseline:99999999-9999-4999-8999-999999999999",
+      },
+    ),
+    activeStreamError,
+  );
+  assert.equal(harness.extensionCalls.length, 0);
+});
+
+test("returns invalid Sheet issues without attempting a live extension", async () => {
+  const harness = createHarness({
+    payloads: [createGridPayload({ skuFormula: true })],
+  });
+
+  const result = await harness.service.addActiveStreamSkusFromGoogleSheet(
+    SPREADSHEET_ID,
+    {
+      streamId: "local-stream:44444444-4444-4444-8444-444444444444",
+      expectedBaselineId:
+        "inventory-baseline:99999999-9999-4999-8999-999999999999",
+    },
+  );
+
+  assert.equal(result.status, "invalid");
+  assert.ok(result.issues.some((issue) => issue.code === "FORMULA_NOT_ALLOWED"));
+  assert.equal(harness.extensionCalls.length, 0);
+});
+
+test("accepts an order-independent already-current live Sheet", async () => {
+  const payload = appendGridRow(createGridPayload());
+  payload.sheets[0].data[0].rowData = [
+    payload.sheets[0].data[0].rowData[0],
+    payload.sheets[0].data[0].rowData[2],
+    payload.sheets[0].data[0].rowData[1],
+  ];
+  const expectedBaselineId =
+    "inventory-baseline:99999999-9999-4999-8999-999999999999";
+  const harness = createHarness({
+    payloads: [payload],
+    extendResponse(command) {
+      return {
+        state: {
+          version: 7,
+          activeInventoryBaselineId: expectedBaselineId,
+          inventoryBaselines: [{
+            baselineId: expectedBaselineId,
+            sourceFingerprint: command.sourceFingerprint,
+            inventory: [...command.inventory].reverse(),
+          }],
+          streams: [{
+            streamId: command.streamId,
+            inventoryBaselineId: expectedBaselineId,
+            activeBiddingVariationNumber: null,
+            attributedGmvDisplay: null,
+            variations: [],
+          }],
+        },
+        result: {
+          status: "already_current",
+          baselineId: expectedBaselineId,
+          previousBaselineId: expectedBaselineId,
+          addedSkus: [],
+        },
+      };
+    },
+  });
+
+  const result = await harness.service.addActiveStreamSkusFromGoogleSheet(
+    SPREADSHEET_ID,
+    {
+      streamId: "local-stream:44444444-4444-4444-8444-444444444444",
+      expectedBaselineId,
+    },
+  );
+
+  assert.equal(result.status, "already_current");
+  assert.equal(result.baselineId, expectedBaselineId);
+  assert.deepEqual(result.addedSkus, []);
+});
+
+test("rejects an already-current response with mismatched persisted provenance", async () => {
+  const expectedBaselineId =
+    "inventory-baseline:99999999-9999-4999-8999-999999999999";
+  const harness = createHarness({
+    extendResponse(command) {
+      return {
+        state: {
+          version: 7,
+          activeInventoryBaselineId: expectedBaselineId,
+          inventoryBaselines: [{
+            baselineId: expectedBaselineId,
+            sourceFingerprint: "fnv1a64:aaaaaaaaaaaaaaaa",
+            inventory: command.inventory,
+          }],
+          streams: [{
+            streamId: command.streamId,
+            inventoryBaselineId: expectedBaselineId,
+            activeBiddingVariationNumber: null,
+            attributedGmvDisplay: null,
+            variations: [],
+          }],
+        },
+        result: {
+          status: "already_current",
+          baselineId: expectedBaselineId,
+          previousBaselineId: expectedBaselineId,
+          addedSkus: [],
+        },
+      };
+    },
+  });
+
+  await assert.rejects(
+    harness.service.addActiveStreamSkusFromGoogleSheet(
+      SPREADSHEET_ID,
+      {
+        streamId: "local-stream:44444444-4444-4444-8444-444444444444",
+        expectedBaselineId,
+      },
+    ),
+    (error) => error.code === "ACTIVE_INVENTORY_UPDATE_FAILED",
+  );
 });

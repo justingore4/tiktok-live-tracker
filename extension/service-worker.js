@@ -14,6 +14,9 @@ importScripts(
   "shared/live-bid-protocol.js",
   "shared/live-bid-storage.js",
   "shared/live-bid-coordinator.js",
+  "shared/next-item-queue-protocol.js",
+  "shared/next-item-queue-storage.js",
+  "shared/next-item-queue-coordinator.js",
   "shared/capture-protocol.js",
   "shared/capture-integration.js",
   "shared/inventory-sheet-import.js",
@@ -42,6 +45,12 @@ const liveBidProtocol = globalThis.TikTokLiveTrackerLiveBidProtocol;
 const liveBidStorage = globalThis.TikTokLiveTrackerLiveBidStorage;
 const liveBidCoordinatorModule =
   globalThis.TikTokLiveTrackerLiveBidCoordinator;
+const nextItemQueueProtocol =
+  globalThis.TikTokLiveTrackerNextItemQueueProtocol;
+const nextItemQueueStorage =
+  globalThis.TikTokLiveTrackerNextItemQueueStorage;
+const nextItemQueueCoordinatorModule =
+  globalThis.TikTokLiveTrackerNextItemQueueCoordinator;
 const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
 const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
 const inventorySheetImport =
@@ -109,11 +118,27 @@ const liveBidCoordinator =
     streamSession,
     streamSessionCoordinator,
   });
+const nextItemQueueStore =
+  nextItemQueueStorage.createNextItemQueueStore({
+    storageArea: chrome.storage.session,
+  });
+const nextItemQueueCoordinator =
+  nextItemQueueCoordinatorModule.createNextItemQueueCoordinator({
+    activeStreamCoordinator,
+    protocol: nextItemQueueProtocol,
+    queueStore: nextItemQueueStore,
+    reconciliation,
+    reconciliationCoordinator,
+    stateCoordinator,
+    streamSession,
+    streamSessionCoordinator,
+  });
 const captureEventIntegration =
   captureIntegration.createCaptureIntegration({
     activeStreamCoordinator,
     captureProtocol,
     liveBidCoordinator,
+    nextItemQueueCoordinator,
     reconciliationCoordinator,
     stateCoordinator,
     streamSession,
@@ -122,6 +147,7 @@ const captureEventIntegration =
 const inventoryImportService =
   googleSheetsInventoryImport.createGoogleSheetsInventoryImportService({
     abortController: globalThis.AbortController,
+    assertActiveStream: requireActiveStreamForInventoryUpdate,
     assertNoActiveStream: requireNoActiveStreamForInventoryImport,
     clearTimeoutImpl: (...args) => globalThis.clearTimeout(...args),
     createBaseline: (command) =>
@@ -132,6 +158,13 @@ const inventoryImportService =
         ...command,
       }),
     createUuid: () => globalThis.crypto.randomUUID(),
+    extendStreamBaseline: (command) =>
+      stateCoordinator.dispatch({
+        type:
+          reconciliationCoordinator.COMMAND_TYPES
+            .EXTEND_STREAM_INVENTORY_BASELINE,
+        ...command,
+      }),
     fetchImpl: (...args) => globalThis.fetch(...args),
     getActiveBaseline: getActiveInventoryBaseline,
     identityApi: chrome.identity,
@@ -165,6 +198,9 @@ const captureStateChangedNotification = Object.freeze({
 const liveBidChangedNotification = Object.freeze(
   liveBidProtocol.createLiveBidChangedNotification(),
 );
+const nextItemQueueChangedNotification = Object.freeze(
+  nextItemQueueProtocol.createQueueChangedNotification(),
+);
 let messageTail = Promise.resolve();
 
 chrome.sidePanel
@@ -190,6 +226,9 @@ function failBoundary(protocol, code, message) {
     BoundaryError = inventoryImportProtocol.InventoryImportProtocolError;
   } else if (protocol === liveBidProtocol) {
     BoundaryError = liveBidCoordinatorModule.LiveBidCoordinatorError;
+  } else if (protocol === nextItemQueueProtocol) {
+    BoundaryError =
+      nextItemQueueCoordinatorModule.NextItemQueueCoordinatorError;
   }
 
   throw new BoundaryError(code, message);
@@ -248,6 +287,18 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === nextItemQueueProtocol.MESSAGE_CHANNEL) {
+    if (nextItemQueueProtocol.isQueueChangedNotification(message)) {
+      return null;
+    }
+
+    return {
+      coordinator: nextItemQueueCoordinator,
+      label: "next-item queue",
+      protocol: nextItemQueueProtocol,
+    };
+  }
+
   if (message.channel === inventoryImportProtocol.MESSAGE_CHANNEL) {
     return {
       coordinator: inventoryImportService,
@@ -268,6 +319,10 @@ function validateMessage(message, boundary) {
 
   if (protocol === liveBidProtocol) {
     return liveBidProtocol.validateLiveBidMessage(message);
+  }
+
+  if (protocol === nextItemQueueProtocol) {
+    return nextItemQueueProtocol.validateNextItemQueueMessage(message);
   }
 
   if (protocol === inventoryImportProtocol) {
@@ -412,13 +467,16 @@ function validateSender(sender, command, boundary) {
 
   if (
     boundary.protocol === reconciliationCoordinator &&
-    command.type ===
-      reconciliationCoordinator.COMMAND_TYPES.CREATE_INVENTORY_BASELINE
+    [
+      reconciliationCoordinator.COMMAND_TYPES.CREATE_INVENTORY_BASELINE,
+      reconciliationCoordinator.COMMAND_TYPES
+        .EXTEND_STREAM_INVENTORY_BASELINE,
+    ].includes(command.type)
   ) {
     failBoundary(
       boundary.protocol,
       "UNAUTHORIZED_MESSAGE_SENDER",
-      "Inventory baselines can be created only through a confirmed Sheet import.",
+      "Inventory baselines can be changed only through a validated Sheet import.",
     );
   }
 
@@ -487,6 +545,68 @@ async function requireNoActiveStreamForInventoryImport() {
       "End the active tracker stream before importing inventory.",
     );
   }
+}
+
+async function requireActiveStreamForInventoryUpdate(streamId) {
+  const { state } = await getStreamSessionResponse();
+
+  if (
+    state.activeSession === null ||
+    state.activeSession.streamId !== streamId
+  ) {
+    throw new googleSheetsInventoryImport.GoogleSheetsInventoryImportError(
+      "ACTIVE_STREAM_CHANGED",
+      "The tracker stream changed while the Inventory tab was being checked. Nothing was added.",
+    );
+  }
+}
+
+async function getActiveStreamInventoryUpdateContext() {
+  const { state: sessionState } = await getStreamSessionResponse();
+  const activeSession = sessionState.activeSession;
+
+  if (activeSession === null) {
+    throw new googleSheetsInventoryImport.GoogleSheetsInventoryImportError(
+      "NO_ACTIVE_STREAM",
+      "Start or resume a tracker stream before adding new SKUs.",
+    );
+  }
+
+  const pinnedResponse = await pinStreamToPreparedInventory(
+    activeSession.streamId,
+  );
+  const reconciliationState = hydrateReconciliationResponse(pinnedResponse);
+  const stream = reconciliationState.streams.find(
+    (candidate) => candidate.streamId === activeSession.streamId,
+  );
+
+  if (
+    !stream ||
+    stream.inventoryBaselineId !==
+      reconciliationState.activeInventoryBaselineId
+  ) {
+    throw new googleSheetsInventoryImport.GoogleSheetsInventoryImportError(
+      "ACTIVE_INVENTORY_UNAVAILABLE",
+      "The active stream inventory could not be verified. Nothing was added.",
+    );
+  }
+
+  return {
+    streamId: activeSession.streamId,
+    expectedBaselineId: stream.inventoryBaselineId,
+  };
+}
+
+async function addActiveStreamSkusFromGoogleSheet(spreadsheetId) {
+  const context = await getActiveStreamInventoryUpdateContext();
+  const result = await inventoryImportService
+    .addActiveStreamSkusFromGoogleSheet(spreadsheetId, context);
+
+  if (result?.status === "extended") {
+    notifyCaptureStateChanged();
+  }
+
+  return result;
 }
 
 async function getActiveInventoryBaseline() {
@@ -598,6 +718,14 @@ function createEndResponse(response, reportRecord, statusOverride = null) {
   };
 }
 
+async function clearNextItemQueueForEndedStream(streamId) {
+  const result = await nextItemQueueCoordinator.clearForStream(streamId);
+
+  if (result?.status === "cleared") {
+    notifyNextItemQueueChanged();
+  }
+}
+
 async function endStreamWithoutReport(command) {
   const { state: sessionState } = await getStreamSessionResponse();
 
@@ -615,6 +743,8 @@ async function endStreamWithoutReport(command) {
   }
 
   const response = await activeStreamCoordinator.dispatch(command);
+
+  await clearNextItemQueueForEndedStream(command.streamId);
   const status = response?.result?.status === "ended"
     ? "ended_without_report"
     : response?.result?.status;
@@ -632,6 +762,8 @@ async function endStreamWithReport(command) {
       command.streamId,
     );
     const response = await activeStreamCoordinator.dispatch(command);
+
+    await clearNextItemQueueForEndedStream(command.streamId);
     return createEndResponse(
       response,
       existing.reportId === null ? null : existing,
@@ -651,6 +783,8 @@ async function endStreamWithReport(command) {
     startedAt: activeSession.startedAt,
   });
   const response = await activeStreamCoordinator.dispatch(command);
+
+  await clearNextItemQueueForEndedStream(command.streamId);
   let finalizedReport = preparedReport;
 
   try {
@@ -841,6 +975,31 @@ async function dispatchReconciliationCommand(command) {
     } catch (_error) {
       // The canonical mapping was saved successfully. Retained live-auction
       // display state is best-effort and must not turn that save into a failure.
+    }
+  }
+
+  return response;
+}
+
+async function dispatchNextItemQueueCommand(command) {
+  const response = await nextItemQueueCoordinator.dispatch(command);
+
+  if (["mapped_current", "unmapped_current"].includes(response?.status)) {
+    try {
+      const stateResponse = await stateCoordinator.dispatch({
+        type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+      });
+      const synchronization = await liveBidCoordinator.synchronize({
+        streamId: command.expectedStreamId,
+        state: stateResponse?.state ?? null,
+      });
+
+      if (synchronization?.status === "accepted") {
+        notifyLiveBidChanged();
+      }
+    } catch (_error) {
+      // The canonical current-variation mapping change was saved successfully.
+      // Retained live-auction display state is best-effort only.
     }
   }
 
@@ -1123,6 +1282,10 @@ function dispatchBoundaryCommand(boundary, command) {
     return dispatchReconciliationCommand(command);
   }
 
+  if (boundary.protocol === nextItemQueueProtocol) {
+    return dispatchNextItemQueueCommand(command);
+  }
+
   if (boundary.protocol === inventoryImportProtocol) {
     switch (command.type) {
       case inventoryImportProtocol.COMMAND_TYPES.GET_IMPORT_STATUS:
@@ -1135,6 +1298,9 @@ function dispatchBoundaryCommand(boundary, command) {
         return inventoryImportService.confirmGoogleSheetImport(
           command.previewToken,
         );
+      case inventoryImportProtocol.COMMAND_TYPES
+        .ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET:
+        return addActiveStreamSkusFromGoogleSheet(command.spreadsheetId);
       default:
         failBoundary(
           inventoryImportProtocol,
@@ -1164,6 +1330,10 @@ function serializeError(error, boundary) {
     error instanceof liveBidProtocol.LiveBidProtocolError ||
     error instanceof liveBidStorage.LiveBidStorageError ||
     error instanceof liveBidCoordinatorModule.LiveBidCoordinatorError ||
+    error instanceof nextItemQueueProtocol.NextItemQueueProtocolError ||
+    error instanceof nextItemQueueStorage.NextItemQueueStorageError ||
+    error instanceof
+      nextItemQueueCoordinatorModule.NextItemQueueCoordinatorError ||
     error instanceof inventoryImportProtocol.InventoryImportProtocolError ||
     error instanceof
       googleSheetsInventoryImport.GoogleSheetsInventoryImportError;
@@ -1209,6 +1379,20 @@ function notifyLiveBidChanged() {
   }
 }
 
+function notifyNextItemQueueChanged() {
+  try {
+    const delivery = chrome.runtime.sendMessage(
+      nextItemQueueChangedNotification,
+    );
+
+    if (delivery && typeof delivery.catch === "function") {
+      delivery.catch(() => undefined);
+    }
+  } catch {
+    // Session persistence already succeeded; delivery is best-effort.
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const boundary = getMessageBoundary(message);
 
@@ -1244,6 +1428,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ) {
         const liveAuctionChanged =
           captureEventIntegration.consumeLiveBidChanged();
+        const nextItemQueueChanged =
+          captureEventIntegration.consumeNextItemQueueChanged();
 
         if (
           message.event?.type ===
@@ -1252,13 +1438,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (liveAuctionChanged) {
             notifyLiveBidChanged();
           }
+
+          if (nextItemQueueChanged) {
+            notifyNextItemQueueChanged();
+          }
         } else {
           notifyCaptureStateChanged();
 
           if (liveAuctionChanged) {
             notifyLiveBidChanged();
           }
+
+          if (nextItemQueueChanged) {
+            notifyNextItemQueueChanged();
+          }
         }
+      }
+
+      if (
+        boundary.protocol === nextItemQueueProtocol &&
+        isRecord(data) &&
+        ["cleared", "queued"].includes(data.status)
+      ) {
+        notifyNextItemQueueChanged();
+      }
+
+      if (
+        boundary.protocol === nextItemQueueProtocol &&
+        isRecord(data) &&
+        ["mapped_current", "unmapped_current"].includes(data.status)
+      ) {
+        notifyCaptureStateChanged();
       }
 
       sendResponse({ ok: true, data });

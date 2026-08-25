@@ -146,96 +146,6 @@
           </div>
         </section>
 
-        <section class="report-section" aria-labelledby="sku-profit-title">
-          <details id="sku-profit-disclosure">
-            <summary
-              id="sku-profit-toggle"
-              class="sku-profit-toggle"
-              aria-controls="sku-profit-content"
-            >
-              <h2 id="sku-profit-title" class="sku-profit-summary-heading">
-                <span class="sku-profit-title-copy">
-                  <span class="eyebrow">Completed sales by SKU</span>
-                  <span class="sku-profit-title">Profit/Loss by SKU</span>
-                </span>
-                <span id="sku-profit-count" class="section-count">0 sold SKUs</span>
-              </h2>
-            </summary>
-            <div id="sku-profit-content" class="sku-profit-content">
-              <div
-                class="table-scroll screen-scroll"
-                tabindex="0"
-                aria-labelledby="sku-profit-title"
-              >
-                <table class="data-table sku-profit-table">
-                  <caption>
-                    Gross profit or loss for mapped SKUs with completed sales during this stream, sorted from highest profit to largest loss.
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">SKU</th>
-                      <th scope="col">Product</th>
-                      <th scope="col" class="number-cell">Units sold</th>
-                      <th scope="col" class="number-cell">Gross profit/loss</th>
-                    </tr>
-                  </thead>
-                  <tbody id="sku-profit-rows"></tbody>
-                </table>
-              </div>
-              <p id="sku-profit-empty" class="empty-copy" hidden>
-                No mapped completed sales are available for SKU profit/loss.
-              </p>
-            </div>
-          </details>
-        </section>
-
-        <section class="report-section" aria-labelledby="sales-title">
-          <details id="completed-sales-disclosure">
-            <summary
-              id="completed-sales-toggle"
-              class="completed-sales-toggle"
-              aria-controls="completed-sales-content"
-            >
-              <h2 id="sales-title" class="completed-sales-summary-heading">
-                <span class="completed-sales-title-copy">
-                  <span class="eyebrow">Stream variations</span>
-                  <span class="completed-sales-title">Item variations this stream</span>
-                </span>
-                <span id="sales-count" class="section-count">0 variations</span>
-              </h2>
-            </summary>
-            <div id="completed-sales-content" class="completed-sales-content">
-              <div
-                class="table-scroll screen-scroll"
-                tabindex="0"
-                aria-labelledby="sales-title"
-              >
-                <table class="data-table sales-table">
-                  <caption>
-                    Completed and canceled TikTok item variations captured during this tracker stream. Canceled item mappings are reference-only and do not affect inventory or metrics.
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Variation</th>
-                      <th scope="col">Status</th>
-                      <th scope="col">SKU</th>
-                      <th scope="col">Item</th>
-                      <th scope="col">Style</th>
-                      <th scope="col">Size</th>
-                      <th scope="col" class="number-cell">Sold price</th>
-                      <th scope="col" class="number-cell">Unit cost</th>
-                      <th scope="col" class="number-cell">Gross profit</th>
-                    </tr>
-                  </thead>
-                  <tbody id="completed-sales-rows"></tbody>
-                </table>
-              </div>
-              <p id="sales-empty" class="empty-copy" hidden>No completed or canceled item variations were captured for this stream.</p>
-              <p id="variation-details-note" class="empty-copy" hidden></p>
-            </div>
-          </details>
-        </section>
-
         <section class="report-section" aria-labelledby="performance-table-title">
           <div class="section-heading table-heading">
             <div>
@@ -256,11 +166,12 @@
                   <th scope="col">Size</th>
                   <th scope="col" class="number-cell">Units sold</th>
                   <th scope="col" class="number-cell">Unit cost</th>
+                  <th scope="col" class="number-cell">Avg. sale price</th>
                   <th scope="col" class="number-cell">Revenue</th>
                   <th scope="col" class="number-cell">COGS</th>
-                  <th scope="col" class="number-cell">Gross profit</th>
-                  <th scope="col" class="number-cell">Gross margin</th>
                   <th scope="col" class="number-cell">Sell-through</th>
+                  <th scope="col" class="number-cell">Gross margin</th>
+                  <th scope="col" class="number-cell">Gross profit/loss</th>
                 </tr>
               </thead>
               <tbody id="performance-rows"></tbody>
@@ -339,6 +250,53 @@
               <tbody id="inventory-rows"></tbody>
             </table>
           </div>
+        </section>
+
+        <section class="report-section" aria-labelledby="sales-title">
+          <details id="completed-sales-disclosure">
+            <summary
+              id="completed-sales-toggle"
+              class="completed-sales-toggle"
+              aria-controls="completed-sales-content"
+            >
+              <h2 id="sales-title" class="completed-sales-summary-heading">
+                <span class="completed-sales-title-copy">
+                  <span class="eyebrow">Stream variations</span>
+                  <span class="completed-sales-title">Item variations this stream</span>
+                </span>
+                <span id="sales-count" class="section-count">0 variations</span>
+              </h2>
+            </summary>
+            <div id="completed-sales-content" class="completed-sales-content">
+              <div
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="sales-title"
+              >
+                <table class="data-table sales-table">
+                  <caption>
+                    Completed and canceled TikTok item variations captured during this tracker stream. Canceled item mappings are reference-only and do not affect inventory or metrics.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Variation</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Item</th>
+                      <th scope="col">Style</th>
+                      <th scope="col">Size</th>
+                      <th scope="col" class="number-cell">Sold price</th>
+                      <th scope="col" class="number-cell">Unit cost</th>
+                      <th scope="col" class="number-cell">Gross profit</th>
+                    </tr>
+                  </thead>
+                  <tbody id="completed-sales-rows"></tbody>
+                </table>
+              </div>
+              <p id="sales-empty" class="empty-copy" hidden>No completed or canceled item variations were captured for this stream.</p>
+              <p id="variation-details-note" class="empty-copy" hidden></p>
+            </div>
+          </details>
         </section>
 
         <section

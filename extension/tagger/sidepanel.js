@@ -53,12 +53,16 @@
     globalThis.TikTokLiveTrackerStreamReportProtocol;
   const liveBidProtocol =
     globalThis.TikTokLiveTrackerLiveBidProtocol;
+  const nextItemQueueProtocol =
+    globalThis.TikTokLiveTrackerNextItemQueueProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
   const streamReportClientModule =
     globalThis.TikTokLiveTrackerStreamReportClient;
   const liveBidClientModule =
     globalThis.TikTokLiveTrackerLiveBidClient;
+  const nextItemQueueClientModule =
+    globalThis.TikTokLiveTrackerNextItemQueueClient;
   const mappingWorkflow = globalThis.TikTokLiveTrackerMappingWorkflow;
   const liveAuctionViewModel =
     globalThis.TikTokLiveTrackerLiveAuctionViewModel;
@@ -315,6 +319,27 @@
     "#inventory-selection-note",
   );
   const resultCount = document.querySelector("#result-count");
+  const addActiveStreamSkusButton = document.querySelector(
+    "#add-active-stream-skus",
+  );
+  const activeStreamInventoryUpdateForm = document.querySelector(
+    "#active-stream-inventory-update-form",
+  );
+  const activeStreamInventorySheetReference = document.querySelector(
+    "#active-stream-inventory-sheet-reference",
+  );
+  const activeStreamInventoryUpdateError = document.querySelector(
+    "#active-stream-inventory-update-error",
+  );
+  const cancelActiveStreamInventoryUpdateButton = document.querySelector(
+    "#cancel-active-stream-inventory-update",
+  );
+  const confirmActiveStreamInventoryUpdateButton = document.querySelector(
+    "#confirm-active-stream-inventory-update",
+  );
+  const activeStreamInventoryUpdateFeedback = document.querySelector(
+    "#active-stream-inventory-update-feedback",
+  );
   const emptyState = document.querySelector("#empty-state");
   const emptyQuery = document.querySelector("#empty-query");
   const cardTemplate = document.querySelector("#inventory-card-template");
@@ -390,6 +415,10 @@
     !streamReportClientModule ||
     !liveBidProtocol ||
     !liveBidClientModule ||
+    !nextItemQueueProtocol ||
+    typeof nextItemQueueProtocol.isQueueChangedNotification !== "function" ||
+    !nextItemQueueClientModule ||
+    typeof nextItemQueueClientModule.createNextItemQueueClient !== "function" ||
     !liveAuctionViewModel ||
     typeof liveAuctionViewModel.createDisplay !== "function" ||
     !variationSelectorViewModel ||
@@ -443,6 +472,11 @@
     runtime: chrome.runtime,
     protocol: liveBidProtocol,
   });
+  const nextItemQueueClient =
+    nextItemQueueClientModule.createNextItemQueueClient({
+      runtime: chrome.runtime,
+      protocol: nextItemQueueProtocol,
+    });
   const variationSelectorLock =
     variationSelectorLockModule.createVariationSelectorLock({
       apply: renderVariationSelectorOptions,
@@ -476,9 +510,15 @@
   let liveBidRefreshDirty = false;
   let liveBidRefreshScheduled = false;
   let liveBidRefreshInFlight = false;
+  let queuedNextItemSku = null;
+  let nextItemQueueRefreshGeneration = 0;
+  let nextItemQueueMutationGeneration = 0;
+  let nextItemQueueMutationBusy = false;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
+  let activeStreamInventoryUpdateOpen = false;
+  let activeStreamInventoryUpdateBusy = false;
   let streamReportSummaries = [];
   let archivedReportSummaries = [];
   let streamReportsLoading = false;
@@ -569,6 +609,73 @@
     return view?.variations?.find(
       (variation) => variation.variationNumber === variationNumber,
     ) ?? null;
+  }
+
+  function getCurrentVariationMappedSku(view) {
+    if (
+      !view ||
+      !Number.isSafeInteger(view.currentVariationNumber) ||
+      view.currentVariationNumber < 1
+    ) {
+      return null;
+    }
+
+    if (
+      view.selectedVariationNumber === view.currentVariationNumber &&
+      typeof view.auction?.sku === "string" &&
+      view.auction.sku.trim() !== ""
+    ) {
+      return view.auction.sku;
+    }
+
+    if (
+      view.activeAuctionMapping?.variationNumber ===
+        view.currentVariationNumber &&
+      typeof view.activeAuctionMapping.sku === "string" &&
+      view.activeAuctionMapping.sku.trim() !== ""
+    ) {
+      return view.activeAuctionMapping.sku;
+    }
+
+    const currentVariation = findVariationOption(
+      view,
+      view.currentVariationNumber,
+    );
+
+    if (
+      currentVariation?.recorded === true &&
+      typeof currentVariation.sku === "string" &&
+      currentVariation.sku.trim() !== ""
+    ) {
+      return currentVariation.sku;
+    }
+
+    return null;
+  }
+
+  function isCurrentVariationMapped(view) {
+    if (
+      !view ||
+      !Number.isSafeInteger(view.currentVariationNumber) ||
+      view.currentVariationNumber < 1
+    ) {
+      return false;
+    }
+
+    if (getCurrentVariationMappedSku(view) !== null) {
+      return true;
+    }
+
+    const currentVariation = findVariationOption(
+      view,
+      view.currentVariationNumber,
+    );
+
+    return (
+      currentVariation?.recorded === true &&
+      currentVariation.item !== null &&
+      currentVariation.item !== undefined
+    );
   }
 
   function getSafeObservedPaymentStatus(value) {
@@ -833,7 +940,66 @@
     renderLiveAuction(null);
   }
 
+  function resetNextItemQueueDisplay() {
+    nextItemQueueRefreshGeneration += 1;
+    nextItemQueueMutationGeneration += 1;
+    nextItemQueueMutationBusy = false;
+    queuedNextItemSku = null;
+  }
+
+  function scheduleNextItemQueueRefresh() {
+    if (
+      !streamSnapshot.resumed ||
+      streamSnapshot.activeSession === null ||
+      persistentController === null ||
+      mountedStreamId === null
+    ) {
+      return;
+    }
+
+    const requestGeneration = ++nextItemQueueRefreshGeneration;
+    const requestStreamId = mountedStreamId;
+
+    Promise.resolve()
+      .then(() => nextItemQueueClient.getQueue())
+      .then((response) => {
+        if (
+          requestGeneration !== nextItemQueueRefreshGeneration ||
+          requestStreamId !== mountedStreamId
+        ) {
+          return;
+        }
+
+        queuedNextItemSku = response.queuedSku;
+        const view = getActiveView();
+
+        if (view) {
+          renderInventory(view, getFocusedInventorySku());
+        }
+      })
+      .catch((error) => {
+        if (
+          requestGeneration === nextItemQueueRefreshGeneration &&
+          requestStreamId === mountedStreamId
+        ) {
+          console.error(
+            "[TikTok Live Tracker] The next-item queue could not be refreshed.",
+            error,
+          );
+        }
+      });
+  }
+
   function handleCaptureStateChanged(message, sender) {
+    if (
+      nextItemQueueProtocol.isQueueChangedNotification(message) &&
+      sender?.id === chrome.runtime.id &&
+      sender.tab === undefined
+    ) {
+      scheduleNextItemQueueRefresh();
+      return false;
+    }
+
     if (isLiveBidChangedNotification(message, sender)) {
       scheduleLiveBidRefresh();
       return false;
@@ -939,6 +1105,7 @@
   function unmountPersistentController() {
     clearCaptureRefreshTimer();
     resetLiveBidTracking();
+    resetNextItemQueueDisplay();
     resetVariationSelector();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
@@ -951,6 +1118,10 @@
     captureRefreshFocusSku = null;
     captureRefreshHadVariationFocus = false;
     lastRenderedSavedVariations = new Map();
+    activeStreamInventoryUpdateOpen = false;
+    activeStreamInventorySheetReference.value = "";
+    clearActiveStreamInventoryUpdateError();
+    clearActiveStreamInventoryUpdateFeedback();
     savedSessionError.hidden = true;
     setTrackerWorkspaceVisible(false);
     trackerWorkspace.toggleAttribute("inert", true);
@@ -986,13 +1157,19 @@
         );
       });
     scheduleLiveBidRefresh();
+    scheduleNextItemQueueRefresh();
   }
 
   function setWorkspaceBusy(busy) {
     const streamUnavailable =
       !streamSnapshot.resumed || streamSnapshot.activeSession === null;
+    const activeInventoryUpdateRefresh =
+      activeStreamInventoryUpdateBusy &&
+      snapshotIsBackgroundRefresh(savedSnapshot);
     const shouldBeBusy =
-      Boolean(busy) || streamSnapshot.busy || streamUnavailable;
+      (Boolean(busy) && !activeInventoryUpdateRefresh) ||
+      streamSnapshot.busy ||
+      streamUnavailable;
     const keepVariationSelectorInteractive =
       variationSelectorLock.isLocked() &&
       snapshotIsBackgroundRefresh(savedSnapshot) &&
@@ -1066,6 +1243,86 @@
     );
   }
 
+  function clearActiveStreamInventoryUpdateError() {
+    activeStreamInventorySheetReference.removeAttribute("aria-invalid");
+    activeStreamInventoryUpdateError.hidden = true;
+    activeStreamInventoryUpdateError.textContent = "";
+  }
+
+  function clearActiveStreamInventoryUpdateFeedback() {
+    activeStreamInventoryUpdateFeedback.hidden = true;
+    activeStreamInventoryUpdateFeedback.textContent = "";
+  }
+
+  function setActiveStreamInventoryUpdateError(message, options = {}) {
+    activeStreamInventorySheetReference.toggleAttribute(
+      "aria-invalid",
+      options.markReference === true,
+    );
+    const renderedMessage = options.outcomeUncertain === true
+      ? `The inventory update could not be confirmed. ${message} Refresh or retry; retrying is safe.`
+      : `No SKUs were added. ${message}`;
+
+    activeStreamInventoryUpdateError.textContent = renderedMessage;
+    activeStreamInventoryUpdateError.hidden = false;
+    return renderedMessage;
+  }
+
+  function renderActiveStreamInventoryUpdateControls() {
+    const available =
+      streamSnapshot.activeSession !== null &&
+      streamSnapshot.resumed === true &&
+      persistentController !== null &&
+      savedSnapshot?.view !== null;
+
+    if (!available) {
+      activeStreamInventoryUpdateOpen = false;
+    }
+
+    addActiveStreamSkusButton.hidden = !available;
+    addActiveStreamSkusButton.disabled =
+      activeStreamInventoryUpdateBusy || !available;
+    addActiveStreamSkusButton.setAttribute(
+      "aria-expanded",
+      String(activeStreamInventoryUpdateOpen && available),
+    );
+    activeStreamInventoryUpdateForm.hidden =
+      !activeStreamInventoryUpdateOpen || !available;
+    activeStreamInventoryUpdateForm.setAttribute(
+      "aria-busy",
+      String(activeStreamInventoryUpdateBusy),
+    );
+    activeStreamInventorySheetReference.disabled =
+      activeStreamInventoryUpdateBusy;
+    cancelActiveStreamInventoryUpdateButton.disabled =
+      activeStreamInventoryUpdateBusy;
+    confirmActiveStreamInventoryUpdateButton.disabled =
+      activeStreamInventoryUpdateBusy;
+    confirmActiveStreamInventoryUpdateButton.textContent =
+      activeStreamInventoryUpdateBusy ? "Checking Sheet..." : "Check and add";
+  }
+
+  function closeActiveStreamInventoryUpdate(options = {}) {
+    const { clearReference = false, restoreFocus = false } = options;
+
+    activeStreamInventoryUpdateOpen = false;
+    clearActiveStreamInventoryUpdateError();
+
+    if (clearReference) {
+      activeStreamInventorySheetReference.value = "";
+    }
+
+    renderActiveStreamInventoryUpdateControls();
+
+    if (
+      restoreFocus &&
+      !addActiveStreamSkusButton.hidden &&
+      !addActiveStreamSkusButton.disabled
+    ) {
+      addActiveStreamSkusButton.focus();
+    }
+  }
+
   function updateSessionControls() {
     inventoryImportPanel.hidden =
       streamSnapshot.activeSession !== null ||
@@ -1088,6 +1345,7 @@
         : savedSnapshot?.phase ?? "idle";
 
     setFooterStatus(footerText, footerPhase);
+    renderActiveStreamInventoryUpdateControls();
     renderStreamReportsPanel();
   }
 
@@ -1728,12 +1986,30 @@
     const stock = viewModel.getStockDisplay(entry);
     const stockAriaLabel = stock.ariaLabel ?? stock.label;
     const selected = entry.selected;
+    const queued = entry.sku === queuedNextItemSku;
     const itemName = formatItemName(entry);
     const canTagSelectedVariation = hasSelectedRecordedVariation(view);
+    const canUseCurrentContextAction =
+      canTagSelectedVariation &&
+      entry.selectionAllowed &&
+      Number.isSafeInteger(view.currentVariationNumber) &&
+      view.currentVariationNumber > 0;
+    const reviewingHistory =
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber;
+    const currentMappedSku = getCurrentVariationMappedSku(view);
+    const mappedToCurrent =
+      reviewingHistory && entry.sku === currentMappedSku;
+    const currentVariationMapped = isCurrentVariationMapped(view);
+    const historyPreservedDescription = reviewingHistory
+      ? ` Variation ${view.selectedVariationNumber} will remain open.`
+      : "";
 
     button.dataset.sku = entry.sku;
     button.dataset.stockState = stock.state;
     button.dataset.selectionReason = entry.selectionReason;
+    button.dataset.queued = String(queued);
+    button.dataset.currentMapped = String(mappedToCurrent);
     button.disabled = !entry.selectionAllowed || !canTagSelectedVariation;
     button.setAttribute("aria-pressed", String(selected));
 
@@ -1775,6 +2051,47 @@
       button.setAttribute(
         "aria-label",
         `Map variation ${variationNumber} to ${itemName}, size ${entry.size}, ${stockAriaLabel}.`,
+      );
+    }
+
+    if (reviewingHistory && canUseCurrentContextAction) {
+      const currentMappingDescription = mappedToCurrent
+        ? ` This item is also selected for current variation ${view.currentVariationNumber}. Right-click to unmap it from current variation ${view.currentVariationNumber}.`
+        : currentVariationMapped
+          ? ` Right-click to remap current variation ${view.currentVariationNumber} to this item.`
+          : ` Right-click to map this item to current variation ${view.currentVariationNumber}.`;
+      const queuedDescription = queued
+        ? " Queued for the next variation. Historical right-click does not change that queue."
+        : "";
+
+      button.setAttribute(
+        "aria-label",
+        `${button.getAttribute("aria-label")}${queuedDescription}${currentMappingDescription}${historyPreservedDescription}`,
+      );
+    } else if (queued) {
+      let contextAction = "";
+
+      if (canUseCurrentContextAction && currentVariationMapped) {
+        contextAction =
+          ` Right-click to remove it from the next variation queue.${historyPreservedDescription}`;
+      } else if (canUseCurrentContextAction) {
+        contextAction =
+          ` Right-click to select it for current variation ${view.currentVariationNumber}; it will remain queued for the next variation.${historyPreservedDescription}`;
+      }
+
+      button.setAttribute(
+        "aria-label",
+        `${button.getAttribute("aria-label")} Queued for the next variation.${contextAction}`,
+      );
+    } else if (canUseCurrentContextAction && currentVariationMapped) {
+      button.setAttribute(
+        "aria-label",
+        `${button.getAttribute("aria-label")} Right-click to queue this item for the next variation.${historyPreservedDescription}`,
+      );
+    } else if (canUseCurrentContextAction) {
+      button.setAttribute(
+        "aria-label",
+        `${button.getAttribute("aria-label")} Right-click to select this item for current variation ${view.currentVariationNumber}.${historyPreservedDescription}`,
       );
     }
 
@@ -3377,6 +3694,165 @@
       `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
   });
 
+  function saveOrdinaryInventorySelection(button, view) {
+    const selected = button.getAttribute("aria-pressed") === "true";
+
+    runSavedMutation(
+      () => selected
+        ? persistentController.unmapSelectedVariation()
+        : persistentController.mapSelectedSku(button.dataset.sku),
+      {
+        type: selected ? "unmap_variation" : "map_variation",
+        variationNumber: view.selectedVariationNumber,
+        focusSku: button.dataset.sku,
+      },
+    );
+  }
+
+  async function toggleNextItemQueue(button, view) {
+    if (nextItemQueueMutationBusy) {
+      mappingAnnouncement.textContent =
+        "Wait for the current next-item queue change to finish.";
+      return;
+    }
+
+    const expectedStreamId = mountedStreamId;
+    const expectedVariationNumber = view.currentVariationNumber;
+    const sku = button.dataset.sku;
+    const mutationGeneration = ++nextItemQueueMutationGeneration;
+
+    nextItemQueueMutationBusy = true;
+
+    try {
+      const response = await nextItemQueueClient.toggleQueue({
+        expectedStreamId,
+        expectedVariationNumber,
+        sku,
+      });
+
+      if (
+        mutationGeneration !== nextItemQueueMutationGeneration ||
+        expectedStreamId !== mountedStreamId
+      ) {
+        return;
+      }
+
+      const latestView = getActiveView();
+      const stillOnExpectedVariation =
+        latestView?.currentVariationNumber === expectedVariationNumber;
+
+      if (stillOnExpectedVariation) {
+        queuedNextItemSku = response.queuedSku;
+        renderInventory(latestView, getFocusedInventorySku());
+      }
+
+      if (response.status === "mapped_current") {
+        const mappedEntry =
+          latestView?.inventory.find((entry) => entry.sku === sku) ??
+          view.inventory.find((entry) => entry.sku === sku);
+        const mappedName = mappedEntry
+          ? `${formatItemName(mappedEntry)}, size ${mappedEntry.size}`
+          : sku;
+        const preservedHistory = latestView?.isReviewingHistory
+          ? ` Variation #${latestView.selectedVariationNumber} remains open.`
+          : "";
+
+        mappingAnnouncement.textContent =
+          `Variation #${expectedVariationNumber} mapped to ${mappedName}.${preservedHistory}`;
+        scheduleCaptureRefresh();
+      } else if (response.queuedSku === null) {
+        mappingAnnouncement.textContent =
+          "The next-item queue was cleared. The current variation mapping was not changed.";
+      } else {
+        const queuedEntry = latestView?.inventory.find(
+          (entry) => entry.sku === response.queuedSku,
+        );
+        const queuedName = queuedEntry
+          ? `${formatItemName(queuedEntry)}, size ${queuedEntry.size}`
+          : response.queuedSku;
+
+        mappingAnnouncement.textContent =
+          `${queuedName} is queued for the next variation. The current variation mapping was not changed.`;
+      }
+
+      scheduleNextItemQueueRefresh();
+    } catch (error) {
+      if (
+        mutationGeneration === nextItemQueueMutationGeneration &&
+        expectedStreamId === mountedStreamId
+      ) {
+        mappingAnnouncement.textContent =
+          error?.message ?? "The next item could not be queued.";
+        scheduleNextItemQueueRefresh();
+      }
+    } finally {
+      if (mutationGeneration === nextItemQueueMutationGeneration) {
+        nextItemQueueMutationBusy = false;
+      }
+    }
+  }
+
+  async function mapCurrentVariationFromHistory(button, view) {
+    if (nextItemQueueMutationBusy) {
+      mappingAnnouncement.textContent =
+        "Wait for the current inventory action to finish.";
+      return;
+    }
+
+    const expectedStreamId = mountedStreamId;
+    const expectedVariationNumber = view.currentVariationNumber;
+    const historicalVariationNumber = view.selectedVariationNumber;
+    const sku = button.dataset.sku;
+    const mutationGeneration = ++nextItemQueueMutationGeneration;
+
+    nextItemQueueMutationBusy = true;
+
+    try {
+      const response = await nextItemQueueClient.mapCurrent({
+        expectedStreamId,
+        expectedVariationNumber,
+        sku,
+      });
+
+      if (
+        mutationGeneration !== nextItemQueueMutationGeneration ||
+        expectedStreamId !== mountedStreamId
+      ) {
+        return;
+      }
+
+      const latestView = getActiveView();
+      const mappedEntry =
+        latestView?.inventory.find((entry) => entry.sku === response.sku) ??
+        view.inventory.find((entry) => entry.sku === response.sku);
+      const mappedName = mappedEntry
+        ? `${formatItemName(mappedEntry)}, size ${mappedEntry.size}`
+        : response.sku;
+
+      if (response.status === "unmapped_current") {
+        mappingAnnouncement.textContent =
+          `${mappedName} was unselected from current variation #${expectedVariationNumber}. Variation #${historicalVariationNumber} remains open.`;
+      } else {
+        mappingAnnouncement.textContent =
+          `${mappedName} was mapped to current variation #${expectedVariationNumber}. Variation #${historicalVariationNumber} remains open.`;
+      }
+
+      scheduleCaptureRefresh();
+    } catch (error) {
+      if (
+        mutationGeneration === nextItemQueueMutationGeneration &&
+        expectedStreamId === mountedStreamId
+      ) {
+        mappingAnnouncement.textContent =
+          error?.message ?? "The current variation could not be mapped.";
+      }
+    } finally {
+      if (mutationGeneration === nextItemQueueMutationGeneration) {
+        nextItemQueueMutationBusy = false;
+      }
+    }
+  }
+
   inventoryGrid.addEventListener("click", (event) => {
     const button = event.target.closest?.("button[data-sku]");
 
@@ -3392,18 +3868,39 @@
       return;
     }
 
-    const selected = button.getAttribute("aria-pressed") === "true";
+    saveOrdinaryInventorySelection(button, view);
+  });
 
-    runSavedMutation(
-      () => selected
-        ? persistentController.unmapSelectedVariation()
-        : persistentController.mapSelectedSku(button.dataset.sku),
-      {
-        type: selected ? "unmap_variation" : "map_variation",
-        variationNumber: view.selectedVariationNumber,
-        focusSku: button.dataset.sku,
-      },
-    );
+  inventoryGrid.addEventListener("contextmenu", (event) => {
+    const button = event.target.closest?.("button[data-sku]");
+
+    if (!button || !inventoryGrid.contains(button)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    if (button.disabled) {
+      return;
+    }
+
+    const view = getActiveView();
+
+    if (!hasSelectedRecordedVariation(view)) {
+      mappingAnnouncement.textContent =
+        "Wait for a captured live auction variation before selecting inventory.";
+      return;
+    }
+
+    if (
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber
+    ) {
+      void mapCurrentVariationFromHistory(button, view);
+      return;
+    }
+
+    void toggleNextItemQueue(button, view);
   });
 
   searchInput.addEventListener("input", () => renderAll());
@@ -3419,6 +3916,176 @@
     searchInput.value = "";
     searchInput.focus();
     renderAll();
+  });
+
+  addActiveStreamSkusButton.addEventListener("click", () => {
+    if (activeStreamInventoryUpdateBusy || addActiveStreamSkusButton.hidden) {
+      return;
+    }
+
+    if (activeStreamInventoryUpdateOpen) {
+      closeActiveStreamInventoryUpdate({
+        clearReference: true,
+        restoreFocus: true,
+      });
+      return;
+    }
+
+    activeStreamInventoryUpdateOpen = true;
+    clearActiveStreamInventoryUpdateError();
+    clearActiveStreamInventoryUpdateFeedback();
+    renderActiveStreamInventoryUpdateControls();
+    activeStreamInventorySheetReference.focus();
+  });
+
+  cancelActiveStreamInventoryUpdateButton.addEventListener("click", () => {
+    if (activeStreamInventoryUpdateBusy) {
+      return;
+    }
+
+    closeActiveStreamInventoryUpdate({
+      clearReference: true,
+      restoreFocus: true,
+    });
+  });
+
+  activeStreamInventorySheetReference.addEventListener("input", () => {
+    clearActiveStreamInventoryUpdateError();
+  });
+
+  activeStreamInventoryUpdateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    if (activeStreamInventoryUpdateBusy) {
+      return;
+    }
+
+    const reference = activeStreamInventorySheetReference.value.trim();
+    const activeSession = streamSnapshot.activeSession;
+    const mountedController = persistentController;
+
+    if (reference === "") {
+      setActiveStreamInventoryUpdateError(
+        "Paste the same Google Sheet link or ID used for this stream.",
+        { markReference: true },
+      );
+      activeStreamInventorySheetReference.focus();
+      return;
+    }
+
+    if (
+      activeSession === null ||
+      streamSnapshot.resumed !== true ||
+      mountedController === null
+    ) {
+      setActiveStreamInventoryUpdateError(
+        "Start or resume the tracker stream before checking for new SKUs.",
+      );
+      return;
+    }
+
+    activeStreamInventoryUpdateBusy = true;
+    clearActiveStreamInventoryUpdateError();
+    clearActiveStreamInventoryUpdateFeedback();
+    renderActiveStreamInventoryUpdateControls();
+    mappingAnnouncement.textContent =
+      "Checking the Inventory tab for brand-new SKU rows.";
+
+    try {
+      const result = await inventoryImportClient
+        .addActiveStreamSkusReference(reference);
+      const addedSkus = Array.isArray(result?.addedSkus)
+        ? result.addedSkus
+        : [];
+      const sameStreamStillMounted =
+        streamSnapshot.activeSession?.streamId === activeSession.streamId &&
+        persistentController === mountedController;
+
+      if (!sameStreamStillMounted) {
+        return;
+      }
+
+      let refreshedSnapshot = null;
+
+      try {
+        refreshedSnapshot = await mountedController.refresh();
+      } catch (_error) {
+        // The controller normally resolves failures as error snapshots, but a
+        // thrown failure is handled by the same saved-update recovery below.
+      }
+
+      if (
+        refreshedSnapshot?.phase !== "ready" ||
+        refreshedSnapshot?.operation !== "refresh"
+      ) {
+        if (
+          streamSnapshot.activeSession?.streamId === activeSession.streamId &&
+          persistentController === mountedController
+        ) {
+          const savedMessage = addedSkus.length === 0
+            ? "The Sheet was checked, but the live inventory view could not refresh. Close and reopen the side panel to reload it."
+            : `Added ${addedSkus.length} new ${
+                addedSkus.length === 1 ? "SKU" : "SKUs"
+              }, but the live inventory view could not refresh. Close and reopen the side panel to reload it.`;
+
+          activeStreamInventoryUpdateError.textContent = savedMessage;
+          activeStreamInventoryUpdateError.hidden = false;
+          mappingAnnouncement.textContent = savedMessage;
+        }
+
+        return;
+      }
+
+      if (
+        streamSnapshot.activeSession?.streamId !== activeSession.streamId ||
+        persistentController !== mountedController
+      ) {
+        return;
+      }
+
+      activeStreamInventoryUpdateOpen = false;
+      activeStreamInventorySheetReference.value = "";
+      const message = addedSkus.length === 0
+        ? "No new SKUs were found. Nothing changed."
+        : `Added ${addedSkus.length} new ${
+            addedSkus.length === 1 ? "SKU" : "SKUs"
+          }. Existing variations and mappings were preserved.`;
+
+      activeStreamInventoryUpdateFeedback.textContent = message;
+      activeStreamInventoryUpdateFeedback.hidden = false;
+      mappingAnnouncement.textContent = message;
+    } catch (error) {
+      if (
+        streamSnapshot.activeSession?.streamId !== activeSession.streamId ||
+        persistentController !== mountedController
+      ) {
+        return;
+      }
+
+      const invalidReference = [
+        "INVALID_SPREADSHEET_ID",
+        "INVALID_SPREADSHEET_REFERENCE",
+      ].includes(error?.code);
+      const message = error?.message ??
+        "The Inventory tab could not be checked.";
+      const outcomeUncertain =
+        typeof error?.code !== "string" ||
+        [
+          "ACTIVE_INVENTORY_UPDATE_FAILED",
+          "INTERNAL_ERROR",
+          "INVALID_RESPONSE",
+          "RUNTIME_MESSAGE_FAILED",
+        ].includes(error.code);
+
+      const renderedMessage = setActiveStreamInventoryUpdateError(message, {
+        markReference: invalidReference,
+        outcomeUncertain,
+      });
+      mappingAnnouncement.textContent = renderedMessage;
+    } finally {
+      activeStreamInventoryUpdateBusy = false;
+      renderActiveStreamInventoryUpdateControls();
+    }
   });
 
   inventorySheetReference.addEventListener("input", () => {
