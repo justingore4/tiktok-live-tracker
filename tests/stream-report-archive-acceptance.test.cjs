@@ -68,6 +68,9 @@ function createReport(options) {
 
 const streamReport = {
   createStreamReport: createReport,
+  correctReportMappings() {
+    throw new Error("archive acceptance tests must not correct report mappings");
+  },
   correctReportUnitCost(candidate) {
     return clone(candidate);
   },

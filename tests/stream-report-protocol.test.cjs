@@ -20,6 +20,8 @@ test("creates strict read and archive-management stream-report messages", () => 
     RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
     LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",
     UPDATE_REPORT_UNIT_COST: "update_report_unit_cost",
+    GET_OFFLINE_EDITOR_DATA: "get_offline_editor_data",
+    SAVE_OFFLINE_EDITOR_MAPPINGS: "save_offline_editor_mappings",
     RENAME_REPORT: "rename_report",
     ARCHIVE_REPORTS: "archive_reports",
     RESTORE_REPORTS: "restore_reports",
@@ -27,6 +29,7 @@ test("creates strict read and archive-management stream-report messages", () => 
   });
   assert.equal(protocol.MAX_ACTIVE_REPORTS, 5);
   assert.equal(protocol.MAX_ARCHIVED_REPORTS, 25);
+  assert.equal(protocol.MAX_OFFLINE_MAPPING_CHANGES, 1000);
   assert.equal(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH, 80);
   assert.equal(protocol.MAX_TOTAL_REPORTS, 30);
 
@@ -158,6 +161,147 @@ test("creates strict read and archive-management stream-report messages", () => 
       command: { type: "get_report", reportId: REPORT_ID },
     },
   );
+});
+
+test("creates detached strict Offline Report Editor commands", () => {
+  const changes = [
+    {
+      variationNumber: 15,
+      expectedStatus: "payment_complete",
+      expectedSku: "TEE-M",
+      sku: "TEE-L",
+    },
+    {
+      variationNumber: 16,
+      expectedStatus: "canceled",
+      expectedSku: null,
+      sku: "TEE-M",
+    },
+  ];
+  const load = protocol.createStreamReportMessage({
+    type: protocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA,
+    reportId: REPORT_ID,
+  });
+  const save = protocol.createStreamReportMessage({
+    type: protocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS,
+    reportId: REPORT_ID,
+    changes,
+  });
+
+  changes[0].sku = null;
+  changes.push({ ...changes[1], variationNumber: 17 });
+
+  assert.deepEqual(load.command, {
+    type: "get_offline_editor_data",
+    reportId: REPORT_ID,
+  });
+  assert.deepEqual(save.command, {
+    type: "save_offline_editor_mappings",
+    reportId: REPORT_ID,
+    changes: [
+      {
+        variationNumber: 15,
+        expectedStatus: "payment_complete",
+        expectedSku: "TEE-M",
+        sku: "TEE-L",
+      },
+      {
+        variationNumber: 16,
+        expectedStatus: "canceled",
+        expectedSku: null,
+        sku: "TEE-M",
+      },
+    ],
+  });
+});
+
+test("rejects malformed Offline Report Editor mapping batches", () => {
+  const valid = {
+    variationNumber: 15,
+    expectedStatus: "payment_complete",
+    expectedSku: "TEE-M",
+    sku: "TEE-L",
+  };
+  const sparse = Array(1);
+  const maskedSparse = Array(1);
+  maskedSparse.extra = true;
+  const invalid = [
+    {
+      type: "get_offline_editor_data",
+      reportId: "bad",
+    },
+    {
+      type: "get_offline_editor_data",
+      reportId: REPORT_ID,
+      extra: true,
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: sparse,
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: maskedSparse,
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [{ ...valid, extra: true }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [{ ...valid, variationNumber: 0 }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [{ ...valid, expectedStatus: "processing" }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [{ ...valid, expectedSku: "tee-m" }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [{ ...valid, sku: " TEE-L" }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [valid, { ...valid, sku: null }],
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: Array.from(
+        { length: protocol.MAX_OFFLINE_MAPPING_CHANGES + 1 },
+        (_value, index) => ({ ...valid, variationNumber: index + 1 }),
+      ),
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: REPORT_ID,
+      changes: [valid],
+      extra: true,
+    },
+  ];
+
+  invalid.forEach((command) => {
+    assert.throws(
+      () => protocol.createStreamReportMessage(command),
+      (error) => error instanceof protocol.StreamReportProtocolError,
+    );
+  });
 });
 
 test("rejects malformed report messages and IDs", () => {

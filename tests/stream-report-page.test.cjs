@@ -5,6 +5,9 @@ const test = require("node:test");
 
 const protocol = require("../extension/shared/stream-report-protocol.js");
 const clientModule = require("../extension/report/stream-report-client.js");
+const inlineCorrection = require(
+  "../extension/report/inline-report-correction.js",
+);
 const reportPage = require("../extension/report/report-page.js");
 
 const REPORT_ID = "stream-report:11111111-1111-4111-8111-111111111111";
@@ -19,7 +22,9 @@ class FakeElement {
     this.textContent = "";
     this.hidden = false;
     this.disabled = false;
+    this.open = false;
     this.value = "";
+    this.title = "";
     this.dataset = {};
     this.className = "";
     this.attributes = new Map();
@@ -40,15 +45,33 @@ class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
   addEventListener(name, listener) {
     this.listeners.set(name, listener);
+  }
+
+  dispatch(name, event = {}) {
+    const listener = this.listeners.get(name);
+
+    if (!listener) {
+      return Promise.resolve();
+    }
+
+    return Promise.resolve(listener({
+      currentTarget: this,
+      target: this,
+      ...event,
+    }));
   }
 
   focus() {}
 
   click() {
     this.clicked = true;
-    this.listeners.get("click")?.({ currentTarget: this });
+    return this.dispatch("click");
   }
 
   remove() {
@@ -64,6 +87,19 @@ const REPORT_SELECTORS = [
   "#download-inventory",
   "#inventory-instructions",
   "#inventory-rows",
+  "#mapping-correction-availability",
+  "#mapping-correction-disclosure",
+  "#mapping-correction-feedback",
+  "#mapping-correction-fields",
+  "#mapping-correction-section",
+  "#mapping-item-group",
+  "#mapping-original",
+  "#mapping-selected",
+  "#mapping-sku",
+  "#mapping-sku-field",
+  "#mapping-sold-price",
+  "#mapping-variation",
+  "#mapping-variation-status",
   "#most-profitable-items",
   "#most-profitable-products",
   "#most-profitable-products-card",
@@ -86,6 +122,8 @@ const REPORT_SELECTORS = [
   "#report-loading",
   "#report-warnings",
   "#retry-report",
+  "#reset-mapping-original",
+  "#save-mapping-correction",
   "#sales-count",
   "#sales-empty",
   "#variation-details-note",
@@ -124,6 +162,32 @@ class FakeDocument {
   }
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  return { promise, reject, resolve };
+}
+
+function createCorrectionLoadRecorder(loads) {
+  return {
+    createInlineReportCorrectionController() {
+      return {
+        load(reportId, options = {}) {
+          loads.push({ reportId, options: { ...options } });
+        },
+        getState() {
+          return { busy: false };
+        },
+      };
+    },
+  };
+}
+
 function createReport(overrides = {}) {
   const malicious = '<img src=x onerror="stealOAuthToken()">';
   const base = {
@@ -139,6 +203,7 @@ function createReport(overrides = {}) {
     completeness: { status: "provisional", reasonCodes: ["unmapped_completed_sales"] },
     totals: {
       completedPaymentCount: 2,
+      committedSalesCount: 1,
       totalSalesCount: 3,
       completedGmvCents: 2500,
       costOfGoodsCents: 600,
@@ -289,6 +354,16 @@ test("packaged report surface is local, printable, and exposes the required acti
   const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
 
   assert.match(html, /Print \/ Save as PDF/);
+  assert.doesNotMatch(html, /Edit in Offline Tracker/);
+  assert.doesNotMatch(html, /offline-editor-(?:page|action)/i);
+  assert.doesNotMatch(source, /offline-editor-(?:page|action)|edit-offline-report/i);
+  assert.doesNotMatch(css, /report-offline-editor-action/);
+  assert.equal(fs.existsSync(path.join(directory, "offline-editor.html")), false);
+  assert.equal(fs.existsSync(path.join(directory, "offline-editor.css")), false);
+  assert.equal(
+    fs.existsSync(path.join(directory, "offline-editor-page.js")),
+    false,
+  );
   assert.match(html, /Copy Updated Inventory/);
   assert.match(html, /Download Updated Inventory CSV/);
   assert.match(html, /Finish unresolved payments/);
@@ -323,10 +398,24 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Ctrl\+V/);
   assert.match(
     html,
-    /<script src="\.\.\/shared\/tiktok-fee-calculator\.js"><\/script>[\s\S]*?<script src="report-page\.js"><\/script>/,
+    new RegExp([
+      '<script src="\\.\\.\\/shared\\/tiktok-fee-calculator\\.js">',
+      '<\\/script>[\\s\\S]*?',
+      '<script src="stream-report-client\\.js"><\\/script>[\\s\\S]*?',
+      '<script src="offline-report-editor-client\\.js">',
+      '<\\/script>[\\s\\S]*?',
+      '<script src="inline-report-correction\\.js"><\\/script>',
+      '[\\s\\S]*?<script src="report-page\\.js"><\\/script>',
+    ].join("")),
   );
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
+  assert.match(html, /id="report-content"[^>]*tabindex="-1"/);
+  assert.match(source, /querySelector\("#report-content"\)\.focus\(\)/);
+  assert.match(
+    css,
+    /\.report-content:focus\s*\{\s*outline:\s*none;\s*\}/,
+  );
   assert.match(source, /clearTimeout:\s*root\.clearTimeout\.bind\(root\)/);
   assert.match(source, /const ACTION_FEEDBACK_DURATION_MS = 4_000;/);
   assert.doesNotMatch(html, /report-state-badge|report-state-description/);
@@ -374,6 +463,7 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
     /id="print-report"[\s\S]*?class="primary-action report-print-action screen-only"[\s\S]*?type="button"[\s\S]*?disabled/,
   );
   assert.equal((html.match(/id="print-report"/g) ?? []).length, 1);
+  assert.doesNotMatch(cover, /Edit in Offline Tracker|offline-editor/i);
   assert.match(
     cover,
     /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?<dt>Report name<\/dt>[\s\S]*?id="report-name"[\s\S]*?<\/dl>/,
@@ -403,6 +493,10 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
   assert.match(
     css,
     /\.report-print-action\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?margin-left:\s*auto;/,
+  );
+  assert.match(
+    printCss,
+    /\.screen-only,[\s\S]*?\.action-feedback\s*\{[\s\S]*?display:\s*none !important;/,
   );
   assert.match(
     printCss,
@@ -776,7 +870,7 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
   assert.equal(rows[1].children[4].className, "number-cell");
 });
 
-test("Google Sheets instructions start collapsed beside the handoff actions and print in full", () => {
+test("Google Sheets instructions start collapsed and stay hidden in print", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -806,30 +900,43 @@ test("Google Sheets instructions start collapsed beside the handoff actions and 
   );
   assert.match(
     printCss,
-    /#inventory-instructions\[hidden\]\s*\{\s*display:\s*block !important;/,
+    /#inventory-instructions\s*\{\s*display:\s*none !important;/,
   );
-  assert.match(
+  assert.doesNotMatch(
     printCss,
-    /\.inventory-workflow\s*\{[\s\S]*?border-color:\s*#cfd5dc;[\s\S]*?color:\s*#111820;[\s\S]*?background:\s*#f5f7fa;/,
+    /#inventory-instructions\[hidden\][\s\S]*?display:\s*block !important;/,
   );
 });
 
-test("stream variations sit between Sheets handoff and the final correction section", () => {
+test("mapping correction sits between Sheets handoff and stream variations", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
   const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
   const inventoryStart = html.indexOf("inventory-update-section");
+  const inventoryEnd = html.indexOf("</section>", inventoryStart) +
+    "</section>".length;
+  const mappingStart = html.indexOf('id="mapping-correction-section"');
+  const mappingSectionStart = html.lastIndexOf("<section", mappingStart);
+  const mappingEnd = html.indexOf("</section>", mappingStart) +
+    "</section>".length;
   const variationsStart = html.indexOf('id="completed-sales-disclosure"');
-  const correctionStart = html.indexOf('id="unit-cost-correction-section"');
+  const variationsSectionStart = html.lastIndexOf("<section", variationsStart);
+  const unitCostStart = html.indexOf('id="unit-cost-correction-section"');
   const footerStart = html.indexOf('<footer class="report-footer">');
 
   assert.ok(inventoryStart >= 0);
-  assert.ok(variationsStart > inventoryStart);
-  assert.ok(correctionStart > variationsStart);
-  assert.ok(correctionStart >= 0);
-  assert.ok(footerStart > correctionStart);
-  assert.equal(html.lastIndexOf("<section", footerStart), html.lastIndexOf("<section", correctionStart));
+  assert.ok(mappingStart > inventoryStart);
+  assert.ok(variationsStart > mappingStart);
+  assert.ok(unitCostStart > variationsStart);
+  assert.ok(footerStart > unitCostStart);
+  assert.equal(html.slice(inventoryEnd, mappingSectionStart).trim(), "");
+  assert.equal(html.slice(mappingEnd, variationsSectionStart).trim(), "");
+  assert.equal(
+    html.lastIndexOf("<section", footerStart),
+    html.lastIndexOf("<section", unitCostStart),
+  );
+  assert.equal((html.match(/id="mapping-correction-section"/g) ?? []).length, 1);
   assert.equal((html.match(/id="unit-cost-correction-section"/g) ?? []).length, 1);
   assert.doesNotMatch(
     html,
@@ -839,7 +946,7 @@ test("stream variations sit between Sheets handoff and the final correction sect
   assert.doesNotMatch(css, /\.definitions-|\.definition-list|#definitions-/);
 });
 
-test("handoff instructions toggle while Print preserves item-variation state", async () => {
+test("Print preserves handoff and item-variation screen state", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
   const inventoryInstructions = document.querySelector("#inventory-instructions");
@@ -886,19 +993,710 @@ test("handoff instructions toggle while Print preserves item-variation state", a
   assert.equal(inventoryInstructions.hidden, false);
   assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "true");
   assert.equal(inventoryInstructionsToggle.textContent, "Hide instructions -");
+  document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [false]);
+  assert.equal(completedSales.open, false);
+  assert.equal(inventoryInstructions.hidden, false);
+  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "true");
+  assert.equal(inventoryInstructionsToggle.textContent, "Hide instructions -");
+
   inventoryInstructionsToggle.click();
   assert.equal(inventoryInstructions.hidden, true);
   assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "false");
   assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
-
-  document.querySelector("#print-report").click();
-  assert.deepEqual(printedStates, [false]);
-  assert.equal(completedSales.open, false);
-
   completedSales.open = true;
   document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [false, true]);
   assert.equal(completedSales.open, true);
+});
+
+test("inline mapping correction loads and rerenders the same durable report", async () => {
+  const document = new FakeDocument();
+  const originalReport = createReport();
+  const correctedReport = createReport({
+    totals: {
+      ...originalReport.totals,
+      costOfGoodsCents: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 2,
+    },
+    topItems: {
+      mostSold: null,
+      mostProfitable: null,
+    },
+    itemPerformance: [],
+    completedSales: originalReport.completedSales.map((sale) =>
+      sale.variationNumber === 12
+        ? {
+            ...sale,
+            mapped: false,
+            sku: null,
+            item: null,
+            style: null,
+            size: null,
+            unitCostCents: null,
+            grossProfitCents: null,
+          }
+        : sale),
+    warnings: [
+      { code: "unmapped_completed_sales", count: 2, sku: null },
+    ],
+  });
+  const editorInventory = [{
+    sku: "SKU-A",
+    item: "Example tee",
+    style: "black",
+    size: "L",
+    unitCostCents: 600,
+    openingQuantity: 1,
+    streamSoldQuantity: 1,
+    baselineSoldQuantity: 1,
+    pendingQuantity: 0,
+    calculatedRemainingQuantity: 0,
+    replacementQuantity: 0,
+    availableAfterReservationsQuantity: 0,
+    oversoldQuantity: 0,
+    requiresRecount: false,
+  }];
+  const initialEditorData = {
+    reportId: REPORT_ID,
+    displayName: "Sunday evening stream",
+    endedAt: ENDED_AT,
+    eligibility: { status: "editable", code: null, reason: null },
+    canceledDetailsAvailable: true,
+    completedVariations: [
+      {
+        variationNumber: 12,
+        expectedStatus: "payment_complete",
+        expectedSku: "SKU-A",
+        soldPriceCents: 1500,
+      },
+      {
+        variationNumber: 13,
+        expectedStatus: "payment_complete",
+        expectedSku: null,
+        soldPriceCents: 1000,
+      },
+    ],
+    canceledVariations: [
+      {
+        variationNumber: 14,
+        expectedStatus: "canceled",
+        expectedSku: "SKU-A",
+      },
+    ],
+    inventory: editorInventory,
+  };
+  const savedEditorData = {
+    ...initialEditorData,
+    completedVariations: initialEditorData.completedVariations.map(
+      (variation) => variation.variationNumber === 12
+        ? { ...variation, expectedSku: null }
+        : variation,
+    ),
+  };
+  const reportLoads = [];
+  const correctionLoads = [];
+  const correctionSaves = [];
+  const confirmations = [];
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport(input) {
+            reportLoads.push({ ...input });
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: reportLoads.length === 1
+                ? originalReport
+                : correctedReport,
+            };
+          },
+          async listPaymentFixingOrders() {
+            return { reportId: REPORT_ID, orders: [] };
+          },
+          async listReportUnitCosts() {
+            return { reportId: REPORT_ID, skus: [] };
+          },
+        };
+      },
+    },
+    correctionClientModule: {
+      createOfflineReportEditorClient() {
+        return {
+          async loadEditorData(input) {
+            correctionLoads.push({ ...input });
+            return initialEditorData;
+          },
+          async saveMappingCorrections(input) {
+            correctionSaves.push(JSON.parse(JSON.stringify(input)));
+            return savedEditorData;
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: inlineCorrection,
+    confirm(message) {
+      confirmations.push(message);
+      return true;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(reportLoads, [{ reportId: REPORT_ID }]);
+  assert.deepEqual(correctionLoads, [{ reportId: REPORT_ID }]);
+
+  const group = document.querySelector("#mapping-item-group");
+  group.value = inlineCorrection.UNMAPPED_GROUP_VALUE;
+  await group.dispatch("change");
+  await document.querySelector("#save-mapping-correction").click();
+
+  assert.deepEqual(correctionSaves, [{
+    reportId: REPORT_ID,
+    changes: [{
+      variationNumber: 12,
+      expectedStatus: "payment_complete",
+      expectedSku: "SKU-A",
+      sku: null,
+    }],
+  }]);
+  assert.equal(confirmations.length, 0);
+  assert.deepEqual(reportLoads, [
+    { reportId: REPORT_ID },
+    { reportId: REPORT_ID },
+  ]);
+  assert.match(allText(document.querySelector("#summary-grid")), /Gross profit/);
+  assert.match(allText(document.querySelector("#summary-grid")), /\$0\.00/);
+  assert.equal(
+    document.querySelector("#completed-sales-rows").children[0]
+      .children[2].textContent,
+    "Unmapped",
+  );
+});
+
+test("mapping refresh failure disables stale unit-cost controls until recovery", async () => {
+  const document = new FakeDocument();
+  const unitCostEntry = {
+    sku: "SKU-A",
+    item: "Example tee",
+    style: "black",
+    size: "L",
+    unitCostCents: 600,
+    completedSaleCount: 1,
+  };
+  let unitCostRequestCount = 0;
+  let onMappingSaved = null;
+
+  const mounted = reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+          async listReportUnitCosts() {
+            unitCostRequestCount += 1;
+
+            if (unitCostRequestCount === 2 || unitCostRequestCount === 3) {
+              throw new Error("Unit-cost data is temporarily unavailable.");
+            }
+
+            return { reportId: REPORT_ID, skus: [unitCostEntry] };
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController(options) {
+        onMappingSaved = options.onSaved;
+        return {
+          async load() {},
+          getState() {
+            return { busy: false };
+          },
+        };
+      },
+    },
+    confirm: () => true,
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const section = document.querySelector("#unit-cost-correction-section");
+  const disclosure = document.querySelector(
+    "#unit-cost-correction-disclosure",
+  );
+  const select = document.querySelector("#unit-cost-sku");
+  const input = document.querySelector("#unit-cost-value");
+  const button = document.querySelector("#update-unit-cost");
+  const unitCostStatus = document.querySelector("#unit-cost-feedback");
+
+  assert.equal(select.disabled, false);
+  assert.equal(select.children.length, 1);
+  await onMappingSaved({ reportId: REPORT_ID });
+
+  assert.equal(unitCostRequestCount, 2);
+  assert.equal(section.hidden, false);
+  assert.equal(section.attributes.get("aria-busy"), "false");
+  assert.equal(disclosure.open, true);
+  assert.equal(select.children.length, 0);
+  assert.equal(select.disabled, true);
+  assert.equal(input.disabled, true);
+  assert.equal(input.value, "");
+  assert.equal(button.disabled, true);
+  assert.equal(unitCostStatus.className, "unit-cost-feedback is-error");
+  assert.match(
+    unitCostStatus.textContent,
+    /saved[\s\S]*could not refresh[\s\S]*Reload this report/,
+  );
+  assert.equal(select.title, unitCostStatus.textContent);
+
+  await mounted.load();
+  assert.equal(unitCostRequestCount, 3);
+  assert.equal(section.hidden, false);
+  assert.equal(select.disabled, true);
+  assert.equal(unitCostStatus.className, "unit-cost-feedback is-error");
+  assert.match(unitCostStatus.textContent, /Reload this report/);
+
+  await mounted.load();
+  assert.equal(unitCostRequestCount, 4);
+  assert.equal(section.hidden, false);
+  assert.equal(select.disabled, false);
+  assert.equal(input.disabled, false);
+  assert.equal(button.disabled, false);
+  assert.equal(select.children.length, 1);
+  assert.equal(select.value, "SKU-A");
+  assert.equal(select.title, "");
+  assert.equal(unitCostStatus.className, "unit-cost-feedback");
+  assert.equal(unitCostStatus.textContent, "");
+});
+
+test("stale auxiliary failures cannot overwrite a newer report", async (t) => {
+  for (const failingRequest of ["payments", "unit costs"]) {
+    await t.test(failingRequest, async () => {
+      const document = new FakeDocument();
+      const location = {
+        search: `?reportId=${encodeURIComponent(REPORT_ID)}`,
+      };
+      const oldRequest = createDeferred();
+      const oldRequestStarted = createDeferred();
+      const newerOrder = {
+        variationNumber: 330,
+        observedPaymentStatus: "payment_failed",
+        mapped: false,
+        sku: null,
+        item: null,
+        style: null,
+        size: null,
+      };
+      const newerCost = {
+        sku: "SKU-B",
+        item: "New report item",
+        style: "blue",
+        size: "M",
+        unitCostCents: 700,
+        completedSaleCount: 1,
+      };
+      const mounted = reportPage.mountStreamReportPage({
+        document,
+        location,
+        navigator: {},
+        runtime: {},
+        protocol,
+        reportModule: { hydrateStreamReport: (report) => report },
+        clientModule: {
+          createStreamReportClient() {
+            return {
+              async getReport({ reportId }) {
+                return {
+                  reportId,
+                  lifecycleStatus: "finalized",
+                  displayName: reportId === REPORT_ID
+                    ? "Older report"
+                    : "Newer report",
+                  report: createReport(),
+                };
+              },
+              async listPaymentFixingOrders({ reportId }) {
+                if (
+                  reportId === REPORT_ID &&
+                  failingRequest === "payments"
+                ) {
+                  oldRequestStarted.resolve();
+                  return oldRequest.promise;
+                }
+
+                return {
+                  reportId,
+                  orders: reportId === SECOND_REPORT_ID ? [newerOrder] : [],
+                };
+              },
+              async listReportUnitCosts({ reportId }) {
+                if (
+                  reportId === REPORT_ID &&
+                  failingRequest === "unit costs"
+                ) {
+                  oldRequestStarted.resolve();
+                  return oldRequest.promise;
+                }
+
+                return {
+                  reportId,
+                  skus: reportId === SECOND_REPORT_ID ? [newerCost] : [],
+                };
+              },
+            };
+          },
+        },
+      });
+
+      await oldRequestStarted.promise;
+      location.search =
+        `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+      await mounted.load();
+      assert.equal(document.querySelector("#report-name").textContent, "Newer report");
+      assert.equal(
+        document.querySelector("#payment-resolution-orders").children.length,
+        1,
+      );
+      assert.equal(document.querySelector("#unit-cost-sku").value, "SKU-B");
+
+      oldRequest.reject(new Error("Older report auxiliary request failed."));
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(document.querySelector("#report-name").textContent, "Newer report");
+      assert.equal(
+        document.querySelector("#payment-resolution-orders").children.length,
+        1,
+      );
+      assert.equal(document.querySelector("#unit-cost-sku").value, "SKU-B");
+      assert.doesNotMatch(
+        document.querySelector("#action-feedback").textContent,
+        /Older report auxiliary request failed/,
+      );
+    });
+  }
+});
+
+test("a unit-cost refresh warning cannot leak into another report", async () => {
+  const document = new FakeDocument();
+  const location = { search: `?reportId=${encodeURIComponent(REPORT_ID)}` };
+  let firstReportCostRequests = 0;
+  let onMappingSaved = null;
+  const mounted = reportPage.mountStreamReportPage({
+    document,
+    location,
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport({ reportId }) {
+            return {
+              reportId,
+              lifecycleStatus: "finalized",
+              displayName: reportId === REPORT_ID
+                ? "First report"
+                : "Second report",
+              report: createReport(),
+            };
+          },
+          async listReportUnitCosts({ reportId }) {
+            if (reportId === SECOND_REPORT_ID) {
+              throw new Error("Second report unit costs are unavailable.");
+            }
+
+            firstReportCostRequests += 1;
+            if (firstReportCostRequests > 1) {
+              throw new Error("First report unit costs are unavailable.");
+            }
+
+            return {
+              reportId,
+              skus: [{
+                sku: "SKU-A",
+                item: "Example tee",
+                style: "black",
+                size: "L",
+                unitCostCents: 600,
+                completedSaleCount: 1,
+              }],
+            };
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController(options) {
+        onMappingSaved = options.onSaved;
+        return {
+          async load() {},
+          getState() {
+            return { busy: false };
+          },
+        };
+      },
+    },
+    confirm: () => true,
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await onMappingSaved({ reportId: REPORT_ID });
+  assert.match(
+    document.querySelector("#unit-cost-feedback").textContent,
+    /mapping correction was saved/,
+  );
+
+  location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+  await mounted.load();
+
+  assert.equal(document.querySelector("#report-name").textContent, "Second report");
+  assert.equal(document.querySelector("#unit-cost-correction-section").hidden, true);
+  assert.equal(document.querySelector("#unit-cost-feedback").textContent, "");
+  assert.equal(document.querySelector("#unit-cost-sku").title, "");
+  assert.match(
+    document.querySelector("#action-feedback").textContent,
+    /Second report unit costs are unavailable/,
+  );
+});
+
+test("an unexpected correction-controller rejection degrades only its panel", async () => {
+  const document = new FakeDocument();
+  let printCount = 0;
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController() {
+        return {
+          async load() {
+            throw new Error("Unexpected controller failure.");
+          },
+          getState() {
+            return { busy: false };
+          },
+        };
+      },
+    },
+    print() {
+      printCount += 1;
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(document.querySelector("#report-content").hidden, false);
+  assert.equal(document.querySelector("#mapping-correction-section").hidden, false);
+  assert.equal(document.querySelector("#mapping-correction-fields").disabled, true);
+  assert.match(
+    document.querySelector("#mapping-correction-availability").textContent,
+    /Mapping correction is unavailable/,
+  );
+  assert.equal(
+    document.querySelector("#mapping-correction-availability").hidden,
+    false,
+  );
+  assert.equal(
+    document.querySelector("#mapping-correction-feedback").className,
+    "mapping-correction-feedback visually-hidden is-error",
+  );
+
+  await document.querySelector("#print-report").click();
+  assert.equal(printCount, 1);
+});
+
+test("an older correction refresh failure cannot override a newer success", async () => {
+  const document = new FakeDocument();
+  const olderRefresh = createDeferred();
+  let correctionLoadCount = 0;
+  const mounted = reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController() {
+        return {
+          load() {
+            correctionLoadCount += 1;
+            if (correctionLoadCount === 1) {
+              return olderRefresh.promise;
+            }
+
+            const availability = document.querySelector(
+              "#mapping-correction-availability",
+            );
+            availability.hidden = true;
+            availability.textContent = "";
+            availability.dataset.state = "editable";
+            document.querySelector(
+              "#mapping-correction-fields",
+            ).disabled = false;
+            return Promise.resolve();
+          },
+          getState() {
+            return { busy: false };
+          },
+        };
+      },
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await mounted.load();
+  olderRefresh.reject(new Error("The older refresh failed late."));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(correctionLoadCount, 2);
+  assert.equal(
+    document.querySelector("#mapping-correction-availability").textContent,
+    "",
+  );
+  assert.equal(
+    document.querySelector("#mapping-correction-availability").hidden,
+    true,
+  );
+  assert.equal(
+    document.querySelector("#mapping-correction-availability").dataset.state,
+    "editable",
+  );
+  assert.equal(
+    document.querySelector("#mapping-correction-fields").disabled,
+    false,
+  );
+});
+
+test("a stale mapping refetch cannot rerender a different report", async () => {
+  const document = new FakeDocument();
+  const location = { search: `?reportId=${encodeURIComponent(REPORT_ID)}` };
+  const staleRefresh = createDeferred();
+  let deferFirstReport = false;
+  let onMappingSaved = null;
+  const mounted = reportPage.mountStreamReportPage({
+    document,
+    location,
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport({ reportId }) {
+            if (reportId === REPORT_ID && deferFirstReport) {
+              return staleRefresh.promise;
+            }
+
+            return {
+              reportId,
+              lifecycleStatus: "finalized",
+              displayName: reportId === REPORT_ID
+                ? "First report"
+                : "Second report",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController(options) {
+        onMappingSaved = options.onSaved;
+        return {
+          async load() {},
+          getState() {
+            return { busy: false };
+          },
+        };
+      },
+    },
+    confirm: () => true,
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  deferFirstReport = true;
+  const oldRefresh = onMappingSaved({ reportId: REPORT_ID });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+  await mounted.load();
+  staleRefresh.resolve({
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    displayName: "Stale first report",
+    report: createReport(),
+  });
+
+  await assert.rejects(
+    oldRefresh,
+    /corrected saved report could not be reloaded safely/,
+  );
+  assert.equal(document.querySelector("#report-name").textContent, "Second report");
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {
@@ -918,7 +1716,7 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(document.querySelector("#completed-sales-rows").children.length, 3);
   assert.equal(document.querySelector("#performance-rows").children.length, 1);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
-  assert.equal(document.querySelector("#summary-grid").children.length, 11);
+  assert.equal(document.querySelector("#summary-grid").children.length, 12);
   assert.match(
     allText(document.querySelector("#summary-grid")),
     /TikTok 6% Fees[\s\S]*Fees paid:[\s\S]*≈\$2[\s\S]*GMV after fees:[\s\S]*≈\$28/,
@@ -936,6 +1734,10 @@ test("report rendering preserves text, renders SKU and product ties, and never c
   assert.equal(
     estimatedProfitCard.children.at(-1).className,
     "summary-card-warning-note",
+  );
+  assert.match(
+    allText(document.querySelector("#summary-grid")),
+    /Avg\. Profit per Sale[\s\S]*\$9\.00[\s\S]*Gross profit per mapped completed sale/,
   );
   assert.equal(document.createdTags.includes("img"), false);
   assert.match(
@@ -1427,6 +2229,7 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
   const confirmations = [];
   const updates = [];
   const copied = [];
+  const correctionLoads = [];
   let currentUnitCostCents = 600;
   let finishUpdate;
   const updateGate = new Promise((resolve) => {
@@ -1533,6 +2336,7 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
         };
       },
     },
+    inlineCorrectionModule: createCorrectionLoadRecorder(correctionLoads),
     confirm(message) {
       confirmations.push(message);
       return true;
@@ -1569,6 +2373,10 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
 
   assert.deepEqual(updates, [
     { reportId: REPORT_ID, sku: "SKU-A", unitCostCents: 800 },
+  ]);
+  assert.deepEqual(correctionLoads, [
+    { reportId: REPORT_ID, options: {} },
+    { reportId: REPORT_ID, options: { preserveDraft: true } },
   ]);
   assert.equal(section.attributes.get("aria-busy"), "false");
   assert.equal(input.disabled, false);
@@ -1703,6 +2511,7 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
   const document = new FakeDocument();
   const confirmations = [];
   const resolutions = [];
+  const correctionLoads = [];
   let finishResolution;
   const resolutionGate = new Promise((resolve) => {
     finishResolution = resolve;
@@ -1766,6 +2575,7 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
         };
       },
     },
+    inlineCorrectionModule: createCorrectionLoadRecorder(correctionLoads),
     confirm(message) {
       confirmations.push(message);
       return true;
@@ -1799,6 +2609,10 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
       resolution: "payment_complete",
       soldPriceCents: 1825,
     },
+  ]);
+  assert.deepEqual(correctionLoads, [
+    { reportId: REPORT_ID, options: {} },
+    { reportId: REPORT_ID, options: { preserveDraft: true } },
   ]);
   assert.match(
     confirmations[0],
@@ -2057,6 +2871,52 @@ test("post-stream AOV displays zero when there are no completed sales", () => {
   const aov = metrics.find((metric) => metric.label === "AOV");
 
   assert.equal(aov.value, "$0.00");
+});
+
+test("post-stream average profit per sale uses mapped completed sales", () => {
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 4,
+      committedSalesCount: 3,
+      totalSalesCount: 5,
+      completedGmvCents: 5000,
+      committedRevenueCents: 4000,
+      grossProfitCents: 1000,
+      unmappedCompletedCount: 1,
+      canceledOrderCount: 1,
+      paymentFixingCount: 0,
+      attributedGmvDisplay: "$50.00",
+    },
+  }));
+  const metric = metrics.find(
+    (entry) => entry.label === "Avg. Profit per Sale",
+  );
+
+  assert.deepEqual(metric, {
+    label: "Avg. Profit per Sale",
+    value: "$3.33",
+    note: "Gross profit per mapped completed sale",
+  });
+});
+
+test("post-stream average profit per sale handles losses and no mapped sales", () => {
+  const lossMetric = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      committedSalesCount: 2,
+      grossProfitCents: -901,
+    },
+  })).find((entry) => entry.label === "Avg. Profit per Sale");
+  const emptyMetric = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      completedPaymentCount: 2,
+      committedSalesCount: 0,
+      grossProfitCents: 0,
+      unmappedCompletedCount: 2,
+    },
+  })).find((entry) => entry.label === "Avg. Profit per Sale");
+
+  assert.equal(lossMetric.value, "-$4.51");
+  assert.equal(emptyMetric.value, "$0.00");
 });
 
 test("post-stream TikTok fee card rounds both compact-GMV values to approximate whole dollars", () => {
