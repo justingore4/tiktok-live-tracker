@@ -18,6 +18,8 @@
     const MAX_TOTAL_REPORTS =
       MAX_ACTIVE_REPORTS + MAX_ARCHIVED_REPORTS;
     const MAX_REPORT_DISPLAY_NAME_LENGTH = 80;
+    const MAX_OFFLINE_MAPPING_CHANGES = 1000;
+    const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const COMMAND_TYPES = Object.freeze({
@@ -28,6 +30,8 @@
       RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
       LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",
       UPDATE_REPORT_UNIT_COST: "update_report_unit_cost",
+      GET_OFFLINE_EDITOR_DATA: "get_offline_editor_data",
+      SAVE_OFFLINE_EDITOR_MAPPINGS: "save_offline_editor_mappings",
       RENAME_REPORT: "rename_report",
       ARCHIVE_REPORTS: "archive_reports",
       RESTORE_REPORTS: "restore_reports",
@@ -51,6 +55,12 @@
         "sku",
         "type",
         "unitCostCents",
+      ],
+      [COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA]: ["reportId", "type"],
+      [COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS]: [
+        "changes",
+        "reportId",
+        "type",
       ],
       [COMMAND_TYPES.RENAME_REPORT]: ["displayName", "reportId", "type"],
       [COMMAND_TYPES.ARCHIVE_REPORTS]: ["reportIds", "type"],
@@ -95,6 +105,57 @@
         actualKeys.every((key, index) => key === sortedExpectedKeys[index]);
     }
 
+    function validateMappingSku(value) {
+      return value === null ||
+        (typeof value === "string" && SKU_PATTERN.test(value));
+    }
+
+    function validateOfflineMappingChanges(changes) {
+      const changeKeys = Array.isArray(changes) ? Object.keys(changes) : [];
+
+      if (
+        !Array.isArray(changes) ||
+        changes.length < 1 ||
+        changes.length > MAX_OFFLINE_MAPPING_CHANGES ||
+        changeKeys.length !== changes.length ||
+        changeKeys.some((key, index) => key !== String(index))
+      ) {
+        fail(
+          "INVALID_MAPPING_CHANGES",
+          `changes must contain 1 to ${MAX_OFFLINE_MAPPING_CHANGES} dense mapping corrections.`,
+        );
+      }
+
+      const expectedKeys = [
+        "expectedSku",
+        "expectedStatus",
+        "sku",
+        "variationNumber",
+      ];
+      const seenVariationNumbers = new Set();
+
+      changes.forEach((change) => {
+        if (
+          !hasExactKeys(change, expectedKeys) ||
+          !Number.isSafeInteger(change.variationNumber) ||
+          change.variationNumber < 1 ||
+          !["payment_complete", "canceled"].includes(
+            change.expectedStatus,
+          ) ||
+          !validateMappingSku(change.expectedSku) ||
+          !validateMappingSku(change.sku) ||
+          seenVariationNumbers.has(change.variationNumber)
+        ) {
+          fail(
+            "INVALID_MAPPING_CHANGES",
+            "Each mapping correction must contain one unique variation, supported status, expected SKU, and replacement SKU.",
+          );
+        }
+
+        seenVariationNumbers.add(change.variationNumber);
+      });
+    }
+
     function validateCommand(command) {
       if (!isPlainRecord(command) || typeof command.type !== "string") {
         fail(
@@ -126,6 +187,8 @@
           COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
           COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
           COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+          COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA,
+          COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS,
           COMMAND_TYPES.RENAME_REPORT,
         ].includes(command.type) &&
         (
@@ -197,6 +260,10 @@
             "unitCostCents must be a nonnegative safe integer.",
           );
         }
+      }
+
+      if (command.type === COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS) {
+        validateOfflineMappingChanges(command.changes);
       }
 
       if (
@@ -309,6 +376,7 @@
       COMMAND_TYPES,
       MAX_ACTIVE_REPORTS,
       MAX_ARCHIVED_REPORTS,
+      MAX_OFFLINE_MAPPING_CHANGES,
       MAX_REPORT_DISPLAY_NAME_LENGTH,
       MAX_TOTAL_REPORTS,
       MESSAGE_CHANNEL,

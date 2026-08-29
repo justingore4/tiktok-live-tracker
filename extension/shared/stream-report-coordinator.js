@@ -134,11 +134,12 @@
       if (
         !streamReport ||
         typeof streamReport.createStreamReport !== "function" ||
+        typeof streamReport.correctReportMappings !== "function" ||
         typeof streamReport.correctReportUnitCost !== "function" ||
         typeof streamReport.hydrateStreamReport !== "function"
       ) {
         throw new TypeError(
-          "streamReport must provide createStreamReport, correctReportUnitCost, and hydrateStreamReport.",
+          "streamReport must provide report creation, mapping correction, unit-cost correction, and hydration.",
         );
       }
 
@@ -526,6 +527,150 @@
         return createPublicRecord(record);
       }
 
+      function createOfflineEditorEligibility(
+        record,
+        activeStreamExists,
+      ) {
+        if (!isFinalized(record)) {
+          return {
+            status: "blocked",
+            code: "REPORT_NOT_FINALIZED",
+            reason: "Only a finalized stream report can be edited.",
+          };
+        }
+
+        if (activeStreamExists) {
+          return {
+            status: "blocked",
+            code: "ACTIVE_STREAM_ALREADY_EXISTS",
+            reason: "End the active tracker stream before editing a report.",
+          };
+        }
+
+        if (record.report.metadata.activeBiddingVariationNumber !== null) {
+          return {
+            status: "blocked",
+            code: "ACTIVE_BIDDING_AT_END",
+            reason: "The report ended with an active bidding variation.",
+          };
+        }
+
+        if (record.report.totals.paymentFixingCount > 0) {
+          return {
+            status: "blocked",
+            code: "PAYMENT_FIXING_ORDERS_REMAIN",
+            reason:
+              "Resolve all processing and payment-fixing orders before editing this report.",
+          };
+        }
+
+        if (record.report.totals.pendingMappedCount > 0) {
+          return {
+            status: "blocked",
+            code: "PENDING_MAPPED_ORDERS_REMAIN",
+            reason:
+              "Resolve all pending mapped orders before editing this report.",
+          };
+        }
+
+        if (record.report.totals.unresolvedOrderCount > 0) {
+          return {
+            status: "blocked",
+            code: "UNRESOLVED_ORDERS_REMAIN",
+            reason: "Resolve all unfinished orders before editing this report.",
+          };
+        }
+
+        const editableVariationCount =
+          record.report.completedSales.length +
+          (record.report.canceledOrders?.length ?? 0);
+
+        if (editableVariationCount === 0) {
+          return {
+            status: "read_only",
+            code: "NO_EDITABLE_VARIATIONS",
+            reason:
+              "This report has no saved completed or canceled variations to edit.",
+          };
+        }
+
+        return { status: "editable", code: null, reason: null };
+      }
+
+      function createOfflineEditorData(record, activeStreamExists) {
+        const report = record.report;
+        const mapExpectedState = (entry, expectedStatus) => ({
+          variationNumber: entry.variationNumber,
+          expectedStatus,
+          expectedSku: entry.sku,
+        });
+
+        return cloneSerializable({
+          reportId: record.reportId,
+          displayName: record.displayName ?? null,
+          endedAt: report.metadata.endedAt,
+          eligibility: createOfflineEditorEligibility(
+            record,
+            activeStreamExists,
+          ),
+          canceledDetailsAvailable: report.canceledOrders !== null,
+          completedVariations: report.completedSales.map((sale) => ({
+            ...mapExpectedState(sale, "payment_complete"),
+            soldPriceCents: sale.soldPriceCents,
+          })),
+          canceledVariations: (report.canceledOrders ?? []).map((order) =>
+            mapExpectedState(order, "canceled")),
+          inventory: report.inventory.map((item) => ({
+            sku: item.sku,
+            item: item.item,
+            style: item.style,
+            size: item.size,
+            unitCostCents: item.unitCostCents,
+            openingQuantity: item.openingQuantity,
+            streamSoldQuantity: item.streamSoldQuantity,
+            baselineSoldQuantity: item.baselineSoldQuantity,
+            pendingQuantity: item.pendingQuantity,
+            calculatedRemainingQuantity:
+              item.calculatedRemainingQuantity,
+            replacementQuantity: item.replacementQuantity,
+            availableAfterReservationsQuantity:
+              item.availableAfterReservationsQuantity,
+            oversoldQuantity: item.oversoldQuantity,
+            requiresRecount: item.requiresRecount,
+          })),
+        });
+      }
+
+      async function loadOfflineEditorData(input) {
+        if (
+          !isPlainRecord(input) ||
+          Object.keys(input).sort().join(",") !==
+            "activeStreamExists,reportId" ||
+          typeof input.activeStreamExists !== "boolean"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            "Offline editor loading requires reportId and activeStreamExists.",
+          );
+        }
+
+        await ensureLoaded();
+        protocol.validateCommand({
+          type: protocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA,
+          reportId: input.reportId,
+        });
+        const record = findByReportId(input.reportId);
+
+        if (!record) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        return createOfflineEditorData(
+          record,
+          input.activeStreamExists,
+        );
+      }
+
       async function getReportForStream(streamId) {
         await ensureLoaded();
         const normalizedStreamId = requireNonEmptyString(streamId, "streamId");
@@ -684,6 +829,73 @@
         );
 
         return createPublicRecord(findByReportId(existing.reportId));
+      }
+
+      async function correctFinalizedReportMappings(input) {
+        if (
+          !isPlainRecord(input) ||
+          Object.keys(input).sort().join(",") !== "changes,reportId"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            "Report mapping correction requires changes and reportId.",
+          );
+        }
+
+        await ensureLoaded();
+        const command = protocol.validateCommand({
+          type: protocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS,
+          ...input,
+        });
+        const existing = findByReportId(command.reportId);
+
+        if (!existing) {
+          fail("REPORT_NOT_FOUND", "The stream report does not exist.");
+        }
+
+        const eligibility = createOfflineEditorEligibility(existing, false);
+
+        if (eligibility.status !== "editable") {
+          fail(eligibility.code, eligibility.reason);
+        }
+
+        let correctedReport;
+
+        try {
+          correctedReport = streamReport.correctReportMappings(
+            existing.report,
+            command.changes,
+          );
+        } catch (error) {
+          fail(
+            typeof error?.code === "string"
+              ? error.code
+              : "REPORT_CORRECTION_FAILED",
+            typeof error?.message === "string"
+              ? error.message
+              : "Could not correct the saved stream report.",
+            error,
+          );
+        }
+
+        if (
+          JSON.stringify(correctedReport) === JSON.stringify(existing.report)
+        ) {
+          return createOfflineEditorData(existing, false);
+        }
+
+        await persist(
+          records.map((record) =>
+            record.reportId === existing.reportId
+              ? { ...record, report: cloneSerializable(correctedReport) }
+              : record,
+          ),
+        );
+
+        return createOfflineEditorData(
+          findByReportId(existing.reportId),
+          false,
+        );
       }
 
       function requireReportsById(reportIds) {
@@ -938,6 +1150,17 @@
 
           return enqueue(() => correctFinalizedReportUnitCost(snapshot));
         },
+        correctFinalizedReportMappings(input) {
+          let snapshot;
+
+          try {
+            snapshot = cloneSerializable(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => correctFinalizedReportMappings(snapshot));
+        },
         discardPendingReportForStream(streamId) {
           return enqueue(() => discardPendingReportForStream(streamId));
         },
@@ -952,6 +1175,17 @@
         },
         getLatestFinalizedReport() {
           return enqueue(getLatestFinalizedReport);
+        },
+        loadOfflineEditorData(input) {
+          let snapshot;
+
+          try {
+            snapshot = cloneSerializable(input);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => loadOfflineEditorData(snapshot));
         },
         listReports() {
           return enqueue(listReports);

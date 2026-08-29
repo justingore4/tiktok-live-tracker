@@ -22,6 +22,8 @@
         protocol: root.TikTokLiveTrackerStreamReportProtocol,
         reportModule: root.TikTokLiveTrackerStreamReport,
         clientModule: root.TikTokLiveTrackerStreamReportClient,
+        offlineEditorClientModule:
+          root.TikTokLiveTrackerOfflineReportEditorClient,
         confirm: root.confirm.bind(root),
         print: () => root.print(),
         Blob: root.Blob,
@@ -1233,6 +1235,22 @@
         runtime: dependencies.runtime,
         protocol,
       });
+      let offlineEditorClient = null;
+
+      if (
+        typeof dependencies.offlineEditorClientModule
+          ?.createOfflineReportEditorClient === "function"
+      ) {
+        try {
+          offlineEditorClient = dependencies.offlineEditorClientModule
+            .createOfflineReportEditorClient({
+              runtime: dependencies.runtime,
+              protocol,
+            });
+        } catch (_error) {
+          offlineEditorClient = null;
+        }
+      }
       let currentRecord = null;
       let currentPaymentFixingOrders = [];
       let paymentResolutionControls = [];
@@ -1240,12 +1258,93 @@
       let currentUnitCostEntries = [];
       let unitCostCorrectionBusy = false;
       let loadSequence = 0;
+      let offlineEditorEligibilitySequence = 0;
       let actionFeedbackSequence = 0;
       let actionFeedbackTimerId = null;
       const inventoryInstructions = document.querySelector("#inventory-instructions");
       const inventoryInstructionsToggle = document.querySelector(
         "#toggle-inventory-instructions",
       );
+      const offlineEditorButton = document.querySelector(
+        "#edit-offline-report",
+      );
+      const offlineEditorEligibility = document.querySelector(
+        "#offline-editor-eligibility",
+      );
+      const setOfflineEditorAvailability = (state, reason) => {
+        if (!offlineEditorButton || !offlineEditorEligibility) {
+          return;
+        }
+
+        const editable = state === "editable";
+        offlineEditorButton.disabled = !editable;
+        offlineEditorButton.dataset.state = state;
+        offlineEditorButton.title = editable ? "" : reason;
+        offlineEditorEligibility.textContent = reason;
+      };
+      const setOfflineEditorLoading = () => {
+        setOfflineEditorAvailability(
+          "loading",
+          "Checking whether this report can be edited offline.",
+        );
+      };
+      const refreshOfflineEditorAvailability = async (
+        reportId,
+        sequence,
+      ) => {
+        const eligibilitySequence = ++offlineEditorEligibilitySequence;
+        setOfflineEditorLoading();
+
+        if (!offlineEditorClient) {
+          setOfflineEditorAvailability(
+            "unavailable",
+            "The Offline Report Editor is unavailable. Reload the extension and try again.",
+          );
+          return;
+        }
+
+        try {
+          const response = await offlineEditorClient.loadEditorData({
+            reportId,
+          });
+
+          if (
+            sequence !== loadSequence ||
+            eligibilitySequence !== offlineEditorEligibilitySequence ||
+            currentRecord?.reportId !== reportId ||
+            response?.reportId !== reportId
+          ) {
+            return;
+          }
+
+          if (response.eligibility.status === "editable") {
+            setOfflineEditorAvailability(
+              "editable",
+              "This saved report can be edited in the Offline Report Editor.",
+            );
+            return;
+          }
+
+          setOfflineEditorAvailability(
+            response.eligibility.status,
+            response.eligibility.reason,
+          );
+        } catch (error) {
+          if (
+            sequence !== loadSequence ||
+            eligibilitySequence !== offlineEditorEligibilitySequence ||
+            currentRecord?.reportId !== reportId
+          ) {
+            return;
+          }
+
+          setOfflineEditorAvailability(
+            "unavailable",
+            error?.message ??
+              "Offline editing eligibility could not be checked. Reload the report and try again.",
+          );
+        }
+      };
       const setInventoryInstructionsExpanded = (expanded) => {
         inventoryInstructions.hidden = !expanded;
         inventoryInstructionsToggle.setAttribute(
@@ -1395,6 +1494,10 @@
         document.querySelector("#report-error").hidden = false;
         document.querySelector("#report-error-message").textContent = message;
         document.querySelector("#print-report").disabled = true;
+        setOfflineEditorAvailability(
+          "unavailable",
+          "Offline editing is unavailable because the report could not be loaded.",
+        );
       };
 
       const hydrateRecord = (response) => {
@@ -1482,6 +1585,10 @@
           });
           currentRecord = hydrateRecord(response);
           renderReport(document, currentRecord);
+          void refreshOfflineEditorAvailability(
+            currentRecord.reportId,
+            loadSequence,
+          );
           displayPaymentFixingOrders(
             currentPaymentFixingOrders.filter(
               (candidate) => candidate.variationNumber !== variationNumber,
@@ -1589,6 +1696,7 @@
 
       const load = async () => {
         const sequence = ++loadSequence;
+        setOfflineEditorLoading();
         document.querySelector("#report-loading").hidden = false;
         document.querySelector("#report-loading").setAttribute("aria-busy", "true");
         document.querySelector("#report-error").hidden = true;
@@ -1624,6 +1732,10 @@
           renderReport(document, currentRecord);
           resolutionFeedback("");
           unitCostFeedback("");
+          void refreshOfflineEditorAvailability(
+            currentRecord.reportId,
+            sequence,
+          );
 
           try {
             const orders = await getPaymentFixingOrders(currentRecord.reportId);
@@ -1697,6 +1809,27 @@
       document.querySelector("#print-report").addEventListener("click", () => {
         if (currentRecord) {
           dependencies.print();
+        }
+      });
+      offlineEditorButton?.addEventListener("click", () => {
+        if (
+          !currentRecord ||
+          offlineEditorButton.disabled ||
+          typeof dependencies.runtime?.getURL !== "function"
+        ) {
+          return;
+        }
+
+        const editorUrl = dependencies.runtime.getURL(
+          "report/offline-editor.html",
+        );
+        const targetUrl =
+          `${editorUrl}?reportId=${encodeURIComponent(currentRecord.reportId)}`;
+
+        if (typeof location?.assign === "function") {
+          location.assign(targetUrl);
+        } else if (location) {
+          location.href = targetUrl;
         }
       });
       inventoryInstructionsToggle.addEventListener("click", () => {

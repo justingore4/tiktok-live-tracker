@@ -4,6 +4,8 @@ const test = require("node:test");
 const coordinatorModule = require(
   "../extension/shared/stream-report-coordinator.js",
 );
+const realReconciliation = require("../extension/shared/reconciliation.js");
+const realStreamReport = require("../extension/shared/stream-report.js");
 const protocol = require("../extension/shared/stream-report-protocol.js");
 const storage = require("../extension/shared/stream-report-storage.js");
 
@@ -82,6 +84,12 @@ const streamReport = {
       correctedUnitCost: clone(input),
     };
   },
+  correctReportMappings(candidate, changes) {
+    return {
+      ...clone(candidate),
+      correctedMappings: clone(changes),
+    };
+  },
   hydrateStreamReport(candidate) {
     return clone(candidate);
   },
@@ -141,6 +149,96 @@ function createSavedRecord(index, options = {}) {
       : { displayName: options.displayName }),
     report,
   };
+}
+
+function createOfflineEditorRecord(index, options = {}) {
+  const record = createSavedRecord(index, options);
+  const oversoldQuantity = options.oversoldQuantity ?? 0;
+  const oversold = oversoldQuantity > 0;
+  const completedSales = options.completedSales ?? [
+    {
+      variationNumber: 10,
+      mapped: true,
+      sku: "TEE-M",
+      item: "Tee",
+      style: "black",
+      size: "M",
+      soldPriceCents: 1500,
+      unitCostCents: 500,
+      grossProfitCents: 1000,
+      conflicts: options.conflicts ?? [],
+    },
+  ];
+  const canceledOrders = options.canceledOrders === undefined
+    ? [
+        {
+          variationNumber: 11,
+          mapped: false,
+          sku: null,
+          item: null,
+          style: null,
+          size: null,
+        },
+      ]
+    : options.canceledOrders;
+
+  record.report = {
+    ...record.report,
+    metadata: {
+      ...record.report.metadata,
+      activeBiddingVariationNumber:
+        options.activeBiddingVariationNumber ?? null,
+    },
+    completeness: options.completeness ?? {
+      status: "provisional",
+      reasonCodes: ["reconciliation_conflicts"],
+    },
+    totals: {
+      ...record.report.totals,
+      paymentFixingCount: options.paymentFixingCount ?? 0,
+      pendingMappedCount: options.pendingMappedCount ?? 0,
+      unresolvedOrderCount: options.unresolvedOrderCount ?? 0,
+    },
+    completedSales,
+    canceledOrders,
+    inventory: [
+      {
+        sku: "TEE-M",
+        item: "Tee",
+        style: "black",
+        size: "M",
+        unitCostCents: 500,
+        openingQuantity: oversold ? 0 : 2,
+        streamSoldQuantity: 1,
+        baselineSoldQuantity: 1,
+        pendingQuantity: 0,
+        calculatedRemainingQuantity: oversold ? -1 : 1,
+        replacementQuantity: oversold ? 0 : 1,
+        availableAfterReservationsQuantity: oversold ? 0 : 1,
+        oversoldQuantity,
+        requiresRecount: oversold,
+      },
+      {
+        sku: "TEE-L",
+        item: "Tee",
+        style: "black",
+        size: "L",
+        unitCostCents: 700,
+        openingQuantity: 1,
+        streamSoldQuantity: 0,
+        baselineSoldQuantity: 0,
+        pendingQuantity: 0,
+        calculatedRemainingQuantity: 1,
+        replacementQuantity: 1,
+        availableAfterReservationsQuantity: 1,
+        oversoldQuantity: 0,
+        requiresRecount: false,
+      },
+    ],
+    privateCanonicalState: { mustNotEscape: true },
+  };
+
+  return record;
 }
 
 test("prepares before End, finalizes idempotently, and exposes strict reads", async () => {
@@ -718,6 +816,500 @@ test("pending reports stay out of both lists and cannot be archive-managed", asy
     (error) => error.code === "REPORT_NOT_FINALIZED",
   );
   assert.equal(store.read()[0].lifecycleStatus, "pending_end");
+});
+
+test("returns only sanitized Offline Report Editor data with exact eligibility", async () => {
+  const editable = createOfflineEditorRecord(1, {
+    displayName: "Saturday stream",
+    oversoldQuantity: 1,
+    conflicts: [{ code: "price_conflict" }],
+  });
+  const editableCoordinator = createCoordinator(createStore({
+    records: [editable],
+  }));
+  const data = await editableCoordinator.loadOfflineEditorData({
+    reportId: editable.reportId,
+    activeStreamExists: false,
+  });
+
+  assert.deepEqual(Object.keys(data).sort(), [
+    "canceledDetailsAvailable",
+    "canceledVariations",
+    "completedVariations",
+    "displayName",
+    "eligibility",
+    "endedAt",
+    "inventory",
+    "reportId",
+  ]);
+  assert.equal(JSON.stringify(data).includes("privateCanonicalState"), false);
+  assert.deepEqual(data.eligibility, {
+    status: "editable",
+    code: null,
+    reason: null,
+  });
+  assert.deepEqual(data.completedVariations, [
+    {
+      variationNumber: 10,
+      expectedStatus: "payment_complete",
+      expectedSku: "TEE-M",
+      soldPriceCents: 1500,
+    },
+  ]);
+  assert.deepEqual(data.canceledVariations, [
+    {
+      variationNumber: 11,
+      expectedStatus: "canceled",
+      expectedSku: null,
+    },
+  ]);
+
+  const matrix = [
+    {
+      record: createOfflineEditorRecord(2),
+      activeStreamExists: true,
+      status: "blocked",
+      code: "ACTIVE_STREAM_ALREADY_EXISTS",
+    },
+    {
+      record: createOfflineEditorRecord(3, {
+        lifecycleStatus: "pending_end",
+      }),
+      activeStreamExists: false,
+      status: "blocked",
+      code: "REPORT_NOT_FINALIZED",
+    },
+    {
+      record: createOfflineEditorRecord(4, {
+        activeBiddingVariationNumber: 12,
+      }),
+      activeStreamExists: false,
+      status: "blocked",
+      code: "ACTIVE_BIDDING_AT_END",
+    },
+    {
+      record: createOfflineEditorRecord(5, { paymentFixingCount: 1 }),
+      activeStreamExists: false,
+      status: "blocked",
+      code: "PAYMENT_FIXING_ORDERS_REMAIN",
+    },
+    {
+      record: createOfflineEditorRecord(6, { pendingMappedCount: 1 }),
+      activeStreamExists: false,
+      status: "blocked",
+      code: "PENDING_MAPPED_ORDERS_REMAIN",
+    },
+    {
+      record: createOfflineEditorRecord(7, { unresolvedOrderCount: 1 }),
+      activeStreamExists: false,
+      status: "blocked",
+      code: "UNRESOLVED_ORDERS_REMAIN",
+    },
+    {
+      record: createOfflineEditorRecord(8, {
+        completedSales: [],
+        canceledOrders: [],
+      }),
+      activeStreamExists: false,
+      status: "read_only",
+      code: "NO_EDITABLE_VARIATIONS",
+    },
+  ];
+
+  for (const entry of matrix) {
+    const coordinator = createCoordinator(createStore({
+      records: [entry.record],
+    }));
+    const response = await coordinator.loadOfflineEditorData({
+      reportId: entry.record.reportId,
+      activeStreamExists: entry.activeStreamExists,
+    });
+
+    assert.equal(response.eligibility.status, entry.status);
+    assert.equal(response.eligibility.code, entry.code);
+    assert.equal(typeof response.eligibility.reason, "string");
+  }
+
+  const legacy = createOfflineEditorRecord(9, { canceledOrders: null });
+  const legacyData = await createCoordinator(createStore({
+    records: [legacy],
+  })).loadOfflineEditorData({
+    reportId: legacy.reportId,
+    activeStreamExists: false,
+  });
+
+  assert.equal(legacyData.eligibility.status, "editable");
+  assert.equal(legacyData.canceledDetailsAvailable, false);
+  assert.deepEqual(legacyData.canceledVariations, []);
+});
+
+test("mapping saves preserve active and archived wrappers, positions, and neighbors", async () => {
+  for (const archived of [false, true]) {
+    const before = createSavedRecord(1);
+    const target = createOfflineEditorRecord(2, {
+      archived,
+      displayName: "Keep this name",
+    });
+    const after = createSavedRecord(3, { archived: !archived });
+    const records = [before, target, after];
+    const store = createStore({ records });
+    const reportModule = {
+      ...streamReport,
+      correctReportMappings(candidate, changes) {
+        const corrected = clone(candidate);
+        const change = changes[0];
+        const sale = corrected.completedSales.find(
+          (entry) => entry.variationNumber === change.variationNumber,
+        );
+
+        sale.sku = change.sku;
+        sale.item = "Tee";
+        sale.style = "black";
+        sale.size = "L";
+        return corrected;
+      },
+    };
+    const coordinator = createCoordinator(store, undefined, reportModule);
+    const changes = [
+      {
+        variationNumber: 10,
+        expectedStatus: "payment_complete",
+        expectedSku: "TEE-M",
+        sku: "TEE-L",
+      },
+    ];
+    const save = coordinator.correctFinalizedReportMappings({
+      reportId: target.reportId,
+      changes,
+    });
+
+    changes[0].sku = null;
+    changes.push({
+      variationNumber: 11,
+      expectedStatus: "canceled",
+      expectedSku: null,
+      sku: "TEE-M",
+    });
+    const response = await save;
+    const persisted = store.read();
+
+    assert.equal(response.completedVariations[0].expectedSku, "TEE-L");
+    assert.deepEqual(persisted.map((record) => record.reportId),
+      records.map((record) => record.reportId));
+    assert.deepEqual(persisted[0], before);
+    assert.deepEqual(persisted[2], after);
+    assert.equal(persisted[1].reportId, target.reportId);
+    assert.equal(persisted[1].displayName, "Keep this name");
+    assert.equal(persisted[1].lifecycleStatus, "finalized");
+    assert.equal(persisted[1].archived, archived);
+    const reopened = createCoordinator(store, undefined, reportModule);
+    const reopenedData = await reopened.loadOfflineEditorData({
+      reportId: target.reportId,
+      activeStreamExists: false,
+    });
+    assert.equal(
+      reopenedData.completedVariations[0].expectedSku,
+      "TEE-L",
+    );
+
+    const saveCount = store.saves.length;
+    await coordinator.correctFinalizedReportMappings({
+      reportId: target.reportId,
+      changes: [
+        {
+          variationNumber: 10,
+          expectedStatus: "payment_complete",
+          expectedSku: "TEE-M",
+          sku: "TEE-L",
+        },
+      ],
+    });
+    assert.equal(store.saves.length, saveCount);
+  }
+});
+
+test("real mapping corrections persist without changing the saved wrapper or neighbors", async () => {
+  const streamId =
+    "local-stream:00000002-1111-4111-8111-111111111111";
+  const state = realReconciliation.createReconciliationState([
+    {
+      sku: "TEE-M",
+      item: "Tee",
+      style: "black",
+      size: "M",
+      quantityReceived: 2,
+      unitCostCents: 500,
+    },
+    {
+      sku: "TEE-L",
+      item: "Tee",
+      style: "black",
+      size: "L",
+      quantityReceived: 0,
+      unitCostCents: 700,
+    },
+  ]);
+  realReconciliation.mapVariation(state, {
+    streamId,
+    variationNumber: 10,
+    sku: "TEE-M",
+  });
+  realReconciliation.recordPaymentComplete(state, {
+    streamId,
+    variationNumber: 10,
+    soldPriceCents: 1500,
+  });
+  const report = realStreamReport.createStreamReport({
+    reconciliation: realReconciliation,
+    reconciliationState: state,
+    streamId,
+    startedAt: "2026-08-02T10:00:00.000Z",
+    endedAt: "2026-08-02T12:00:00.000Z",
+    generatedAt: "2026-08-02T12:00:01.000Z",
+  });
+  const before = createSavedRecord(1);
+  const target = {
+    reportId: report.reportId,
+    lifecycleStatus: "finalized",
+    archived: true,
+    displayName: "Keep this name",
+    report,
+  };
+  const after = createSavedRecord(3);
+  const originalRecords = [before, target, after];
+  const store = createStore({ records: originalRecords });
+  const coordinator = createCoordinator(store, undefined, realStreamReport);
+
+  const response = await coordinator.correctFinalizedReportMappings({
+    reportId: target.reportId,
+    changes: [{
+      variationNumber: 10,
+      expectedStatus: "payment_complete",
+      expectedSku: "TEE-M",
+      sku: "TEE-L",
+    }],
+  });
+
+  assert.equal(response.completedVariations[0].expectedSku, "TEE-L");
+  const persisted = store.read();
+  assert.deepEqual(
+    persisted.map((record) => record.reportId),
+    originalRecords.map((record) => record.reportId),
+  );
+  assert.deepEqual(persisted[0], before);
+  assert.deepEqual(persisted[2], after);
+  assert.equal(persisted[1].reportId, target.reportId);
+  assert.equal(persisted[1].displayName, "Keep this name");
+  assert.equal(persisted[1].lifecycleStatus, "finalized");
+  assert.equal(persisted[1].archived, true);
+
+  const corrected = persisted[1].report;
+  assert.equal(corrected.completedSales[0].sku, "TEE-L");
+  assert.equal(corrected.completedSales[0].unitCostCents, 700);
+  assert.equal(corrected.completedSales[0].grossProfitCents, 800);
+  assert.equal(corrected.totals.costOfGoodsCents, 700);
+  assert.equal(corrected.totals.grossProfitCents, 800);
+  assert.deepEqual(
+    corrected.inventory.map((item) => [
+      item.sku,
+      item.streamSoldQuantity,
+      item.replacementQuantity,
+      item.oversoldQuantity,
+      item.requiresRecount,
+    ]),
+    [
+      ["TEE-L", 1, 0, 1, true],
+      ["TEE-M", 0, 2, 0, false],
+    ],
+  );
+  assert.deepEqual(
+    corrected.sheetRows.map((row) => [
+      row.sku,
+      row.quantity_on_hand_at_import,
+      row.unit_cost,
+    ]),
+    [
+      ["TEE-L", 0, "7.00"],
+      ["TEE-M", 2, "5.00"],
+    ],
+  );
+  assert.deepEqual(corrected.warnings, [{
+    code: "inventory_recount_required",
+    count: 1,
+    sku: "TEE-L",
+  }]);
+  assert.deepEqual(corrected.completeness, {
+    status: "provisional",
+    reasonCodes: ["inventory_recount_required"],
+  });
+  assert.deepEqual(realStreamReport.hydrateStreamReport(corrected), corrected);
+
+  const reopened = createCoordinator(store, undefined, realStreamReport);
+  const durable = await reopened.getReport(target.reportId);
+  assert.equal(durable.displayName, "Keep this name");
+  assert.equal(durable.lifecycleStatus, "finalized");
+  assert.deepEqual(durable.report, corrected);
+});
+
+test("ineligible mapping saves reject before transformation or persistence", async () => {
+  const scenarios = [
+    {
+      options: { lifecycleStatus: "pending_end" },
+      code: "REPORT_NOT_FINALIZED",
+    },
+    {
+      options: { activeBiddingVariationNumber: 12 },
+      code: "ACTIVE_BIDDING_AT_END",
+    },
+    {
+      options: { paymentFixingCount: 1 },
+      code: "PAYMENT_FIXING_ORDERS_REMAIN",
+    },
+    {
+      options: { pendingMappedCount: 1 },
+      code: "PENDING_MAPPED_ORDERS_REMAIN",
+    },
+    {
+      options: { unresolvedOrderCount: 1 },
+      code: "UNRESOLVED_ORDERS_REMAIN",
+    },
+    {
+      options: { completedSales: [], canceledOrders: [] },
+      code: "NO_EDITABLE_VARIATIONS",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const before = createSavedRecord(1);
+    const target = createOfflineEditorRecord(2, scenario.options);
+    const after = createSavedRecord(3, { archived: true });
+    const records = [before, target, after];
+    const store = createStore({ records });
+    let transformCount = 0;
+    const coordinator = createCoordinator(store, undefined, {
+      ...streamReport,
+      correctReportMappings() {
+        transformCount += 1;
+        throw new Error("The mapping transform must not run.");
+      },
+    });
+
+    await assert.rejects(
+      coordinator.correctFinalizedReportMappings({
+        reportId: target.reportId,
+        changes: [
+          {
+            variationNumber: 10,
+            expectedStatus: "payment_complete",
+            expectedSku: "TEE-M",
+            sku: "TEE-L",
+          },
+        ],
+      }),
+      (error) => error.code === scenario.code,
+    );
+    assert.equal(transformCount, 0);
+    assert.equal(store.saves.length, 0);
+    assert.deepEqual(store.read(), records);
+  }
+});
+
+test("queued mapping correction starts from the newest unit-cost-corrected report", async () => {
+  const target = createOfflineEditorRecord(1);
+  const store = createStore({ records: [target] });
+  let mappingInputUnitCost = null;
+  const reportModule = {
+    ...streamReport,
+    correctReportUnitCost(candidate, input) {
+      const corrected = clone(candidate);
+      corrected.inventory.find((item) => item.sku === input.sku)
+        .unitCostCents = input.unitCostCents;
+      return corrected;
+    },
+    correctReportMappings(candidate, changes) {
+      mappingInputUnitCost = candidate.inventory.find(
+        (item) => item.sku === "TEE-L",
+      ).unitCostCents;
+      const corrected = clone(candidate);
+      corrected.completedSales[0].sku = changes[0].sku;
+      return corrected;
+    },
+  };
+  const coordinator = createCoordinator(store, undefined, reportModule);
+  const costSave = coordinator.correctFinalizedReportUnitCost({
+    reportId: target.reportId,
+    sku: "TEE-L",
+    unitCostCents: 825,
+  });
+  const mappingSave = coordinator.correctFinalizedReportMappings({
+    reportId: target.reportId,
+    changes: [
+      {
+        variationNumber: 10,
+        expectedStatus: "payment_complete",
+        expectedSku: "TEE-M",
+        sku: "TEE-L",
+      },
+    ],
+  });
+
+  await Promise.all([costSave, mappingSave]);
+  assert.equal(mappingInputUnitCost, 825);
+  assert.equal(store.read()[0].inventory, undefined);
+  assert.equal(store.read()[0].report.inventory[1].unitCostCents, 825);
+  assert.equal(store.read()[0].report.completedSales[0].sku, "TEE-L");
+});
+
+test("mapping transform and storage failures leave every saved report unchanged", async () => {
+  const target = createOfflineEditorRecord(1);
+  const neighbor = createSavedRecord(2);
+  const records = [target, neighbor];
+  const command = {
+    reportId: target.reportId,
+    changes: [
+      {
+        variationNumber: 10,
+        expectedStatus: "payment_complete",
+        expectedSku: "TEE-M",
+        sku: "TEE-L",
+      },
+      {
+        variationNumber: 999,
+        expectedStatus: "canceled",
+        expectedSku: null,
+        sku: "TEE-M",
+      },
+    ],
+  };
+  const transformStore = createStore({ records });
+  const transformCoordinator = createCoordinator(
+    transformStore,
+    undefined,
+    {
+      ...streamReport,
+      correctReportMappings() {
+        throw Object.assign(new Error("Variation 999 is stale."), {
+          code: "STALE_REPORT_MAPPING",
+        });
+      },
+    },
+  );
+
+  await assert.rejects(
+    transformCoordinator.correctFinalizedReportMappings(command),
+    (error) => error.code === "STALE_REPORT_MAPPING",
+  );
+  assert.deepEqual(transformStore.read(), records);
+  assert.equal(transformStore.saves.length, 0);
+
+  const saveStore = createStore({ records, failSave: true });
+  const saveCoordinator = createCoordinator(saveStore);
+  await assert.rejects(
+    saveCoordinator.correctFinalizedReportMappings(command),
+    (error) => error.code === "STORAGE_WRITE_FAILED",
+  );
+  assert.deepEqual(saveStore.read(), records);
+  assert.equal(saveStore.saves.length, 0);
 });
 
 test("bulk restore and permanent delete reject mixed selections without partial changes", async () => {

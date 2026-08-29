@@ -62,6 +62,7 @@ const REPORT_SELECTORS = [
   "#completed-sales-disclosure",
   "#copy-inventory",
   "#download-inventory",
+  "#edit-offline-report",
   "#inventory-instructions",
   "#inventory-rows",
   "#most-profitable-items",
@@ -70,6 +71,7 @@ const REPORT_SELECTORS = [
   "#most-sold-items",
   "#most-sold-products",
   "#most-sold-products-card",
+  "#offline-editor-eligibility",
   "#performance-empty",
   "#performance-row-count",
   "#performance-rows",
@@ -289,6 +291,7 @@ test("packaged report surface is local, printable, and exposes the required acti
   const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
 
   assert.match(html, /Print \/ Save as PDF/);
+  assert.match(html, /Edit in Offline Tracker/);
   assert.match(html, /Copy Updated Inventory/);
   assert.match(html, /Download Updated Inventory CSV/);
   assert.match(html, /Finish unresolved payments/);
@@ -323,7 +326,7 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Ctrl\+V/);
   assert.match(
     html,
-    /<script src="\.\.\/shared\/tiktok-fee-calculator\.js"><\/script>[\s\S]*?<script src="report-page\.js"><\/script>/,
+    /<script src="\.\.\/shared\/tiktok-fee-calculator\.js"><\/script>[\s\S]*?<script src="offline-report-editor-client\.js"><\/script>[\s\S]*?<script src="report-page\.js"><\/script>/,
   );
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
@@ -373,7 +376,16 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
     cover,
     /id="print-report"[\s\S]*?class="primary-action report-print-action screen-only"[\s\S]*?type="button"[\s\S]*?disabled/,
   );
+  assert.match(
+    cover,
+    /id="print-report"[\s\S]*?Print \/ Save as PDF[\s\S]*?id="edit-offline-report"[\s\S]*?Edit in Offline Tracker/,
+  );
+  assert.match(
+    cover,
+    /id="edit-offline-report"[\s\S]*?class="secondary-action report-offline-editor-action screen-only"[\s\S]*?aria-describedby="offline-editor-eligibility"[\s\S]*?data-state="loading"[\s\S]*?disabled/,
+  );
   assert.equal((html.match(/id="print-report"/g) ?? []).length, 1);
+  assert.equal((html.match(/id="edit-offline-report"/g) ?? []).length, 1);
   assert.match(
     cover,
     /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?<dt>Report name<\/dt>[\s\S]*?id="report-name"[\s\S]*?<\/dl>/,
@@ -403,6 +415,10 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
   assert.match(
     css,
     /\.report-print-action\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?margin-left:\s*auto;/,
+  );
+  assert.match(
+    printCss,
+    /\.screen-only,[\s\S]*?\.action-feedback\s*\{[\s\S]*?display:\s*none !important;/,
   );
   assert.match(
     printCss,
@@ -899,6 +915,176 @@ test("handoff instructions toggle while Print preserves item-variation state", a
   document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [false, true]);
   assert.equal(completedSales.open, true);
+});
+
+test("Offline Report Editor stays disabled while loading, then routes an editable report", async () => {
+  const document = new FakeDocument();
+  const requests = [];
+  const navigations = [];
+  let resolveEligibility;
+  const eligibilityResponse = new Promise((resolve) => {
+    resolveEligibility = resolve;
+  });
+  const location = {
+    search: `?reportId=${encodeURIComponent(REPORT_ID)}`,
+    assign(url) {
+      navigations.push(url);
+    },
+  };
+
+  reportPage.mountStreamReportPage({
+    document,
+    location,
+    navigator: {},
+    runtime: {
+      getURL(pathname) {
+        assert.equal(pathname, "report/offline-editor.html");
+        return `chrome-extension://tracker/${pathname}`;
+      },
+    },
+    protocol,
+    reportModule: {
+      hydrateStreamReport(report) {
+        return report;
+      },
+    },
+    clientModule: {
+      createStreamReportClient() {
+        return {
+          async getReport() {
+            return {
+              reportId: REPORT_ID,
+              lifecycleStatus: "finalized",
+              report: createReport(),
+            };
+          },
+        };
+      },
+    },
+    offlineEditorClientModule: {
+      createOfflineReportEditorClient() {
+        return {
+          loadEditorData(options) {
+            requests.push(options);
+            return eligibilityResponse;
+          },
+        };
+      },
+    },
+    print() {},
+  });
+
+  const button = document.querySelector("#edit-offline-report");
+  const status = document.querySelector("#offline-editor-eligibility");
+
+  assert.equal(button.disabled, true);
+  assert.equal(button.dataset.state, "loading");
+  assert.equal(
+    status.textContent,
+    "Checking whether this report can be edited offline.",
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests, [{ reportId: REPORT_ID }]);
+  assert.equal(button.disabled, true);
+  assert.equal(navigations.length, 0);
+
+  resolveEligibility({
+    reportId: REPORT_ID,
+    eligibility: { status: "editable", code: null, reason: null },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(button.disabled, false);
+  assert.equal(button.dataset.state, "editable");
+  assert.equal(
+    status.textContent,
+    "This saved report can be edited in the Offline Report Editor.",
+  );
+
+  button.click();
+  assert.deepEqual(navigations, [
+    `chrome-extension://tracker/report/offline-editor.html?reportId=${
+      encodeURIComponent(REPORT_ID)
+    }`,
+  ]);
+});
+
+test("Offline Report Editor exposes exact blocked and read-only reasons", async () => {
+  const unavailable = [
+    {
+      status: "blocked",
+      code: "ACTIVE_STREAM_ALREADY_EXISTS",
+      reason: "End the active tracker stream before editing a report.",
+    },
+    {
+      status: "read_only",
+      code: "NO_EDITABLE_VARIATIONS",
+      reason: "This report has no saved completed or canceled variations to edit.",
+    },
+  ];
+
+  for (const eligibility of unavailable) {
+    const document = new FakeDocument();
+    const navigations = [];
+
+    reportPage.mountStreamReportPage({
+      document,
+      location: {
+        search: `?reportId=${encodeURIComponent(REPORT_ID)}`,
+        assign(url) {
+          navigations.push(url);
+        },
+      },
+      navigator: {},
+      runtime: {
+        getURL(pathname) {
+          return `chrome-extension://tracker/${pathname}`;
+        },
+      },
+      protocol,
+      reportModule: {
+        hydrateStreamReport(report) {
+          return report;
+        },
+      },
+      clientModule: {
+        createStreamReportClient() {
+          return {
+            async getReport() {
+              return {
+                reportId: REPORT_ID,
+                lifecycleStatus: "finalized",
+                report: createReport(),
+              };
+            },
+          };
+        },
+      },
+      offlineEditorClientModule: {
+        createOfflineReportEditorClient() {
+          return {
+            async loadEditorData() {
+              return { reportId: REPORT_ID, eligibility };
+            },
+          };
+        },
+      },
+      print() {},
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const button = document.querySelector("#edit-offline-report");
+    const status = document.querySelector("#offline-editor-eligibility");
+    assert.equal(button.disabled, true);
+    assert.equal(button.dataset.state, eligibility.status);
+    assert.equal(button.title, eligibility.reason);
+    assert.equal(status.textContent, eligibility.reason);
+
+    button.click();
+    assert.deepEqual(navigations, []);
+  }
 });
 
 test("report rendering preserves text, renders SKU and product ties, and never creates markup from values", () => {
@@ -1702,6 +1888,7 @@ test("failed report unit-cost correction keeps the selected SKU and entered cost
 test("report payment correction confirms, saves, refreshes totals, and removes the resolved row", async () => {
   const document = new FakeDocument();
   const confirmations = [];
+  const eligibilityChecks = [];
   const resolutions = [];
   let finishResolution;
   const resolutionGate = new Promise((resolve) => {
@@ -1766,6 +1953,32 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
         };
       },
     },
+    offlineEditorClientModule: {
+      createOfflineReportEditorClient() {
+        return {
+          async loadEditorData({ reportId }) {
+            eligibilityChecks.push(reportId);
+            const blocked = unresolvedOrders.length > 0;
+
+            return {
+              reportId,
+              eligibility: blocked
+                ? {
+                    status: "blocked",
+                    code: "PAYMENT_FIXING_ORDERS_REMAIN",
+                    reason:
+                      "Resolve all processing and payment-fixing orders before editing this report.",
+                  }
+                : {
+                    status: "editable",
+                    code: null,
+                    reason: null,
+                  },
+            };
+          },
+        };
+      },
+    },
     confirm(message) {
       confirmations.push(message);
       return true;
@@ -1773,6 +1986,18 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
   });
 
   await new Promise((resolve) => setImmediate(resolve));
+  const offlineEditorButton = document.querySelector("#edit-offline-report");
+  const offlineEditorStatus = document.querySelector(
+    "#offline-editor-eligibility",
+  );
+
+  assert.deepEqual(eligibilityChecks, [REPORT_ID]);
+  assert.equal(offlineEditorButton.disabled, true);
+  assert.equal(offlineEditorButton.dataset.state, "blocked");
+  assert.equal(
+    offlineEditorStatus.textContent,
+    "Resolve all processing and payment-fixing orders before editing this report.",
+  );
   const row = document.querySelector("#payment-resolution-orders").children[0];
   row.children[1].children[1].value = "18.25";
   row.children[2].click();
@@ -1792,6 +2017,14 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
+  assert.deepEqual(eligibilityChecks, [REPORT_ID, REPORT_ID]);
+  assert.equal(offlineEditorButton.disabled, false);
+  assert.equal(offlineEditorButton.dataset.state, "editable");
+  assert.equal(offlineEditorButton.title, "");
+  assert.equal(
+    offlineEditorStatus.textContent,
+    "This saved report can be edited in the Offline Report Editor.",
+  );
   assert.deepEqual(resolutions, [
     {
       reportId: REPORT_ID,

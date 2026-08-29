@@ -16,6 +16,7 @@
     const MAX_ROWS = 1000;
     const MAX_TEXT_LENGTH = 200;
     const MAX_ID_LENGTH = 200;
+    const MAX_INVENTORY_UPDATE_LINE_LENGTH = 128;
     const LOCAL_STREAM_ID_PATTERN =
       /^local-stream:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
     const REPORT_ID_PATTERN =
@@ -655,17 +656,20 @@
         value.requiresRecount,
         `${path}.requiresRecount`,
       );
+      const exactOversoldQuantity =
+        BigInt(baselineSoldQuantity) +
+        BigInt(pendingQuantity) -
+        BigInt(openingQuantity);
+      const expectedOversoldQuantity =
+        exactOversoldQuantity > 0n ? exactOversoldQuantity : 0n;
 
       if (
         calculatedRemainingQuantity !== openingQuantity - baselineSoldQuantity ||
         replacementQuantity !== Math.max(0, calculatedRemainingQuantity) ||
         availableAfterReservationsQuantity !==
           Math.max(0, calculatedRemainingQuantity - pendingQuantity) ||
-        oversoldQuantity !==
-          Math.max(
-            0,
-            baselineSoldQuantity + pendingQuantity - openingQuantity,
-          ) ||
+        expectedOversoldQuantity > BigInt(Number.MAX_SAFE_INTEGER) ||
+        BigInt(oversoldQuantity) !== expectedOversoldQuantity ||
         requiresRecount !== (oversoldQuantity > 0) ||
         streamSoldQuantity > baselineSoldQuantity
       ) {
@@ -1138,7 +1142,7 @@
         "report.inventoryUpdateLines",
       ).map((line, index) =>
         requireText(line, `report.inventoryUpdateLines[${index}]`, {
-          maximum: 100,
+          maximum: MAX_INVENTORY_UPDATE_LINE_LENGTH,
         }),
       );
       const sheetRows = requireArray(candidate.sheetRows, "report.sheetRows")
@@ -1689,6 +1693,484 @@
       };
     }
 
+    function normalizeMappingCorrectionSku(value, path) {
+      if (value === null) {
+        return null;
+      }
+
+      if (
+        typeof value !== "string" ||
+        value !== value.trim() ||
+        !SKU_PATTERN.test(value)
+      ) {
+        fail("INVALID_ARGUMENT", `${path} is not a supported SKU or null.`);
+      }
+
+      return value;
+    }
+
+    function normalizeReportMappingChanges(changes) {
+      const changeKeys = Array.isArray(changes) ? Object.keys(changes) : [];
+
+      if (
+        !Array.isArray(changes) ||
+        changes.length < 1 ||
+        changes.length > MAX_ROWS ||
+        changeKeys.length !== changes.length ||
+        changeKeys.some((key, index) => key !== String(index))
+      ) {
+        fail(
+          "INVALID_ARGUMENT",
+          `Report mapping changes must contain between 1 and ${MAX_ROWS} entries.`,
+        );
+      }
+
+      const expectedKeys = [
+        "expectedSku",
+        "expectedStatus",
+        "sku",
+        "variationNumber",
+      ];
+      const seenVariationNumbers = new Set();
+
+      return changes.map((change, index) => {
+        const path = `changes[${index}]`;
+
+        if (!isPlainRecord(change)) {
+          fail("INVALID_ARGUMENT", `${path} must be an object.`);
+        }
+
+        const actualKeys = Object.keys(change).sort();
+
+        if (
+          actualKeys.length !== expectedKeys.length ||
+          actualKeys.some((key, keyIndex) => key !== expectedKeys[keyIndex])
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            `${path} must contain exactly: ${expectedKeys.join(", ")}.`,
+          );
+        }
+
+        if (
+          !Number.isSafeInteger(change.variationNumber) ||
+          change.variationNumber < 1
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            `${path}.variationNumber must be a positive safe integer.`,
+          );
+        }
+
+        if (
+          change.expectedStatus !== "payment_complete" &&
+          change.expectedStatus !== "canceled"
+        ) {
+          fail(
+            "INVALID_ARGUMENT",
+            `${path}.expectedStatus must be payment_complete or canceled.`,
+          );
+        }
+
+        if (seenVariationNumbers.has(change.variationNumber)) {
+          fail(
+            "INVALID_ARGUMENT",
+            `Variation ${change.variationNumber} appears more than once in the correction batch.`,
+          );
+        }
+
+        seenVariationNumbers.add(change.variationNumber);
+
+        return {
+          variationNumber: change.variationNumber,
+          expectedStatus: change.expectedStatus,
+          expectedSku: normalizeMappingCorrectionSku(
+            change.expectedSku,
+            `${path}.expectedSku`,
+          ),
+          sku: normalizeMappingCorrectionSku(change.sku, `${path}.sku`),
+        };
+      });
+    }
+
+    function correctionSafeInteger(value, path, { signed = false } = {}) {
+      const maximum = BigInt(Number.MAX_SAFE_INTEGER);
+      const minimum = signed ? BigInt(Number.MIN_SAFE_INTEGER) : 0n;
+
+      if (value < minimum || value > maximum) {
+        fail(
+          "INVALID_ARGUMENT",
+          `${path} would exceed the supported safe-integer range.`,
+        );
+      }
+
+      return Number(value);
+    }
+
+    function rebuildMappingDerivedReport(
+      hydrated,
+      completedSales,
+      canceledOrders,
+    ) {
+      const aggregateBySku = new Map(
+        hydrated.inventory.map((item) => [
+          item.sku,
+          {
+            soldQuantity: 0n,
+            revenueCents: 0n,
+            costOfGoodsCents: 0n,
+          },
+        ]),
+      );
+      let committedSalesCount = 0n;
+      let committedRevenueCents = 0n;
+      let costOfGoodsCents = 0n;
+
+      completedSales.forEach((sale) => {
+        if (!sale.mapped) {
+          return;
+        }
+
+        const aggregate = aggregateBySku.get(sale.sku);
+
+        if (!aggregate) {
+          fail(
+            "UNKNOWN_SKU",
+            `Report inventory does not contain SKU ${sale.sku}.`,
+          );
+        }
+
+        const soldPriceCents = BigInt(sale.soldPriceCents);
+        const unitCostCents = BigInt(sale.unitCostCents);
+
+        correctionSafeInteger(
+          soldPriceCents - unitCostCents,
+          `Variation ${sale.variationNumber} gross profit`,
+          { signed: true },
+        );
+        aggregate.soldQuantity += 1n;
+        aggregate.revenueCents += soldPriceCents;
+        aggregate.costOfGoodsCents += unitCostCents;
+        committedSalesCount += 1n;
+        committedRevenueCents += soldPriceCents;
+        costOfGoodsCents += unitCostCents;
+      });
+
+      const itemPerformance = hydrated.inventory.map((item) => {
+        const aggregate = aggregateBySku.get(item.sku);
+
+        return {
+          sku: item.sku,
+          item: item.item,
+          style: item.style,
+          size: item.size,
+          soldQuantity: correctionSafeInteger(
+            aggregate.soldQuantity,
+            `${item.sku} sold quantity`,
+          ),
+          revenueCents: correctionSafeInteger(
+            aggregate.revenueCents,
+            `${item.sku} revenue`,
+          ),
+          costOfGoodsCents: correctionSafeInteger(
+            aggregate.costOfGoodsCents,
+            `${item.sku} cost of goods`,
+          ),
+          grossProfitCents: correctionSafeInteger(
+            aggregate.revenueCents - aggregate.costOfGoodsCents,
+            `${item.sku} gross profit`,
+            { signed: true },
+          ),
+        };
+      });
+      const inventory = hydrated.inventory.map((item) => {
+        const correctedStreamSoldQuantity =
+          aggregateBySku.get(item.sku).soldQuantity;
+        const outsideStreamSales =
+          BigInt(item.baselineSoldQuantity) -
+          BigInt(item.streamSoldQuantity);
+
+        if (outsideStreamSales < 0n) {
+          fail(
+            "INVALID_REPORT",
+            `${item.sku} has fewer baseline sales than report sales.`,
+          );
+        }
+
+        const baselineSoldQuantity =
+          outsideStreamSales + correctedStreamSoldQuantity;
+        const calculatedRemainingQuantity =
+          BigInt(item.openingQuantity) - baselineSoldQuantity;
+        const replacementQuantity =
+          calculatedRemainingQuantity > 0n
+            ? calculatedRemainingQuantity
+            : 0n;
+        const availableAfterReservations =
+          calculatedRemainingQuantity - BigInt(item.pendingQuantity);
+        const availableAfterReservationsQuantity =
+          availableAfterReservations > 0n
+            ? availableAfterReservations
+            : 0n;
+        const oversold =
+          baselineSoldQuantity +
+          BigInt(item.pendingQuantity) -
+          BigInt(item.openingQuantity);
+        const oversoldQuantity = oversold > 0n ? oversold : 0n;
+        const normalizedOversoldQuantity = correctionSafeInteger(
+          oversoldQuantity,
+          `${item.sku} oversold quantity`,
+        );
+
+        return {
+          ...item,
+          streamSoldQuantity: correctionSafeInteger(
+            correctedStreamSoldQuantity,
+            `${item.sku} stream sold quantity`,
+          ),
+          baselineSoldQuantity: correctionSafeInteger(
+            baselineSoldQuantity,
+            `${item.sku} baseline sold quantity`,
+          ),
+          calculatedRemainingQuantity: correctionSafeInteger(
+            calculatedRemainingQuantity,
+            `${item.sku} calculated remaining quantity`,
+            { signed: true },
+          ),
+          replacementQuantity: correctionSafeInteger(
+            replacementQuantity,
+            `${item.sku} replacement quantity`,
+          ),
+          availableAfterReservationsQuantity: correctionSafeInteger(
+            availableAfterReservationsQuantity,
+            `${item.sku} available quantity`,
+          ),
+          oversoldQuantity: normalizedOversoldQuantity,
+          requiresRecount: normalizedOversoldQuantity > 0,
+        };
+      });
+      const normalizedCommittedSalesCount = correctionSafeInteger(
+        committedSalesCount,
+        "Report committed sales count",
+      );
+      const normalizedCommittedRevenueCents = correctionSafeInteger(
+        committedRevenueCents,
+        "Report committed revenue",
+      );
+      const normalizedCostOfGoodsCents = correctionSafeInteger(
+        costOfGoodsCents,
+        "Report cost of goods",
+      );
+      const totals = {
+        ...hydrated.totals,
+        committedSalesCount: normalizedCommittedSalesCount,
+        unmappedCompletedCount:
+          completedSales.length - normalizedCommittedSalesCount,
+        committedRevenueCents: normalizedCommittedRevenueCents,
+        costOfGoodsCents: normalizedCostOfGoodsCents,
+        grossProfitCents: correctionSafeInteger(
+          committedRevenueCents - costOfGoodsCents,
+          "Report gross profit",
+          { signed: true },
+        ),
+      };
+      const productPerformance = createProductPerformance(itemPerformance);
+      const warnings = expectedWarnings(hydrated.metadata, totals, inventory);
+      const reasonCodes = REASON_ORDER.filter((code) =>
+        warnings.some((warning) => warning.code === code),
+      );
+      const sheetRows = inventory.map((row) => ({
+        sku: row.sku,
+        item: row.item,
+        style: row.style,
+        size: row.size,
+        quantity_on_hand_at_import: row.replacementQuantity,
+        unit_cost: centsToDecimal(row.unitCostCents),
+      }));
+
+      return hydrateStreamReport({
+        ...hydrated,
+        completeness: {
+          status: reasonCodes.length === 0 ? "final" : "provisional",
+          reasonCodes,
+        },
+        totals,
+        topItems: {
+          mostSold: expectedTopMetric(
+            itemPerformance,
+            "sold_quantity",
+            "soldQuantity",
+          ),
+          mostProfitable: expectedTopMetric(
+            itemPerformance,
+            "gross_profit_cents",
+            "grossProfitCents",
+          ),
+        },
+        topProducts: {
+          mostSold: expectedTopProductMetric(
+            productPerformance,
+            "sold_quantity",
+            "soldQuantity",
+          ),
+          mostProfitable: expectedTopProductMetric(
+            productPerformance,
+            "gross_profit_cents",
+            "grossProfitCents",
+          ),
+        },
+        itemPerformance,
+        productPerformance,
+        completedSales,
+        canceledOrders,
+        inventory,
+        inventoryUpdateLines: inventory.map(
+          (row) => `SKU: ${row.sku} Updated count: ${row.replacementQuantity}`,
+        ),
+        sheetRows,
+        warnings,
+      });
+    }
+
+    function correctReportMappings(report, changes) {
+      const hydrated = hydrateStreamReport(report);
+      const normalizedChanges = normalizeReportMappingChanges(changes);
+      const inventoryBySku = new Map(
+        hydrated.inventory.map((item) => [item.sku, item]),
+      );
+      const terminalByVariationNumber = new Map(
+        hydrated.completedSales.map((sale) => [
+          sale.variationNumber,
+          { status: "payment_complete", entry: sale },
+        ]),
+      );
+
+      hydrated.canceledOrders?.forEach((order) => {
+        terminalByVariationNumber.set(order.variationNumber, {
+          status: "canceled",
+          entry: order,
+        });
+      });
+
+      normalizedChanges.forEach((change) => {
+        [change.expectedSku, change.sku]
+          .filter((sku) => sku !== null)
+          .forEach((sku) => {
+            if (!inventoryBySku.has(sku)) {
+              fail(
+                "UNKNOWN_SKU",
+                `Report inventory does not contain SKU ${sku}.`,
+              );
+            }
+          });
+
+        const terminal = terminalByVariationNumber.get(
+          change.variationNumber,
+        );
+
+        if (!terminal) {
+          if (
+            change.expectedStatus === "canceled" &&
+            hydrated.canceledOrders === null
+          ) {
+            fail(
+              "CANCELED_DETAILS_UNAVAILABLE",
+              "This legacy report does not contain individual canceled-order details.",
+            );
+          }
+
+          fail(
+            "UNKNOWN_VARIATION",
+            `Report does not contain terminal variation ${change.variationNumber}.`,
+          );
+        }
+
+        const currentSku = terminal.entry.sku;
+
+        if (
+          terminal.status !== change.expectedStatus ||
+          (currentSku !== change.expectedSku && currentSku !== change.sku)
+        ) {
+          fail(
+            "STALE_REPORT_MAPPING",
+            `Variation ${change.variationNumber} no longer matches the expected report mapping.`,
+          );
+        }
+      });
+
+      const changesByVariationNumber = new Map(
+        normalizedChanges.map((change) => [change.variationNumber, change]),
+      );
+      const completedSales = hydrated.completedSales.map((sale) => {
+        const change = changesByVariationNumber.get(sale.variationNumber);
+
+        if (!change) {
+          return sale;
+        }
+
+        if (change.sku === null) {
+          return {
+            ...sale,
+            mapped: false,
+            sku: null,
+            item: null,
+            style: null,
+            size: null,
+            unitCostCents: null,
+            grossProfitCents: null,
+          };
+        }
+
+        const inventoryItem = inventoryBySku.get(change.sku);
+
+        return {
+          ...sale,
+          mapped: true,
+          sku: inventoryItem.sku,
+          item: inventoryItem.item,
+          style: inventoryItem.style,
+          size: inventoryItem.size,
+          unitCostCents: inventoryItem.unitCostCents,
+          grossProfitCents:
+            sale.soldPriceCents - inventoryItem.unitCostCents,
+        };
+      });
+      const canceledOrders = hydrated.canceledOrders?.map((order) => {
+        const change = changesByVariationNumber.get(order.variationNumber);
+
+        if (!change) {
+          return order;
+        }
+
+        if (change.sku === null) {
+          return {
+            ...order,
+            mapped: false,
+            sku: null,
+            item: null,
+            style: null,
+            size: null,
+          };
+        }
+
+        const inventoryItem = inventoryBySku.get(change.sku);
+
+        return {
+          ...order,
+          mapped: true,
+          sku: inventoryItem.sku,
+          item: inventoryItem.item,
+          style: inventoryItem.style,
+          size: inventoryItem.size,
+        };
+      }) ?? null;
+
+      return rebuildMappingDerivedReport(
+        hydrated,
+        completedSales,
+        canceledOrders,
+      );
+    }
+
     function correctReportUnitCost(report, input) {
       const hydrated = hydrateStreamReport(report);
       const correction = normalizeUnitCostCorrection(input);
@@ -1847,6 +2329,7 @@
       REPORT_ID_PATTERN,
       SHEET_HEADERS,
       StreamReportError,
+      correctReportMappings,
       correctReportUnitCost,
       createReportIdForStream,
       createStreamReport,

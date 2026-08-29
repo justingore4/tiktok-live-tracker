@@ -92,6 +92,8 @@ function createWorkerHarness(options = {}) {
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
   const reportPageUrl =
     `chrome-extension://${extensionId}/report/report.html`;
+  const offlineEditorPageUrl =
+    `chrome-extension://${extensionId}/report/offline-editor.html`;
   let requestedPanelBehavior = null;
   let storeOptions = null;
   let coordinatorOptions = null;
@@ -574,7 +576,104 @@ function createWorkerHarness(options = {}) {
     : JSON.parse(JSON.stringify(options.paymentReportRecord));
   let remainingReportReplacementFailures =
     options.reportReplacementFailureCount ?? 0;
+  function createOfflineEditorFixture(
+    reportId,
+    expectedSku = "TEE-M",
+    eligibility = { status: "editable", code: null, reason: null },
+  ) {
+    const createInventoryRow = (sku, size, openingQuantity) => {
+      const soldQuantity = expectedSku === sku ? 1 : 0;
+      const calculatedRemainingQuantity = openingQuantity - soldQuantity;
+
+      return {
+        sku,
+        item: "Tee",
+        style: "black",
+        size,
+        unitCostCents: sku === "TEE-M" ? 500 : 700,
+        openingQuantity,
+        streamSoldQuantity: soldQuantity,
+        baselineSoldQuantity: soldQuantity,
+        pendingQuantity: 0,
+        calculatedRemainingQuantity,
+        replacementQuantity: calculatedRemainingQuantity,
+        availableAfterReservationsQuantity: calculatedRemainingQuantity,
+        oversoldQuantity: 0,
+        requiresRecount: false,
+      };
+    };
+
+    return {
+      reportId,
+      displayName: null,
+      endedAt: "2026-08-19T12:00:00.000Z",
+      eligibility,
+      canceledDetailsAvailable: true,
+      completedVariations: [
+        {
+          variationNumber: 10,
+          expectedStatus: "payment_complete",
+          expectedSku,
+          soldPriceCents: 1500,
+        },
+      ],
+      canceledVariations: [],
+      inventory: [
+        createInventoryRow("TEE-M", "M", 2),
+        createInventoryRow("TEE-L", "L", 1),
+      ],
+    };
+  }
   const reportCoordinator = {
+    async loadOfflineEditorData(input) {
+      reportCalls.push({
+        type: "load_offline_editor",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+      const eligibility = input.activeStreamExists
+        ? {
+            status: "blocked",
+            code: "ACTIVE_STREAM_ALREADY_EXISTS",
+            reason: "End the active tracker stream before editing a report.",
+          }
+        : { status: "editable", code: null, reason: null };
+      const fallback = createOfflineEditorFixture(
+        input.reportId,
+        "TEE-M",
+        eligibility,
+      );
+
+      return JSON.parse(JSON.stringify(
+        options.offlineEditorData ?? fallback,
+      ));
+    },
+    async correctFinalizedReportMappings(input) {
+      reportCalls.push({
+        type: "correct_offline_mappings",
+        input: JSON.parse(JSON.stringify(input)),
+      });
+
+      if (options.offlineMappingCorrectionError) {
+        throw options.offlineMappingCorrectionError === "known"
+          ? new FakeStreamReportStorageError(
+              "STORAGE_WRITE_FAILED",
+              "Could not save the corrected stream report.",
+            )
+          : options.offlineMappingCorrectionError;
+      }
+
+      return JSON.parse(JSON.stringify(
+        options.mappingCorrectedEditorData ??
+          options.offlineEditorData ?? {
+            ...createOfflineEditorFixture(
+              input.reportId,
+              input.changes.find(
+                (change) => change.expectedStatus === "payment_complete",
+              )?.sku ?? null,
+            ),
+          },
+      ));
+    },
     async correctFinalizedReportUnitCost(input) {
       reportCalls.push({
         type: "correct_unit_cost",
@@ -1212,6 +1311,7 @@ function createWorkerHarness(options = {}) {
     inventoryImportProtocol,
     reportCalls,
     reportCoordinator,
+    offlineEditorPageUrl,
     reportPageUrl,
     listeners,
     liveBidSyncCalls,
@@ -3474,6 +3574,201 @@ test("report reads and archive mutations enforce exact extension senders", async
         "Only the extension side panel and packaged report page can read stream reports.",
     },
   });
+});
+
+test("Offline Report Editor commands enforce exact packaged-page senders", async () => {
+  const harness = createWorkerHarness();
+  const reportId =
+    "stream-report:11111111-1111-4111-8111-111111111111";
+  const loadMessage = harness.createReportMessage({
+    type: "get_offline_editor_data",
+    reportId,
+  });
+  const changes = [
+    {
+      variationNumber: 10,
+      expectedStatus: "payment_complete",
+      expectedSku: "TEE-M",
+      sku: "TEE-L",
+    },
+  ];
+  const saveMessage = harness.createReportMessage({
+    type: "save_offline_editor_mappings",
+    reportId,
+    changes,
+  });
+  const reportSender = harness.createSender({
+    url: `${harness.reportPageUrl}?reportId=${encodeURIComponent(reportId)}`,
+  });
+  const editorSender = harness.createSender({
+    url: `${harness.offlineEditorPageUrl}?reportId=${encodeURIComponent(reportId)}`,
+  });
+  const unrelatedSender = harness.createSender({
+    url: `chrome-extension://${harness.extensionId}/other.html`,
+  });
+  const reportLoad = harness.send(loadMessage, reportSender);
+  const editorLoad = harness.send(loadMessage, editorSender);
+  const sidePanelLoad = harness.send(loadMessage);
+  const dashboardLoad = harness.send(
+    loadMessage,
+    harness.createCaptureSender(),
+  );
+  const unrelatedLoad = harness.send(loadMessage, unrelatedSender);
+  const editorSave = harness.send(saveMessage, editorSender);
+  const reportSave = harness.send(saveMessage, reportSender);
+  const sidePanelSave = harness.send(saveMessage);
+  const dashboardSave = harness.send(
+    saveMessage,
+    harness.createCaptureSender(),
+  );
+  const unrelatedSave = harness.send(saveMessage, unrelatedSender);
+  const editorFullReportRead = harness.send(
+    harness.createReportMessage({ type: "get_report", reportId }),
+    editorSender,
+  );
+
+  for (const request of [reportLoad, editorLoad]) {
+    const response = await request.response;
+    assert.equal(response.ok, true);
+    assert.equal(response.data.reportId, reportId);
+    assert.equal(response.data.eligibility.status, "editable");
+  }
+
+  for (const request of [
+    sidePanelLoad,
+    dashboardLoad,
+    unrelatedLoad,
+  ]) {
+    assert.deepEqual(await request.response, {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "Only the packaged report page and Offline Report Editor can load editor data.",
+      },
+    });
+  }
+
+  assert.equal((await editorSave.response).ok, true);
+
+  for (const request of [
+    reportSave,
+    sidePanelSave,
+    dashboardSave,
+    unrelatedSave,
+  ]) {
+    assert.deepEqual(await request.response, {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "Only the packaged Offline Report Editor can save mapping corrections.",
+      },
+    });
+  }
+
+  assert.deepEqual(await editorFullReportRead.response, {
+    ok: false,
+    error: {
+      code: "UNAUTHORIZED_MESSAGE_SENDER",
+      message:
+        "Only the extension side panel and packaged report page can read stream reports.",
+    },
+  });
+  assert.equal(
+    harness.reportCalls.filter(
+      (call) => call.type === "load_offline_editor",
+    ).length,
+    2,
+  );
+  assert.deepEqual(
+    harness.reportCalls.find(
+      (call) => call.type === "correct_offline_mappings",
+    ).input,
+    { reportId, changes },
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "repair"),
+    false,
+  );
+  assert.equal(harness.dispatchCalls.length, 0);
+  assert.equal(harness.captureDispatchCalls.length, 0);
+  assert.equal(harness.nextItemQueueCalls.length, 0);
+  assert.equal(harness.inventoryImportCalls.length, 0);
+  assert.equal(harness.runtimeSendMessages.length, 0);
+  assert.equal(harness.streamDispatchCalls.length, 3);
+  assert.ok(harness.streamDispatchCalls.every(
+    (command) =>
+      command.type ===
+        harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+  ));
+});
+
+test("active tracker state blocks Offline Report Editor saves without side effects", async () => {
+  const activeSession = {
+    streamId: "local-stream:99999999-9999-4999-8999-999999999999",
+    startedAt: "2026-08-29T19:00:00.000Z",
+    identitySource: "local_session",
+  };
+  const harness = createWorkerHarness({ initialActiveSession: activeSession });
+  const reportId =
+    "stream-report:11111111-1111-4111-8111-111111111111";
+  const sender = harness.createSender({
+    url: `${harness.offlineEditorPageUrl}?reportId=${reportId}`,
+  });
+  const load = harness.send(
+    harness.createReportMessage({
+      type: "get_offline_editor_data",
+      reportId,
+    }),
+    sender,
+  );
+  const save = harness.send(
+    harness.createReportMessage({
+      type: "save_offline_editor_mappings",
+      reportId,
+      changes: [
+        {
+          variationNumber: 10,
+          expectedStatus: "payment_complete",
+          expectedSku: "TEE-M",
+          sku: "TEE-L",
+        },
+      ],
+    }),
+    sender,
+  );
+
+  assert.deepEqual((await load.response).data.eligibility, {
+    status: "blocked",
+    code: "ACTIVE_STREAM_ALREADY_EXISTS",
+    reason: "End the active tracker stream before editing a report.",
+  });
+  assert.deepEqual(await save.response, {
+    ok: false,
+    error: {
+      code: "ACTIVE_STREAM_ALREADY_EXISTS",
+      message: "End the active tracker stream before editing a report.",
+    },
+  });
+  assert.equal(
+    harness.reportCalls.some(
+      (call) => call.type === "correct_offline_mappings",
+    ),
+    false,
+  );
+  assert.equal(
+    harness.reportCalls.some((call) => call.type === "repair"),
+    false,
+  );
+  assert.equal(harness.dispatchCalls.length, 0);
+  assert.equal(harness.inventoryImportCalls.length, 0);
+  assert.equal(harness.streamDispatchCalls.length, 2);
+  assert.ok(harness.streamDispatchCalls.every(
+    (command) =>
+      command.type ===
+        harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
+  ));
 });
 
 function createPaymentCorrectionFixture(options = {}) {

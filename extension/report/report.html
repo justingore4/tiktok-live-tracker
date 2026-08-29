@@ -49,6 +49,25 @@
             >
               Print / Save as PDF
             </button>
+            <button
+              id="edit-offline-report"
+              class="secondary-action report-offline-editor-action screen-only"
+              type="button"
+              aria-describedby="offline-editor-eligibility"
+              data-state="loading"
+              disabled
+            >
+              Edit in Offline Tracker
+            </button>
+            <p
+              id="offline-editor-eligibility"
+              class="visually-hidden screen-only"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              Checking whether this report can be edited offline.
+            </p>
           </div>
           <dl class="report-meta" aria-label="Stream report details">
             <div>
@@ -371,6 +390,7 @@
     <script src="../shared/stream-report.js"></script>
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="stream-report-client.js"></script>
+    <script src="offline-report-editor-client.js"></script>
     <script src="report-page.js"></script>
   </body>
 </html>

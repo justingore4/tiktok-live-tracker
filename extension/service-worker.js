@@ -175,6 +175,9 @@ const inventoryImportService =
   });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const reportPageUrl = chrome.runtime.getURL("report/report.html");
+const offlineEditorPageUrl = chrome.runtime.getURL(
+  "report/offline-editor.html",
+);
 const reportReadCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
   streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
@@ -398,6 +401,44 @@ function validateSender(sender, command, boundary) {
         sender.url.startsWith(`${reportPageUrl}?`) ||
         sender.url.startsWith(`${reportPageUrl}#`)
       );
+    const fromOfflineEditor =
+      sender?.id === chrome.runtime.id &&
+      typeof sender.url === "string" &&
+      (
+        sender.url === offlineEditorPageUrl ||
+        sender.url.startsWith(`${offlineEditorPageUrl}?`) ||
+        sender.url.startsWith(`${offlineEditorPageUrl}#`)
+      );
+
+    if (
+      command.type ===
+        streamReportProtocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA
+    ) {
+      if (!fromReportPage && !fromOfflineEditor) {
+        failBoundary(
+          boundary.protocol,
+          "UNAUTHORIZED_MESSAGE_SENDER",
+          "Only the packaged report page and Offline Report Editor can load editor data.",
+        );
+      }
+
+      return;
+    }
+
+    if (
+      command.type ===
+        streamReportProtocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS
+    ) {
+      if (!fromOfflineEditor) {
+        failBoundary(
+          boundary.protocol,
+          "UNAUTHORIZED_MESSAGE_SENDER",
+          "Only the packaged Offline Report Editor can save mapping corrections.",
+        );
+      }
+
+      return;
+    }
 
     if (!fromSidePanel && !fromReportPage) {
       failBoundary(
@@ -1231,6 +1272,28 @@ async function updateUnitCostForReport(command) {
   });
 }
 
+async function loadOfflineEditorDataForReport(command, sessionState) {
+  return reportCoordinator.loadOfflineEditorData({
+    reportId: command.reportId,
+    activeStreamExists: sessionState.activeSession !== null,
+  });
+}
+
+async function saveOfflineEditorMappingsForReport(command, sessionState) {
+  if (sessionState.activeSession !== null) {
+    failBoundary(
+      streamReportProtocol,
+      "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before editing a report.",
+    );
+  }
+
+  return reportCoordinator.correctFinalizedReportMappings({
+    reportId: command.reportId,
+    changes: command.changes,
+  });
+}
+
 function dispatchBoundaryCommand(boundary, command) {
   if (boundary.protocol === streamSessionCoordinator) {
     return dispatchStreamSessionCommand(command);
@@ -1238,6 +1301,20 @@ function dispatchBoundaryCommand(boundary, command) {
 
   if (boundary.protocol === streamReportProtocol) {
     return getStreamSessionResponse().then(async ({ state }) => {
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA
+      ) {
+        return loadOfflineEditorDataForReport(command, state);
+      }
+
+      if (
+        command.type ===
+          streamReportProtocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS
+      ) {
+        return saveOfflineEditorMappingsForReport(command, state);
+      }
+
       await repairPendingReportsForSession(state, { required: true });
 
       if (
