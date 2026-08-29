@@ -92,8 +92,6 @@ function createWorkerHarness(options = {}) {
     `chrome-extension://${extensionId}/tagger/sidepanel.html`;
   const reportPageUrl =
     `chrome-extension://${extensionId}/report/report.html`;
-  const offlineEditorPageUrl =
-    `chrome-extension://${extensionId}/report/offline-editor.html`;
   let requestedPanelBehavior = null;
   let storeOptions = null;
   let coordinatorOptions = null;
@@ -1311,7 +1309,6 @@ function createWorkerHarness(options = {}) {
     inventoryImportProtocol,
     reportCalls,
     reportCoordinator,
-    offlineEditorPageUrl,
     reportPageUrl,
     listeners,
     liveBidSyncCalls,
@@ -3576,7 +3573,7 @@ test("report reads and archive mutations enforce exact extension senders", async
   });
 });
 
-test("Offline Report Editor commands enforce exact packaged-page senders", async () => {
+test("report mapping-correction commands enforce the exact packaged report page", async () => {
   const harness = createWorkerHarness();
   const reportId =
     "stream-report:11111111-1111-4111-8111-111111111111";
@@ -3600,21 +3597,22 @@ test("Offline Report Editor commands enforce exact packaged-page senders", async
   const reportSender = harness.createSender({
     url: `${harness.reportPageUrl}?reportId=${encodeURIComponent(reportId)}`,
   });
-  const editorSender = harness.createSender({
-    url: `${harness.offlineEditorPageUrl}?reportId=${encodeURIComponent(reportId)}`,
-  });
   const unrelatedSender = harness.createSender({
     url: `chrome-extension://${harness.extensionId}/other.html`,
   });
+  const removedEditorSender = harness.createSender({
+    url:
+      `chrome-extension://${harness.extensionId}/report/offline-editor.html` +
+      `?reportId=${encodeURIComponent(reportId)}`,
+  });
   const reportLoad = harness.send(loadMessage, reportSender);
-  const editorLoad = harness.send(loadMessage, editorSender);
   const sidePanelLoad = harness.send(loadMessage);
   const dashboardLoad = harness.send(
     loadMessage,
     harness.createCaptureSender(),
   );
   const unrelatedLoad = harness.send(loadMessage, unrelatedSender);
-  const editorSave = harness.send(saveMessage, editorSender);
+  const removedEditorLoad = harness.send(loadMessage, removedEditorSender);
   const reportSave = harness.send(saveMessage, reportSender);
   const sidePanelSave = harness.send(saveMessage);
   const dashboardSave = harness.send(
@@ -3622,64 +3620,50 @@ test("Offline Report Editor commands enforce exact packaged-page senders", async
     harness.createCaptureSender(),
   );
   const unrelatedSave = harness.send(saveMessage, unrelatedSender);
-  const editorFullReportRead = harness.send(
-    harness.createReportMessage({ type: "get_report", reportId }),
-    editorSender,
-  );
+  const removedEditorSave = harness.send(saveMessage, removedEditorSender);
 
-  for (const request of [reportLoad, editorLoad]) {
-    const response = await request.response;
-    assert.equal(response.ok, true);
-    assert.equal(response.data.reportId, reportId);
-    assert.equal(response.data.eligibility.status, "editable");
-  }
+  const loadResponse = await reportLoad.response;
+  assert.equal(loadResponse.ok, true);
+  assert.equal(loadResponse.data.reportId, reportId);
+  assert.equal(loadResponse.data.eligibility.status, "editable");
 
   for (const request of [
     sidePanelLoad,
     dashboardLoad,
     unrelatedLoad,
+    removedEditorLoad,
   ]) {
     assert.deepEqual(await request.response, {
       ok: false,
       error: {
         code: "UNAUTHORIZED_MESSAGE_SENDER",
-        message:
-          "Only the packaged report page and Offline Report Editor can load editor data.",
+        message: "Only the packaged report page can load correction data.",
       },
     });
   }
 
-  assert.equal((await editorSave.response).ok, true);
+  assert.equal((await reportSave.response).ok, true);
 
   for (const request of [
-    reportSave,
     sidePanelSave,
     dashboardSave,
     unrelatedSave,
+    removedEditorSave,
   ]) {
     assert.deepEqual(await request.response, {
       ok: false,
       error: {
         code: "UNAUTHORIZED_MESSAGE_SENDER",
-        message:
-          "Only the packaged Offline Report Editor can save mapping corrections.",
+        message: "Only the packaged report page can save mapping corrections.",
       },
     });
   }
 
-  assert.deepEqual(await editorFullReportRead.response, {
-    ok: false,
-    error: {
-      code: "UNAUTHORIZED_MESSAGE_SENDER",
-      message:
-        "Only the extension side panel and packaged report page can read stream reports.",
-    },
-  });
   assert.equal(
     harness.reportCalls.filter(
       (call) => call.type === "load_offline_editor",
     ).length,
-    2,
+    1,
   );
   assert.deepEqual(
     harness.reportCalls.find(
@@ -3696,7 +3680,7 @@ test("Offline Report Editor commands enforce exact packaged-page senders", async
   assert.equal(harness.nextItemQueueCalls.length, 0);
   assert.equal(harness.inventoryImportCalls.length, 0);
   assert.equal(harness.runtimeSendMessages.length, 0);
-  assert.equal(harness.streamDispatchCalls.length, 3);
+  assert.equal(harness.streamDispatchCalls.length, 2);
   assert.ok(harness.streamDispatchCalls.every(
     (command) =>
       command.type ===
@@ -3704,7 +3688,7 @@ test("Offline Report Editor commands enforce exact packaged-page senders", async
   ));
 });
 
-test("active tracker state blocks Offline Report Editor saves without side effects", async () => {
+test("active tracker state blocks report mapping saves without side effects", async () => {
   const activeSession = {
     streamId: "local-stream:99999999-9999-4999-8999-999999999999",
     startedAt: "2026-08-29T19:00:00.000Z",
@@ -3714,7 +3698,7 @@ test("active tracker state blocks Offline Report Editor saves without side effec
   const reportId =
     "stream-report:11111111-1111-4111-8111-111111111111";
   const sender = harness.createSender({
-    url: `${harness.offlineEditorPageUrl}?reportId=${reportId}`,
+    url: `${harness.reportPageUrl}?reportId=${reportId}`,
   });
   const load = harness.send(
     harness.createReportMessage({

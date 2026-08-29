@@ -175,9 +175,6 @@ const inventoryImportService =
   });
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const reportPageUrl = chrome.runtime.getURL("report/report.html");
-const offlineEditorPageUrl = chrome.runtime.getURL(
-  "report/offline-editor.html",
-);
 const reportReadCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
   streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
@@ -401,24 +398,15 @@ function validateSender(sender, command, boundary) {
         sender.url.startsWith(`${reportPageUrl}?`) ||
         sender.url.startsWith(`${reportPageUrl}#`)
       );
-    const fromOfflineEditor =
-      sender?.id === chrome.runtime.id &&
-      typeof sender.url === "string" &&
-      (
-        sender.url === offlineEditorPageUrl ||
-        sender.url.startsWith(`${offlineEditorPageUrl}?`) ||
-        sender.url.startsWith(`${offlineEditorPageUrl}#`)
-      );
-
     if (
       command.type ===
         streamReportProtocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA
     ) {
-      if (!fromReportPage && !fromOfflineEditor) {
+      if (!fromReportPage) {
         failBoundary(
           boundary.protocol,
           "UNAUTHORIZED_MESSAGE_SENDER",
-          "Only the packaged report page and Offline Report Editor can load editor data.",
+          "Only the packaged report page can load correction data.",
         );
       }
 
@@ -429,11 +417,11 @@ function validateSender(sender, command, boundary) {
       command.type ===
         streamReportProtocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS
     ) {
-      if (!fromOfflineEditor) {
+      if (!fromReportPage) {
         failBoundary(
           boundary.protocol,
           "UNAUTHORIZED_MESSAGE_SENDER",
-          "Only the packaged Offline Report Editor can save mapping corrections.",
+          "Only the packaged report page can save mapping corrections.",
         );
       }
 

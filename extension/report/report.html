@@ -49,25 +49,6 @@
             >
               Print / Save as PDF
             </button>
-            <button
-              id="edit-offline-report"
-              class="secondary-action report-offline-editor-action screen-only"
-              type="button"
-              aria-describedby="offline-editor-eligibility"
-              data-state="loading"
-              disabled
-            >
-              Edit in Offline Tracker
-            </button>
-            <p
-              id="offline-editor-eligibility"
-              class="visually-hidden screen-only"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              Checking whether this report can be edited offline.
-            </p>
           </div>
           <dl class="report-meta" aria-label="Stream report details">
             <div>
@@ -270,6 +251,115 @@
           </div>
         </section>
 
+        <section
+          id="mapping-correction-section"
+          class="report-section mapping-correction-section screen-only"
+          aria-labelledby="mapping-correction-title"
+          aria-busy="false"
+          hidden
+        >
+          <details id="mapping-correction-disclosure">
+            <summary
+              id="mapping-correction-toggle"
+              class="mapping-correction-toggle"
+              aria-controls="mapping-correction-content"
+            >
+              <h2 id="mapping-correction-title" class="mapping-correction-heading">
+                <span class="eyebrow">Post-stream correction</span>
+                <span class="mapping-correction-title">Correct Item Mapping</span>
+              </h2>
+              <span
+                id="mapping-correction-availability"
+                class="mapping-correction-availability"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >Checking availability…</span>
+            </summary>
+            <div id="mapping-correction-content" class="mapping-correction-content">
+              <fieldset
+                id="mapping-correction-fields"
+                class="mapping-correction-fields"
+                disabled
+              >
+                <legend class="visually-hidden">Choose a corrected item mapping</legend>
+                <div class="mapping-correction-form">
+                  <label class="mapping-correction-field" for="mapping-variation">
+                    <span>Variation</span>
+                    <select
+                      id="mapping-variation"
+                      aria-describedby="mapping-correction-availability mapping-correction-feedback"
+                    ></select>
+                  </label>
+                  <label class="mapping-correction-field" for="mapping-item-group">
+                    <span>Item and style</span>
+                    <select
+                      id="mapping-item-group"
+                      aria-describedby="mapping-correction-availability mapping-correction-feedback"
+                    ></select>
+                  </label>
+                  <label
+                    id="mapping-sku-field"
+                    class="mapping-correction-field"
+                    for="mapping-sku"
+                    hidden
+                  >
+                    <span>Exact size and SKU</span>
+                    <select
+                      id="mapping-sku"
+                      aria-describedby="mapping-correction-availability mapping-correction-feedback"
+                    ></select>
+                  </label>
+                  <button
+                    id="save-mapping-correction"
+                    class="primary-action"
+                    type="button"
+                    aria-describedby="mapping-correction-availability mapping-correction-feedback"
+                    disabled
+                  >Save Mapping Correction</button>
+                </div>
+              </fieldset>
+              <dl class="mapping-correction-facts">
+                <div>
+                  <dt>Status</dt>
+                  <dd id="mapping-variation-status">—</dd>
+                </div>
+                <div>
+                  <dt>Sold price</dt>
+                  <dd id="mapping-sold-price">—</dd>
+                </div>
+                <div>
+                  <dt>Originally mapped item</dt>
+                  <dd id="mapping-original">Unmapped</dd>
+                </div>
+                <div>
+                  <dt>Selected replacement</dt>
+                  <dd id="mapping-selected">Unmapped</dd>
+                </div>
+                <div class="mapping-reset-card">
+                  <dt class="visually-hidden">Original mapping action</dt>
+                  <dd>
+                    <button
+                      id="reset-mapping-original"
+                      class="mapping-reset-action"
+                      type="button"
+                      aria-describedby="mapping-original mapping-correction-feedback"
+                      disabled
+                    >Reset to original</button>
+                  </dd>
+                </div>
+              </dl>
+              <p
+                id="mapping-correction-feedback"
+                class="mapping-correction-feedback visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              ></p>
+            </div>
+          </details>
+        </section>
+
         <section class="report-section" aria-labelledby="sales-title">
           <details id="completed-sales-disclosure">
             <summary
@@ -391,6 +481,7 @@
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="stream-report-client.js"></script>
     <script src="offline-report-editor-client.js"></script>
+    <script src="inline-report-correction.js"></script>
     <script src="report-page.js"></script>
   </body>
 </html>

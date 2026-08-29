@@ -22,8 +22,10 @@
         protocol: root.TikTokLiveTrackerStreamReportProtocol,
         reportModule: root.TikTokLiveTrackerStreamReport,
         clientModule: root.TikTokLiveTrackerStreamReportClient,
-        offlineEditorClientModule:
+        correctionClientModule:
           root.TikTokLiveTrackerOfflineReportEditorClient,
+        inlineCorrectionModule:
+          root.TikTokLiveTrackerInlineReportCorrection,
         confirm: root.confirm.bind(root),
         print: () => root.print(),
         Blob: root.Blob,
@@ -233,10 +235,16 @@
       const completedCount = safeInteger(totals.completedPaymentCount);
       const totalSalesCount = safeInteger(totals.totalSalesCount);
       const unmatchedCount = safeInteger(totals.unmappedCompletedCount);
+      const committedSalesCount = safeInteger(totals.committedSalesCount);
       const committedRevenueCents = safeInteger(totals.committedRevenueCents);
       const grossProfitCents = safeInteger(
         totals.grossProfitCents ?? totals.profitCents,
       );
+      const averageProfitCents = committedSalesCount > 0
+        ? Math.sign(grossProfitCents) * Math.round(
+            Math.abs(grossProfitCents) / committedSalesCount,
+          )
+        : 0;
       const feeMetrics =
         typeof feeCalculator?.calculateSixPercentGmvFees === "function"
           ? feeCalculator.calculateSixPercentGmvFees(
@@ -327,6 +335,11 @@
           label: "Mapped gross margin",
           value: formatPercentage(grossProfitCents, committedRevenueCents),
           note: "Gross profit divided by mapped revenue",
+        },
+        {
+          label: "Avg. Profit per Sale",
+          value: formatUsdCents(averageProfitCents),
+          note: "Gross profit per mapped completed sale",
         },
       ];
     }
@@ -1235,116 +1248,38 @@
         runtime: dependencies.runtime,
         protocol,
       });
-      let offlineEditorClient = null;
+      let correctionClient = null;
 
       if (
-        typeof dependencies.offlineEditorClientModule
+        typeof dependencies.correctionClientModule
           ?.createOfflineReportEditorClient === "function"
       ) {
         try {
-          offlineEditorClient = dependencies.offlineEditorClientModule
+          correctionClient = dependencies.correctionClientModule
             .createOfflineReportEditorClient({
               runtime: dependencies.runtime,
               protocol,
             });
         } catch (_error) {
-          offlineEditorClient = null;
+          correctionClient = null;
         }
       }
+
       let currentRecord = null;
       let currentPaymentFixingOrders = [];
       let paymentResolutionControls = [];
       let paymentResolutionBusy = false;
       let currentUnitCostEntries = [];
       let unitCostCorrectionBusy = false;
+      let unitCostRefreshFailure = null;
       let loadSequence = 0;
-      let offlineEditorEligibilitySequence = 0;
+      let mappingCorrectionRefreshSequence = 0;
       let actionFeedbackSequence = 0;
       let actionFeedbackTimerId = null;
       const inventoryInstructions = document.querySelector("#inventory-instructions");
       const inventoryInstructionsToggle = document.querySelector(
         "#toggle-inventory-instructions",
       );
-      const offlineEditorButton = document.querySelector(
-        "#edit-offline-report",
-      );
-      const offlineEditorEligibility = document.querySelector(
-        "#offline-editor-eligibility",
-      );
-      const setOfflineEditorAvailability = (state, reason) => {
-        if (!offlineEditorButton || !offlineEditorEligibility) {
-          return;
-        }
-
-        const editable = state === "editable";
-        offlineEditorButton.disabled = !editable;
-        offlineEditorButton.dataset.state = state;
-        offlineEditorButton.title = editable ? "" : reason;
-        offlineEditorEligibility.textContent = reason;
-      };
-      const setOfflineEditorLoading = () => {
-        setOfflineEditorAvailability(
-          "loading",
-          "Checking whether this report can be edited offline.",
-        );
-      };
-      const refreshOfflineEditorAvailability = async (
-        reportId,
-        sequence,
-      ) => {
-        const eligibilitySequence = ++offlineEditorEligibilitySequence;
-        setOfflineEditorLoading();
-
-        if (!offlineEditorClient) {
-          setOfflineEditorAvailability(
-            "unavailable",
-            "The Offline Report Editor is unavailable. Reload the extension and try again.",
-          );
-          return;
-        }
-
-        try {
-          const response = await offlineEditorClient.loadEditorData({
-            reportId,
-          });
-
-          if (
-            sequence !== loadSequence ||
-            eligibilitySequence !== offlineEditorEligibilitySequence ||
-            currentRecord?.reportId !== reportId ||
-            response?.reportId !== reportId
-          ) {
-            return;
-          }
-
-          if (response.eligibility.status === "editable") {
-            setOfflineEditorAvailability(
-              "editable",
-              "This saved report can be edited in the Offline Report Editor.",
-            );
-            return;
-          }
-
-          setOfflineEditorAvailability(
-            response.eligibility.status,
-            response.eligibility.reason,
-          );
-        } catch (error) {
-          if (
-            sequence !== loadSequence ||
-            eligibilitySequence !== offlineEditorEligibilitySequence ||
-            currentRecord?.reportId !== reportId
-          ) {
-            return;
-          }
-
-          setOfflineEditorAvailability(
-            "unavailable",
-            error?.message ??
-              "Offline editing eligibility could not be checked. Reload the report and try again.",
-          );
-        }
-      };
       const setInventoryInstructionsExpanded = (expanded) => {
         inventoryInstructions.hidden = !expanded;
         inventoryInstructionsToggle.setAttribute(
@@ -1478,13 +1413,52 @@
       };
 
       const displayReportUnitCosts = (entries, selectedSku = null) => {
+        unitCostRefreshFailure = null;
         currentUnitCostEntries = Array.isArray(entries) ? entries : [];
         renderUnitCostCorrection(
           document,
           currentUnitCostEntries,
           selectedSku,
         );
+        [
+          document.querySelector("#unit-cost-sku"),
+          document.querySelector("#unit-cost-value"),
+          document.querySelector("#update-unit-cost"),
+        ].filter(Boolean).forEach((control) => {
+          control.title = "";
+        });
+        unitCostFeedback("");
         setUnitCostBusy(unitCostCorrectionBusy);
+      };
+
+      const showUnitCostRefreshFailure = (reportId, message) => {
+        const section = document.querySelector("#unit-cost-correction-section");
+        const disclosure = document.querySelector(
+          "#unit-cost-correction-disclosure",
+        );
+        const controls = [
+          document.querySelector("#unit-cost-sku"),
+          document.querySelector("#unit-cost-value"),
+          document.querySelector("#update-unit-cost"),
+        ].filter(Boolean);
+
+        unitCostRefreshFailure = { reportId, message };
+        currentUnitCostEntries = [];
+        renderUnitCostCorrection(document, currentUnitCostEntries);
+        setUnitCostBusy(false);
+
+        if (section) {
+          section.hidden = false;
+          section.setAttribute("aria-busy", "false");
+        }
+        if (disclosure) {
+          disclosure.open = true;
+        }
+        controls.forEach((control) => {
+          control.disabled = true;
+          control.title = message;
+        });
+        unitCostFeedback(message, true);
       };
 
       const showError = (message) => {
@@ -1494,10 +1468,6 @@
         document.querySelector("#report-error").hidden = false;
         document.querySelector("#report-error-message").textContent = message;
         document.querySelector("#print-report").disabled = true;
-        setOfflineEditorAvailability(
-          "unavailable",
-          "Offline editing is unavailable because the report could not be loaded.",
-        );
       };
 
       const hydrateRecord = (response) => {
@@ -1531,6 +1501,153 @@
 
         const response = await client.listReportUnitCosts({ reportId });
         return response.skus;
+      };
+
+      const showCorrectionUnavailable = () => {
+        const section = document.querySelector("#mapping-correction-section");
+        const availability = document.querySelector(
+          "#mapping-correction-availability",
+        );
+        const fields = document.querySelector("#mapping-correction-fields");
+        const correctionFeedback = document.querySelector(
+          "#mapping-correction-feedback",
+        );
+        const reason =
+          "Mapping correction is unavailable. Reload the extension and try again.";
+
+        if (section) {
+          section.hidden = false;
+          section.setAttribute("aria-busy", "false");
+        }
+        if (availability) {
+          availability.hidden = false;
+          availability.textContent = reason;
+          availability.dataset.state = "unavailable";
+        }
+        if (fields) {
+          fields.disabled = true;
+        }
+        if (correctionFeedback) {
+          correctionFeedback.textContent = reason;
+          correctionFeedback.className =
+            "mapping-correction-feedback visually-hidden is-error";
+        }
+      };
+      const isCurrentReportView = (reportId, sequence) =>
+        loadSequence === sequence && currentRecord?.reportId === reportId;
+
+      let mappingCorrectionController = null;
+
+      if (
+        typeof dependencies.inlineCorrectionModule
+          ?.createInlineReportCorrectionController === "function"
+      ) {
+        try {
+          const controller = dependencies.inlineCorrectionModule
+            .createInlineReportCorrectionController({
+              document,
+              client: correctionClient,
+              onStatus: feedback,
+              onSaved: async ({ reportId }) => {
+                const refreshSequence = loadSequence;
+
+                if (currentRecord?.reportId !== reportId) {
+                  throw new Error(
+                    "The viewed report changed before it could be refreshed.",
+                  );
+                }
+
+                const response = await client.getReport({ reportId });
+
+                if (
+                  !response?.report ||
+                  response.reportId !== reportId ||
+                  !isCurrentReportView(reportId, refreshSequence)
+                ) {
+                  throw new Error(
+                    "The corrected saved report could not be reloaded safely.",
+                  );
+                }
+
+                currentRecord = hydrateRecord(response);
+                renderReport(document, currentRecord);
+
+                try {
+                  const entries = await getReportUnitCosts(reportId);
+
+                  if (!isCurrentReportView(reportId, refreshSequence)) {
+                    return;
+                  }
+
+                  displayReportUnitCosts(entries);
+                } catch (_error) {
+                  if (isCurrentReportView(reportId, refreshSequence)) {
+                    showUnitCostRefreshFailure(
+                      reportId,
+                      "The mapping correction was saved, but unit-cost " +
+                        "correction data could not refresh. Reload this report " +
+                        "before correcting a unit cost.",
+                    );
+                  }
+                }
+              },
+            });
+
+          if (
+            !controller ||
+            typeof controller.load !== "function" ||
+            typeof controller.getState !== "function"
+          ) {
+            throw new TypeError(
+              "The inline mapping-correction controller is unavailable.",
+            );
+          }
+
+          mappingCorrectionController = controller;
+        } catch (_error) {
+          mappingCorrectionController = null;
+        }
+      }
+
+      if (!mappingCorrectionController) {
+        showCorrectionUnavailable();
+      }
+
+      const refreshMappingCorrection = (reportId, optionsValue = {}) => {
+        if (
+          !mappingCorrectionController ||
+          typeof mappingCorrectionController.load !== "function" ||
+          currentRecord?.reportId !== reportId
+        ) {
+          return;
+        }
+
+        const refreshSequence = loadSequence;
+        const correctionSequence = ++mappingCorrectionRefreshSequence;
+        const handleFailure = () => {
+          if (
+            correctionSequence === mappingCorrectionRefreshSequence &&
+            isCurrentReportView(reportId, refreshSequence)
+          ) {
+            showCorrectionUnavailable();
+          }
+        };
+
+        try {
+          const state = typeof mappingCorrectionController.getState === "function"
+            ? mappingCorrectionController.getState()
+            : null;
+
+          if (state?.busy) {
+            return;
+          }
+
+          Promise.resolve(
+            mappingCorrectionController.load(reportId, optionsValue),
+          ).catch(handleFailure);
+        } catch (_error) {
+          handleFailure();
+        }
       };
 
       resolvePaymentOrder = async ({
@@ -1573,22 +1690,25 @@
           return;
         }
 
+        const reportId = currentRecord.reportId;
+        const mutationSequence = loadSequence;
         setResolutionBusy(true);
         resolutionFeedback(`Saving variation #${variationNumber}...`);
 
         try {
           const response = await client.resolvePaymentFixingOrder({
-            reportId: currentRecord.reportId,
+            reportId,
             variationNumber,
             resolution,
             soldPriceCents,
           });
+
+          if (!isCurrentReportView(reportId, mutationSequence)) {
+            return;
+          }
+
           currentRecord = hydrateRecord(response);
           renderReport(document, currentRecord);
-          void refreshOfflineEditorAvailability(
-            currentRecord.reportId,
-            loadSequence,
-          );
           displayPaymentFixingOrders(
             currentPaymentFixingOrders.filter(
               (candidate) => candidate.variationNumber !== variationNumber,
@@ -1605,22 +1725,44 @@
 
           try {
             const orders = await getPaymentFixingOrders(currentRecord.reportId);
+
+            if (!isCurrentReportView(reportId, mutationSequence)) {
+              return;
+            }
+
             displayPaymentFixingOrders(orders, resolvePaymentOrder);
           } catch (_refreshError) {
-            feedback(`${successMessage} Reload the report to recheck unfinished payments.`);
+            if (isCurrentReportView(reportId, mutationSequence)) {
+              feedback(
+                `${successMessage} Reload the report to recheck unfinished payments.`,
+              );
+            }
           }
 
           try {
             const entries = await getReportUnitCosts(currentRecord.reportId);
+
+            if (!isCurrentReportView(reportId, mutationSequence)) {
+              return;
+            }
+
             displayReportUnitCosts(entries);
           } catch (_refreshError) {
-            displayReportUnitCosts([]);
+            if (isCurrentReportView(reportId, mutationSequence)) {
+              displayReportUnitCosts([]);
+            }
           }
+
+          refreshMappingCorrection(reportId, {
+            preserveDraft: true,
+          });
         } catch (error) {
-          const message = error?.message ??
-            "The unfinished payment could not be updated.";
-          resolutionFeedback(message, true);
-          feedback(message);
+          if (isCurrentReportView(reportId, mutationSequence)) {
+            const message = error?.message ??
+              "The unfinished payment could not be updated.";
+            resolutionFeedback(message, true);
+            feedback(message);
+          }
         } finally {
           setResolutionBusy(false);
         }
@@ -1659,15 +1801,22 @@
           return;
         }
 
+        const reportId = currentRecord.reportId;
+        const mutationSequence = loadSequence;
         setUnitCostBusy(true);
         unitCostFeedback(`Updating ${entry.sku}...`);
 
         try {
           const response = await client.updateReportUnitCost({
-            reportId: currentRecord.reportId,
+            reportId,
             sku: entry.sku,
             unitCostCents,
           });
+
+          if (!isCurrentReportView(reportId, mutationSequence)) {
+            return;
+          }
+
           currentRecord = hydrateRecord(response);
           renderReport(document, currentRecord);
 
@@ -1678,17 +1827,33 @@
 
           try {
             const entries = await getReportUnitCosts(currentRecord.reportId);
+
+            if (!isCurrentReportView(reportId, mutationSequence)) {
+              return;
+            }
+
             displayReportUnitCosts(entries, entry.sku);
             unitCostFeedback(successMessage);
           } catch (_refreshError) {
-            displayReportUnitCosts([]);
-            feedback(`${successMessage} Reload the report before making another cost correction.`);
+            if (isCurrentReportView(reportId, mutationSequence)) {
+              displayReportUnitCosts([]);
+              feedback(
+                `${successMessage} Reload the report before making another ` +
+                  "cost correction.",
+              );
+            }
           }
+
+          refreshMappingCorrection(reportId, {
+            preserveDraft: true,
+          });
         } catch (error) {
-          const message = error?.message ??
-            "The corrected unit cost could not be saved. Try again.";
-          unitCostFeedback(message, true);
-          feedback(message);
+          if (isCurrentReportView(reportId, mutationSequence)) {
+            const message = error?.message ??
+              "The corrected unit cost could not be saved. Try again.";
+            unitCostFeedback(message, true);
+            feedback(message);
+          }
         } finally {
           setUnitCostBusy(false);
         }
@@ -1696,7 +1861,6 @@
 
       const load = async () => {
         const sequence = ++loadSequence;
-        setOfflineEditorLoading();
         document.querySelector("#report-loading").hidden = false;
         document.querySelector("#report-loading").setAttribute("aria-busy", "true");
         document.querySelector("#report-error").hidden = true;
@@ -1728,24 +1892,40 @@
             throw new Error("The requested saved stream report was not found.");
           }
 
+          const previousReportId = currentRecord?.reportId ?? null;
           currentRecord = hydrateRecord(response);
+
+          if (
+            previousReportId !== null &&
+            previousReportId !== currentRecord.reportId
+          ) {
+            displayPaymentFixingOrders([], resolvePaymentOrder);
+            displayReportUnitCosts([]);
+          }
+
           renderReport(document, currentRecord);
           resolutionFeedback("");
-          unitCostFeedback("");
-          void refreshOfflineEditorAvailability(
-            currentRecord.reportId,
-            sequence,
-          );
+          if (
+            unitCostRefreshFailure === null ||
+            unitCostRefreshFailure.reportId !== currentRecord.reportId
+          ) {
+            unitCostFeedback("");
+          }
+          refreshMappingCorrection(currentRecord.reportId);
 
           try {
             const orders = await getPaymentFixingOrders(currentRecord.reportId);
 
-            if (sequence !== loadSequence) {
+            if (!isCurrentReportView(reportId, sequence)) {
               return;
             }
 
             displayPaymentFixingOrders(orders, resolvePaymentOrder);
           } catch (error) {
+            if (!isCurrentReportView(reportId, sequence)) {
+              return;
+            }
+
             displayPaymentFixingOrders([], resolvePaymentOrder);
             feedback(
               error?.message ??
@@ -1756,13 +1936,24 @@
           try {
             const entries = await getReportUnitCosts(currentRecord.reportId);
 
-            if (sequence !== loadSequence) {
+            if (!isCurrentReportView(reportId, sequence)) {
               return;
             }
 
             displayReportUnitCosts(entries);
           } catch (error) {
-            displayReportUnitCosts([]);
+            if (!isCurrentReportView(reportId, sequence)) {
+              return;
+            }
+
+            if (unitCostRefreshFailure?.reportId === reportId) {
+              showUnitCostRefreshFailure(
+                reportId,
+                unitCostRefreshFailure.message,
+              );
+            } else {
+              displayReportUnitCosts([]);
+            }
             feedback(
               error?.message ??
                 "Unit costs could not be checked. Reload the report to try again.",
@@ -1809,27 +2000,6 @@
       document.querySelector("#print-report").addEventListener("click", () => {
         if (currentRecord) {
           dependencies.print();
-        }
-      });
-      offlineEditorButton?.addEventListener("click", () => {
-        if (
-          !currentRecord ||
-          offlineEditorButton.disabled ||
-          typeof dependencies.runtime?.getURL !== "function"
-        ) {
-          return;
-        }
-
-        const editorUrl = dependencies.runtime.getURL(
-          "report/offline-editor.html",
-        );
-        const targetUrl =
-          `${editorUrl}?reportId=${encodeURIComponent(currentRecord.reportId)}`;
-
-        if (typeof location?.assign === "function") {
-          location.assign(targetUrl);
-        } else if (location) {
-          location.href = targetUrl;
         }
       });
       inventoryInstructionsToggle.addEventListener("click", () => {
