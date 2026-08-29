@@ -128,6 +128,386 @@
       }));
     }
 
+    function orderInventoryGroupsByRecentMappedVariations(
+      groups,
+      variations,
+    ) {
+      if (!Array.isArray(groups)) {
+        throw new TypeError("Inventory groups must be an array.");
+      }
+
+      if (!Array.isArray(variations)) {
+        throw new TypeError("Variations must be an array.");
+      }
+
+      const groupIndexBySku = new Map();
+
+      groups.forEach((group, groupIndex) => {
+        if (!Array.isArray(group?.entries)) {
+          return;
+        }
+
+        group.entries.forEach((entry) => {
+          if (
+            typeof entry?.sku === "string" &&
+            !groupIndexBySku.has(entry.sku)
+          ) {
+            groupIndexBySku.set(entry.sku, groupIndex);
+          }
+        });
+      });
+
+      const latestEndedVariationByGroupIndex = new Map();
+
+      variations.forEach((variation) => {
+        if (
+          variation?.recorded !== true ||
+          variation?.bidding !== false ||
+          typeof variation?.sku !== "string" ||
+          !Number.isSafeInteger(variation.variationNumber) ||
+          variation.variationNumber < 1
+        ) {
+          return;
+        }
+
+        const groupIndex = groupIndexBySku.get(variation.sku);
+
+        if (groupIndex === undefined) {
+          return;
+        }
+
+        const latestVariation =
+          latestEndedVariationByGroupIndex.get(groupIndex);
+
+        if (
+          latestVariation === undefined ||
+          variation.variationNumber > latestVariation
+        ) {
+          latestEndedVariationByGroupIndex.set(
+            groupIndex,
+            variation.variationNumber,
+          );
+        }
+      });
+
+      return groups
+        .map((group, originalIndex) => ({
+          group,
+          originalIndex,
+          latestEndedVariation:
+            latestEndedVariationByGroupIndex.get(originalIndex) ?? null,
+        }))
+        .sort((left, right) => {
+          if (left.latestEndedVariation === null) {
+            return right.latestEndedVariation === null
+              ? left.originalIndex - right.originalIndex
+              : 1;
+          }
+
+          if (right.latestEndedVariation === null) {
+            return -1;
+          }
+
+          return (
+            right.latestEndedVariation - left.latestEndedVariation ||
+            left.originalIndex - right.originalIndex
+          );
+        })
+        .map(({ group }) => group);
+    }
+
+    function createInventoryGroupOrderController(options = {}) {
+      const maxPinnedGroups = options.maxPinnedGroups ?? 9;
+
+      if (!Number.isSafeInteger(maxPinnedGroups) || maxPinnedGroups < 1) {
+        throw new TypeError(
+          "The maximum pinned inventory group count must be a positive integer.",
+        );
+      }
+
+      let endedVariationFacts = new Map();
+      let pinnedGroupKeys = [];
+      let historicalState = null;
+
+      function createGroupLookups(groups) {
+        const groupByKey = new Map();
+        const groupKeyBySku = new Map();
+
+        groups.forEach((group) => {
+          if (
+            typeof group?.key !== "string" ||
+            !Array.isArray(group.entries)
+          ) {
+            throw new TypeError(
+              "Inventory groups must contain a key and entries array.",
+            );
+          }
+
+          groupByKey.set(group.key, group);
+          group.entries.forEach((entry) => {
+            if (
+              typeof entry?.sku === "string" &&
+              !groupKeyBySku.has(entry.sku)
+            ) {
+              groupKeyBySku.set(entry.sku, group.key);
+            }
+          });
+        });
+
+        return { groupByKey, groupKeyBySku };
+      }
+
+      function reconcileOrderKeys(orderKeys, groups) {
+        const availableKeys = new Set(groups.map((group) => group.key));
+        const seenKeys = new Set();
+        const reconciled = [];
+
+        orderKeys.forEach((key) => {
+          if (availableKeys.has(key) && !seenKeys.has(key)) {
+            seenKeys.add(key);
+            reconciled.push(key);
+          }
+        });
+
+        groups.forEach((group) => {
+          if (!seenKeys.has(group.key)) {
+            seenKeys.add(group.key);
+            reconciled.push(group.key);
+          }
+        });
+
+        return reconciled;
+      }
+
+      function captureEndedVariationFacts(view) {
+        view.variations.forEach((variation) => {
+          if (
+            variation?.recorded !== true ||
+            variation?.bidding !== false ||
+            !Number.isSafeInteger(variation.variationNumber) ||
+            variation.variationNumber < 1 ||
+            endedVariationFacts.has(variation.variationNumber)
+          ) {
+            return;
+          }
+
+          if (typeof variation.sku === "string") {
+            endedVariationFacts.set(variation.variationNumber, variation.sku);
+            return;
+          }
+
+          const isUnmappedCurrentLiveVariation =
+            view.isReviewingHistory !== true &&
+            variation.variationNumber === view.currentVariationNumber;
+
+          if (!isUnmappedCurrentLiveVariation) {
+            endedVariationFacts.set(variation.variationNumber, null);
+          }
+        });
+      }
+
+      function getLiveOrderKeys(groups) {
+        const immutableEndedVariations = Array.from(
+          endedVariationFacts,
+          ([variationNumber, sku]) => ({
+            variationNumber,
+            recorded: true,
+            bidding: false,
+            sku,
+          }),
+        );
+
+        const recentOrderKeys = orderInventoryGroupsByRecentMappedVariations(
+          groups,
+          immutableEndedVariations,
+        ).map((group) => group.key);
+        const availableGroupKeys = new Set(recentOrderKeys);
+
+        pinnedGroupKeys = pinnedGroupKeys.filter(
+          (groupKey) => availableGroupKeys.has(groupKey),
+        );
+
+        const pinnedKeySet = new Set(pinnedGroupKeys);
+
+        return [
+          ...pinnedGroupKeys,
+          ...recentOrderKeys.filter((groupKey) => !pinnedKeySet.has(groupKey)),
+        ];
+      }
+
+      function validateMaxPinnedGroups(value) {
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new TypeError(
+            "The maximum pinned inventory group count must be a positive integer.",
+          );
+        }
+
+        return value;
+      }
+
+      function trimPinnedGroups(
+        requestedMaxPinnedGroups = maxPinnedGroups,
+      ) {
+        const pinLimit = validateMaxPinnedGroups(requestedMaxPinnedGroups);
+        const unpinnedGroupKeys = pinnedGroupKeys.slice(pinLimit);
+
+        if (unpinnedGroupKeys.length > 0) {
+          pinnedGroupKeys = pinnedGroupKeys.slice(0, pinLimit);
+        }
+
+        return Object.freeze({
+          changed: unpinnedGroupKeys.length > 0,
+          pinnedCount: pinnedGroupKeys.length,
+          unpinnedGroupKeys: Object.freeze(unpinnedGroupKeys),
+        });
+      }
+
+      function togglePinnedGroup(
+        groupKey,
+        requestedMaxPinnedGroups = maxPinnedGroups,
+      ) {
+        if (typeof groupKey !== "string" || groupKey.length === 0) {
+          throw new TypeError("A pinned inventory group key is required.");
+        }
+
+        const pinLimit = validateMaxPinnedGroups(requestedMaxPinnedGroups);
+
+        const pinnedIndex = pinnedGroupKeys.indexOf(groupKey);
+
+        if (pinnedIndex >= 0) {
+          pinnedGroupKeys.splice(pinnedIndex, 1);
+
+          return Object.freeze({
+            changed: true,
+            pinned: false,
+            limitReached: false,
+            pinnedCount: pinnedGroupKeys.length,
+            pinnedPosition: null,
+          });
+        }
+
+        if (pinnedGroupKeys.length >= pinLimit) {
+          return Object.freeze({
+            changed: false,
+            pinned: false,
+            limitReached: true,
+            pinnedCount: pinnedGroupKeys.length,
+            pinnedPosition: null,
+          });
+        }
+
+        pinnedGroupKeys.push(groupKey);
+
+        return Object.freeze({
+          changed: true,
+          pinned: true,
+          limitReached: false,
+          pinnedCount: pinnedGroupKeys.length,
+          pinnedPosition: pinnedGroupKeys.length,
+        });
+      }
+
+      function isGroupPinned(groupKey) {
+        return pinnedGroupKeys.includes(groupKey);
+      }
+
+      function orderGroups(groupByKey, orderKeys) {
+        return orderKeys
+          .map((key) => groupByKey.get(key))
+          .filter(Boolean);
+      }
+
+      function order(groups, view) {
+        if (!Array.isArray(groups)) {
+          throw new TypeError("Inventory groups must be an array.");
+        }
+
+        if (!view || !Array.isArray(view.variations)) {
+          throw new TypeError(
+            "An inventory ordering view with variations is required.",
+          );
+        }
+
+        const { groupByKey, groupKeyBySku } = createGroupLookups(groups);
+
+        captureEndedVariationFacts(view);
+        const liveOrderKeys = getLiveOrderKeys(groups);
+
+        if (view.isReviewingHistory !== true) {
+          historicalState = null;
+          return orderGroups(groupByKey, liveOrderKeys);
+        }
+
+        if (historicalState === null) {
+          historicalState = {
+            selectedVariationNumber: null,
+            frozenOrderKeys: [...liveOrderKeys],
+            historicalMappedGroupKey: null,
+            mappedGroupKeyByVariationNumber: new Map(),
+          };
+        }
+
+        historicalState.frozenOrderKeys = reconcileOrderKeys(
+          historicalState.frozenOrderKeys,
+          groups,
+        );
+
+        if (
+          historicalState.selectedVariationNumber !==
+          view.selectedVariationNumber
+        ) {
+          historicalState.selectedVariationNumber =
+            view.selectedVariationNumber;
+
+          if (
+            historicalState.mappedGroupKeyByVariationNumber.has(
+              view.selectedVariationNumber,
+            )
+          ) {
+            historicalState.historicalMappedGroupKey =
+              historicalState.mappedGroupKeyByVariationNumber.get(
+                view.selectedVariationNumber,
+              );
+          } else {
+            historicalState.historicalMappedGroupKey =
+              typeof view.auction?.sku === "string"
+                ? groupKeyBySku.get(view.auction.sku) ?? null
+                : null;
+            historicalState.mappedGroupKeyByVariationNumber.set(
+              view.selectedVariationNumber,
+              historicalState.historicalMappedGroupKey,
+            );
+          }
+        }
+
+        const historicalOrderKeys =
+          historicalState.historicalMappedGroupKey === null
+            ? historicalState.frozenOrderKeys
+            : [
+                historicalState.historicalMappedGroupKey,
+                ...historicalState.frozenOrderKeys.filter(
+                  (key) => key !== historicalState.historicalMappedGroupKey,
+                ),
+              ];
+
+        return orderGroups(groupByKey, historicalOrderKeys);
+      }
+
+      function reset() {
+        endedVariationFacts = new Map();
+        pinnedGroupKeys = [];
+        historicalState = null;
+      }
+
+      return Object.freeze({
+        isGroupPinned,
+        order,
+        reset,
+        trimPinnedGroups,
+        togglePinnedGroup,
+      });
+    }
+
     function getRemainingQuantity(entry) {
       const quantity = entry?.remainingQuantity ?? entry?.quantityReceived ?? 0;
 
@@ -416,6 +796,7 @@
       LEGACY_RECOVERY_INVENTORY,
       calculateAverageOrderValueCents,
       createInventoryGroupKey,
+      createInventoryGroupOrderController,
       filterInventoryEntries,
       filterInventoryGroups,
       formatGrossMarginPercentage,
@@ -428,6 +809,7 @@
       getStockDisplay,
       groupInventoryEntries,
       normalizeSearchText,
+      orderInventoryGroupsByRecentMappedVariations,
     };
   },
 );

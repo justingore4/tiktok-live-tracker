@@ -328,10 +328,14 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   const inventoryCardTemplateSource = html.match(
     /<template id="inventory-card-template">[\s\S]*?<\/template>/,
   )?.[0];
+  const inventoryCardOpeningTag = inventoryCardTemplateSource?.match(
+    /<button class="inventory-card"[^>]*>/,
+  )?.[0];
 
   assert.ok(headerSource);
   assert.ok(footerSource);
   assert.ok(inventoryCardTemplateSource);
+  assert.ok(inventoryCardOpeningTag);
   assert.match(html, /<label[^>]+for="inventory-search"/);
   assert.match(html, /id="variation-selector-label"[^>]+visually-hidden/);
   assert.doesNotMatch(headerSource, /<button/);
@@ -486,7 +490,7 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     styleSource,
     /\.card-title\s*\{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/,
   );
-  assert.doesNotMatch(inventoryCardTemplateSource, /aria-pressed|role="combobox"/);
+  assert.doesNotMatch(inventoryCardOpeningTag, /aria-pressed|role="combobox"/);
   assert.match(
     html,
     /data-field="stock"[\s\S]+data-field="stock-primary"[\s\S]+data-field="stock-secondary"[\s\S]+hidden/,
@@ -1462,12 +1466,17 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
     inventoryRenderer,
     [
       "viewModel.groupInventoryEntries(view.inventory)",
+      "inventoryGroupOrderController.order(",
       "viewModel.filterInventoryGroups(",
       "const visibleInventory = inventoryListExpanded",
       "visibleInventory.forEach((group)",
       "createInventoryCard(group, view)",
     ],
-    "inventory rows must be grouped and filtered before the visible whole groups render",
+    "inventory rows must be grouped, recently ordered, and filtered before the visible whole groups render",
+  );
+  assert.match(
+    inventoryRenderer,
+    /inventoryGroupOrderController\.order\(\s*inventoryGroups,\s*view,?\s*\)/,
   );
   assert.match(
     inventoryRenderer,
@@ -1726,12 +1735,13 @@ test("inventory cards stay capped at nine until the user expands the list", () =
   assertTextOrder(
     inventoryRenderer,
     [
+      "inventoryGroupOrderController.order(",
       "viewModel.filterInventoryGroups(",
       "const visibleInventory = inventoryListExpanded",
       "filteredInventory.slice(0, COLLAPSED_INVENTORY_ITEM_LIMIT)",
       "visibleInventory.forEach((group)",
     ],
-    "the nine-card limit must be applied after grouping and search filtering",
+    "the nine-card limit must be applied after recent ordering and search filtering",
   );
   assert.match(
     inventoryRenderer,
@@ -1747,10 +1757,15 @@ test("inventory cards stay capped at nine until the user expands the list", () =
   );
   assert.match(
     toggleHandler,
-    /inventoryListExpanded = !inventoryListExpanded;[\s\S]*?const view = getActiveView\(\);[\s\S]*?if \(view\) \{[\s\S]*?renderInventory\(view\)/,
+    /inventoryListExpanded = !inventoryListExpanded;[\s\S]*?inventoryListExpanded[\s\S]*?trimPinnedGroups\([\s\S]*?COLLAPSED_INVENTORY_ITEM_LIMIT[\s\S]*?const view = getActiveView\(\);[\s\S]*?if \(view\) \{[\s\S]*?renderInventory\(view\)/,
+  );
+  assert.match(
+    toggleHandler,
+    /trimmedPins\?\.changed[\s\S]*?unpinnedGroupKeys\.length[\s\S]*?first \$\{COLLAPSED_INVENTORY_ITEM_LIMIT\} pinned items remain pinned/,
   );
   assert.doesNotMatch(inventoryRenderer, /inventoryListExpanded\s*=\s*false/);
   assert.doesNotMatch(unmountSource, /inventoryListExpanded\s*=/);
+  assert.match(unmountSource, /inventoryGroupOrderController\.reset\(\)/);
 
   assert.match(
     styleSource,
@@ -1759,6 +1774,129 @@ test("inventory cards stay capped at nine until the user expands the list", () =
   assert.match(
     styleSource,
     /\.inventory-list-toggle\[aria-expanded="true"\][\s\S]*?\.inventory-list-toggle-chevron\s*\{[\s\S]*?rotate\(225deg\)/,
+  );
+});
+
+test("inventory pin controls are accessible and isolated from mapping actions", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const templateSource = html.match(
+    /<template id="inventory-card-template">[\s\S]*?<\/template>/,
+  )?.[0];
+  const cardSource = panelSource.slice(
+    panelSource.indexOf("function createInventoryCard(group, view)"),
+    panelSource.indexOf("function formatResultCount("),
+  );
+  const togglePinSource = panelSource.slice(
+    panelSource.indexOf("function toggleInventoryGroupPin(pinButton)"),
+    panelSource.indexOf("function findInventoryGroup("),
+  );
+  const inventoryRenderer = panelSource.slice(
+    panelSource.indexOf("function renderInventory(view, focusSku = null)"),
+    panelSource.indexOf("function renderMetrics(view)"),
+  );
+  const firstClickHandlerStart = panelSource.indexOf(
+    'inventoryGrid.addEventListener("click"',
+  );
+  const secondClickHandlerStart = panelSource.indexOf(
+    'inventoryGrid.addEventListener("click"',
+    firstClickHandlerStart + 1,
+  );
+  const contextHandlerStart = panelSource.indexOf(
+    'inventoryGrid.addEventListener("contextmenu"',
+  );
+  const pinClickSource = panelSource.slice(
+    firstClickHandlerStart,
+    secondClickHandlerStart,
+  );
+  const mappingClickSource = panelSource.slice(
+    secondClickHandlerStart,
+    contextHandlerStart,
+  );
+
+  assert.ok(templateSource);
+  assert.match(
+    templateSource,
+    /class="inventory-card-wrapper"[\s\S]*?<button[\s\S]*?class="inventory-pin-button"[\s\S]*?data-field="pin"[\s\S]*?type="button"[\s\S]*?aria-pressed="false"[\s\S]*?<\/button>\s*<button class="inventory-card" type="button">/,
+    "the pin must be a sibling of the mapping card, never a nested button",
+  );
+  assert.match(
+    templateSource,
+    /class="inventory-pin-button"[\s\S]*?<svg[\s\S]*?aria-hidden="true"[\s\S]*?focusable="false"/,
+  );
+  assert.match(
+    panelSource,
+    /createInventoryGroupOrderController\(\{[\s\S]*?maxPinnedGroups: COLLAPSED_INVENTORY_ITEM_LIMIT/,
+  );
+  assert.match(
+    cardSource,
+    /const pinButton = wrapper\.querySelector\("\.inventory-pin-button"\)[\s\S]*?isGroupPinned\(group\.key\)[\s\S]*?pinButton\.dataset\.groupKey = group\.key[\s\S]*?aria-pressed[\s\S]*?Unpin[\s\S]*?Pin/,
+  );
+  assert.match(
+    pinClickSource,
+    /closest\?\.\("\.inventory-pin-button"\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?event\.stopPropagation\(\)[\s\S]*?toggleInventoryGroupPin\(pinButton\)/,
+  );
+  assertTextOrder(
+    mappingClickSource,
+    [
+      'event.target.closest?.(".inventory-pin-button")',
+      "return;",
+      'event.target.closest?.(".inventory-card")',
+      "saveOrdinaryInventorySelection(button, view)",
+    ],
+    "pin clicks must be rejected before ordinary mapping logic",
+  );
+  assert.match(
+    togglePinSource,
+    /const pinLimit = inventoryListExpanded[\s\S]*?inventoryGroups\.length[\s\S]*?: COLLAPSED_INVENTORY_ITEM_LIMIT[\s\S]*?togglePinnedGroup\([\s\S]*?groupKey,[\s\S]*?pinLimit[\s\S]*?result\.limitReached[\s\S]*?pin up to \$\{pinLimit\} items[\s\S]*?renderInventory\(view\)[\s\S]*?restoreInventoryPinFocus\(groupKey\)/,
+  );
+  assert.match(
+    togglePinSource,
+    /historical item order remains frozen[\s\S]*?pinned at position \$\{result\.pinnedPosition\}[\s\S]*?returned to recent-sale order/,
+  );
+  assertTextOrder(
+    inventoryRenderer,
+    [
+      'closest?.(".inventory-pin-button")',
+      "inventoryGrid.replaceChildren(fragment)",
+      "restoreInventoryPinFocus(focusedPinGroupKey)",
+    ],
+    "background inventory renders must restore focus to a recreated pin control",
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-card-wrapper\s*\{[\s\S]*?position: relative/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-pin-button\s*\{[\s\S]*?position: absolute[\s\S]*?z-index: 2[\s\S]*?width: 32px[\s\S]*?height: 32px[\s\S]*?border-radius: 9px/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-pin-button svg\s*\{[\s\S]*?width: 18px[\s\S]*?height: 18px/,
+  );
+  assert.match(
+    styleSource,
+    /\.card-heading\s*\{[\s\S]*?padding-right: 35px/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-pin-button:focus-visible[\s\S]*?outline: 2px solid var\(--focus\)/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-pin-button\[aria-pressed="true"\][\s\S]*?background: var\(--cyan\)/,
   );
 });
 

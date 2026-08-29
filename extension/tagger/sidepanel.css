@@ -2308,7 +2308,60 @@ button {
 }
 
 .inventory-card-wrapper {
+  position: relative;
   min-width: 0;
+}
+
+.inventory-pin-button {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #8fa5bd;
+  background: rgb(7 13 20 / 62%);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.inventory-pin-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.inventory-pin-button:hover {
+  border-color: var(--border-strong);
+  color: #d8e7f8;
+  background: #162333;
+}
+
+.inventory-pin-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.inventory-pin-button[aria-pressed="true"] {
+  border-color: var(--cyan);
+  color: #07110f;
+  background: var(--cyan);
+}
+
+.inventory-pin-button[aria-pressed="true"] svg path:first-child {
+  fill: currentColor;
 }
 
 .inventory-card {
@@ -2358,6 +2411,7 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 9px;
   align-items: start;
+  padding-right: 35px;
 }
 
 .card-title {

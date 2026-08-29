@@ -457,6 +457,8 @@
   if (
     !viewModel ||
     typeof viewModel.groupInventoryEntries !== "function" ||
+    typeof viewModel.createInventoryGroupOrderController !==
+      "function" ||
     typeof viewModel.filterInventoryGroups !== "function" ||
     typeof viewModel.getInventoryGroupStockDisplay !== "function" ||
     typeof viewModel.getPreferredInventoryGroupEntry !== "function" ||
@@ -542,6 +544,10 @@
   const variationSelectorLock =
     variationSelectorLockModule.createVariationSelectorLock({
       apply: renderVariationSelectorOptions,
+    });
+  const inventoryGroupOrderController =
+    viewModel.createInventoryGroupOrderController({
+      maxPinnedGroups: COLLAPSED_INVENTORY_ITEM_LIMIT,
     });
   let variationSelectorOpen = false;
   let activeVariationNumber = null;
@@ -1182,6 +1188,7 @@
     resetNextItemQueueDisplay();
     resetInventorySizeMenu();
     resetVariationSelector();
+    inventoryGroupOrderController.reset();
     unsubscribePersistentController?.();
     unsubscribePersistentController = null;
     persistentController = null;
@@ -2179,6 +2186,7 @@
     const canceled = auction?.paymentStatus === "canceled";
     const variationNumber = view.variationNumber;
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
+    const pinButton = wrapper.querySelector(".inventory-pin-button");
     const button = wrapper.querySelector(".inventory-card");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
     const stock = viewModel.getInventoryGroupStockDisplay(group);
@@ -2190,6 +2198,7 @@
     ) ?? null;
     const queued = queuedEntry !== null;
     const itemName = formatItemName(group);
+    const pinned = inventoryGroupOrderController.isGroupPinned(group.key);
     const multipleSizes = group.entries.length > 1;
     const selectionAllowed = group.entries.some(
       (entry) => entry.selectionAllowed,
@@ -2218,6 +2227,14 @@
       ? ` Variation ${view.selectedVariationNumber} will remain open.`
       : "";
 
+    wrapper.dataset.pinned = String(pinned);
+    pinButton.dataset.groupKey = group.key;
+    pinButton.setAttribute("aria-pressed", String(pinned));
+    pinButton.setAttribute(
+      "aria-label",
+      `${pinned ? "Unpin" : "Pin"} ${itemName}`,
+    );
+    pinButton.title = `${pinned ? "Unpin" : "Pin"} ${itemName}`;
     button.dataset.groupKey = group.key;
     button.dataset.variantSkus = JSON.stringify(
       group.entries.map((entry) => entry.sku),
@@ -2404,6 +2421,67 @@
       button.focus();
     } else {
       searchInput.focus();
+    }
+  }
+
+  function restoreInventoryPinFocus(groupKey) {
+    const pinButton = [
+      ...inventoryGrid.querySelectorAll(".inventory-pin-button"),
+    ].find((candidate) => candidate.dataset.groupKey === groupKey);
+
+    if (pinButton) {
+      pinButton.focus();
+    } else if (!inventoryListToggle.hidden) {
+      inventoryListToggle.focus();
+    } else {
+      searchInput.focus();
+    }
+  }
+
+  function toggleInventoryGroupPin(pinButton) {
+    const view = getActiveView();
+    const groupKey = pinButton.dataset.groupKey;
+    const inventoryGroups = viewModel.groupInventoryEntries(
+      view?.inventory ?? [],
+    );
+    const group = inventoryGroups.find(
+      (candidate) => candidate.key === groupKey,
+    ) ?? null;
+
+    if (!view || !group) {
+      return;
+    }
+
+    const pinLimit = inventoryListExpanded
+      ? inventoryGroups.length
+      : COLLAPSED_INVENTORY_ITEM_LIMIT;
+    const result = inventoryGroupOrderController.togglePinnedGroup(
+      groupKey,
+      pinLimit,
+    );
+    const itemName = formatItemName(group);
+    const reviewingHistory =
+      view.isReviewingHistory ||
+      view.selectedVariationNumber !== view.currentVariationNumber;
+
+    if (result.limitReached) {
+      mappingAnnouncement.textContent =
+        `You can pin up to ${pinLimit} items. Unpin an item before pinning ${itemName}.`;
+      pinButton.focus();
+      return;
+    }
+
+    renderInventory(view);
+    restoreInventoryPinFocus(groupKey);
+
+    if (result.pinned) {
+      mappingAnnouncement.textContent = reviewingHistory
+        ? `${itemName} is pinned for the live item list. The historical item order remains frozen.`
+        : `${itemName} is pinned at position ${result.pinnedPosition}.`;
+    } else {
+      mappingAnnouncement.textContent = reviewingHistory
+        ? `${itemName} is unpinned from the live item list. The historical item order remains frozen.`
+        : `${itemName} is unpinned and returned to recent-sale order.`;
     }
   }
 
@@ -3139,12 +3217,20 @@
       return;
     }
 
+    const focusedPinGroupKey = document.activeElement
+      ?.closest?.(".inventory-pin-button")
+      ?.dataset.groupKey ?? null;
     const canceled = view.auction?.paymentStatus === "canceled";
     const query = searchInput.value;
     const normalizedQuery = viewModel.normalizeSearchText(query);
     const inventoryGroups = viewModel.groupInventoryEntries(view.inventory);
+    const orderedInventoryGroups =
+      inventoryGroupOrderController.order(
+        inventoryGroups,
+        view,
+      );
     const filteredInventory = viewModel.filterInventoryGroups(
-      inventoryGroups,
+      orderedInventoryGroups,
       query,
     );
     const visibleInventory = inventoryListExpanded
@@ -3187,6 +3273,8 @@
 
     if (focusSku) {
       restoreCardFocus(focusSku);
+    } else if (focusedPinGroupKey) {
+      restoreInventoryPinFocus(focusedPinGroupKey);
     }
   }
 
@@ -4787,6 +4875,22 @@
   }
 
   inventoryGrid.addEventListener("click", (event) => {
+    const pinButton = event.target.closest?.(".inventory-pin-button");
+
+    if (!pinButton || !inventoryGrid.contains(pinButton)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    toggleInventoryGroupPin(pinButton);
+  });
+
+  inventoryGrid.addEventListener("click", (event) => {
+    if (event.target.closest?.(".inventory-pin-button")) {
+      return;
+    }
+
     const button = event.target.closest?.(".inventory-card");
 
     if (!button || button.disabled || !inventoryGrid.contains(button)) {
@@ -4888,11 +4992,24 @@
 
   inventoryListToggle.addEventListener("click", () => {
     inventoryListExpanded = !inventoryListExpanded;
+    const trimmedPins = inventoryListExpanded
+      ? null
+      : inventoryGroupOrderController.trimPinnedGroups(
+          COLLAPSED_INVENTORY_ITEM_LIMIT,
+        );
 
     const view = getActiveView();
 
     if (view) {
       renderInventory(view);
+    }
+
+    if (trimmedPins?.changed) {
+      const unpinnedCount = trimmedPins.unpinnedGroupKeys.length;
+
+      mappingAnnouncement.textContent =
+        `${unpinnedCount} ${unpinnedCount === 1 ? "item was" : "items were"} unpinned. ` +
+        `The first ${COLLAPSED_INVENTORY_ITEM_LIMIT} pinned items remain pinned.`;
     }
   });
 

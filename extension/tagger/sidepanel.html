@@ -1070,6 +1070,21 @@
 
     <template id="inventory-card-template">
       <div class="inventory-card-wrapper" role="listitem">
+        <button
+          class="inventory-pin-button"
+          data-field="pin"
+          type="button"
+          aria-pressed="false"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M9 3h6l-1 6 3 3v1H7v-1l3-3-1-6Z"></path>
+            <path d="M12 13v8"></path>
+          </svg>
+        </button>
         <button class="inventory-card" type="button">
           <span class="card-heading">
             <span class="card-title">
