@@ -366,6 +366,36 @@
         : Math.round(completedGmvCents / completedPaymentCount);
     }
 
+    function formatGrossMarginPercentage(
+      grossProfitCents,
+      mappedRevenueCents,
+    ) {
+      if (!Number.isSafeInteger(grossProfitCents)) {
+        throw new TypeError(
+          "Gross profit must be a safe integer number of cents.",
+        );
+      }
+
+      if (
+        !Number.isSafeInteger(mappedRevenueCents) ||
+        mappedRevenueCents < 0
+      ) {
+        throw new TypeError(
+          "Mapped revenue must be a nonnegative safe integer number of cents.",
+        );
+      }
+
+      if (mappedRevenueCents === 0) {
+        return "—";
+      }
+
+      const percentage = (grossProfitCents / mappedRevenueCents) * 100;
+      return `${percentage.toLocaleString("en-US", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })}%`;
+    }
+
     function getProfitDisplay(value) {
       const formattedValue = formatUsdCents(value);
 
@@ -388,6 +418,7 @@
       createInventoryGroupKey,
       filterInventoryEntries,
       filterInventoryGroups,
+      formatGrossMarginPercentage,
       formatUsdCents,
       getAvailableToTagQuantity,
       getInventoryGroupStockDisplay,

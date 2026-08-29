@@ -54,6 +54,7 @@
       OBSERVED_PAYMENT_STATUSES.CANCELED,
     ]);
     const PAYMENT_FIXING_OBSERVED_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
     ]);
@@ -2154,7 +2155,7 @@
       ) {
         fail(
           "PAYMENT_ORDER_NOT_RESOLVABLE",
-          "Only payment-fixing orders can be resolved after tracking ends.",
+          "Only unresolved payment orders can be resolved after tracking ends.",
         );
       }
 
@@ -2314,11 +2315,8 @@
 
         if (
           auction.paymentStatus === "unknown" &&
-          (
-            auction.observedPaymentStatus ===
-              OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED ||
-            auction.observedPaymentStatus ===
-              OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING
+          PAYMENT_FIXING_OBSERVED_STATUSES.has(
+            auction.observedPaymentStatus,
           )
         ) {
           totals.paymentFixingCount += 1;

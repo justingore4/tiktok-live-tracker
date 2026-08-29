@@ -106,6 +106,10 @@ test("side panel exposes bottom performance metrics and renders their values", (
     metricsSection,
     /class="metric-title-with-description"[\s\S]*?>\s*Est\. Profit After Fees\s*<[\s\S]*?class="metric-description">GMV post 6% fee - COGS<\//,
   );
+  assert.match(
+    metricsSection,
+    /class="metric-title-with-description"[\s\S]*?>\s*Mapped Gross Margin\s*<[\s\S]*?class="metric-description">Gross profit divided by mapped revenue<\//,
+  );
   assert.match(metricsSection, /id="revenue-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="aov-value"[^>]*>\$0\.00</);
   assert.match(metricsSection, /id="total-gmv-value"[^>]*>&mdash;</);
@@ -133,14 +137,18 @@ test("side panel exposes bottom performance metrics and renders their values", (
     metricsSection,
     /id="estimated-profit-after-fees-warning"[\s\S]*?class="metric-warning"[\s\S]*?hidden/,
   );
+  assert.match(
+    metricsSection,
+    /id="mapped-gross-margin-value"[^>]*>&mdash;</,
+  );
   assert.equal(
     [
       ...metricsSection.matchAll(
         /class="metric-card(?:\s+metric-card-(?:fees|order-status|profit))?"/g,
       ),
     ].length,
-    8,
-    "the Metrics section must preserve its existing cards and include estimated profit after fees",
+    9,
+    "the Metrics section must preserve its existing cards and include mapped gross margin",
   );
 
   assert.match(
@@ -189,6 +197,10 @@ test("side panel exposes bottom performance metrics and renders their values", (
   );
   assert.match(
     source,
+    /const mappedGrossMarginValue = document\.querySelector\([\s\S]*?"#mapped-gross-margin-value"/,
+  );
+  assert.match(
+    source,
     /const estimatedProfitAfterFeesValue = document\.querySelector\([\s\S]*?"#estimated-profit-after-fees-value"/,
   );
   assert.match(
@@ -228,6 +240,11 @@ test("side panel exposes bottom performance metrics and renders their values", (
     source,
     /formattedEstimatedProfitAfterFees\s*=\s*[\s\S]*?estimatedProfitAfterFees\s*\?\?\s*"—"/,
     "missing Total GMV must leave estimated profit after fees unavailable",
+  );
+  assert.match(
+    source,
+    /formatGrossMarginPercentage\([\s\S]*?view\.totals\.profitCents,[\s\S]*?view\.totals\.committedRevenueCents[\s\S]*?mappedGrossMarginValue\.textContent\s*=\s*formattedMappedGrossMargin/,
+    "mapped gross margin must use gross profit divided by mapped completed-sale revenue",
   );
   assert.match(
     source,

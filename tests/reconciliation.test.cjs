@@ -411,7 +411,7 @@ test("canceledOrderCount includes only unique canonical cancellations in the sel
   assert.equal(otherSummary.totals.auctionCount, 1);
 });
 
-test("paymentFixingCount includes only unresolved failed-payment buffer orders in the selected stream", () => {
+test("paymentFixingCount includes every unresolved manually confirmable payment in the selected stream", () => {
   const state = createState();
 
   observeBiddingVariation(state, {
@@ -464,7 +464,7 @@ test("paymentFixingCount includes only unresolved failed-payment buffer orders i
     streamId: "another-stream",
   });
 
-  assert.equal(initialSummary.totals.paymentFixingCount, 2);
+  assert.equal(initialSummary.totals.paymentFixingCount, 3);
   assert.equal(otherSummary.totals.paymentFixingCount, 1);
 
   observePaymentStatuses(state, {
@@ -479,7 +479,7 @@ test("paymentFixingCount includes only unresolved failed-payment buffer orders i
   assert.equal(
     calculateSummary(state, { streamId: STREAM_ONE }).totals
       .paymentFixingCount,
-    2,
+    3,
   );
 
   recordPaymentComplete(state, {
@@ -496,12 +496,17 @@ test("paymentFixingCount includes only unresolved failed-payment buffer orders i
       },
     ],
   });
+  resolvePaymentFixingOrder(state, {
+    ...auctionInput(902),
+    resolution: "canceled",
+    soldPriceCents: null,
+  });
 
   const resolvedSummary = calculateSummary(state, { streamId: STREAM_ONE });
 
   assert.equal(resolvedSummary.totals.paymentFixingCount, 0);
   assert.equal(resolvedSummary.totals.completedPaymentCount, 2);
-  assert.equal(resolvedSummary.totals.canceledOrderCount, 2);
+  assert.equal(resolvedSummary.totals.canceledOrderCount, 3);
 });
 
 test("nonterminal payment states are flexible until cancellation becomes sticky", () => {
@@ -1046,7 +1051,7 @@ test("canceled mappings are editable reference-only history with no inventory or
   );
 });
 
-test("lists only unresolved payment-fixing orders with deterministic inventory identity", () => {
+test("lists unresolved confirmable payments with deterministic inventory identity", () => {
   const state = createState();
 
   for (const [variationNumber, observedPaymentStatus] of [
@@ -1072,6 +1077,15 @@ test("lists only unresolved payment-fixing orders with deterministic inventory i
     {
       variationNumber: 7,
       observedPaymentStatus: "payment_fixing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+    {
+      variationNumber: 8,
+      observedPaymentStatus: "payment_processing",
       mapped: false,
       sku: null,
       item: null,
@@ -1188,18 +1202,34 @@ test("manual cancellation releases inventory and permits reference-only remappin
   assert.deepEqual(correctedSummary.itemPerformance, summary.itemPerformance);
 });
 
-test("manual payment resolution excludes processing and validates its outcome", () => {
+test("manual payment resolution accepts processing and validates its outcome", () => {
   const state = createState();
 
+  mapVariation(state, auctionInput(72, { sku: "BLACK-TEE-M" }));
   observePendingPayment(
     state,
     72,
     OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
   );
 
+  const completed = resolvePaymentFixingOrder(state, {
+    ...auctionInput(72),
+    resolution: "payment_complete",
+    soldPriceCents: 1000,
+  });
+
+  assert.equal(completed.status, "committed");
+  assert.equal(completed.observedPaymentStatus, "payment_complete");
+
+  observePendingPayment(
+    state,
+    73,
+    OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
+  );
+
   for (const input of [
     {
-      ...auctionInput(72),
+      ...auctionInput(73),
       resolution: "payment_complete",
       soldPriceCents: 1000,
     },
@@ -1217,13 +1247,13 @@ test("manual payment resolution excludes processing and validates its outcome", 
 
   assertErrorCode(
     () => resolvePaymentFixingOrder(state, {
-      ...auctionInput(72),
+      ...auctionInput(73),
       resolution: "canceled",
       soldPriceCents: 1,
     }),
     "INVALID_ARGUMENT",
   );
-  assert.equal(getAuction(state, auctionInput(72)).paymentStatus, "unknown");
+  assert.equal(getAuction(state, auctionInput(73)).paymentStatus, "unknown");
 });
 
 test("canonical cancellation ignores later priced completion and remains terminal", () => {

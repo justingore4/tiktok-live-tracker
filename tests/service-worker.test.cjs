@@ -910,6 +910,17 @@ function createWorkerHarness(options = {}) {
             summary: null,
           };
         },
+        async getActiveBaselinePreview() {
+          inventoryImportCalls.push({
+            type: "get_active_baseline_preview",
+          });
+          return options.activeBaselinePreviewResult ?? {
+            ready: false,
+            baselineId: null,
+            inventory: null,
+            summary: null,
+          };
+        },
         async previewGoogleSheet(spreadsheetId) {
           inventoryImportCalls.push({
             type: "preview_google_sheet",
@@ -1930,6 +1941,43 @@ test("routes exact inventory-import status and preview messages", async () => {
       spreadsheetId: "1Abc_def-Ghij234567890",
     },
   ]);
+});
+
+test("routes the exact local active-baseline preview message", async () => {
+  const activeBaselinePreviewResult = {
+    ready: true,
+    baselineId:
+      "inventory-baseline:22222222-2222-4222-8222-222222222222",
+    inventory: [{
+      sku: "TEST-SKU",
+      item: "Test item",
+      style: "",
+      size: "OS",
+      quantityOnHandAtImport: 1,
+      unitCostCents: 100,
+    }],
+    summary: {
+      rowCount: 1,
+      totalQuantityOnHandAtImport: 1,
+      totalInventoryCostCents: 100,
+    },
+  };
+  const harness = createWorkerHarness({ activeBaselinePreviewResult });
+  const request = harness.send(
+    harness.createImportMessage({
+      type:
+        harness.inventoryImportProtocol.COMMAND_TYPES
+          .GET_ACTIVE_BASELINE_PREVIEW,
+    }),
+  );
+
+  assert.deepEqual(await request.response, {
+    ok: true,
+    data: activeBaselinePreviewResult,
+  });
+  assert.deepEqual(harness.inventoryImportCalls, [{
+    type: "get_active_baseline_preview",
+  }]);
 });
 
 test("confirmed import alone can dispatch internal baseline creation", async () => {

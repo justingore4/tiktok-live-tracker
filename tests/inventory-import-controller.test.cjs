@@ -123,6 +123,25 @@ test("previews detached rows then confirms a baseline explicitly", async () => {
   ]);
 });
 
+test("canceling a replacement preview retains the confirmed baseline identity", async () => {
+  const controller = createInventoryImportController({
+    client: createClient({
+      getImportStatus: async () => ({ ready: true, ...CONFIRMATION }),
+    }),
+  });
+
+  await controller.start();
+  const previewed = await controller.previewReference(SHEET_ID);
+  assert.equal(previewed.hasConfirmedBaseline, true);
+  assert.deepEqual(previewed.confirmation, CONFIRMATION);
+  assert.deepEqual(previewed.preview, PREVIEW);
+
+  const canceled = controller.resetPreview();
+  assert.equal(canceled.hasConfirmedBaseline, true);
+  assert.deepEqual(canceled.confirmation, CONFIRMATION);
+  assert.equal(canceled.preview, null);
+});
+
 test("retains sanitized validation issues and retries the same detached Sheet ID", async () => {
   let attempts = 0;
   const validationFailure = Object.assign(new Error("Fix the Inventory tab."), {

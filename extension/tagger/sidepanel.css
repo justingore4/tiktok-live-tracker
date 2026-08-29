@@ -152,7 +152,6 @@ button {
 
 .inventory-import-heading h2,
 .inventory-import-preview-heading h3,
-.inventory-import-description,
 .inventory-import-progress h3,
 .inventory-import-progress p,
 .inventory-import-error h3,
@@ -194,13 +193,6 @@ button {
   background: rgb(244 189 80 / 10%);
 }
 
-.inventory-import-description {
-  margin-top: 10px;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .inventory-import-form {
   display: grid;
   gap: 8px;
@@ -235,7 +227,6 @@ button {
   border-color: var(--amber);
 }
 
-.inventory-import-form .field-help,
 .inventory-import-form .field-error {
   margin: 0;
   font-size: 9px;
@@ -246,8 +237,7 @@ button {
   width: 100%;
 }
 
-.inventory-import-progress,
-.inventory-import-confirmation {
+.inventory-import-progress {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
@@ -435,8 +425,74 @@ button {
 }
 
 .inventory-import-confirmation {
-  border-color: rgb(39 211 180 / 38%);
+  margin-top: 13px;
+  padding: 11px;
+  border: 1px solid rgb(39 211 180 / 38%);
+  border-radius: 10px;
   background: rgb(39 211 180 / 7%);
+}
+
+.inventory-import-confirmation-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.inventory-import-confirmation-summary::-webkit-details-marker {
+  display: none;
+}
+
+.inventory-import-confirmation-summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 5px;
+}
+
+.inventory-import-confirmation-status {
+  display: block;
+  min-width: 0;
+}
+
+.inventory-import-confirmation-title,
+.inventory-import-confirmation-message {
+  display: block;
+}
+
+.inventory-import-confirmation-title {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.inventory-import-confirmation-message {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.inventory-import-confirmation-toggle {
+  color: var(--blue-bright);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.inventory-import-confirmation-toggle > span::before {
+  content: "+";
+}
+
+.inventory-import-confirmation[open]
+  .inventory-import-confirmation-toggle
+  > span::before {
+  content: "−";
+}
+
+.confirmed-inventory-preview {
+  padding-top: 12px;
+  border-top: 1px solid rgb(39 211 180 / 20%);
 }
 
 .inventory-import-confirmation-mark {
@@ -473,8 +529,7 @@ button {
   padding: 12px;
 }
 
-.stream-session-panel[data-state="active"] .stream-session-heading,
-.stream-session-panel[data-state="active"] .stream-session-safety-note {
+.stream-session-panel[data-state="active"] .stream-session-heading {
   display: none;
 }
 
@@ -492,7 +547,6 @@ button {
 .stream-session-heading h2,
 .stream-session-status h3,
 .stream-session-status p,
-.stream-session-safety-note,
 .stream-session-end-confirmation p,
 .stream-session-error h3,
 .stream-session-error p {
@@ -600,13 +654,6 @@ button {
 .stream-session-status p {
   margin-top: 3px;
   color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.stream-session-safety-note {
-  margin-top: 9px;
-  color: var(--text-subtle);
   font-size: 10px;
   line-height: 1.45;
 }
@@ -2218,6 +2265,48 @@ button {
   margin-top: 17px;
 }
 
+.inventory-list-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--blue-bright);
+  background: rgb(72 165 255 / 6%);
+  font-size: 11px;
+  font-weight: 740;
+  cursor: pointer;
+}
+
+.inventory-list-toggle:hover {
+  border-color: var(--border-strong);
+  background: rgb(72 165 255 / 10%);
+}
+
+.inventory-list-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.inventory-list-toggle-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.inventory-list-toggle[aria-expanded="true"]
+  .inventory-list-toggle-chevron {
+  transform: translateY(2px) rotate(225deg);
+}
+
 .inventory-card-wrapper {
   min-width: 0;
 }
@@ -2272,8 +2361,10 @@ button {
 }
 
 .card-title {
-  display: block;
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 1px;
   font-size: 14px;
   font-weight: 700;
   line-height: 1.35;
@@ -2284,20 +2375,6 @@ button {
 .inventory-card [data-field="style"] {
   color: #d9e1eb;
   font-weight: 570;
-}
-
-.item-separator {
-  color: var(--text-subtle);
-  font-weight: 450;
-}
-
-.stock-indicator {
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--cyan);
-  box-shadow: 0 0 0 4px rgb(39 211 180 / 10%);
 }
 
 .card-meta {
@@ -2505,15 +2582,6 @@ button {
   text-transform: uppercase;
 }
 
-.inventory-card[data-selected="true"] .stock-indicator {
-  display: none;
-}
-
-.inventory-card[data-stock-state="low_stock"] .stock-indicator {
-  background: var(--amber);
-  box-shadow: 0 0 0 4px rgb(244 189 80 / 10%);
-}
-
 .inventory-card[data-stock-state="low_stock"] .stock-label {
   color: #ffd88a;
 }
@@ -2524,11 +2592,6 @@ button {
 
 .inventory-card[data-stock-state="oversold"] {
   border-color: #6f5630;
-}
-
-.inventory-card[data-stock-state="oversold"] .stock-indicator {
-  background: var(--amber);
-  box-shadow: 0 0 0 4px rgb(244 189 80 / 10%);
 }
 
 .inventory-card[data-stock-state="oversold"] .stock-label {

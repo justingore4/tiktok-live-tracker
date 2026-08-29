@@ -22,12 +22,18 @@ test("creates exact versioned inventory-import messages", () => {
   assert.equal(message.command.spreadsheetId, "1Abc_def-Ghij234567890");
 });
 
-test("accepts only the four exact command shapes", () => {
+test("accepts only the five exact command shapes", () => {
   assert.deepEqual(
     protocol.validateCommand({
       type: protocol.COMMAND_TYPES.GET_IMPORT_STATUS,
     }),
     { type: "get_import_status" },
+  );
+  assert.deepEqual(
+    protocol.validateCommand({
+      type: protocol.COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW,
+    }),
+    { type: "get_active_baseline_preview" },
   );
   assert.deepEqual(
     protocol.validateCommand({
@@ -53,6 +59,14 @@ test("accepts only the four exact command shapes", () => {
     },
   );
 
+  assert.throws(
+    () =>
+      protocol.validateCommand({
+        type: protocol.COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW,
+        baselineId: "inventory-baseline:caller-controlled",
+      }),
+    (error) => error.code === "INVALID_COMMAND",
+  );
   assert.throws(
     () =>
       protocol.validateCommand({

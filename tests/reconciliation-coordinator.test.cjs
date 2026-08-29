@@ -1252,7 +1252,7 @@ test("failed first initialization remains uninitialized and can be retried", asy
   assert.equal(memoryStore.calls.save.length, 2);
 });
 
-test("persists report-scoped payment fixing resolution and keeps retries idempotent", async () => {
+test("persists report-scoped processing-payment resolution and keeps retries idempotent", async () => {
   const memoryStore = createMemoryStateStore();
   const coordinator = createCoordinator(memoryStore);
 
@@ -1260,7 +1260,7 @@ test("persists report-scoped payment fixing resolution and keeps retries idempot
   await coordinator.dispatch(mapCommand(91));
   await coordinator.dispatch(observePaymentStatusesCommand([{
     variationNumber: 91,
-    observedPaymentStatus: "payment_failed",
+    observedPaymentStatus: "payment_processing",
   }]));
   const saveCountBeforeResolution = memoryStore.calls.save.length;
   const input = {

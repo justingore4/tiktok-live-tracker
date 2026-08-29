@@ -15,6 +15,7 @@
     const MESSAGE_VERSION = 1;
     const COMMAND_TYPES = Object.freeze({
       GET_IMPORT_STATUS: "get_import_status",
+      GET_ACTIVE_BASELINE_PREVIEW: "get_active_baseline_preview",
       PREVIEW_GOOGLE_SHEET: "preview_google_sheet",
       CONFIRM_GOOGLE_SHEET_IMPORT: "confirm_google_sheet_import",
       ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET:
@@ -22,6 +23,7 @@
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_IMPORT_STATUS]: ["type"],
+      [COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW]: ["type"],
       [COMMAND_TYPES.PREVIEW_GOOGLE_SHEET]: ["spreadsheetId", "type"],
       [COMMAND_TYPES.CONFIRM_GOOGLE_SHEET_IMPORT]: ["previewToken", "type"],
       [COMMAND_TYPES.ADD_ACTIVE_STREAM_SKUS_FROM_GOOGLE_SHEET]: [

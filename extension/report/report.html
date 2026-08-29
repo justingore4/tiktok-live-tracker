@@ -115,37 +115,6 @@
           ></p>
         </section>
 
-        <section class="report-section" aria-labelledby="performers-title">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Product insights</p>
-              <h2 id="performers-title">Top performers</h2>
-            </div>
-          </div>
-          <div class="performer-grid">
-            <section class="performer-card" aria-labelledby="most-sold-title">
-              <p class="performer-kicker">By completed units</p>
-              <h3 id="most-sold-title">Most sold SKU</h3>
-              <ul id="most-sold-items" class="performer-list"></ul>
-            </section>
-            <section class="performer-card" aria-labelledby="most-profitable-title">
-              <p class="performer-kicker">By mapped gross profit</p>
-              <h3 id="most-profitable-title">Most profitable SKU</h3>
-              <ul id="most-profitable-items" class="performer-list"></ul>
-            </section>
-            <section id="most-sold-products-card" class="performer-card" aria-labelledby="most-sold-products-title" hidden>
-              <p class="performer-kicker">Combined across sizes</p>
-              <h3 id="most-sold-products-title">Most sold product</h3>
-              <ul id="most-sold-products" class="performer-list"></ul>
-            </section>
-            <section id="most-profitable-products-card" class="performer-card" aria-labelledby="most-profitable-products-title" hidden>
-              <p class="performer-kicker">Combined across sizes</p>
-              <h3 id="most-profitable-products-title">Most profitable product</h3>
-              <ul id="most-profitable-products" class="performer-list"></ul>
-            </section>
-          </div>
-        </section>
-
         <section class="report-section" aria-labelledby="performance-table-title">
           <div class="section-heading table-heading">
             <div>
@@ -180,6 +149,37 @@
           <p id="performance-empty" class="empty-copy" hidden>
             No mapped completed sales are available for SKU performance.
           </p>
+        </section>
+
+        <section class="report-section" aria-labelledby="performers-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Product insights</p>
+              <h2 id="performers-title">Top performers</h2>
+            </div>
+          </div>
+          <div class="performer-grid">
+            <section class="performer-card" aria-labelledby="most-sold-title">
+              <p class="performer-kicker">By completed units</p>
+              <h3 id="most-sold-title">Most sold SKU</h3>
+              <ul id="most-sold-items" class="performer-list"></ul>
+            </section>
+            <section class="performer-card" aria-labelledby="most-profitable-title">
+              <p class="performer-kicker">By mapped gross profit</p>
+              <h3 id="most-profitable-title">Most profitable SKU</h3>
+              <ul id="most-profitable-items" class="performer-list"></ul>
+            </section>
+            <section id="most-sold-products-card" class="performer-card" aria-labelledby="most-sold-products-title" hidden>
+              <p class="performer-kicker">Combined across sizes</p>
+              <h3 id="most-sold-products-title">Most sold product</h3>
+              <ul id="most-sold-products" class="performer-list"></ul>
+            </section>
+            <section id="most-profitable-products-card" class="performer-card" aria-labelledby="most-profitable-products-title" hidden>
+              <p class="performer-kicker">Combined across sizes</p>
+              <h3 id="most-profitable-products-title">Most profitable product</h3>
+              <ul id="most-profitable-products" class="performer-list"></ul>
+            </section>
+          </div>
         </section>
 
         <section class="report-section inventory-update-section" aria-labelledby="inventory-title">
@@ -226,7 +226,7 @@
           <div class="table-scroll screen-scroll" tabindex="0">
             <table class="data-table inventory-table">
               <caption>
-                Unit cost, opening inventory, completed mapped sales since the inventory baseline, pending reservations, and the updated quantity_on_hand_at_import for every SKU.
+                Unit cost, opening inventory, completed mapped sales since the inventory baseline, and the updated quantity_on_hand_at_import for every SKU.
               </caption>
               <thead>
                 <tr>
@@ -242,7 +242,6 @@
                     aria-label="Sold since inventory baseline"
                     title="Sold since inventory baseline"
                   >Sold</th>
-                  <th scope="col" class="number-cell">Pending</th>
                   <th scope="col" class="number-cell">Updated count</th>
                   <th scope="col" class="number-cell">Oversold</th>
                 </tr>

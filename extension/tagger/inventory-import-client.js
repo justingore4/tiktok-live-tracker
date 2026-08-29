@@ -20,6 +20,13 @@
       /^inventory-baseline:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     const FINGERPRINT_PATTERN = /^fnv1a64:[0-9a-f]{16}$/;
     const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
+    const INVENTORY_TEXT_LIMITS = Object.freeze({
+      item: 160,
+      style: 160,
+      size: 80,
+    });
+    const UNSAFE_CONTROL_CHARACTER_PATTERN =
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
     class InventoryImportClientError extends Error {
       constructor(code, message, options = {}) {
@@ -157,13 +164,56 @@
         "unitCostCents",
       ]) &&
         typeof row.sku === "string" &&
+        SKU_PATTERN.test(row.sku) &&
         typeof row.item === "string" &&
+        row.item.length > 0 &&
+        row.item.length <= INVENTORY_TEXT_LIMITS.item &&
         typeof row.style === "string" &&
+        row.style.length <= INVENTORY_TEXT_LIMITS.style &&
         typeof row.size === "string" &&
+        row.size.length > 0 &&
+        row.size.length <= INVENTORY_TEXT_LIMITS.size &&
+        [row.item, row.style, row.size].every(
+          (value) =>
+            value === value.normalize("NFC").trim().replace(/\s+/g, " ") &&
+            !value.startsWith("=") &&
+            !UNSAFE_CONTROL_CHARACTER_PATTERN.test(value),
+        ) &&
         Number.isSafeInteger(row.quantityOnHandAtImport) &&
         row.quantityOnHandAtImport >= 0 &&
         Number.isSafeInteger(row.unitCostCents) &&
         row.unitCostCents >= 0;
+    }
+
+    function inventoryMatchesSummary(inventory, summary) {
+      const seenSkus = new Set();
+      const seenIdentities = new Set();
+      let totalQuantityOnHandAtImport = 0n;
+      let totalInventoryCostCents = 0n;
+
+      for (const row of inventory) {
+        const identity = [row.item, row.style, row.size]
+          .map((value) => value.toLocaleLowerCase("en-US"))
+          .join("\u0000");
+
+        if (seenSkus.has(row.sku) || seenIdentities.has(identity)) {
+          return false;
+        }
+
+        seenSkus.add(row.sku);
+        seenIdentities.add(identity);
+        totalQuantityOnHandAtImport += BigInt(row.quantityOnHandAtImport);
+        totalInventoryCostCents +=
+          BigInt(row.quantityOnHandAtImport) * BigInt(row.unitCostCents);
+      }
+
+      return (
+        totalQuantityOnHandAtImport <= BigInt(Number.MAX_SAFE_INTEGER) &&
+        totalInventoryCostCents <= BigInt(Number.MAX_SAFE_INTEGER) &&
+        Number(totalQuantityOnHandAtImport) ===
+          summary.totalQuantityOnHandAtImport &&
+        Number(totalInventoryCostCents) === summary.totalInventoryCostCents
+      );
     }
 
     function isValidIssue(issue) {
@@ -332,6 +382,44 @@
         return cloneSerializable(data);
       }
 
+      if (commandType === commandTypes.GET_ACTIVE_BASELINE_PREVIEW) {
+        if (
+          !hasExactKeys(data, [
+            "baselineId",
+            "inventory",
+            "ready",
+            "summary",
+          ]) ||
+          typeof data.ready !== "boolean"
+        ) {
+          fail("INVALID_RESPONSE", "The inventory-import service returned invalid data.");
+        }
+
+        if (!data.ready) {
+          if (
+            data.baselineId !== null ||
+            data.inventory !== null ||
+            data.summary !== null
+          ) {
+            fail("INVALID_RESPONSE", "The inventory-import service returned invalid data.");
+          }
+        } else if (
+          typeof data.baselineId !== "string" ||
+          !BASELINE_ID_PATTERN.test(data.baselineId) ||
+          !Array.isArray(data.inventory) ||
+          data.inventory.length < 1 ||
+          data.inventory.length > 1_000 ||
+          !data.inventory.every(isValidInventoryRow) ||
+          !isValidSummary(data.summary) ||
+          data.summary.rowCount !== data.inventory.length ||
+          !inventoryMatchesSummary(data.inventory, data.summary)
+        ) {
+          fail("INVALID_RESPONSE", "The inventory-import service returned invalid data.");
+        }
+
+        return cloneSerializable(data);
+      }
+
       if (
         !hasExactKeys(data, [
           "baselineId",
@@ -415,6 +503,12 @@
         return enqueue({ type: protocol.COMMAND_TYPES.GET_IMPORT_STATUS });
       }
 
+      function getActiveBaselinePreview() {
+        return enqueue({
+          type: protocol.COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW,
+        });
+      }
+
       function previewReference(reference) {
         let spreadsheetId;
         try {
@@ -470,6 +564,7 @@
       return Object.freeze({
         addActiveStreamSkusReference,
         confirmPreview,
+        getActiveBaselinePreview,
         getImportStatus,
         normalizeReference,
         previewReference,

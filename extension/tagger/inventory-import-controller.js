@@ -462,7 +462,6 @@
               : client.previewSpreadsheetId(spreadsheetId),
           accept(response) {
             preview = requirePreview(response);
-            confirmation = null;
           },
         });
 

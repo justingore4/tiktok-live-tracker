@@ -560,7 +560,11 @@
           !Number.isSafeInteger(order.variationNumber) ||
           order.variationNumber < 1 ||
           order.variationNumber <= priorVariationNumber ||
-          !["payment_fixing", "payment_failed"].includes(
+          ![
+            "payment_processing",
+            "payment_fixing",
+            "payment_failed",
+          ].includes(
             order.observedPaymentStatus,
           ) ||
           typeof order.mapped !== "boolean"

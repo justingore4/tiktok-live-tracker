@@ -28,6 +28,14 @@
       /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
     const BASELINE_ID_PATTERN =
       /^inventory-baseline:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
+    const INVENTORY_TEXT_LIMITS = Object.freeze({
+      item: 160,
+      style: 160,
+      size: 80,
+    });
+    const UNSAFE_CONTROL_CHARACTER_PATTERN =
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
     const PREVIEW_TOKEN_PATTERN =
       /^inventory-preview:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -1094,6 +1102,112 @@
         };
       }
 
+      function createActiveBaselinePreview(baseline) {
+        const unavailable = {
+          ready: false,
+          baselineId: null,
+          inventory: null,
+          summary: null,
+        };
+
+        if (
+          !isPlainRecord(baseline) ||
+          typeof baseline.baselineId !== "string" ||
+          !BASELINE_ID_PATTERN.test(baseline.baselineId) ||
+          !Array.isArray(baseline.inventory) ||
+          baseline.inventory.length < 1 ||
+          baseline.inventory.length > 1_000
+        ) {
+          return unavailable;
+        }
+
+        const seenSkus = new Set();
+        const seenIdentities = new Set();
+        let totalQuantityOnHandAtImport = 0n;
+        let totalInventoryCostCents = 0n;
+
+        for (const row of baseline.inventory) {
+          if (
+            !isPlainRecord(row) ||
+            Object.keys(row).sort().join("\u0000") !==
+              [
+                "item",
+                "quantityOnHandAtImport",
+                "size",
+                "sku",
+                "style",
+                "unitCostCents",
+              ].sort().join("\u0000") ||
+            typeof row.sku !== "string" ||
+            !SKU_PATTERN.test(row.sku) ||
+            seenSkus.has(row.sku) ||
+            !Number.isSafeInteger(row.quantityOnHandAtImport) ||
+            row.quantityOnHandAtImport < 0 ||
+            !Number.isSafeInteger(row.unitCostCents) ||
+            row.unitCostCents < 0
+          ) {
+            return unavailable;
+          }
+
+          for (const [field, allowEmpty] of [
+            ["item", false],
+            ["style", true],
+            ["size", false],
+          ]) {
+            const value = row[field];
+
+            if (
+              typeof value !== "string" ||
+              value !== value.normalize("NFC").trim().replace(/\s+/g, " ") ||
+              (!allowEmpty && value === "") ||
+              value.startsWith("=") ||
+              value.length > INVENTORY_TEXT_LIMITS[field] ||
+              UNSAFE_CONTROL_CHARACTER_PATTERN.test(value)
+            ) {
+              return unavailable;
+            }
+          }
+
+          const identity = [row.item, row.style, row.size]
+            .map((value) => value.toLocaleLowerCase("en-US"))
+            .join("\u0000");
+
+          if (seenIdentities.has(identity)) {
+            return unavailable;
+          }
+
+          seenSkus.add(row.sku);
+          seenIdentities.add(identity);
+          totalQuantityOnHandAtImport += BigInt(row.quantityOnHandAtImport);
+          totalInventoryCostCents +=
+            BigInt(row.quantityOnHandAtImport) * BigInt(row.unitCostCents);
+        }
+
+        if (
+          totalQuantityOnHandAtImport > BigInt(Number.MAX_SAFE_INTEGER) ||
+          totalInventoryCostCents > BigInt(Number.MAX_SAFE_INTEGER)
+        ) {
+          return unavailable;
+        }
+
+        return {
+          ready: true,
+          baselineId: baseline.baselineId,
+          inventory: cloneSerializable(baseline.inventory),
+          summary: {
+            rowCount: baseline.inventory.length,
+            totalQuantityOnHandAtImport: Number(totalQuantityOnHandAtImport),
+            totalInventoryCostCents: Number(totalInventoryCostCents),
+          },
+        };
+      }
+
+      async function getActiveBaselinePreview() {
+        return createActiveBaselinePreview(
+          await dependencies.getActiveBaseline(),
+        );
+      }
+
       function invalidatePreviews() {
         previews.clear();
       }
@@ -1101,6 +1215,7 @@
       return Object.freeze({
         addActiveStreamSkusFromGoogleSheet,
         confirmGoogleSheetImport,
+        getActiveBaselinePreview,
         getImportStatus,
         invalidatePreviews,
         previewGoogleSheet,

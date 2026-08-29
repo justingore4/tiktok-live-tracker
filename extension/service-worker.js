@@ -1290,6 +1290,8 @@ function dispatchBoundaryCommand(boundary, command) {
     switch (command.type) {
       case inventoryImportProtocol.COMMAND_TYPES.GET_IMPORT_STATUS:
         return inventoryImportService.getImportStatus();
+      case inventoryImportProtocol.COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW:
+        return inventoryImportService.getActiveBaselinePreview();
       case inventoryImportProtocol.COMMAND_TYPES.PREVIEW_GOOGLE_SHEET:
         return inventoryImportService.previewGoogleSheet(
           command.spreadsheetId,

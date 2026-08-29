@@ -282,6 +282,126 @@ test("serializes client commands so confirm cannot overtake preview", async () =
   ]);
 });
 
+test("gets a strict local active-baseline preview", async () => {
+  const messages = [];
+  const readyData = {
+    ready: true,
+    baselineId: BASELINE_ID,
+    inventory: INVENTORY,
+    summary: SUMMARY,
+  };
+  const client = createInventoryImportClient({
+    protocol,
+    runtime: {
+      sendMessage(message) {
+        messages.push(message);
+        return Promise.resolve(ok(readyData));
+      },
+    },
+  });
+
+  const result = await client.getActiveBaselinePreview();
+  assert.deepEqual(result, readyData);
+  assert.notEqual(result, readyData);
+  assert.notEqual(result.inventory, readyData.inventory);
+  assert.deepEqual(messages, [
+    protocol.createInventoryImportMessage({
+      type: protocol.COMMAND_TYPES.GET_ACTIVE_BASELINE_PREVIEW,
+    }),
+  ]);
+});
+
+test("strictly validates unavailable and ready active-baseline previews", async () => {
+  const invalidResponses = [
+    {
+      ready: false,
+      baselineId: null,
+      inventory: [],
+      summary: null,
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: [],
+      summary: { ...SUMMARY, rowCount: 0 },
+    },
+    {
+      ready: true,
+      baselineId: "not-a-baseline",
+      inventory: INVENTORY,
+      summary: SUMMARY,
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: INVENTORY,
+      summary: { ...SUMMARY, rowCount: 2 },
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: INVENTORY,
+      summary: { ...SUMMARY, totalInventoryCostCents: 1 },
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: [{ ...INVENTORY[0], unexpected: true }],
+      summary: SUMMARY,
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: INVENTORY,
+      summary: SUMMARY,
+      sourceFingerprint: FINGERPRINT,
+    },
+    {
+      ready: true,
+      baselineId: BASELINE_ID,
+      inventory: [
+        INVENTORY[0],
+        { ...INVENTORY[0], sku: "TEE-BLACK-L" },
+      ],
+      summary: {
+        rowCount: 2,
+        totalQuantityOnHandAtImport: 6,
+        totalInventoryCostCents: 7500,
+      },
+    },
+  ];
+
+  for (const data of invalidResponses) {
+    const client = createInventoryImportClient({
+      protocol,
+      runtime: { sendMessage: () => Promise.resolve(ok(data)) },
+    });
+
+    await assert.rejects(
+      client.getActiveBaselinePreview(),
+      (error) => error.code === "INVALID_RESPONSE",
+    );
+  }
+
+  const unavailableClient = createInventoryImportClient({
+    protocol,
+    runtime: {
+      sendMessage: () => Promise.resolve(ok({
+        ready: false,
+        baselineId: null,
+        inventory: null,
+        summary: null,
+      })),
+    },
+  });
+  assert.deepEqual(await unavailableClient.getActiveBaselinePreview(), {
+    ready: false,
+    baselineId: null,
+    inventory: null,
+    summary: null,
+  });
+});
+
 test("adds active-stream SKUs through an exact worker-owned command", async () => {
   const messages = [];
   const resultData = {

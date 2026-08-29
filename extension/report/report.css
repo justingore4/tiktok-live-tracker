@@ -822,13 +822,17 @@ button:disabled {
   border-bottom: 0;
 }
 
-.data-table tbody tr:nth-child(even) {
-  background: #ffffff;
+.data-table tbody tr:nth-child(even) td {
+  background: #f4f6f8;
 }
 
 .data-table .number-cell {
   text-align: right;
   white-space: nowrap;
+}
+
+.data-table.inventory-table .number-cell {
+  text-align: center;
 }
 
 .data-table .sku-cell {
@@ -1197,6 +1201,10 @@ button:disabled {
   .data-table th,
   .data-table td {
     border-color: #aeb4bb !important;
+  }
+
+  .data-table tbody tr:nth-child(even) td {
+    background: #f4f6f8 !important;
   }
 
   .data-table .profit-positive {

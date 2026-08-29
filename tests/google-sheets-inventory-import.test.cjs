@@ -807,6 +807,91 @@ test("reports readiness only for a persisted imported active baseline", async ()
   });
 });
 
+test("returns a cloned local preview of the active inventory baseline", async () => {
+  const activeBaseline = {
+    baselineId:
+      "inventory-baseline:99999999-9999-4999-8999-999999999999",
+    sourceFingerprint: "fnv1a64:ae41c31763e06074",
+    inventory: [
+      {
+        sku: "SKU-1",
+        item: "Stussy tee",
+        style: "black",
+        size: "L",
+        quantityOnHandAtImport: 3,
+        unitCostCents: 1250,
+      },
+    ],
+  };
+  const harness = createHarness({ activeBaseline });
+
+  const result = await harness.service.getActiveBaselinePreview();
+  assert.deepEqual(result, {
+    ready: true,
+    baselineId: activeBaseline.baselineId,
+    inventory: activeBaseline.inventory,
+    summary: {
+      rowCount: 1,
+      totalQuantityOnHandAtImport: 3,
+      totalInventoryCostCents: 3750,
+    },
+  });
+  assert.notEqual(result.inventory, activeBaseline.inventory);
+  assert.notEqual(result.inventory[0], activeBaseline.inventory[0]);
+  result.inventory[0].item = "Changed client copy";
+  assert.equal(activeBaseline.inventory[0].item, "Stussy tee");
+  assert.equal(harness.authCalls.length, 0);
+  assert.equal(harness.fetchCalls.length, 0);
+});
+
+test("returns the exact unavailable active-baseline preview for absent or unusable data", async () => {
+  const expected = {
+    ready: false,
+    baselineId: null,
+    inventory: null,
+    summary: null,
+  };
+  const unusableBaselines = [
+    null,
+    {
+      baselineId:
+        "inventory-baseline:99999999-9999-4999-8999-999999999999",
+      inventory: [],
+    },
+    {
+      baselineId: "invalid-baseline",
+      inventory: [{
+        sku: "SKU-1",
+        item: "Stussy tee",
+        style: "black",
+        size: "L",
+        quantityOnHandAtImport: 3,
+        unitCostCents: 1250,
+      }],
+    },
+    {
+      baselineId:
+        "inventory-baseline:99999999-9999-4999-8999-999999999999",
+      inventory: [{
+        sku: "bad sku",
+        item: "Stussy tee",
+        style: "black",
+        size: "L",
+        quantityOnHandAtImport: 3,
+        unitCostCents: 1250,
+      }],
+    },
+  ];
+
+  for (const activeBaseline of unusableBaselines) {
+    const harness = createHarness({ activeBaseline });
+    assert.deepEqual(
+      await harness.service.getActiveBaselinePreview(),
+      expected,
+    );
+  }
+});
+
 test("adds only a full validated Sheet snapshot to the active stream", async () => {
   const payload = appendGridRow(createGridPayload());
   const harness = createHarness({ payloads: [payload] });

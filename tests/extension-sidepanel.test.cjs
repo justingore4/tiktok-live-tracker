@@ -313,6 +313,14 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
   );
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
   const headerSource = html.match(/<header class="app-header">[\s\S]*?<\/header>/)?.[0];
   const footerSource = html.match(
     /<footer class="app-footer"[\s\S]*?<\/footer>/,
@@ -350,9 +358,16 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     html,
     /id="stream-session-error"[\s\S]+role="alert"[\s\S]+tabindex="-1"/,
   );
-  assert.match(html, /id="start-stream"[\s\S]+type="button"/);
+  assert.match(
+    html,
+    /id="start-stream"[\s\S]+type="button"[\s\S]+>\s*Start stream tracking\s*</,
+  );
   assert.match(html, /id="resume-stream"[\s\S]+type="button"/);
   assert.match(html, /id="end-stream"[\s\S]+type="button"/);
+  assert.doesNotMatch(
+    html,
+    /stream-session-safety-note|These controls affect only this tracker's local session/,
+  );
   assert.match(html, /id="confirm-end-stream"[\s\S]+type="button"/);
   assert.match(
     html,
@@ -377,7 +392,11 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /<label[^>]+for="inventory-sheet-reference"/);
   assert.match(
     html,
-    /id="inventory-sheet-reference"[\s\S]+aria-describedby="inventory-sheet-help inventory-sheet-error"/,
+    /id="inventory-sheet-reference"[\s\S]+aria-describedby="inventory-sheet-error"/,
+  );
+  assert.doesNotMatch(
+    html,
+    /inventory-import-description|inventory-sheet-help|Connect the spreadsheet that contains your|Only the Inventory tab is read/,
   );
   assert.match(
     html,
@@ -398,9 +417,9 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(
     html,
-    /id="inventory-import-confirmation"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
+    /id="inventory-import-confirmation-status"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
   );
-  assert.match(html, /do not[\s\S]+start or end TikTok LIVE/i);
+  assert.doesNotMatch(html, /do not[\s\S]+start or end TikTok LIVE/i);
   assert.match(html, /Waiting for a live auction variation/);
   const endConfirmation = html.match(
     /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
@@ -457,6 +476,16 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /id="inventory-grid"[^>]+role="list"/);
   assert.match(html, /class="inventory-card-wrapper"[^>]+role="listitem"/);
   assert.match(inventoryCardTemplateSource, /<button class="inventory-card" type="button">/);
+  assert.match(
+    inventoryCardTemplateSource,
+    /class="card-title"[\s\S]*?data-field="item"[\s\S]*?data-field="style"/,
+  );
+  assert.doesNotMatch(inventoryCardTemplateSource, /item-separator/);
+  assert.doesNotMatch(inventoryCardTemplateSource, /stock-indicator/);
+  assert.match(
+    styleSource,
+    /\.card-title\s*\{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/,
+  );
   assert.doesNotMatch(inventoryCardTemplateSource, /aria-pressed|role="combobox"/);
   assert.match(
     html,
@@ -464,7 +493,11 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(
     html,
-    /Selecting an item reserves one unit until TikTok reports Payment[\s\S]+complete or Canceled\.[\s\S]+Temporary Payment failed remains pending\.[\s\S]+Zero-stock items remain selectable[\s\S]+oversold\./,
+    /id="inventory-selection-note"[^>]+hidden[^>]*><\/p>/,
+  );
+  assert.doesNotMatch(
+    `${html}\n${panelSource}`,
+    /Selecting an item reserves one unit until TikTok reports Payment complete or Canceled/,
   );
   assert.match(html, /id="pending-mapping"/);
   assert.match(html, /id="auction-eyebrow"[^>]*>Live order status</);
@@ -488,6 +521,80 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, />\s*Live session\s*</);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
+});
+
+test("a confirmed baseline exposes a local read-only inventory disclosure", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const confirmationSource = html.match(
+    /<details\s+id="inventory-import-confirmation"[\s\S]*?<\/details>/,
+  )?.[0];
+  const confirmationOpeningTag = confirmationSource?.match(/^<details[^>]+>/)?.[0];
+
+  assert.ok(confirmationSource);
+  assert.ok(confirmationOpeningTag);
+  assert.match(confirmationOpeningTag, /\shidden(?:\s|>)/);
+  assert.doesNotMatch(confirmationOpeningTag, /\sopen(?:\s|>)/);
+  assert.match(
+    confirmationSource,
+    /<summary class="inventory-import-confirmation-summary">/,
+  );
+  assert.match(confirmationSource, /Preview inventory/);
+  assert.match(
+    confirmationSource,
+    /id="confirmed-inventory-preview"[\s\S]+class="inventory-import-preview confirmed-inventory-preview"[\s\S]+hidden/,
+  );
+  assert.match(
+    confirmationSource,
+    /Validated preview[\s\S]+Review the opening inventory/,
+  );
+  assert.match(
+    confirmationSource,
+    /Rows[\s\S]+Opening units[\s\S]+Opening cost/,
+  );
+  assert.match(
+    confirmationSource,
+    /SKU[\s\S]+Item[\s\S]+Style[\s\S]+Size[\s\S]+Qty[\s\S]+Cost/,
+  );
+  assert.doesNotMatch(
+    confirmationSource,
+    /Confirm inventory baseline|Cancel preview|Change Sheet/,
+  );
+  assert.match(
+    panelSource,
+    /inventoryImportConfirmation\.addEventListener\("toggle"/,
+  );
+  assert.match(
+    panelSource,
+    /inventoryImportClient\.getActiveBaselinePreview\(\)/,
+  );
+  assert.match(
+    panelSource,
+    /preview\.baselineId !== expectedBaselineId/,
+  );
+  assert.match(
+    panelSource,
+    /confirmedInventoryPreviewRequestEpoch/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-import-confirmation-summary::\-webkit-details-marker[\s\S]+display:\s*none/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-import-confirmation\[open\][\s\S]+content:\s*"−"/,
+  );
 });
 
 test("active streams expose an append-only Google Sheets inventory action", () => {
@@ -702,7 +809,7 @@ test("side panel keeps setup and active-stream controls in their intended order"
   assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
 });
 
-test("active stream compacts its session controls without changing other lifecycle states", () => {
+test("stable stream states hide redundant status copy while active tracking stays compact", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const html = fs.readFileSync(
     path.join(extensionDirectory, manifest.side_panel.default_path),
@@ -723,16 +830,20 @@ test("active stream compacts its session controls without changing other lifecyc
     /function renderStreamSnapshot\(snapshot\) \{[\s\S]*?function announceSavedAction/,
   )?.[0];
   const activeHideRule = styleSource.match(
-    /\.stream-session-panel\[data-state="active"\] \.stream-session-heading,\s*\.stream-session-panel\[data-state="active"\] \.stream-session-safety-note\s*\{[\s\S]*?\}/,
+    /\.stream-session-panel\[data-state="active"\] \.stream-session-heading\s*\{[\s\S]*?\}/,
   )?.[0];
 
   assert.ok(sessionMarkup);
   assert.ok(renderSource);
   assert.ok(activeHideRule);
   assert.match(sessionMarkup, /class="stream-session-heading"/);
-  assert.match(sessionMarkup, /id="stream-session-safety-note"/);
+  assert.doesNotMatch(sessionMarkup, /stream-session-safety-note/);
   assert.match(sessionMarkup, /id="stream-session-status-title"/);
   assert.match(sessionMarkup, /id="stream-session-status-message"/);
+  assert.match(
+    sessionMarkup,
+    /id="start-stream"[\s\S]*?>\s*Start stream tracking\s*<\/button>/,
+  );
   assert.match(
     sessionMarkup,
     /id="end-stream"[\s\S]*?>\s*End Stream Tracking\s*<\/button>/,
@@ -753,6 +864,10 @@ test("active stream compacts its session controls without changing other lifecyc
     renderSource,
     /if \(streamSessionBadge\.parentElement !== badgeContainer\) \{\s*badgeContainer\.append\(streamSessionBadge\);\s*\}/,
   );
+  assert.match(
+    renderSource,
+    /streamSessionStatus\.hidden =\s*failed \|\| dataState === "inactive" \|\| dataState === "resume";/,
+  );
   assert.match(renderSource, /streamSessionBadge\.textContent = "Active";/);
   assert.match(renderSource, /streamSessionStatusTitle\.textContent = "Tracker stream active";/);
   assert.match(
@@ -768,10 +883,7 @@ test("active stream compacts its session controls without changing other lifecyc
     styleSource,
     /\.stream-session-panel\[data-state="active"\] \.stream-session-status\s*\{[\s\S]*?margin-top:\s*0;/,
   );
-  assert.doesNotMatch(
-    styleSource,
-    /\.stream-session-panel\[data-state="(?:inactive|resume|error|checking)"\][^{]*(?:stream-session-heading|stream-session-safety-note)[^{]*\{[\s\S]*?display:\s*none;/,
-  );
+  assert.doesNotMatch(styleSource, /stream-session-safety-note/);
 });
 
 test("tagger UI routes employee changes through persistent Live commands", () => {
@@ -1351,10 +1463,11 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
     [
       "viewModel.groupInventoryEntries(view.inventory)",
       "viewModel.filterInventoryGroups(",
-      "filteredInventory.forEach((group)",
+      "const visibleInventory = inventoryListExpanded",
+      "visibleInventory.forEach((group)",
       "createInventoryCard(group, view)",
     ],
-    "inventory rows must be grouped before a query filters and renders whole groups",
+    "inventory rows must be grouped and filtered before the visible whole groups render",
   );
   assert.match(
     inventoryRenderer,
@@ -1567,6 +1680,85 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   assert.match(
     styleSource,
     /\.inventory-card\[data-selected="true"\]\[data-current-mapped="true"\]\[data-queued="true"\][\s\S]*?var\(--cyan\) 0 33\.333%[\s\S]*?#62aaff 33\.333% 66\.666%[\s\S]*?#ff737e 66\.666% 100%/,
+  );
+});
+
+test("inventory cards stay capped at nine until the user expands the list", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const panelSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.js"),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(taggerDirectory, "sidepanel.css"),
+    "utf8",
+  );
+  const toggleMarkup = html.match(
+    /<button\s+id="inventory-list-toggle"[\s\S]*?<\/button>/,
+  )?.[0];
+  const inventoryRenderer = panelSource.slice(
+    panelSource.indexOf("function renderInventory(view, focusSku = null)"),
+    panelSource.indexOf("function renderMetrics(view)"),
+  );
+  const toggleHandler = panelSource.slice(
+    panelSource.indexOf('inventoryListToggle.addEventListener("click"'),
+    panelSource.indexOf('inventorySizeListbox.addEventListener("keydown"'),
+  );
+  const unmountSource = panelSource.slice(
+    panelSource.indexOf("function unmountPersistentController()"),
+    panelSource.indexOf("function mountPersistentController("),
+  );
+
+  assert.ok(toggleMarkup);
+  assert.match(toggleMarkup, /type="button"/);
+  assert.match(toggleMarkup, /aria-expanded="false"/);
+  assert.match(toggleMarkup, /aria-controls="inventory-grid"/);
+  assert.match(toggleMarkup, /\shidden/);
+  assert.match(toggleMarkup, />Show all items</);
+  assert.match(toggleMarkup, /class="inventory-list-toggle-chevron"[^>]+aria-hidden="true"/);
+
+  assert.match(panelSource, /const COLLAPSED_INVENTORY_ITEM_LIMIT = 9;/);
+  assert.match(panelSource, /let inventoryListExpanded = false;/);
+  assertTextOrder(
+    inventoryRenderer,
+    [
+      "viewModel.filterInventoryGroups(",
+      "const visibleInventory = inventoryListExpanded",
+      "filteredInventory.slice(0, COLLAPSED_INVENTORY_ITEM_LIMIT)",
+      "visibleInventory.forEach((group)",
+    ],
+    "the nine-card limit must be applied after grouping and search filtering",
+  );
+  assert.match(
+    inventoryRenderer,
+    /inventoryListToggle\.hidden\s*=\s*[\s\S]*?filteredInventory\.length <= COLLAPSED_INVENTORY_ITEM_LIMIT/,
+  );
+  assert.match(
+    inventoryRenderer,
+    /inventoryListToggle\.setAttribute\([\s\S]*?"aria-expanded",[\s\S]*?String\(inventoryListExpanded\)/,
+  );
+  assert.match(
+    inventoryRenderer,
+    /inventoryListToggleLabel\.textContent = inventoryListExpanded[\s\S]*?"Show fewer items"[\s\S]*?: "Show all items"/,
+  );
+  assert.match(
+    toggleHandler,
+    /inventoryListExpanded = !inventoryListExpanded;[\s\S]*?const view = getActiveView\(\);[\s\S]*?if \(view\) \{[\s\S]*?renderInventory\(view\)/,
+  );
+  assert.doesNotMatch(inventoryRenderer, /inventoryListExpanded\s*=\s*false/);
+  assert.doesNotMatch(unmountSource, /inventoryListExpanded\s*=/);
+
+  assert.match(
+    styleSource,
+    /\.inventory-list-toggle\s*\{[\s\S]*?display: flex;[\s\S]*?width: 100%;/,
+  );
+  assert.match(
+    styleSource,
+    /\.inventory-list-toggle\[aria-expanded="true"\][\s\S]*?\.inventory-list-toggle-chevron\s*\{[\s\S]*?rotate\(225deg\)/,
   );
 });
 

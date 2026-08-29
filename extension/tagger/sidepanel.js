@@ -9,6 +9,7 @@
   const CAPTURE_STATE_NOTIFICATION_TYPE = "capture_state_changed";
   const CAPTURE_REFRESH_DELAY_MS = 150;
   const ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS = 4_000;
+  const COLLAPSED_INVENTORY_ITEM_LIMIT = 9;
   const OBSERVED_PAYMENT_STATUSES = new Set([
     "not_observed",
     "payment_processing",
@@ -159,8 +160,35 @@
   const inventoryImportConfirmation = document.querySelector(
     "#inventory-import-confirmation",
   );
+  const inventoryImportConfirmationStatus = document.querySelector(
+    "#inventory-import-confirmation-status",
+  );
   const inventoryImportConfirmationMessage = document.querySelector(
     "#inventory-import-confirmation-message",
+  );
+  const confirmedInventoryPreviewLoading = document.querySelector(
+    "#confirmed-inventory-preview-loading",
+  );
+  const confirmedInventoryPreviewError = document.querySelector(
+    "#confirmed-inventory-preview-error",
+  );
+  const confirmedInventoryPreviewErrorMessage = document.querySelector(
+    "#confirmed-inventory-preview-error-message",
+  );
+  const confirmedInventoryPreview = document.querySelector(
+    "#confirmed-inventory-preview",
+  );
+  const confirmedInventoryPreviewRowCount = document.querySelector(
+    "#confirmed-inventory-preview-row-count",
+  );
+  const confirmedInventoryPreviewUnitCount = document.querySelector(
+    "#confirmed-inventory-preview-unit-count",
+  );
+  const confirmedInventoryPreviewTotalCost = document.querySelector(
+    "#confirmed-inventory-preview-total-cost",
+  );
+  const confirmedInventoryPreviewRows = document.querySelector(
+    "#confirmed-inventory-preview-rows",
   );
   const streamSessionPanel = document.querySelector("#stream-session-panel");
   const streamSessionHeading = document.querySelector(
@@ -334,6 +362,12 @@
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
+  const inventoryListToggle = document.querySelector(
+    "#inventory-list-toggle",
+  );
+  const inventoryListToggleLabel = inventoryListToggle.querySelector(
+    '[data-field="inventory-list-toggle-label"]',
+  );
   const inventorySizeListbox = document.querySelector(
     "#inventory-size-listbox",
   );
@@ -384,6 +418,9 @@
   const grossProfitValue = document.querySelector("#gross-profit-value");
   const grossProfitWarning = document.querySelector(
     "#gross-profit-warning",
+  );
+  const mappedGrossMarginValue = document.querySelector(
+    "#mapped-gross-margin-value",
   );
   const estimatedProfitAfterFeesValue = document.querySelector(
     "#estimated-profit-after-fees-value",
@@ -536,6 +573,7 @@
   let liveBidRefreshScheduled = false;
   let liveBidRefreshInFlight = false;
   let queuedNextItemSku = null;
+  let inventoryListExpanded = false;
   let inventorySizeMenuState = null;
   let deferredInventoryRender = null;
   let activeInventorySizeSku = null;
@@ -545,6 +583,10 @@
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
+  let confirmedInventoryPreviewContextBaselineId = null;
+  let confirmedInventoryPreviewBaselineId = null;
+  let confirmedInventoryPreviewRequestEpoch = 0;
+  let confirmedInventoryPreviewRequestPending = false;
   let activeStreamInventoryUpdateOpen = false;
   let activeStreamInventoryUpdateBusy = false;
   let activeStreamInventoryUpdateFeedbackTimerId = null;
@@ -3105,18 +3147,31 @@
       inventoryGroups,
       query,
     );
+    const visibleInventory = inventoryListExpanded
+      ? filteredInventory
+      : filteredInventory.slice(0, COLLAPSED_INVENTORY_ITEM_LIMIT);
     const fragment = document.createDocumentFragment();
 
-    filteredInventory.forEach((group) => {
+    visibleInventory.forEach((group) => {
       fragment.append(createInventoryCard(group, view));
     });
 
     inventoryGrid.replaceChildren(fragment);
     inventoryGrid.dataset.orderState = canceled ? "canceled" : "editable";
+    inventorySelectionNote.hidden = !canceled;
     inventorySelectionNote.textContent = canceled
       ? "This order was canceled. Select an item only to record what was auctioned; mapping, changing, or clearing it will not affect inventory or metrics."
-      : "Selecting an item reserves one unit until TikTok reports Payment complete or Canceled. Temporary Payment failed remains pending. Zero-stock items remain selectable and show how far they are oversold.";
+      : "";
     inventoryGrid.hidden = filteredInventory.length === 0;
+    inventoryListToggle.hidden =
+      filteredInventory.length <= COLLAPSED_INVENTORY_ITEM_LIMIT;
+    inventoryListToggle.setAttribute(
+      "aria-expanded",
+      String(inventoryListExpanded),
+    );
+    inventoryListToggleLabel.textContent = inventoryListExpanded
+      ? "Show fewer items"
+      : "Show all items";
     emptyState.hidden = filteredInventory.length !== 0;
     emptyQuery.textContent = `"${query.trim()}"`;
     clearSearchButton.hidden = normalizedQuery.length === 0;
@@ -3148,6 +3203,11 @@
     const formattedGrossProfit = viewModel.formatUsdCents(
       view.totals.profitCents,
     );
+    const formattedMappedGrossMargin =
+      viewModel.formatGrossMarginPercentage(
+        view.totals.profitCents,
+        view.totals.committedRevenueCents,
+      );
     const attributedGmvDisplay = view.totals.attributedGmvDisplay;
     const tiktokFeeMetrics =
       tiktokFeeCalculator.calculateSixPercentGmvFees(attributedGmvDisplay);
@@ -3226,6 +3286,10 @@
 
     if (grossProfitValue.textContent !== formattedGrossProfit) {
       grossProfitValue.textContent = formattedGrossProfit;
+    }
+
+    if (mappedGrossMarginValue.textContent !== formattedMappedGrossMargin) {
+      mappedGrossMarginValue.textContent = formattedMappedGrossMargin;
     }
 
     if (unmatchedCompletedCount > 0) {
@@ -3549,14 +3613,22 @@
     inventoryImportIssues.hidden = issues.length === 0;
   }
 
-  function renderInventoryPreview(preview) {
+  function renderInventoryPreview(
+    preview,
+    {
+      rowCount = inventoryPreviewRowCount,
+      unitCount = inventoryPreviewUnitCount,
+      totalCost = inventoryPreviewTotalCost,
+      rows = inventoryPreviewRows,
+    } = {},
+  ) {
     const { inventory, summary } = preview;
 
-    inventoryPreviewRowCount.textContent = String(summary.rowCount);
-    inventoryPreviewUnitCount.textContent = String(
+    rowCount.textContent = String(summary.rowCount);
+    unitCount.textContent = String(
       summary.totalQuantityOnHandAtImport,
     );
-    inventoryPreviewTotalCost.textContent = viewModel.formatUsdCents(
+    totalCost.textContent = viewModel.formatUsdCents(
       summary.totalInventoryCostCents,
     );
     const rowsFragment = document.createDocumentFragment();
@@ -3577,7 +3649,104 @@
       });
       rowsFragment.append(tableRow);
     });
-    inventoryPreviewRows.replaceChildren(rowsFragment);
+    rows.replaceChildren(rowsFragment);
+  }
+
+  function resetConfirmedInventoryPreview({ collapse = true } = {}) {
+    confirmedInventoryPreviewRequestEpoch += 1;
+    confirmedInventoryPreviewRequestPending = false;
+    confirmedInventoryPreviewBaselineId = null;
+    confirmedInventoryPreviewLoading.hidden = true;
+    confirmedInventoryPreviewError.hidden = true;
+    confirmedInventoryPreviewErrorMessage.textContent =
+      "Close and reopen the preview to try again.";
+    confirmedInventoryPreview.hidden = true;
+    confirmedInventoryPreviewRows.replaceChildren();
+
+    if (collapse) {
+      inventoryImportConfirmation.open = false;
+    }
+  }
+
+  async function loadConfirmedInventoryPreview() {
+    const expectedBaselineId =
+      inventoryImportSnapshot.confirmation?.baselineId ?? null;
+
+    if (confirmedInventoryPreviewRequestPending) {
+      return;
+    }
+
+    if (typeof expectedBaselineId !== "string") {
+      confirmedInventoryPreviewLoading.hidden = true;
+      confirmedInventoryPreview.hidden = true;
+      confirmedInventoryPreviewErrorMessage.textContent =
+        "The saved baseline details are unavailable. Close and reopen the side panel to refresh them.";
+      confirmedInventoryPreviewError.hidden = false;
+      mappingAnnouncement.textContent =
+        confirmedInventoryPreviewErrorMessage.textContent;
+      return;
+    }
+
+    if (
+      confirmedInventoryPreviewBaselineId === expectedBaselineId &&
+      !confirmedInventoryPreview.hidden
+    ) {
+      return;
+    }
+
+    const requestEpoch = ++confirmedInventoryPreviewRequestEpoch;
+    confirmedInventoryPreviewRequestPending = true;
+    confirmedInventoryPreviewLoading.hidden = false;
+    confirmedInventoryPreviewError.hidden = true;
+    confirmedInventoryPreview.hidden = true;
+
+    try {
+      const preview = await inventoryImportClient.getActiveBaselinePreview();
+      const requestIsCurrent =
+        requestEpoch === confirmedInventoryPreviewRequestEpoch &&
+        inventoryImportConfirmation.open &&
+        inventoryImportSnapshot.confirmation?.baselineId === expectedBaselineId;
+
+      if (!requestIsCurrent) {
+        return;
+      }
+
+      if (!preview.ready || preview.baselineId !== expectedBaselineId) {
+        throw new Error(
+          "The confirmed inventory baseline is no longer available. Close and reopen the side panel to refresh it.",
+        );
+      }
+
+      renderInventoryPreview(preview, {
+        rowCount: confirmedInventoryPreviewRowCount,
+        unitCount: confirmedInventoryPreviewUnitCount,
+        totalCost: confirmedInventoryPreviewTotalCost,
+        rows: confirmedInventoryPreviewRows,
+      });
+      confirmedInventoryPreviewBaselineId = preview.baselineId;
+      confirmedInventoryPreview.hidden = false;
+      mappingAnnouncement.textContent =
+        `Saved inventory preview opened with ${preview.summary.rowCount} rows.`;
+    } catch (error) {
+      if (
+        requestEpoch !== confirmedInventoryPreviewRequestEpoch ||
+        !inventoryImportConfirmation.open
+      ) {
+        return;
+      }
+
+      confirmedInventoryPreviewErrorMessage.textContent =
+        error?.message ??
+        "The confirmed inventory could not be loaded. Close and reopen the preview to try again.";
+      confirmedInventoryPreviewError.hidden = false;
+      mappingAnnouncement.textContent =
+        confirmedInventoryPreviewErrorMessage.textContent;
+    } finally {
+      if (requestEpoch === confirmedInventoryPreviewRequestEpoch) {
+        confirmedInventoryPreviewRequestPending = false;
+        confirmedInventoryPreviewLoading.hidden = true;
+      }
+    }
   }
 
   function renderInventoryImportSnapshot(snapshot) {
@@ -3589,10 +3758,26 @@
     const showPanel =
       !streamExists &&
       !shouldPrepareInventoryForStreamRetry(streamSnapshot);
+    const nextConfirmedBaselineId =
+      snapshot.hasConfirmedBaseline && preview === null && !failed && !busy
+        ? snapshot.confirmation?.baselineId ?? null
+        : null;
+
+    if (nextConfirmedBaselineId !== confirmedInventoryPreviewContextBaselineId) {
+      resetConfirmedInventoryPreview();
+      confirmedInventoryPreviewContextBaselineId = nextConfirmedBaselineId;
+    }
 
     inventoryImportPanel.hidden = !showPanel;
 
     if (!showPanel) {
+      if (
+        inventoryImportConfirmation.open ||
+        confirmedInventoryPreviewRequestPending ||
+        confirmedInventoryPreviewBaselineId !== null
+      ) {
+        resetConfirmedInventoryPreview();
+      }
       previousInventoryImportPhase = snapshot.phase;
       return;
     }
@@ -3717,7 +3902,7 @@
         previousInventoryImportPhase === "confirming" ||
         focusInventoryImportAfterRetry
       ) {
-        inventoryImportConfirmation.focus();
+        inventoryImportConfirmationStatus.focus();
         focusInventoryImportAfterRetry = false;
       }
     }
@@ -3786,7 +3971,8 @@
     if (streamSessionBadge.parentElement !== badgeContainer) {
       badgeContainer.append(streamSessionBadge);
     }
-    streamSessionStatus.hidden = failed;
+    streamSessionStatus.hidden =
+      failed || dataState === "inactive" || dataState === "resume";
     streamSessionError.hidden = !failed;
     streamSessionActions.hidden = failed || checking || busy;
     startStreamButton.hidden = true;
@@ -4700,6 +4886,16 @@
     }
   });
 
+  inventoryListToggle.addEventListener("click", () => {
+    inventoryListExpanded = !inventoryListExpanded;
+
+    const view = getActiveView();
+
+    if (view) {
+      renderInventory(view);
+    }
+  });
+
   inventorySizeListbox.addEventListener("keydown", (event) => {
     handleInventorySizeMenuKeydown(event);
   });
@@ -4947,6 +5143,24 @@
       activeStreamInventoryUpdateBusy = false;
       renderActiveStreamInventoryUpdateControls();
     }
+  });
+
+  inventoryImportConfirmation.addEventListener("toggle", () => {
+    if (!inventoryImportConfirmation.open) {
+      if (confirmedInventoryPreviewRequestPending) {
+        confirmedInventoryPreviewRequestEpoch += 1;
+        confirmedInventoryPreviewRequestPending = false;
+        confirmedInventoryPreviewLoading.hidden = true;
+      }
+      return;
+    }
+
+    Promise.resolve(loadConfirmedInventoryPreview()).catch((error) => {
+      console.error(
+        "[TikTok Live Tracker] Unexpected saved-inventory preview failure.",
+        error,
+      );
+    });
   });
 
   inventorySheetReference.addEventListener("input", () => {
@@ -5459,6 +5673,7 @@
     () => {
       clearCaptureRefreshTimer();
       resetLiveBidTracking();
+      resetConfirmedInventoryPreview();
       chrome.runtime.onMessage.removeListener(handleCaptureStateChanged);
     },
     { once: true },

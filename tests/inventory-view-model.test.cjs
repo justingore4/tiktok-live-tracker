@@ -7,6 +7,7 @@ const {
   createInventoryGroupKey,
   filterInventoryEntries,
   filterInventoryGroups,
+  formatGrossMarginPercentage,
   formatUsdCents,
   getInventoryGroupStockDisplay,
   getPreferredInventoryGroupEntry,
@@ -494,6 +495,24 @@ test("rejects invalid AOV inputs", () => {
   assert.throws(
     () => calculateAverageOrderValueCents(100, -1),
     /Completed payment count must be a nonnegative safe integer/,
+  );
+});
+
+test("formats mapped gross margin from mapped revenue", () => {
+  assert.equal(formatGrossMarginPercentage(6050, 8000), "75.6%");
+  assert.equal(formatGrossMarginPercentage(0, 2500), "0.0%");
+  assert.equal(formatGrossMarginPercentage(-500, 2500), "-20.0%");
+  assert.equal(formatGrossMarginPercentage(0, 0), "—");
+});
+
+test("rejects invalid mapped gross margin inputs", () => {
+  assert.throws(
+    () => formatGrossMarginPercentage(1.5, 100),
+    /Gross profit must be a safe integer/,
+  );
+  assert.throws(
+    () => formatGrossMarginPercentage(100, -1),
+    /Mapped revenue must be a nonnegative safe integer/,
   );
 });
 

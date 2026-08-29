@@ -564,7 +564,7 @@ test("completed and canceled item variations print only when the user expands th
   );
 });
 
-test("all report tables use a white background and black text on screen and in print", () => {
+test("all report tables use high-contrast zebra rows on screen and in print", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -583,11 +583,19 @@ test("all report tables use a white background and black text on screen and in p
   );
   assert.match(
     screenCss,
+    /\.data-table tbody tr:nth-child\(even\) td\s*\{\s*background:\s*#f4f6f8;/,
+  );
+  assert.match(
+    screenCss,
     /\.data-table \.muted-cell,\s*\.data-table \.warning-cell\s*\{\s*color:\s*#000000;/,
   );
   assert.match(
     printCss,
     /\.table-scroll,\s*\.data-table,\s*\.data-table th,\s*\.data-table td\s*\{\s*color:\s*#000000 !important;\s*background:\s*#ffffff !important;/,
+  );
+  assert.match(
+    printCss,
+    /\.data-table tbody tr:nth-child\(even\) td\s*\{\s*background:\s*#f4f6f8 !important;/,
   );
 });
 
@@ -655,6 +663,20 @@ test("SKU performance shows unit cost and average sale price without crowding sc
   );
 });
 
+test("SKU performance appears immediately before Top performers", () => {
+  const html = fs.readFileSync(
+    path.join(__dirname, "..", "extension", "report", "report.html"),
+    "utf8",
+  );
+  const performanceStart = html.indexOf('aria-labelledby="performance-table-title"');
+  const performersStart = html.indexOf('aria-labelledby="performers-title"');
+  const inventoryStart = html.indexOf("inventory-update-section");
+
+  assert.ok(performanceStart >= 0);
+  assert.ok(performersStart > performanceStart);
+  assert.ok(inventoryStart > performersStart);
+});
+
 test("updated inventory shows every SKU unit cost with a compact accessible Sold header", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -674,7 +696,6 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
     "Unit cost",
     "Opening",
     "Sold",
-    "Pending",
     "Updated count",
     "Oversold",
   ]);
@@ -688,6 +709,10 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
   );
   assert.match(css, /\.table-scroll\s*\{[\s\S]*?overflow-x:\s*auto;/);
   assert.match(css, /\.inventory-table\s*\{\s*min-width:\s*800px;/);
+  assert.match(
+    css,
+    /\.data-table\.inventory-table \.number-cell\s*\{\s*text-align:\s*center;/,
+  );
   assert.match(
     printCss,
     /\.screen-scroll\s*\{[\s\S]*?overflow:\s*visible;/,
@@ -728,7 +753,7 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
 
   const rows = document.querySelector("#inventory-rows").children;
   assert.equal(rows.length, inventory.length);
-  assert.deepEqual(rows.map((row) => row.children.length), [10, 10]);
+  assert.deepEqual(rows.map((row) => row.children.length), [9, 9]);
   assert.deepEqual(
     rows.map((row) => row.children[4].textContent),
     ["$6.00", "$0.00"],
@@ -743,7 +768,6 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
       "$0.00",
       "20",
       "3",
-      "0",
       "17",
       "0",
     ],
@@ -1174,7 +1198,7 @@ test("SKU sell-through caps at 100% while retaining the oversold quantity", () =
 
   assert.equal(performanceRow.children[8].textContent, "100.0%");
   assert.equal(performanceRow.children[9].textContent, "66.7%");
-  assert.equal(inventoryRow.children[9].textContent, "1");
+  assert.equal(inventoryRow.children[8].textContent, "1");
   assert.match(
     allText(document.querySelector("#report-warnings")),
     /allocated beyond its opening quantity/,
@@ -1286,6 +1310,15 @@ test("post-stream payment controls render only supplied unresolved rows and coll
       style: null,
       size: null,
     },
+    {
+      variationNumber: 222,
+      observedPaymentStatus: "payment_processing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
   ];
 
   const controls = reportPage.renderPaymentFixingOrders(
@@ -1298,17 +1331,18 @@ test("post-stream payment controls render only supplied unresolved rows and coll
 
   assert.equal(section.hidden, false);
   assert.equal(section.attributes.get("aria-busy"), "false");
-  assert.equal(rows.children.length, 2);
-  assert.equal(controls.length, 6);
+  assert.equal(rows.children.length, 3);
+  assert.equal(controls.length, 9);
   assert.equal(
     document.querySelector("#payment-resolution-count").textContent,
-    "2 unresolved orders",
+    "3 unresolved orders",
   );
   assert.match(
     allText(rows),
     /Variation #220[\s\S]*Payment failed - fixing period[\s\S]*Example tee - black - L \(SKU-A\)/,
   );
   assert.match(allText(rows), /Variation #221[\s\S]*No inventory item selected/);
+  assert.match(allText(rows), /Variation #222[\s\S]*Payment processing/);
 
   const firstPriceInput = rows.children[0].children[1].children[1];
   firstPriceInput.value = "18.25";
@@ -2225,7 +2259,7 @@ test("long inventory renders every row in the updated inventory table", () => {
   assert.equal(rows.length, 1000);
   assert.ok(
     rows.every(
-      (row) => row.children.length === 10 && row.children[4].textContent === "$1.00",
+      (row) => row.children.length === 9 && row.children[4].textContent === "$1.00",
     ),
   );
 });
@@ -2342,6 +2376,15 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
       style: null,
       size: null,
     },
+    {
+      variationNumber: 222,
+      observedPaymentStatus: "payment_processing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
   ];
   const client = createClient({
     runtime: {
@@ -2420,7 +2463,7 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
   );
 });
 
-test("stream report client rejects ineligible payment statuses in list responses", async () => {
+test("stream report client rejects terminal payment statuses in unresolved-order responses", async () => {
   const client = createClient({
     runtime: {
       async sendMessage() {
@@ -2431,7 +2474,7 @@ test("stream report client rejects ineligible payment statuses in list responses
             orders: [
               {
                 variationNumber: 220,
-                observedPaymentStatus: "payment_processing",
+                observedPaymentStatus: "payment_complete",
                 mapped: false,
                 sku: null,
                 item: null,

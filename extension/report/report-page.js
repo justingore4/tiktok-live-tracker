@@ -59,7 +59,7 @@
       inventory_recount_required:
         "At least one SKU was allocated beyond its opening quantity. Review the oversold amount and recount physical stock.",
       payment_fixing_orders:
-        "At least one order was still in the payment-fixing buffer when tracking ended.",
+        "At least one payment result was unresolved when tracking ended.",
       pending_inventory_reservations:
         "At least one inventory reservation was unresolved when tracking ended.",
       unmapped_completed_sales:
@@ -194,13 +194,6 @@
         entry?.baselineSoldQuantity ??
           entry?.completedSoldQuantity ??
           entry?.soldQuantity,
-      );
-    }
-
-    function getPendingQuantity(entry) {
-      return safeInteger(
-        entry?.pendingQuantity ??
-          entry?.reservedQuantity,
       );
     }
 
@@ -576,9 +569,15 @@
     }
 
     function getObservedPaymentLabel(status) {
-      return status === "payment_failed"
-        ? "Payment failed - fixing period"
-        : "Payment fixing";
+      if (status === "payment_processing") {
+        return "Payment processing";
+      }
+
+      if (status === "payment_failed") {
+        return "Payment failed - fixing period";
+      }
+
+      return "Payment fixing";
     }
 
     function renderPaymentFixingOrders(document, ordersValue, onResolve) {
@@ -905,7 +904,6 @@
           }),
           createTableCell(document, getOpeningQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getCompletedQuantity(entry), { className: "number-cell" }),
-          createTableCell(document, getPendingQuantity(entry), { className: "number-cell" }),
           createTableCell(document, getUpdatedQuantity(entry), { className: "number-cell" }),
           createTableCell(document, oversold, {
             className: oversold > 0 ? "number-cell warning-cell" : "number-cell",
