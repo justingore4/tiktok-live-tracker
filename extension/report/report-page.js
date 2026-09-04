@@ -312,7 +312,7 @@
           note: "Terminal cancellations only",
         },
         {
-          label: "Payment fixing",
+          label: "Payment errors",
           value: String(safeInteger(totals.paymentFixingCount)),
           note: "Still inside the payment buffer",
         },

@@ -503,7 +503,7 @@ keeps it pending when the stream still exists. One stream has at most one report
 Business exceptions never block report creation. The strict report retains its internal
 `completeness.status` (`final` or `provisional`) and stable reason codes: only a snapshot
 with no active bidding marker, unresolved order, pending inventory reservation,
-payment-fixing order, unmapped completed sale, reconciliation conflict, or oversold SKU
+payment-error order, unmapped completed sale, reconciliation conflict, or oversold SKU
 requiring recount receives the former value. The employee UI deliberately does not render
 either state word or a completeness badge; it presents the specific attention notices and
 End-readiness counts instead. Lifecycle `pending_end` remains internal recovery state.
@@ -756,14 +756,14 @@ Shared tagger behavior includes:
   `payment_failed`, or `canceled`; active bidding and `not_observed`, processing, fixing,
   or unrecognized observations are excluded. One compact order-status card renders
   `totals.canceledOrderCount` beside **Canceled Orders:** and
-  `totals.paymentFixingCount` beside **Payment Fixing:**. The canceled count includes a
+  `totals.paymentFixingCount` beside **Payment Errors:**. The canceled count includes a
   unique current-stream variation only after exact terminal `Canceled`; active bidding,
   `not_observed`, processing, fixing, temporary failed, completed, and unrecognized
-  variations are excluded. The fixing count includes canonical-unresolved variations
-  whose latest observation is `payment_fixing` or temporary `payment_failed`; processing,
-  bidding/`not_observed`, unrecognized, completed, and canceled variations are excluded.
-  Completion or cancellation clears the fixing count automatically, and neither value
-  depends on inventory mapping. A **Gross Profits** card
+  variations are excluded. The payment-error count includes canonical-unresolved
+  variations whose latest observation is `payment_fixing` or temporary `payment_failed`;
+  processing, bidding/`not_observed`, unrecognized, completed, and canceled variations are
+  excluded. Completion or cancellation clears the payment-error count automatically, and
+  neither value depends on inventory mapping. A **Gross Profits** card
   renders `totals.profitCents`: mapped, completed sold-price revenue
   minus the committed Google Sheets unit-cost snapshots. Completed-but-unmapped sales are
   excluded and trigger a visible incomplete-count warning until inventory items are

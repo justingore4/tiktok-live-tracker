@@ -162,10 +162,10 @@ auctioned again, the employee maps its new variation number.
   mapped and unmapped completions. Active bidding variations and `Not observed`,
   `Payment processing`, `Payment fixing`, or unrecognized statuses are excluded from the
   denominator. One compact order-status card contains **Canceled Orders:** and
-  **Payment Fixing:**. Canceled Orders counts each unique current-stream variation only
+  **Payment Errors:**. Canceled Orders counts each unique current-stream variation only
   after TikTok reports the exact terminal `Canceled` badge. It excludes active bidding,
   `Not observed`, processing, fixing, temporary `Payment failed`, completed, and
-  unrecognized variations. Payment Fixing counts unique unresolved variations whose
+  unrecognized variations. Payment Errors counts unique unresolved variations whose
   latest badge is either `Payment fixing` or the temporary `Payment failed` shown during
   TikTok's correction buffer. It excludes processing, active bidding, `Not observed`,
   unrecognized, completed, and canceled variations, and clears an order from the count
@@ -427,7 +427,7 @@ a negative quantity. The copy and CSV actions remain the exact six-column Sheet 
 The report retains strict completeness metadata and reason codes internally, but the
 employee UI does not display a Final/Provisional state label. Instead, it lists the
 specific captured conditions that need attention: an active bidding marker, unresolved
-order, pending reservation, payment-fixing order, unmapped completed sale,
+order, pending reservation, payment-error order, unmapped completed sale,
 reconciliation conflict, or oversold/recount warning. Those conditions never prevent the
 employee from ending local tracking, but inventory and profit figures should be reviewed
 before updating the Sheet.
@@ -723,11 +723,11 @@ misconfigured build fail before requesting Google authorization.
     each unique current-stream variation only after its row changes to the exact terminal
     `Canceled` badge. Verify active bidding, `Not observed`, processing, fixing, temporary
     `Payment failed`, completed, and unrecognized variations do not enter this count.
-    Confirm **Payment Fixing:** counts a unique unresolved order while its latest badge is
+    Confirm **Payment Errors:** counts a unique unresolved order while its latest badge is
     `Payment fixing` or temporary `Payment failed`, but not while it is processing,
     bidding, `Not observed`, unrecognized, completed, or canceled. Verify that row leaves
-    Payment Fixing and enters Canceled Orders when TikTok reaches `Canceled`, or simply
-    leaves Payment Fixing when payment completes. Mapping or not mapping an item must not
+    Payment Errors and enters Canceled Orders when TikTok reaches `Canceled`, or simply
+    leaves Payment Errors when payment completes. Mapping or not mapping an item must not
     affect either status count. Confirm **Gross Profits** equals mapped completed sold-price
     revenue minus the pinned Google Sheets unit costs.
     If a completed order has no inventory item, confirm it is excluded from that subtotal

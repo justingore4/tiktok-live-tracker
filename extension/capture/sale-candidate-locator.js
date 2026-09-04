@@ -32,6 +32,8 @@
       ["payment failed", OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED],
       ["payment fixing", OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING],
       ["payment processing", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
+      ["payment processing...", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
+      ["payment processing\u2026", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
     ]);
     const MAX_ROW_ANCESTORS = 12;
 

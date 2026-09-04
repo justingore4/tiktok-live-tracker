@@ -1198,7 +1198,7 @@ async function resolvePaymentFixingOrderForReport(command, sessionState) {
     failBoundary(
       streamReportProtocol,
       "REPORT_NOT_LATEST",
-      "Only the newest ended-stream report can correct payment-fixing orders.",
+      "Only the newest ended-stream report can correct payment-error orders.",
     );
   }
 

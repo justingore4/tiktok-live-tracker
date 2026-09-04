@@ -2063,7 +2063,7 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
   assert.match(readinessSource, /Report attention items:/);
   assert.match(readinessSource, /pending mapped order/);
-  assert.match(readinessSource, /payment-fixing order/);
+  assert.match(readinessSource, /payment-error order/);
   assert.match(readinessSource, /completed sale without inventory/);
   assert.match(readinessSource, /data conflict/);
   assert.match(readinessSource, /SKU requiring a recount/);

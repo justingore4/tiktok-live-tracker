@@ -2045,7 +2045,7 @@
       requireState(state);
 
       if (!isPlainRecord(input)) {
-        fail("INVALID_ARGUMENT", "A payment-fixing order query is required.");
+        fail("INVALID_ARGUMENT", "A payment-error order query is required.");
       }
 
       const streamId = requireStreamId(input.streamId);
@@ -2090,7 +2090,7 @@
       requireState(state);
 
       if (!isPlainRecord(input)) {
-        fail("INVALID_ARGUMENT", "A payment-fixing resolution is required.");
+        fail("INVALID_ARGUMENT", "A payment-error resolution is required.");
       }
 
       const key = validateAuctionKey(input);
@@ -2123,7 +2123,7 @@
       if (!auction) {
         fail(
           "PAYMENT_ORDER_NOT_RESOLVABLE",
-          "The payment-fixing variation does not exist.",
+          "The payment-error variation does not exist.",
         );
       }
 

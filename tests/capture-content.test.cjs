@@ -1084,7 +1084,7 @@ test("captures every sanitized row status before completed payments", async () =
     "Buyer Six has won: $12.00 Variation: #39 Awaiting payment",
   );
 
-  setPaymentText(processing, "Payment processing");
+  setPaymentText(processing, "Payment processing...");
   setPaymentText(fixing, "Payment fixing");
   setPaymentText(failed, "Payment failed");
   setPaymentText(canceled, "Canceled");

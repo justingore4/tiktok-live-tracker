@@ -54,12 +54,12 @@ test("maps every payment state to its selector tone with bidding taking preceden
       label: "Payment fixing",
     },
     {
-      name: "payment failed during its buffer period",
+      name: "payment failed",
       option: createOption({
         observedPaymentStatus: "payment_failed",
         observedPaymentStatusLabel: "Payment failed",
       }),
-      tone: "warning",
+      tone: "danger",
       label: "Payment failed",
     },
     {

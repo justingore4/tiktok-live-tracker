@@ -14,7 +14,6 @@
     const WARNING_PAYMENT_STATUSES = new Set([
       "payment_processing",
       "payment_fixing",
-      "payment_failed",
     ]);
 
     function requireOption(option) {
@@ -38,7 +37,10 @@
         return "warning";
       }
 
-      if (option.observedPaymentStatus === "canceled") {
+      if (
+        option.observedPaymentStatus === "payment_failed" ||
+        option.observedPaymentStatus === "canceled"
+      ) {
         return "danger";
       }
 

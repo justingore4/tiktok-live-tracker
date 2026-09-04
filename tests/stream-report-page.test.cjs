@@ -2873,6 +2873,27 @@ test("post-stream AOV displays zero when there are no completed sales", () => {
   assert.equal(aov.value, "$0.00");
 });
 
+test("post-stream payment-error metric uses the renamed aggregate label", () => {
+  const report = createReport();
+  const metrics = reportPage.createSummaryMetrics(createReport({
+    totals: {
+      ...report.totals,
+      paymentFixingCount: 6,
+    },
+  }));
+  const metric = metrics.find((entry) => entry.label === "Payment errors");
+
+  assert.deepEqual(metric, {
+    label: "Payment errors",
+    value: "6",
+    note: "Still inside the payment buffer",
+  });
+  assert.equal(
+    metrics.some((entry) => entry.label === "Payment fixing"),
+    false,
+  );
+});
+
 test("post-stream average profit per sale uses mapped completed sales", () => {
   const metrics = reportPage.createSummaryMetrics(createReport({
     totals: {

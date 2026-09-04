@@ -209,14 +209,14 @@ outcome is `payment_complete`, `payment_failed`, or `canceled`. The numerator in
 completed orders that are still unmapped. The denominator excludes the active bidding
 variation and `not_observed`, `payment_processing`, `payment_fixing`, and `unrecognized`
 observations. One compact order-status card displays **Canceled Orders:** and
-**Payment Fixing:**. Canceled Orders counts each unique current-stream variation only
+**Payment Errors:**. Canceled Orders counts each unique current-stream variation only
 after TikTok reports the exact terminal `Canceled` badge. Active bidding and
 `not_observed`, processing, fixing, temporary `Payment failed`, completed, and
-unrecognized variations are excluded. Payment Fixing counts each unique canonical-
+unrecognized variations are excluded. Payment Errors counts each unique canonical-
 unresolved variation whose latest observation is `Payment fixing` or temporary
 `Payment failed` during the correction buffer. Processing, active bidding/`not_observed`,
 unrecognized, completed, and canceled variations are excluded. Completion or exact
-cancellation clears the variation from Payment Fixing automatically; neither status
+cancellation clears the variation from Payment Errors automatically; neither status
 count depends on inventory mapping.
 **Gross Profits** is mapped
 completed sold-price revenue minus the committed unit-cost snapshots
@@ -272,7 +272,7 @@ zero. A report-only cost correction changes that report handoff's `unit_cost` co
 never changes any quantity column or the canonical baseline.
 
 The strict saved record retains internal completeness status and reason codes. An active
-bidding variation, unresolved order, pending reservation, payment-fixing order, unmapped
+bidding variation, unresolved order, pending reservation, payment-error order, unmapped
 completed sale, conflict, or oversold/recount condition adds a specific attention notice
 but never blocks End. The employee UI does not show Final/Provisional state wording. The
 report does not reopen its ended stream in the tagger. The newest safely eligible report
@@ -577,10 +577,10 @@ screen test-user run does not complete those release reviews.
    confirm **Canceled Orders:** increases once for each unique current-stream variation
    only when its row reaches exact terminal `Canceled`. Verify bidding, `not_observed`,
    processing, fixing, temporary failed, completed, and unrecognized variations remain
-   excluded. Confirm **Payment Fixing:** includes unique canonical-unresolved variations
+   excluded. Confirm **Payment Errors:** includes unique canonical-unresolved variations
    while their latest observation is fixing or temporary failed, but excludes processing,
    bidding/`not_observed`, unrecognized, completed, and canceled variations. Verify a
-   priced completion or exact cancellation removes the order from Payment Fixing, and
+   priced completion or exact cancellation removes the order from Payment Errors, and
    only cancellation adds it to Canceled Orders. Inventory mapping must not change either
    status count. Confirm **Gross Profits** equals
    mapped completed sold-price revenue minus the pinned Google Sheets unit costs. Leave a

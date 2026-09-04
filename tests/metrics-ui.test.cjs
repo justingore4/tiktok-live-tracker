@@ -97,7 +97,7 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(metricsSection, />\s*GMV after fees:\s*</);
   assert.match(metricsSection, />\s*Completed Sales\/Total Sales\s*</);
   assert.match(metricsSection, />\s*Canceled Orders:\s*</);
-  assert.match(metricsSection, />\s*Payment Fixing:\s*</);
+  assert.match(metricsSection, />\s*Payment Errors:\s*</);
   assert.match(
     metricsSection,
     /class="metric-title-with-description"[\s\S]*?>\s*Gross Profits\s*<[\s\S]*?class="metric-description">Mapped completed revenue - unit costs<\//,
@@ -258,11 +258,11 @@ test("side panel exposes bottom performance metrics and renders their values", (
   assert.match(
     source,
     /function renderMetrics\(view\)\s*{[\s\S]*?paymentFixingCount\s*=\s*Number\.isSafeInteger\([\s\S]*?view\.totals\.paymentFixingCount[\s\S]*?paymentFixingDisplay\s*=\s*String\(paymentFixingCount\)[\s\S]*?paymentFixingValue\.textContent\s*=\s*paymentFixingDisplay/,
-    "the card must render the canonical payment-fixing total as a whole number",
+    "the card must render the canonical payment-error total as a whole number",
   );
   assert.match(
     metricsSection,
-    /class="metric-card metric-card-order-status"[\s\S]*?<dt id="canceled-orders-label">Canceled Orders:<\/dt>[\s\S]*?id="canceled-orders-value"[\s\S]*?aria-labelledby="canceled-orders-label"[\s\S]*?<dt id="payment-fixing-label">Payment Fixing:<\/dt>[\s\S]*?id="payment-fixing-value"[\s\S]*?aria-labelledby="payment-fixing-label"/,
+    /class="metric-card metric-card-order-status"[\s\S]*?<dt id="canceled-orders-label">Canceled Orders:<\/dt>[\s\S]*?id="canceled-orders-value"[\s\S]*?aria-labelledby="canceled-orders-label"[\s\S]*?<dt id="payment-fixing-label">Payment Errors:<\/dt>[\s\S]*?id="payment-fixing-value"[\s\S]*?aria-labelledby="payment-fixing-label"/,
     "the order-status card must keep both inline counts semantically labeled",
   );
   assert.match(

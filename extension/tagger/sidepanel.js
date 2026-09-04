@@ -1509,7 +1509,7 @@
       ],
       [unresolvedOrderCount, "unresolved order", "unresolved orders"],
       [totals.pendingMappedCount, "pending mapped order", "pending mapped orders"],
-      [totals.paymentFixingCount, "payment-fixing order", "payment-fixing orders"],
+      [totals.paymentFixingCount, "payment-error order", "payment-error orders"],
       [totals.unmappedCompletedCount, "completed sale without inventory", "completed sales without inventory"],
       [totals.conflictCount, "data conflict", "data conflicts"],
       [recountSkuCount, "SKU requiring a recount", "SKUs requiring a recount"],

@@ -560,7 +560,7 @@
             status: "blocked",
             code: "PAYMENT_FIXING_ORDERS_REMAIN",
             reason:
-              "Resolve all processing and payment-fixing orders before editing this report.",
+              "Resolve all processing and payment-error orders before editing this report.",
           };
         }
 
