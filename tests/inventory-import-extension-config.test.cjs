@@ -10,6 +10,14 @@ const manifest = JSON.parse(
   ),
 );
 
+test("package and extension release versions stay aligned", () => {
+  const packageMetadata = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
+  );
+
+  assert.equal(packageMetadata.version, manifest.version);
+});
+
 test("requests only browser identity and read-only Google Sheets access", () => {
   assert.ok(manifest.permissions.includes("identity"));
   assert.deepEqual(manifest.host_permissions, [
@@ -20,8 +28,8 @@ test("requests only browser identity and read-only Google Sheets access", () => 
   ]);
   assert.match(
     manifest.oauth2.client_id,
-    /^(?:REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID|[0-9]+-[A-Za-z0-9_-]+)\.apps\.googleusercontent\.com$/,
-    "use either the safe checked-in placeholder or a public Chrome Extension OAuth client ID",
+    /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/,
+    "use the configured public Chrome Extension OAuth client ID",
   );
 });
 

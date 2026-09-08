@@ -4,7 +4,7 @@ A browser-based tool for tracking TikTok LIVE auction sales. TikTok supplies the
 completed sale and final price, an employee identifies the physical item, and the
 tracker combines those facts to calculate inventory and gross profit.
 
-> **Project status:** early browser prototype. The tracker now reads the current
+> **Project status:** private, browser-only Chrome extension. The tracker reads the current
 > bidding variation number and bid price from the on-video auction card and observes the live
 > **Sold items** panel for sale and payment truth under the active local tracker
 > stream. It persists sanitized payment-status changes plus exact green
@@ -512,7 +512,7 @@ before updating the Sheet.
 | `extension/shared/capture-*.js` | Strict page-to-worker protocol and active-stream binding | Implemented |
 | `extension/shared/sale-parser.js` | Completed-sale text parsing | Implemented |
 | `extension/shared/inventory-sheet-import.js` | Pure Google Sheets inventory validation and detached preview contract | Implemented |
-| `extension/shared/google-sheets-inventory-import.js` | Worker-owned OAuth, fixed-range Sheet read, preview nonce, and confirmation adapter | Implemented; real OAuth client ID required per build |
+| `extension/shared/google-sheets-inventory-import.js` | Worker-owned OAuth, fixed-range Sheet read, preview nonce, and confirmation adapter | Implemented; permanent-ID OAuth client configured in the manifest |
 | `extension/shared/inventory-import-protocol.js` | Strict side-panel-to-worker inventory-import message boundary | Implemented |
 | `extension/shared/reconciliation.js` | Versioned inventory baselines, stream pins, payment, and gross-profit rules | Implemented |
 | `extension/shared/reconciliation-storage.js` | Versioned state validation and storage adapter | Implemented in service worker |
@@ -526,20 +526,23 @@ before updating the Sheet.
 | `docs/` | Architecture and capture-development notes | In progress |
 | `tests/` | Offline parser, reconciliation, persistence, worker, and tagger tests | Implemented |
 
-The first version is intended to remain browser-only if secure Google OAuth is
-sufficient. The optional backend is reserved for needs such as server-managed
-credentials, webhooks, multi-device coordination, or heavier reporting.
+The current release is browser-only and uses Chrome-managed Google OAuth. No backend
+is needed for installation or sharing. The optional backend is reserved for needs such
+as server-managed credentials, webhooks, multi-device coordination, or heavier reporting.
 
 ## Development setup
 
 ### Prerequisites
 
-- Google Chrome
+- Current desktop Google Chrome on Windows, macOS, or Linux, with unpacked extensions allowed
 - Node.js and npm
 - Git
 - Visual Studio Code or another code editor
 
 No npm packages or Python environment are currently required.
+
+Recipients installing a shared release need Chrome and an approved Google account,
+not Node.js, Git, a code editor, or the rest of this repository.
 
 ### Run the offline tests
 
@@ -551,30 +554,54 @@ npm.cmd test
 
 PowerShell uses `npm.cmd` here to avoid systems that block the `npm.ps1` wrapper.
 
+### Private release identity and Google access
+
+This project is shared as an unpacked extension among a small group of personally known
+users. It does not require a Chrome Web Store account, upload, publication, or custom
+icons. Use one working repository and share its tested `extension` folder, optionally
+as a ZIP; a separately maintained private source folder is not required.
+
+The checked-in `extension/manifest.json` already contains a permanent public `key` and
+the matching public `oauth2.client_id`. Every installation must report the same ID:
+
+```text
+lmkljkejmicknleeldfgekbbgpnegcmo
+```
+
+Keep both manifest values unchanged across computers and releases. Do not generate a
+new key, replace the OAuth client, or create a Google Cloud project for each recipient.
+The client must remain of type **Chrome Extension**, with its application/item ID equal
+to that permanent extension ID. Its editable Google Cloud name is only a label; it
+does not change the client ID or publish the app. The extension retains only the
+`https://www.googleapis.com/auth/spreadsheets.readonly` scope.
+
+The project owner manages the existing Google Cloud configuration:
+
+1. Keep the **Google Sheets API** enabled.
+2. In **Google Auth Platform -> Audience**, keep **External** and **Testing**; do not
+   select **Publish app** for this workflow.
+3. Add each user's Google account under **Test users**. This list belongs to the project,
+   not an individual OAuth client. Existing test users in that project can authorize
+   the configured client without being added again.
+4. Ensure the authorizing account can open the inventory spreadsheet. A test-user entry
+   does not grant access to a Sheet or override account/organization restrictions.
+
+Google can show a testing/unverified-app warning, and Sheets authorization expires
+seven days after consent, requiring reauthorization. This does not change the extension
+ID or erase local reports. See [Google's Audience rules](https://support.google.com/cloud/answer/15549945?hl=en)
+and [Chrome's OAuth setup](https://developer.chrome.com/docs/extensions/how-to/integrate/oauth).
+Privacy obligations are described under [Credentials and privacy](#credentials-and-privacy).
+
 ### Load the extension in Chrome
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose this repository's `extension` directory.
-5. Copy the extension ID shown on `chrome://extensions`. Google OAuth must be configured
-   for this exact ID before a real Sheet can be read:
-   1. In a Google Cloud project, enable the **Google Sheets API**.
-   2. Configure the OAuth consent screen. While the app is in Testing, add the employee's
-      Google account as a test user.
-   3. Create an OAuth client whose application type is **Chrome Extension** and whose
-      extension/item ID exactly matches the ID copied above.
-   4. Replace
-      `REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com` in
-      `extension/manifest.json` with that public client ID. Do not add a client secret.
-   5. Select **Reload** for the extension on `chrome://extensions`.
+5. Confirm the displayed ID is `lmkljkejmicknleeldfgekbbgpnegcmo`. If it differs, stop and
+   check that the correct folder and unchanged manifest were loaded. Use the Google
+   access configuration above; there is no client-ID placeholder to replace.
 6. Click the extension's toolbar icon to open the Live session tagger side panel.
-
-For a shipped build, configure the OAuth client against the final Chrome Web Store item
-ID, not a temporary unpacked ID. Use the Store item's public key when a stable matching
-unpacked-development ID is required. The checked-in placeholder intentionally makes a
-misconfigured build fail before requesting Google authorization.
-
 7. In Google Sheets, create a spreadsheet from
    [`docs/google-sheets-inventory-template.csv`](docs/google-sheets-inventory-template.csv):
    use **File -> Import -> Upload**, import the CSV into the workbook, and rename the tab
@@ -848,6 +875,32 @@ restarts. The local ID is tracker-owned and is not yet a verified TikTok room ID
 tagger has no manual unpaid or payment-undo controls; TikTok's captured payment truth is
 authoritative.
 
+### Share and update the private release
+
+1. Make and test changes in this repository. Run the offline suite and perform the
+   relevant live checks before sharing a version.
+2. Update the release version in both `extension/manifest.json` and `package.json`.
+   Preserve the manifest's `key`, `oauth2.client_id`, and existing permissions.
+3. Send only the complete `extension` folder, optionally as a versioned ZIP. Do not
+   include repository configuration, logs, credentials, or private inventory data.
+4. On a first installation, extract the folder into a permanent local location and use
+   **Load unpacked** to select the directory containing `manifest.json`.
+5. For an update, finish any active tracker session first. Replace the extension's code
+   files in the existing loaded folder with the complete tested release, removing any
+   obsolete code files no longer included in that release. Select **Reload** on
+   `chrome://extensions`, reopen the side panel, and refresh the TikTok dashboard.
+
+Do not uninstall the extension merely to update it: removal clears its local reports
+and inventory. The permanent ID does not sync code, Google authorization, or saved data
+between computers. Folder installations receive updates manually, not automatically.
+See [Chrome's local loading/reloading instructions](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world)
+and [local storage behavior](https://developer.chrome.com/docs/extensions/reference/api/storage).
+
+Different installed IDs are not separate code backups when their **Loaded from** paths
+point to the same folder. After changing an old path-derived installation to the
+permanent key, its old-ID entry may no longer load. Export needed reports before an ID
+migration; do not rely on keeping the old entry disabled as an archive.
+
 ## Credentials and privacy
 
 The extension uses Chrome-managed user OAuth. Its manifest requests only
@@ -857,9 +910,10 @@ spreadsheets the connected account is allowed to open; this implementation makes
 request only for the employee-selected spreadsheet ID and the fixed
 whole `'Inventory'` worksheet range. It has no Sheets write scope.
 
-The OAuth client ID in the manifest is public build configuration, not a secret. Replace
-the checked-in placeholder with a Chrome Extension OAuth client tied to the exact
-extension ID. Chrome obtains and caches the access token; the service worker uses it only
+The public key and OAuth client ID in the manifest are public build configuration, not
+secrets. They are already configured for the permanent extension ID and must remain
+unchanged across private installations and updates. Chrome obtains and caches the
+access token; the service worker uses it only
 for the Sheets API request. The token never enters side-panel messages, DOM, extension
 storage, repository files, or application logs. `config/.env.example` is not read by the
 extension, and no service-account private key belongs in a browser bundle.
@@ -906,11 +960,18 @@ storage still deletes the entire in-extension library. Save required PDF or CSV 
 extension before deleting reports, uninstalling, or clearing storage. Files already
 saved to the computer are independent of extension storage.
 
-A public Chrome Web Store release needs a matching production OAuth client, an accurate
-privacy policy and Store data-use disclosures, and compliance with Google's Limited Use
-requirements. Because the read-only Sheets scope is sensitive, Google may require OAuth
-app verification before broad production use. Passing local tests with a consent-screen
-test user does not complete either Store review or OAuth verification.
+This private, personally known user group can use Google's
+[personal-use/testing verification exceptions](https://support.google.com/cloud/answer/13464323?hl=en);
+Chrome Web Store publication and OAuth Production status are not part of the current
+installation process. An OAuth client's name or the extension's `1.0.0` version does not
+change its Google publishing status.
+
+Skipping verification is not an exemption from the
+[Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy).
+It still requires a published privacy policy, clear disclosures, secure handling, and
+applicable Limited Use compliance. Successful tester authorization is not proof of
+policy compliance. A future public release would need a separate review of current
+Store and Google OAuth requirements; those are not setup steps for this private release.
 
 ## Documentation
 

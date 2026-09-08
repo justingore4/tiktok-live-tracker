@@ -346,18 +346,25 @@ tracker stream.
 
 ## Configure and manually test Google Sheets inventory
 
-The live tracker now requires one confirmed Google Sheets inventory baseline before a
-new Start. The checked-in manifest intentionally contains
-`REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com`; a real Sheet request
-fails closed until that public placeholder is replaced.
+The live tracker requires one confirmed Google Sheets inventory baseline before a new
+Start. The checked-in manifest already contains a permanent public `key`
+and matching Chrome Extension OAuth client. Keep both values unchanged. See the
+[README](../README.md) for the complete private installation and sharing workflow.
 
-1. Load `extension` from `chrome://extensions` and copy its exact extension ID.
-2. In a Google Cloud project, enable the Google Sheets API, configure the OAuth consent
-   screen, and add the testing Google account as a test user when the app is in Testing.
-3. Create an OAuth client of type **Chrome Extension** for that exact ID. Replace the
-   placeholder under `oauth2.client_id` in `extension/manifest.json`, then reload the
-   extension. No client secret, service-account key, `.env` value, or access token is
-   required in the repository.
+1. In desktop Chrome, enable **Developer mode** at `chrome://extensions` and **Load
+   unpacked** this repository's `extension` folder. Verify that its ID is
+   `lmkljkejmicknleeldfgekbbgpnegcmo`; the checked-in public key keeps that identity stable
+   across folders and computers.
+2. In the existing Google Cloud project, verify that the Google Sheets API remains
+   enabled and the existing **Chrome Extension** OAuth client matches that ID and the
+   manifest's `oauth2.client_id`. Do not create a project or client per computer, replace
+   the public key, or generate a new ID for each update. No client secret, service-account
+   key, `.env` value, or access token belongs in the shared folder.
+3. Keep the project's Audience **External** and publishing status **Testing** for this
+   setup. Add each authorizing Google account as a test user in that existing project's
+   Audience settings. Audience and the test-user list are project-level settings shared
+   by its OAuth clients, not a separate list per computer or client. Each friend signs in
+   and authorizes independently; being a test user does not grant access to a Sheet.
 4. Import [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv)
    into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
    headers, and replace the dummy rows with the physical opening count and unit cost.
@@ -375,6 +382,12 @@ fails closed until that public placeholder is replaced.
    atomically saving a new durable local baseline; Start becomes available only after
    that succeeds. The importer accepts at most 1,000 inventory rows beyond the header;
    an oversized Sheet is rejected without a partial preview or import.
+
+With this read-only Sheets scope in **Testing**, Google authorization expires seven days
+after consent; reconnect when needed before the next import. This is authorization
+expiry, not deletion of the saved local baseline or reports. Google's
+[Audience documentation](https://support.google.com/cloud/answer/15549945?hl=en) explains
+the Testing limits and warnings.
 
 Run these fail-closed checks before relying on the importer:
 
@@ -427,11 +440,28 @@ six-column export cannot restore the previous names. A saved report's separate c
 control edits only that report and its copy/CSV handoff, even when the report is older or
 archived or another stream is active.
 
-For distribution, the OAuth client must use the final Chrome Web Store item ID rather
-than a temporary unpacked ID. The Store listing also needs accurate privacy disclosures
-and a privacy policy. The read-only Sheets scope is sensitive, so Google may require OAuth
-verification and Limited Use evidence before broad production access. A local consent
-screen test-user run does not complete those release reviews.
+The current distribution is private: use this one working repository's `extension`
+folder yourself and send that same folder, or a ZIP containing it, to 1–3 personally
+known friends using desktop Chrome. Each friend extracts it into a permanent folder,
+loads that folder unpacked, authorizes their own Google account, and selects a Sheet
+they own or can read. This workflow does not require Chrome Web Store publication or a
+replacement extension ID/OAuth client. The shared public key and client ID do not share
+Google authorization, inventory, or locally stored reports between users.
+
+For an update, replace the extension files in the same installed folder while preserving
+the manifest key and OAuth client, select **Reload** at `chrome://extensions`, and refresh
+the TikTok dashboard between streams. Do not uninstall or clear extension storage if you
+want to keep local data; save important reports as PDF/CSV first. Different extension IDs
+alone would not freeze two versions if both installations loaded files from the same
+folder. The [README](../README.md) is the complete install/update reference.
+
+Google describes [personal-use and testing verification
+exceptions](https://support.google.com/cloud/answer/13464323?hl=en), but those are not a
+blanket privacy exemption. The [Google API Services User Data
+Policy](https://developers.google.com/terms/api-services-user-data-policy) still applies,
+including an accurate published privacy policy, clear privacy disclosures, and applicable
+Limited Use requirements. Private sharing does not establish approval for broader public
+distribution; reassess Google's requirements before expanding the audience.
 
 ## Load and test during a real stream
 

@@ -1416,30 +1416,51 @@ expenses. It can be negative when the completed sale price is below unit cost.
 
 The inventory importer uses **browser-only user OAuth**. `manifest.json` declares
 `identity`, the read-only Sheets scope, the exact Sheets API host permission, and a
-deliberate client-ID placeholder. Each development or release build must replace that
-placeholder with a Google OAuth client of type **Chrome Extension** whose configured
-extension ID exactly matches `chrome.runtime.id`. The client ID is public configuration;
-there is no client secret.
+configured Google OAuth client of type **Chrome Extension**. The checked-in public
+extension `key` pins `chrome.runtime.id` to `lmkljkejmicknleeldfgekbbgpnegcmo`, matching
+that client's configured extension ID. Both the key and client ID are public
+configuration; neither is a client secret or a private signing key.
 
-For local testing, the Chrome Extension OAuth client may use the unpacked ID displayed on
-`chrome://extensions`. A distributable build must use the final Chrome Web Store item ID;
-development builds that must reproduce that ID need the corresponding public extension
-key. Enabling the Sheets API, configuring the OAuth consent screen, and adding test users
-while the app is in Testing are external setup steps. The checked-in placeholder fails
-closed before interactive authorization, so live Google testing cannot pass until those
-steps are complete.
+The current workflow is private use by one to three personally known users on desktop
+Chrome. Development and normal use load the working repository's `extension/` folder
+unpacked. Another user can load a copy of that same folder, including one shared as a
+ZIP and extracted first. Preserve the checked-in key and OAuth client ID when copying,
+updating, or reloading the extension; do not create a new OAuth client per computer or
+release. This workflow requires no Chrome Web Store publication, listing, or Store
+assets. See the [README installation instructions](../README.md#load-the-extension-in-chrome)
+for the operational setup rather than maintaining a separate build or installation guide
+here.
+
+Keep the Sheets API enabled and Google Auth Platform **Audience** set to **External /
+Testing** for this setup. Add each authorizing Google account as a test user at the
+project level; that list applies across the project's OAuth clients, not separately per
+client, extension copy, or device. Testing authorizations expire seven days after consent
+for this Sheets scope, so users must be prepared to authorize again. Google's
+[audience documentation](https://support.google.com/cloud/answer/15549945?hl=en)
+describes the limits and account restrictions.
+
+The extension ID identifies the extension, not an employee, Google account, or computer.
+`chrome.identity` manages Google authorization in Chrome; the chosen account still needs
+access to the selected Sheet. Tracker state in `chrome.storage.local` belongs to that
+extension installation in its Chrome profile. Copying the extension or signing into the
+same Google account on another device does not copy or synchronize its local tracker
+state.
 
 A service-account private key must never be placed in the extension because the installed
 bundle is readable on disk. `config/.env.example` is not consumed by the extension and
 intentionally contains no service-account placeholders. A future backend could own a
 service account only as a separately secured and documented architecture.
 
-Chrome Web Store publication and Google OAuth production approval are separate release
-gates. The Store listing needs an accurate privacy policy and disclosures for Google
-authentication, locally stored inventory, and observed website content. The read-only
-Sheets scope is sensitive, so broad production use may require Google OAuth verification
-and evidence that the app complies with Google's Limited Use requirements. A local test
-user flow does not satisfy those release gates.
+Google documents [OAuth verification exceptions](https://support.google.com/cloud/answer/13464323?hl=en)
+for qualifying personal-use and development/testing apps. The current private/testing
+workflow does not include a Store release or an OAuth verification submission; reassess
+verification requirements before expanding the audience. An exception from verification
+is not an exception from the
+[Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy).
+An accurate, accessible, published privacy policy and appropriate disclosures must still
+explain Google data access, use, local storage, sharing, and deletion. Applicable Limited
+Use and secure-data-handling requirements also remain in force. Keeping OAuth in Testing
+does not establish compliance with those obligations.
 
 ## 9. Remaining live-validation questions
 
