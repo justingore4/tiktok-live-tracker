@@ -528,6 +528,43 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.doesNotMatch(html, />\s*Change item\s*</);
 });
 
+test("pre-stream sheet input keeps its accessible label without a visible layout row", () => {
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const sheetLabel = html.match(
+    /<label\b[^>]*\bfor="inventory-sheet-reference"[^>]*>[\s\S]*?<\/label>/,
+  )?.[0];
+  const activeStreamSheetLabel = html.match(
+    /<label\b[^>]*\bfor="active-stream-inventory-sheet-reference"[^>]*>[\s\S]*?<\/label>/,
+  )?.[0];
+  const hiddenStyle = styleSource.match(
+    /\.visually-hidden\s*\{[^}]*\}/,
+  )?.[0];
+
+  assert.ok(sheetLabel);
+  assert.ok(activeStreamSheetLabel);
+  assert.ok(hiddenStyle);
+  assert.match(sheetLabel, /class="[^"]*\bvisually-hidden\b[^"]*"/);
+  assert.match(sheetLabel, />\s*Google Sheet ID or sharing link\s*<\/label>/);
+  assert.doesNotMatch(sheetLabel, /\shidden(?:\s|=|>)|aria-hidden="true"/);
+  assert.match(html, /<input\b[^>]*\bid="inventory-sheet-reference"/);
+  assert.match(hiddenStyle, /position:\s*absolute\s*!important;/);
+  assert.match(hiddenStyle, /overflow:\s*hidden\s*!important;/);
+  assert.match(hiddenStyle, /clip:\s*rect\(0, 0, 0, 0\)\s*!important;/);
+  assert.doesNotMatch(hiddenStyle, /display:\s*none|visibility:\s*hidden/);
+  assert.match(
+    activeStreamSheetLabel,
+    />\s*Google Sheet ID or sharing link\s*<\/label>/,
+  );
+  assert.doesNotMatch(activeStreamSheetLabel, /visually-hidden|\shidden(?:\s|=|>)/);
+});
+
 test("a confirmed baseline exposes a local read-only inventory disclosure", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const html = fs.readFileSync(
