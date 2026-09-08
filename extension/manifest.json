@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsIcJ6PIkLXvrCWi7WlA+MNy4Fl+fR8g/37pO+luR1HCm3B3sVkznJ4c2yIevaqDcFptcR0GBFzasnDS+ANcHxL7cttZQuc/ejV0NvhYn4aGPZfYReP3QFPugn3TB6xQAAWs2IytAbariLskLIPJ3b8KdvGPTFDMnud9508HfjzT1eLJCkx8FktAcuBy8ZKsZ7W0gry+OdNjJuBlOu4rwWxHq6Nr8uv7MLyoUBQzCGFToTZ6Qk6Lf2r9ROGPlMtVvoAbU/9bee74Ne6bdWsuQ3h/Y04w9pb5DIEA1KD8l+rGa4kzPg5N7CTDVKPkdsOdPklKC/SuVgpvHb4yiGc3T5QIDAQAB",
   "name": "TikTok Live Tracker",
   "version": "0.1.0",
   "description": "Tag live-stream items as they sell and reconcile them against TikTok payment confirmations.",
@@ -7,7 +8,7 @@
   "permissions": ["storage", "sidePanel", "identity"],
   "host_permissions": ["https://sheets.googleapis.com/*"],
   "oauth2": {
-    "client_id": "627721501298-uo4j3mb29cdkhiv565hhnj62usf6ql8q.apps.googleusercontent.com",
+    "client_id": "627721501298-v850an3m2mog3re717nd4kd6rnp76eh7.apps.googleusercontent.com",
     "scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"]
   },
   "background": {
