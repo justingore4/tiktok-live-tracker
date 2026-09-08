@@ -562,6 +562,7 @@
           order.variationNumber <= priorVariationNumber ||
           ![
             "payment_processing",
+            "order_processing",
             "payment_fixing",
             "payment_failed",
           ].includes(

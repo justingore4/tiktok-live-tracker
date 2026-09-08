@@ -20,6 +20,7 @@
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
       NOT_OBSERVED: "not_observed",
       PAYMENT_PROCESSING: "payment_processing",
+      ORDER_PROCESSING: "order_processing",
       PAYMENT_FIXING: "payment_fixing",
       PAYMENT_FAILED: "payment_failed",
       CANCELED: "canceled",
@@ -34,6 +35,9 @@
       ["payment processing", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
       ["payment processing...", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
       ["payment processing\u2026", OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING],
+      ["order processing", OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING],
+      ["order processing...", OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING],
+      ["order processing\u2026", OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING],
     ]);
     const MAX_ROW_ANCESTORS = 12;
 

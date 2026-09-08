@@ -1154,6 +1154,44 @@ test("captures every sanitized row status before completed payments", async () =
   );
 });
 
+test("Order processing ellipses share one observation without committing a sale", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Order processing...");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+    {
+      type: "observe_payment_statuses",
+      statuses: [{ variationNumber: 44, observedPaymentStatus: "order_processing" }],
+    },
+  ]);
+
+  for (const label of ["Order processing", "Order processing\u2026"]) {
+    setPaymentText(sale, label);
+    latestCaptureObserver(harness).trigger([
+      { type: "characterData", target: sale.statusText },
+    ]);
+    await flushAsync();
+    assert.equal(harness.captureMessages.length, 2);
+  }
+  assert.equal(harness.completedSaleLogs().length, 0);
+
+  setPaymentText(sale, "Payment complete");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "payment_complete",
+    variationNumber: 44,
+    soldPriceCents: 700,
+  });
+});
+
 test("an unpriced completion remains provisional and can transition", async () => {
   const sale = createSaleRow(
     "Example Buyer has won: $7.00 Variation: #44 Payment complete",

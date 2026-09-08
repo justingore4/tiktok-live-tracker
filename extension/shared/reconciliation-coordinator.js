@@ -107,6 +107,7 @@
     ];
     const OBSERVABLE_PAYMENT_STATUSES = new Set([
       "payment_processing",
+      "order_processing",
       "payment_fixing",
       "payment_failed",
       "canceled",

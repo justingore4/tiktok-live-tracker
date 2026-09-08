@@ -504,25 +504,26 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     /Selecting an item reserves one unit until TikTok reports Payment complete or Canceled/,
   );
   assert.match(html, /id="pending-mapping"/);
-  assert.match(html, /id="auction-eyebrow"[^>]*>Live order status</);
-  assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
-  assert.match(html, /id="state-warning"[^>]+role="status"/);
-  assert.match(html, /id="auction-status"[^>]+tabindex="-1"/);
-  assert.match(html, /<dt>TikTok payment<\/dt>/);
   assert.match(
     html,
-    /id="tiktok-payment-status"[\s\S]+data-payment-status="not_observed"/,
+    /id="pending-mapping-title"[^>]+tabindex="-1"[\s\S]*?Variation <span data-field="mapped-variation">#&mdash;<\/span>[\s\S]*?Status \|\s+<span id="mapped-item">-<\/span>/,
   );
-  assert.match(html, /data-field="observed-payment-status"[\s\S]+Payment not yet observed/);
-  assert.match(html, /id="payment-price"[^>]+hidden/);
-  assert.match(html, /<dt>Inventory tag<\/dt>/);
-  assert.match(html, /data-field="mapping-status"[\s\S]+No item selected/);
+  assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
+  assert.match(html, /id="state-warning"[^>]+role="status"/);
+  assert.doesNotMatch(
+    html,
+    /id="auction-eyebrow"|class="pending-card"|id="auction-status"|id="tiktok-payment-status"|id="payment-price"|data-field="observed-payment-status"|data-field="mapping-status"/,
+  );
+  assert.doesNotMatch(html, /<dt>TikTok payment<\/dt>|<dt>Inventory tag<\/dt>/);
+  assert.doesNotMatch(html, /Gross profit excludes platform fees, shipping, refunds, and taxes/);
+  assert.match(styleSource, /\.pending-heading h2:focus\s*\{/);
+  assert.doesNotMatch(styleSource, /\.sale-results > p\s*\{/);
   assert.match(
     html,
     /id="sale-results"\s+class="sale-results">[\s\S]+data-field="sold-price">&mdash;<[\s\S]+data-field="unit-cost">&mdash;<[\s\S]+data-field="gross-profit"\s+data-tone="neutral">&mdash;<[\s\S]+data-field="remaining-inventory">&mdash;</,
   );
   assert.doesNotMatch(html, /id="sale-results"[^>]*\shidden/);
-  assert.match(html, />\s*Live session\s*</);
+  assert.doesNotMatch(html, /id="data-mode-badge"|class="session-badge"/);
   assert.doesNotMatch(html, /id="change-mapping"/);
   assert.doesNotMatch(html, />\s*Change item\s*</);
 });
@@ -701,6 +702,7 @@ test("active streams expose an append-only Google Sheets inventory action", () =
 
 test("variation picker keeps its compact layout while coloring status segments", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const html = fs.readFileSync(path.join(taggerDirectory, "sidepanel.html"), "utf8");
   const panelSource = fs.readFileSync(
     path.join(taggerDirectory, "sidepanel.js"),
     "utf8",
@@ -709,6 +711,29 @@ test("variation picker keeps its compact layout while coloring status segments",
     path.join(taggerDirectory, "sidepanel.css"),
     "utf8",
   );
+
+  assert.match(html, /id="variation-context" class="visually-hidden"/);
+  assert.match(html, /aria-describedby="variation-context"/);
+  assert.doesNotMatch(html, /id="data-mode-badge"|class="session-badge"/);
+  assert.doesNotMatch(styleSource, /\.session-badge\s*\{|\.current-auction-label/);
+
+  const panelRules = [...styleSource.matchAll(/\.current-auction\s*\{([^}]+)\}/g)];
+  const pickerRules = [...styleSource.matchAll(/\.variation-picker\s*\{([^}]+)\}/g)];
+  assert.equal(panelRules.length, 1, "narrow layouts must keep the compact panel");
+  assert.match(panelRules[0][1], /padding: 12px 14px;/);
+  assert.doesNotMatch(panelRules[0][1], /min-height/);
+  assert.equal(pickerRules.length, 1, "the label and dropdown must stay on one row");
+  assert.match(pickerRules[0][1], /display: flex;/);
+  assert.doesNotMatch(pickerRules[0][1], /flex-direction: column/);
+  assert.match(
+    styleSource,
+    /\.variation-picker h2\s*\{[^}]*font-size: clamp\(18px, 6vw, 24px\);/,
+  );
+  for (const selector of ["current-auction-copy", "variation-select-shell"]) {
+    const rule = styleSource.match(new RegExp(`\\.${selector}\\s*\\{([^}]+)\\}`));
+    assert.match(rule?.[1] ?? "", /min-width: 0;[\s\S]*flex: 1;/);
+  }
+  assert.match(styleSource, /#variation-selector\s*\{[^}]*width: 100%;/);
 
   assert.match(
     panelSource,
@@ -971,7 +996,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     /if \(multipleSizes\) \{[\s\S]*?button\.setAttribute\("role", "combobox"\)[\s\S]*?\} else \{[\s\S]*?button\.setAttribute\("aria-pressed", String\(selected\)\)/,
   );
   assert.match(panelSource, /Click to unselect this item/);
-  assert.match(
+  assert.doesNotMatch(
     panelSource,
     /No item selected\. Select the matching inventory entry below\./,
   );
@@ -1115,43 +1140,22 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     /warnings\.some\([\s\S]+unmapped_completed_sale/,
   );
   assert.doesNotMatch(panelSource, /changeMappingButton|#change-mapping/);
-  assert.match(panelSource, /function renderOrderStatuses\(auction\)/);
-  assert.match(panelSource, /observedPaymentStatus\.textContent = observedLabel/);
-  assert.match(
+  assert.doesNotMatch(
     panelSource,
-    /tiktokPaymentStatus\.dataset\.paymentStatus = safeObservedStatus/,
-  );
-  assert.match(panelSource, /paymentPrice\.hidden = !hasCapturedPrice/);
-  assert.match(panelSource, /mappingStatus\.textContent = getInventoryTagLabel\(auction\)/);
-  assert.match(
-    panelSource,
-    /auction\.paymentStatus === "payment_complete"/,
+    /renderOrderStatuses|getInventoryTagLabel|isInventoryReservationPending|auctionStatus|tiktokPaymentStatus|paymentPrice|mappingStatus/,
   );
   assert.match(workflowSource, /"Payment status unavailable"/);
   assert.match(workflowSource, /mapped: "Item selected"/);
-  assert.match(panelSource, /"Sale assigned"/);
-  assert.match(panelSource, /"Item selected"/);
-  assert.match(panelSource, /\? "Pending"[\s\S]+: "Item selected"/);
-  assert.match(
-    panelSource,
-    /function isInventoryReservationPending\(auction\)[\s\S]+auction\?\.status === "pending"/,
-  );
   assert.match(
     panelSource,
     /function isObservedCompletionAwaitingPrice\(auction\)/,
   );
-  assert.match(panelSource, /"Final price syncing - item selected"/);
   assert.doesNotMatch(panelSource, /Final price syncing - item reserved/);
   assert.match(
     panelSource,
     /TikTok shows Payment complete, but the final price is still syncing\./,
   );
   assert.match(panelSource, /remains reserved and pending/);
-  assert.match(
-    panelSource,
-    /"Canceled · reference item selected · no inventory change"/,
-  );
-  assert.match(panelSource, /"Canceled · no reference item selected"/);
   assert.match(panelSource, /selectedLabel\.textContent = "Canceled item"/);
   assert.match(panelSource, /Click to unselect this reference item/);
   assert.match(
@@ -1185,14 +1189,17 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     workflowSource,
     /not_observed: "Payment not yet observed"[\s\S]+payment_processing: "Payment processing"[\s\S]+payment_fixing: "Payment fixing"[\s\S]+payment_failed: "Payment failed"[\s\S]+canceled: "Canceled"[\s\S]+payment_complete: "Payment complete"[\s\S]+unrecognized: "Unrecognized payment status"/,
   );
-  assert.match(panelSource, /"payment_failed",[\s\S]+"canceled",/);
-  assert.match(
-    styleSource,
-    /data-payment-status="payment_fixing"\],[\s\S]+data-payment-status="payment_failed"\][\s\S]+color: #ffd88a/,
+  assert.doesNotMatch(
+    panelSource,
+    /OBSERVED_PAYMENT_STATUSES|getSafeObservedPaymentStatus/,
   );
   assert.match(
+    panelSource,
+    /function getObservedPaymentStatusLabel\(value\)/,
+  );
+  assert.doesNotMatch(
     styleSource,
-    /data-payment-status="canceled"\][\s\S]+color: #ffb1b7[\s\S]+data-payment-status="canceled"\] \.pending-status-dot[\s\S]+background: #ff737e/,
+    /\.pending-status|\.order-statuses|\.inventory-tag-status|\.payment-price/,
   );
   assert.match(panelSource, /stateWarning\.textContent !== warning/);
   assert.doesNotMatch(panelSource, /this pending mapping/);
@@ -1201,6 +1208,130 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
     mappingSource,
     /chrome\.storage|sendMessage|\bfetch\s*\(|sheets\.googleapis|completed_sale_detected/,
   );
+});
+
+test("compact order box appears only in history and preserves live rendering and focus", () => {
+  const source = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"),
+    "utf8",
+  );
+  const nameStart = source.indexOf("function formatItemName(entry)");
+  const nameEnd = source.indexOf("function createInventoryCard", nameStart);
+  const renderStart = source.indexOf("function renderAuction(view)");
+  const renderEnd = source.indexOf("function describeSelectedVariation", renderStart);
+
+  assert.ok(nameStart >= 0 && nameEnd > nameStart);
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+
+  let activeView = null;
+  const calls = [];
+  let headingFocusCount = 0;
+  let variationFocusCount = 0;
+  const sandbox = {
+    getActiveView: () => activeView,
+    mappedVariation: { textContent: "" },
+    mappedItem: { textContent: "" },
+    pendingMapping: { hidden: true, dataset: {} },
+    pendingMappingTitle: {
+      focus() { headingFocusCount += 1; },
+    },
+    variationSelector: {
+      focus() { variationFocusCount += 1; },
+    },
+    renderVariationNavigation: (view) => calls.push(["navigation", view]),
+    renderLiveAuction: (view) => calls.push(["live", view]),
+    renderSaleResults: (view) => calls.push(["sale", view]),
+    renderStateWarning: (view) => calls.push(["warning", view]),
+    renderInventory: (view) => calls.push(["inventory", view]),
+    renderMetrics: (view) => calls.push(["metrics", view]),
+  };
+  vm.runInNewContext(
+    `${source.slice(nameStart, nameEnd)}\n${source.slice(renderStart, renderEnd)}`,
+    sandbox,
+  );
+
+  const cases = [
+    { sku: "KOREA", item: "korea vulture", style: "tee", label: "korea vulture - tee" },
+    { sku: "LA-M", item: "LA", style: "hoodie", label: "LA - hoodie" },
+    { sku: null, item: null, style: null, label: "-" },
+    { sku: "PLAIN", item: "plain", style: "", label: "plain" },
+    {
+      sku: "KOREA",
+      item: "korea vulture",
+      style: "tee",
+      label: "korea vulture - tee",
+      paymentStatus: "canceled",
+      status: "canceled",
+      variationNumber: 78,
+    },
+  ];
+
+  for (const example of cases) {
+    const { label, ...identity } = example;
+    const auction = Object.freeze({
+      variationNumber: 79,
+      paymentStatus: "payment_complete",
+      status: "committed",
+      size: "OS",
+      ...identity,
+    });
+    activeView = Object.freeze({
+      auction,
+      inventory: Object.freeze([]),
+      isReviewingHistory: true,
+      selectedVariationNumber: auction.variationNumber,
+      currentVariationNumber: 80,
+    });
+    calls.length = 0;
+    const previousHeadingFocus = headingFocusCount;
+
+    assert.equal(sandbox.renderAll({ focusStatus: true }), activeView);
+    assert.equal(sandbox.mappedVariation.textContent, `#${auction.variationNumber}`);
+    assert.equal(sandbox.mappedItem.textContent, label);
+    assert.equal(sandbox.pendingMapping.hidden, false);
+    assert.equal(sandbox.pendingMapping.dataset.status, auction.status);
+    assert.equal(headingFocusCount, previousHeadingFocus + 1);
+    assert.equal(variationFocusCount, 0);
+    assert.deepEqual(calls.map(([name]) => name), [
+      "navigation", "live", "sale", "warning", "inventory", "metrics",
+    ]);
+    assert.ok(calls.every(([, view]) => view === activeView));
+  }
+
+  const historicalView = activeView;
+  for (const activeBiddingVariationNumber of [80, null]) {
+    activeView = {
+      ...historicalView,
+      auction: { variationNumber: 80, sku: null },
+      selectedVariationNumber: 80,
+      activeBiddingVariationNumber,
+      isReviewingHistory: false,
+    };
+    calls.length = 0;
+    const previousHeadingFocus = headingFocusCount;
+
+    sandbox.renderAll({ focusStatus: true });
+    assert.equal(sandbox.pendingMapping.hidden, true);
+    assert.equal(headingFocusCount, previousHeadingFocus);
+    assert.deepEqual(calls.map(([name]) => name), [
+      "navigation", "live", "inventory", "metrics",
+    ]);
+
+    activeView = historicalView;
+    sandbox.renderAll();
+    assert.equal(sandbox.pendingMapping.hidden, false);
+    assert.equal(sandbox.mappedVariation.textContent, "#78");
+  }
+
+  const previousHeadingFocus = headingFocusCount;
+  activeView = { auction: null, inventory: [] };
+  calls.length = 0;
+  sandbox.renderAll({ focusStatus: true });
+  assert.equal(sandbox.pendingMapping.hidden, true);
+  assert.equal(headingFocusCount, previousHeadingFocus);
+  assert.ok(calls.every(([name]) => name !== "sale" && name !== "warning"));
+  sandbox.renderAll({ focusVariation: true });
+  assert.equal(variationFocusCount, 1);
 });
 
 test("inventory right click maps the current variation from history without changing its queue", () => {
@@ -1376,7 +1507,350 @@ test("inventory right click maps the current variation from history without chan
     styleSource,
     /\.inventory-card\[data-selected="true"\]\[data-current-mapped="true"\]\[data-queued="true"\]\s*\{[\s\S]+var\(--cyan\) 0 33\.333%[\s\S]+#62aaff 33\.333% 66\.666%[\s\S]+#ff737e 66\.666% 100%/,
   );
-  assert.doesNotMatch(html, /data-field="queued"|class="queued-label"/);
+  assert.match(html, /data-field="queued"[^>]*>Queued<\/span>/);
+  assert.match(html, /data-field="current-mapped"[^>]*>Live<\/span>/);
+});
+
+function createInventoryCardBadgeHarness() {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(path.join(taggerDirectory, "sidepanel.js"), "utf8");
+  const html = fs.readFileSync(path.join(taggerDirectory, "sidepanel.html"), "utf8");
+  const templateSource = html.match(
+    /<template id="inventory-card-template">([\s\S]*?)<\/template>/,
+  )?.[1];
+  const cardSource = panelSource.slice(
+    panelSource.indexOf("function createInventoryCard(group, view)"),
+    panelSource.indexOf("function formatResultCount("),
+  );
+  const currentMappingSource = panelSource.slice(
+    panelSource.indexOf("function findVariationOption("),
+    panelSource.indexOf("function getObservedPaymentStatusLabel("),
+  );
+  const viewModel = require("../extension/tagger/inventory-view-model.js");
+
+  assert.ok(templateSource, "use the actual inventory card template");
+  assert.ok(cardSource.length > 0, "execute the actual inventory card renderer");
+  assert.ok(currentMappingSource.length > 0);
+
+  function cloneTemplate() {
+    const elements = [...templateSource.matchAll(/<([a-z]+)\b([^>]*)>([^<]*)/gi)]
+      .map(([, tagName, attributeSource, textContent]) => {
+        const attributes = Object.fromEntries(
+          [...attributeSource.matchAll(/([\w-]+)="([^"]*)"/g)]
+            .map(([, name, value]) => [name, value]),
+        );
+        return {
+          tagName,
+          attributes,
+          dataset: {},
+          hidden: /\bhidden(?:\s|$)/.test(attributeSource),
+          textContent: textContent.trim(),
+          setAttribute(name, value) {
+            this.attributes[name] = String(value);
+          },
+          getAttribute(name) {
+            return this.attributes[name] ?? null;
+          },
+        };
+      });
+    const wrapper = elements[0];
+    wrapper.querySelector = (selector) => {
+      const field = selector.match(/^\[data-field="([^"]+)"\]$/)?.[1];
+      const element = elements.find((candidate) => field
+        ? candidate.attributes["data-field"] === field
+        : candidate.attributes.class?.split(/\s+/).includes(selector.slice(1)));
+      assert.ok(element, `template contains ${selector}`);
+      return element;
+    };
+    return wrapper;
+  }
+
+  const sandbox = {
+    cardTemplate: { content: { firstElementChild: { cloneNode: cloneTemplate } } },
+    queuedNextItemSku: null,
+    viewModel: {
+      getPreferredInventoryGroupEntry: viewModel.getPreferredInventoryGroupEntry,
+      getInventoryGroupStockDisplay: () => ({ state: "in_stock", label: "3 left" }),
+    },
+    inventoryGroupOrderController: { isGroupPinned: () => false },
+    formatItemName: (group) => `${group.item} ${group.style}`,
+    hasSelectedRecordedVariation: () => true,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(`${currentMappingSource}\n${cardSource}`, sandbox);
+
+  return {
+    render({
+      selectedSku = null,
+      liveSku = null,
+      queuedSku = null,
+      reviewingHistory = true,
+      status = "pending",
+      paymentStatus = "payment_processing",
+      sizes = ["M"],
+    } = {}) {
+      const group = {
+        key: "test-tee-black",
+        item: "Test tee",
+        style: "Black",
+        entries: sizes.map((size) => ({
+          sku: `TEE-${size}`,
+          size,
+          selected: selectedSku === `TEE-${size}`,
+          selectionAllowed: true,
+        })),
+      };
+      const view = {
+        variationNumber: reviewingHistory ? 100 : 115,
+        selectedVariationNumber: reviewingHistory ? 100 : 115,
+        currentVariationNumber: 115,
+        isReviewingHistory: reviewingHistory,
+        auction: { sku: selectedSku, status, paymentStatus },
+        activeAuctionMapping: { variationNumber: 115, sku: liveSku },
+        variations: [],
+      };
+      const originalGroup = JSON.stringify(group);
+      const originalView = JSON.stringify(view);
+      sandbox.queuedNextItemSku = queuedSku;
+      const wrapper = sandbox.createInventoryCard(group, view);
+      assert.equal(JSON.stringify(group), originalGroup, "badges must not change inventory");
+      assert.equal(JSON.stringify(view), originalView, "badges must not change mappings");
+      return {
+        button: wrapper.querySelector(".inventory-card"),
+        badges: wrapper.querySelector(".inventory-card-badges"),
+        selected: wrapper.querySelector('[data-field="selected"]'),
+        live: wrapper.querySelector('[data-field="current-mapped"]'),
+        queued: wrapper.querySelector('[data-field="queued"]'),
+        size: wrapper.querySelector('[data-field="size"]'),
+      };
+    },
+  };
+}
+
+test("inventory cards independently label every selected, live, and queued combination", () => {
+  const harness = createInventoryCardBadgeHarness();
+  const selectedStates = [
+    { status: "pending", paymentStatus: "payment_processing", label: "Selected" },
+    { status: "committed", paymentStatus: "payment_complete", label: "Sold" },
+    { status: "canceled", paymentStatus: "canceled", label: "Canceled item" },
+  ];
+
+  for (const state of selectedStates) {
+    for (const selected of [false, true]) {
+      for (const live of [false, true]) {
+        for (const queued of [false, true]) {
+          const card = harness.render({
+            ...state,
+            selectedSku: selected ? "TEE-M" : null,
+            liveSku: live ? "TEE-M" : null,
+            queuedSku: queued ? "TEE-M" : null,
+          });
+          const context =
+            `${state.label}: selected=${selected}, live=${live}, queued=${queued}`;
+          assert.equal(card.selected.hidden, !selected, context);
+          assert.equal(card.live.hidden, !live, context);
+          assert.equal(card.queued.hidden, !queued, context);
+          assert.equal(card.badges.hidden, !(selected || live || queued), context);
+          assert.equal(
+            card.selected.textContent,
+            selected ? state.label : "Selected",
+            context,
+          );
+          assert.equal(card.live.textContent, "Live", context);
+          assert.equal(card.queued.textContent, "Queued", context);
+          assert.equal(card.button.dataset.selected, String(selected), context);
+          assert.equal(card.button.dataset.currentMapped, String(live), context);
+          assert.equal(card.button.dataset.queued, String(queued), context);
+          assert.equal(card.button.dataset.sku, "TEE-M", context);
+          assert.equal(card.button.getAttribute("aria-pressed"), String(selected), context);
+          assert.equal(card.button.disabled, false, context);
+        }
+      }
+    }
+  }
+});
+
+test("inventory card badges clear with state changes and hide Live in current view", () => {
+  const harness = createInventoryCardBadgeHarness();
+  const states = [
+    {
+      input: { selectedSku: "TEE-M", liveSku: "TEE-M", queuedSku: "TEE-M" },
+      visible: [true, true, true],
+    },
+    {
+      input: { selectedSku: "TEE-M", liveSku: "TEE-M" },
+      visible: [true, true, false],
+    },
+    {
+      input: { selectedSku: "TEE-M", liveSku: "TEE-M", reviewingHistory: false },
+      visible: [true, false, false],
+    },
+    { input: { queuedSku: "TEE-M" }, visible: [false, false, true] },
+    { input: {}, visible: [false, false, false] },
+  ];
+
+  for (const { input, visible } of states) {
+    const card = harness.render(input);
+    assert.deepEqual(
+      [!card.selected.hidden, !card.live.hidden, !card.queued.hidden],
+      visible,
+    );
+    assert.equal(card.badges.hidden, !visible.some(Boolean));
+  }
+});
+
+test("grouped inventory card badges retain distinct exact-SKU selections and queue state", () => {
+  const harness = createInventoryCardBadgeHarness();
+  const card = harness.render({
+    sizes: ["S", "M", "L"],
+    selectedSku: "TEE-S",
+    liveSku: "TEE-M",
+    queuedSku: "TEE-L",
+  });
+
+  assert.deepEqual(
+    [card.selected.hidden, card.live.hidden, card.queued.hidden],
+    [false, false, false],
+  );
+  assert.equal(card.badges.hidden, false);
+  assert.equal(card.button.dataset.focusSku, "TEE-S");
+  assert.equal(card.size.textContent, "S");
+  assert.equal(
+    card.button.dataset.sku,
+    undefined,
+    "a grouped card cannot become a single-SKU action",
+  );
+  assert.deepEqual(JSON.parse(card.button.dataset.variantSkus), ["TEE-S", "TEE-M", "TEE-L"]);
+  assert.equal(card.button.getAttribute("role"), "combobox");
+  assert.equal(card.button.getAttribute("aria-pressed"), null);
+  assert.match(card.button.getAttribute("aria-label"), /Size S is selected for variation 100/);
+  assert.match(card.button.getAttribute("aria-label"), /Queued for the next variation/);
+  assert.match(card.button.getAttribute("aria-label"), /selected for current variation 115/);
+
+  const unrelated = harness.render({
+    sizes: ["S", "M", "L"],
+    selectedSku: "OTHER-S",
+    liveSku: "OTHER-M",
+    queuedSku: "OTHER-L",
+  });
+  assert.deepEqual(
+    [unrelated.selected.hidden, unrelated.live.hidden, unrelated.queued.hidden],
+    [true, true, true],
+  );
+  assert.equal(unrelated.badges.hidden, true, "matching only a size must not produce a badge");
+});
+
+test("inventory card badges stay compact, clear pins, and match size-picker colors", () => {
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.html"),
+    "utf8",
+  );
+  const badgeStyle = styleSource.match(/\.inventory-card-badge\s*\{([^}]+)\}/)?.[1];
+  const stackStyle = styleSource.match(/\.inventory-card-badges\s*\{([^}]+)\}/)?.[1];
+  const headingStyle = styleSource.match(/\.card-heading\s*\{([^}]+)\}/)?.[1];
+
+  assert.ok(badgeStyle);
+  assert.ok(stackStyle);
+  assert.ok(headingStyle);
+  assert.match(html, /class="inventory-card-badges" hidden/);
+  assert.match(badgeStyle, /font-size: 8px/);
+  assert.match(badgeStyle, /padding: 2px 5px/);
+  assert.match(badgeStyle, /line-height: 1\.25/);
+  assert.match(badgeStyle, /max-width: 100%/);
+  assert.match(badgeStyle, /overflow-wrap: anywhere/);
+  assert.match(stackStyle, /flex-direction: column/);
+  assert.match(stackStyle, /gap: 3px/);
+  assert.match(headingStyle, /display: flex/);
+  assert.match(headingStyle, /flex-wrap: wrap/);
+  assert.match(headingStyle, /padding-right: 35px/);
+  assert.match(styleSource, /\[hidden\]\s*\{\s*display: none !important;/);
+
+  for (const tone of ["selected", "current", "queued"]) {
+    const cardStyle = styleSource.match(new RegExp(
+      `\\.inventory-card-badge\\[data-tone="${tone}"\\]\\s*\\{([^}]+)\\}`,
+    ))?.[1];
+    const optionStyle = styleSource.match(new RegExp(
+      `\\.inventory-size-option-badge\\[data-tone="${tone}"\\]\\s*\\{([^}]+)\\}`,
+    ))?.[1];
+    assert.ok(cardStyle, `${tone} card badge has its own color rule`);
+    assert.ok(optionStyle, `${tone} size-picker badge has a color rule`);
+    assert.equal(cardStyle.trim(), optionStyle.trim(), `${tone} colors stay consistent`);
+  }
+});
+
+test("inventory hover preserves every selection outline and keyboard focus", () => {
+  const styleSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const hoverRules = [...styleSource.matchAll(/(\.inventory-card[^{}]*:hover[^{}]*)\{([^}]+)\}/g)];
+
+  assert.equal(hoverRules.length, 1, "only one card hover rule can override status borders");
+  assert.equal(
+    hoverRules[0][1].trim(),
+    ".inventory-card:where(:not(:disabled):hover)",
+    ":where keeps hover below all attribute-based status rules in specificity",
+  );
+  assert.match(hoverRules[0][2], /border-color: var\(--border-strong\);/);
+  assert.match(hoverRules[0][2], /transform: translateY\(-1px\);/);
+  assert.doesNotMatch(hoverRules[0][2], /!important|background|box-shadow|outline/);
+
+  const states = ["selected", "current-mapped", "queued"];
+  for (let mask = 1; mask < 8; mask += 1) {
+    const attributes = states.filter((_, index) => mask & (1 << index))
+      .map((state) => `[data-${state}="true"]`).join("");
+    const selector = `.inventory-card${attributes}`;
+    const rules = [...styleSource.matchAll(/(\.inventory-card[^{}]*)\{([^}]+)\}/g)];
+    const rule = rules.find((match) => match[1].trim() === selector)?.[2];
+
+    assert.ok(rule, `${selector} retains its status outline`);
+    const border = mask === 1 ? "var(--cyan)" : mask === 2 ? "#62aaff" : "transparent";
+    assert.ok(rule.includes(`border-color: ${border};`), selector);
+    assert.match(rule, /background:/);
+    assert.match(rule, /box-shadow:/);
+  }
+
+  assert.match(
+    styleSource,
+    /\.inventory-card:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\);/,
+  );
+});
+
+test("placeholder sizes stay invisible on single-SKU cards without changing spacing", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(path.join(taggerDirectory, "sidepanel.js"), "utf8");
+  const styleSource = fs.readFileSync(path.join(taggerDirectory, "sidepanel.css"), "utf8");
+  const sizeDisplaySource = panelSource.match(
+    /button\.dataset\.placeholderSize = String\([\s\S]*?\);/,
+  )?.[0];
+
+  assert.ok(sizeDisplaySource);
+  assert.match(
+    styleSource,
+    /\.inventory-card\[data-placeholder-size="true"\] \.size-label\s*\{\s*visibility: hidden;\s*\}/,
+    "hide the full label and value while preserving their layout space",
+  );
+
+  const placeholderSizes = ["OS", "os", "N/A", "na", "n/a", "NA", " OS "];
+  const realSizes = ["S", "M", "XL", "7", "10.5", "OSFM", "N/A-XL", "", null];
+
+  for (const size of [...placeholderSizes, ...realSizes]) {
+    for (const multipleSizes of [false, true]) {
+      const representativeEntry = Object.freeze({ sku: "EXACT-SKU", size });
+      const button = { dataset: {} };
+      vm.runInNewContext(sizeDisplaySource, { button, representativeEntry, multipleSizes });
+      assert.equal(
+        button.dataset.placeholderSize,
+        String(!multipleSizes && placeholderSizes.includes(size)),
+        `size ${size}, multiple sizes ${multipleSizes}`,
+      );
+      assert.deepEqual(representativeEntry, { sku: "EXACT-SKU", size });
+    }
+  }
 });
 
 test("grouped multi-size inventory cards keep exact-SKU mapping and queue actions accessible", () => {
@@ -1472,7 +1946,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
       "visibleInventory.forEach((group)",
       "createInventoryCard(group, view)",
     ],
-    "inventory rows must be grouped, recently ordered, and filtered before the visible whole groups render",
+    "inventory rows must be grouped, pin-ordered, and filtered before visible whole groups render",
   );
   assert.match(
     inventoryRenderer,
@@ -1741,7 +2215,7 @@ test("inventory cards stay capped at nine until the user expands the list", () =
       "filteredInventory.slice(0, COLLAPSED_INVENTORY_ITEM_LIMIT)",
       "visibleInventory.forEach((group)",
     ],
-    "the nine-card limit must be applied after recent ordering and search filtering",
+    "the nine-card limit must be applied after pin ordering and search filtering",
   );
   assert.match(
     inventoryRenderer,
@@ -1863,8 +2337,9 @@ test("inventory pin controls are accessible and isolated from mapping actions", 
   );
   assert.match(
     togglePinSource,
-    /historical item order remains frozen[\s\S]*?pinned at position \$\{result\.pinnedPosition\}[\s\S]*?returned to recent-sale order/,
+    /pinned at position \$\{result\.pinnedPosition\}[\s\S]*?returned to original inventory order after pinned items/,
   );
+  assert.doesNotMatch(togglePinSource, /recent-sale|remains frozen|reviewingHistory/);
   assertTextOrder(
     inventoryRenderer,
     [

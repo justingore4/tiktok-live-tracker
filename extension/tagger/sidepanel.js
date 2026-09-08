@@ -10,15 +10,6 @@
   const CAPTURE_REFRESH_DELAY_MS = 150;
   const ACTIVE_STREAM_INVENTORY_FEEDBACK_DURATION_MS = 4_000;
   const COLLAPSED_INVENTORY_ITEM_LIMIT = 9;
-  const OBSERVED_PAYMENT_STATUSES = new Set([
-    "not_observed",
-    "payment_processing",
-    "payment_fixing",
-    "payment_failed",
-    "canceled",
-    "payment_complete",
-    "unrecognized",
-  ]);
   const RECOVERABLE_STREAM_BASELINE_ERROR_CODES = new Set([
     "STATE_NOT_INITIALIZED",
     "INVENTORY_BASELINE_REQUIRED",
@@ -357,7 +348,9 @@
   const liveGrossProfitValue = document.querySelector(
     "#live-gross-profit-value",
   );
-  const liveAuctionNote = document.querySelector("#live-auction-note");
+  const liveRemainingInventoryValue = document.querySelector(
+    "#live-remaining-inventory-value",
+  );
   const inventoryTitle = document.querySelector("#inventory-title");
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
@@ -429,19 +422,11 @@
     "#estimated-profit-after-fees-warning",
   );
   const pendingMapping = document.querySelector("#pending-mapping");
+  const pendingMappingTitle = document.querySelector("#pending-mapping-title");
   const mappedVariation = document.querySelector(
     '[data-field="mapped-variation"]',
   );
   const mappedItem = document.querySelector("#mapped-item");
-  const auctionStatus = document.querySelector("#auction-status");
-  const tiktokPaymentStatus = document.querySelector(
-    "#tiktok-payment-status",
-  );
-  const observedPaymentStatus = document.querySelector(
-    '[data-field="observed-payment-status"]',
-  );
-  const paymentPrice = document.querySelector("#payment-price");
-  const mappingStatus = document.querySelector('[data-field="mapping-status"]');
   const soldPriceResult = document.querySelector('[data-field="sold-price"]');
   const unitCostResult = document.querySelector('[data-field="unit-cost"]');
   const grossProfitResult = document.querySelector(
@@ -756,10 +741,6 @@
       currentVariation.item !== null &&
       currentVariation.item !== undefined
     );
-  }
-
-  function getSafeObservedPaymentStatus(value) {
-    return OBSERVED_PAYMENT_STATUSES.has(value) ? value : "unavailable";
   }
 
   function getObservedPaymentStatusLabel(value) {
@@ -2188,7 +2169,10 @@
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const pinButton = wrapper.querySelector(".inventory-pin-button");
     const button = wrapper.querySelector(".inventory-card");
+    const badges = wrapper.querySelector(".inventory-card-badges");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
+    const currentLabel = wrapper.querySelector('[data-field="current-mapped"]');
+    const queuedLabel = wrapper.querySelector('[data-field="queued"]');
     const stock = viewModel.getInventoryGroupStockDisplay(group);
     const stockAriaLabel = stock.ariaLabel ?? stock.label;
     const selectedEntry = group.entries.find((entry) => entry.selected) ?? null;
@@ -2241,6 +2225,9 @@
     );
     button.dataset.focusSku = representativeEntry?.sku ?? "";
     button.dataset.multipleSizes = String(multipleSizes);
+    button.dataset.placeholderSize = String(
+      !multipleSizes && /^(?:os|n\/?a)$/i.test(representativeEntry?.size?.trim() ?? ""),
+    );
 
     if (!multipleSizes && representativeEntry) {
       button.dataset.sku = representativeEntry.sku;
@@ -2382,6 +2369,9 @@
     secondaryStockLabel.textContent = stock.secondaryLabel ?? "";
     secondaryStockLabel.hidden = !stock.secondaryLabel;
     selectedLabel.hidden = !selected;
+    currentLabel.hidden = !mappedToCurrent;
+    queuedLabel.hidden = !queued;
+    badges.hidden = !selected && !mappedToCurrent && !queued;
 
     if (auction?.status === "committed" && selected) {
       selectedLabel.textContent = "Sold";
@@ -2460,9 +2450,6 @@
       pinLimit,
     );
     const itemName = formatItemName(group);
-    const reviewingHistory =
-      view.isReviewingHistory ||
-      view.selectedVariationNumber !== view.currentVariationNumber;
 
     if (result.limitReached) {
       mappingAnnouncement.textContent =
@@ -2475,13 +2462,11 @@
     restoreInventoryPinFocus(groupKey);
 
     if (result.pinned) {
-      mappingAnnouncement.textContent = reviewingHistory
-        ? `${itemName} is pinned for the live item list. The historical item order remains frozen.`
-        : `${itemName} is pinned at position ${result.pinnedPosition}.`;
+      mappingAnnouncement.textContent =
+        `${itemName} is pinned at position ${result.pinnedPosition}.`;
     } else {
-      mappingAnnouncement.textContent = reviewingHistory
-        ? `${itemName} is unpinned from the live item list. The historical item order remains frozen.`
-        : `${itemName} is unpinned and returned to recent-sale order.`;
+      mappingAnnouncement.textContent =
+        `${itemName} is unpinned and returned to original inventory order after pinned items.`;
     }
   }
 
@@ -3138,8 +3123,8 @@
       liveGrossProfitValue.dataset.tone = display.profitTone;
     }
 
-    if (liveAuctionNote.textContent !== display.note) {
-      liveAuctionNote.textContent = display.note;
+    if (liveRemainingInventoryValue.textContent !== display.remainingInventory) {
+      liveRemainingInventoryValue.textContent = display.remainingInventory;
     }
   }
 
@@ -3199,7 +3184,7 @@
     if (variations.length > 0) {
       variationContext.textContent = "Live auction variations";
       inventoryTitle.textContent =
-        `Review or tag variation #${view.selectedVariationNumber}`;
+        `Select Variation #${view.selectedVariationNumber}`;
     } else {
       variationContext.textContent =
         "Waiting for a live auction variation";
@@ -3506,36 +3491,6 @@
       : "—";
   }
 
-  function getInventoryTagLabel(auction) {
-    if (auction.paymentStatus === "payment_complete") {
-      return auction.sku ? "Sale assigned" : "No item selected";
-    }
-
-    if (isObservedCompletionAwaitingPrice(auction)) {
-      return auction.sku
-        ? "Final price syncing - item selected"
-        : "Final price syncing - no item selected";
-    }
-
-    if (auction.paymentStatus === "canceled") {
-      return auction.sku
-        ? "Canceled · reference item selected · no inventory change"
-        : "Canceled · no reference item selected";
-    }
-
-    if (!auction.sku) {
-      return "No item selected";
-    }
-
-    return isInventoryReservationPending(auction)
-      ? "Pending"
-      : "Item selected";
-  }
-
-  function isInventoryReservationPending(auction) {
-    return auction?.status === "pending";
-  }
-
   function isObservedCompletionAwaitingPrice(auction) {
     return (
       auction?.observedPaymentStatus === "payment_complete" &&
@@ -3543,40 +3498,16 @@
     );
   }
 
-  function renderOrderStatuses(auction) {
-    const safeObservedStatus = getSafeObservedPaymentStatus(
-      auction.observedPaymentStatus,
-    );
-    const observedLabel = getObservedPaymentStatusLabel(
-      auction.observedPaymentStatus,
-    );
-    const hasCapturedPrice =
-      auction.observedPaymentStatus === "payment_complete" &&
-      Number.isSafeInteger(auction.soldPriceCents);
-
-    observedPaymentStatus.textContent = observedLabel;
-    tiktokPaymentStatus.dataset.paymentStatus = safeObservedStatus;
-    paymentPrice.hidden = !hasCapturedPrice;
-    paymentPrice.textContent = hasCapturedPrice
-      ? `(${viewModel.formatUsdCents(auction.soldPriceCents)} captured)`
-      : "";
-    mappingStatus.textContent = getInventoryTagLabel(auction);
-  }
-
   function renderAuction(view) {
     const auction = view.auction;
 
-    if (!auction) {
+    if (!auction || !view.isReviewingHistory) {
       pendingMapping.hidden = true;
       return;
     }
 
     mappedVariation.textContent = `#${auction.variationNumber}`;
-    mappedItem.textContent = auction.sku
-      ? `${formatItemName(auction)}, size ${auction.size}`
-      : "No item selected. Select the matching inventory entry below.";
-    renderOrderStatuses(auction);
-    auctionStatus.dataset.status = auction.status;
+    mappedItem.textContent = auction.sku ? formatItemName(auction) : "-";
     pendingMapping.dataset.status = auction.status;
     pendingMapping.hidden = false;
 
@@ -3598,7 +3529,7 @@
     renderMetrics(view);
 
     if (options.focusStatus && !pendingMapping.hidden) {
-      auctionStatus.focus();
+      pendingMappingTitle.focus();
     } else if (options.focusVariation) {
       variationSelector.focus();
     }

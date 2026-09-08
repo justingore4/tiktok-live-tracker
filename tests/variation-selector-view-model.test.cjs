@@ -45,6 +45,15 @@ test("maps every payment state to its selector tone with bidding taking preceden
       label: "processing",
     },
     {
+      name: "order processing",
+      option: createOption({
+        observedPaymentStatus: "order_processing",
+        observedPaymentStatusLabel: "Order processing",
+      }),
+      tone: "warning",
+      label: "Order processing",
+    },
+    {
       name: "payment fixing",
       option: createOption({
         observedPaymentStatus: "payment_fixing",

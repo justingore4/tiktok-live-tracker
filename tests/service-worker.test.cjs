@@ -3436,7 +3436,7 @@ test("a post-End finalization failure returns the saved pending report for resta
   assert.equal(harness.consoleErrors.length, 1);
 });
 
-test("report reads and archive mutations enforce exact extension senders", async () => {
+test("report reads, rename, and archive mutations enforce exact extension senders", async () => {
   const harness = createWorkerHarness();
   const message = harness.createReportMessage({ type: "list_reports" });
   const archivedListMessage = harness.createReportMessage({
@@ -3519,11 +3519,6 @@ test("report reads and archive mutations enforce exact extension senders", async
     displayName: "August launch stream",
   });
   const sidePanelRename = harness.send(renameMessage);
-  const reportPageRename = harness.send(
-    renameMessage,
-    harness.createSender({ url: `${harness.reportPageUrl}#saved` }),
-  );
-
   assert.deepEqual(await sidePanelRename.response, {
     ok: true,
     data: {
@@ -3531,13 +3526,47 @@ test("report reads and archive mutations enforce exact extension senders", async
       displayName: "August launch stream",
     },
   });
-  assert.deepEqual(await reportPageRename.response, {
-    ok: false,
-    error: {
-      code: "UNAUTHORIZED_MESSAGE_SENDER",
-      message: "The packaged report page has read-only report access.",
-    },
-  });
+  for (const url of [
+    harness.reportPageUrl,
+    `${harness.reportPageUrl}?reportId=${encodeURIComponent(reportId)}`,
+    `${harness.reportPageUrl}#saved`,
+  ]) {
+    const reportPageRename = harness.send(
+      renameMessage,
+      harness.createSender({ url }),
+    );
+
+    assert.deepEqual(await reportPageRename.response, {
+      ok: true,
+      data: {
+        reportId,
+        displayName: "August launch stream",
+      },
+    });
+  }
+
+  for (const sender of [
+    harness.createCaptureSender(),
+    harness.createSender({
+      url: `chrome-extension://${harness.extensionId}/other.html`,
+    }),
+    harness.createSender({ url: `${harness.reportPageUrl}.untrusted` }),
+    harness.createSender({
+      id: "another-extension",
+      url: harness.reportPageUrl,
+    }),
+  ]) {
+    const unauthorizedRename = harness.send(renameMessage, sender);
+
+    assert.deepEqual(await unauthorizedRename.response, {
+      ok: false,
+      error: {
+        code: "UNAUTHORIZED_MESSAGE_SENDER",
+        message:
+          "Only the extension side panel and packaged report page can read stream reports.",
+      },
+    });
+  }
 
   const unrelatedExtensionPage = harness.send(
     harness.createReportMessage({

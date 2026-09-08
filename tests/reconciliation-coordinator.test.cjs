@@ -471,6 +471,14 @@ test("persists mapped reservations through every nonterminal payment status", as
   const coordinator = createCoordinator(memoryStore);
 
   const mapped = await coordinator.dispatch(mapCommand(49));
+  const orderProcessing = await coordinator.dispatch(
+    observePaymentStatusesCommand([
+      {
+        variationNumber: 49,
+        observedPaymentStatus: "order_processing",
+      },
+    ]),
+  );
   const processing = await coordinator.dispatch(
     observePaymentStatusesCommand([
       {
@@ -503,6 +511,15 @@ test("persists mapped reservations through every nonterminal payment status", as
 
   assert.equal(mapped.result.status, "pending");
   assert.equal(
+    reconciliation.getAuction(orderProcessing.state, key).observedPaymentStatus,
+    "order_processing",
+  );
+  assert.equal(reconciliation.getAuction(orderProcessing.state, key).status, "pending");
+  assert.equal(
+    reconciliation.getInventoryAvailability(orderProcessing.state, key).reservedQuantity,
+    1,
+  );
+  assert.equal(
     reconciliation.getInventoryAvailability(mapped.state, key)
       .reservedQuantity,
     1,
@@ -528,7 +545,7 @@ test("persists mapped reservations through every nonterminal payment status", as
       .reservedQuantity,
     1,
   );
-  assert.equal(memoryStore.calls.save.length, 4);
+  assert.equal(memoryStore.calls.save.length, 5);
   assert.deepEqual(memoryStore.getPersistedState(), fixing.state);
 });
 

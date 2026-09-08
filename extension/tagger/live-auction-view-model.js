@@ -66,12 +66,12 @@
         return {
           hidden: true,
           variationNumber: null,
-          variationLabel: "Variation # -",
+          variationLabel: "Variation # - Status | -",
           currentBid: UNAVAILABLE,
           unitCost: UNAVAILABLE,
           grossProfit: UNAVAILABLE,
           profitTone: "neutral",
-          note: "",
+          remainingInventory: UNAVAILABLE,
           state: "inactive",
         };
       }
@@ -91,6 +91,17 @@
       const activeMapping = activeVariationNumber === null
         ? null
         : getMatchingActiveMapping(view, activeVariationNumber);
+      const displayedMapping = activeVariationNumber === null
+        ? view.variations?.find((entry) => entry.variationNumber === variationNumber)
+        : activeMapping;
+      const mappedItem = displayedMapping?.sku
+        ? view.inventory?.find((entry) => entry.sku === displayedMapping.sku) ?? displayedMapping
+        : null;
+      const itemLabel = mappedItem?.item
+        ? mappedItem.style
+          ? `${mappedItem.item} - ${mappedItem.style}`
+          : mappedItem.item
+        : "-";
       const bidPriceCents = isPositiveSafeInteger(
         matchingSnapshot?.bidPriceCents,
       )
@@ -110,32 +121,13 @@
         ? bidPriceCents - unitCostCents
         : null;
       const profit = getSignedProfitDisplay(profitCents, formatUsdCents);
-      let note;
-
-      if (activeVariationNumber === null && variationNumber === null) {
-        note = "Waiting for a live auction.";
-      } else if (activeVariationNumber === null) {
-        note = "Waiting for the next live item.";
-      } else if (!hasBid && !hasMapping) {
-        note =
-          "Waiting for a live bid. Map the live item to show cost and profit.";
-      } else if (!hasBid) {
-        note =
-          "Waiting for a live bid. Unit cost is ready; profit will appear with the first bid.";
-      } else if (!hasMapping) {
-        note =
-          "Map the live item to show unit cost and live gross profit.";
-      } else {
-        note =
-          "Live pre-fee estimate. Sold Items determines the final price.";
-      }
 
       return {
         hidden: false,
         variationNumber,
         variationLabel: variationNumber === null
-          ? "Variation # -"
-          : `Variation #${variationNumber}`,
+          ? "Variation # - Status | -"
+          : `Variation #${variationNumber} Status | ${itemLabel}`,
         currentBid: hasBid
           ? formatUsdCents(bidPriceCents)
           : UNAVAILABLE,
@@ -144,7 +136,9 @@
           : UNAVAILABLE,
         grossProfit: profit.label,
         profitTone: profit.tone,
-        note,
+        remainingInventory: Number.isSafeInteger(mappedItem?.remainingQuantity)
+          ? `${mappedItem.remainingQuantity} remaining`
+          : UNAVAILABLE,
         state:
           activeVariationNumber === null
             ? variationNumber === null

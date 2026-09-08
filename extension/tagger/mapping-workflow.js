@@ -29,6 +29,7 @@
     const OBSERVED_PAYMENT_STATUS_LABELS = Object.freeze({
       not_observed: "Payment not yet observed",
       payment_processing: "Payment processing",
+      order_processing: "Order processing",
       payment_fixing: "Payment fixing",
       payment_failed: "Payment failed",
       canceled: "Canceled",

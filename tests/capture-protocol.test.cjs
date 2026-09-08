@@ -180,6 +180,10 @@ test("creates an exact detached batch payment-status message", () => {
       variationNumber: 42,
       observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.CANCELED,
     },
+    {
+      variationNumber: 41,
+      observedPaymentStatus: OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING,
+    },
   ];
   const message = createCaptureMessage({
     type: EVENT_TYPES.OBSERVE_PAYMENT_STATUSES,
@@ -196,6 +200,7 @@ test("creates an exact detached batch payment-status message", () => {
   });
   assert.notEqual(message.event.statuses, statuses);
   assert.notEqual(message.event.statuses[0], statuses[0]);
+  assert.equal(message.event.statuses[3].observedPaymentStatus, "order_processing");
 
   statuses[0].variationNumber = 999;
   assert.equal(message.event.statuses[0].variationNumber, 44);

@@ -60,8 +60,33 @@
               <dd id="stream-ended">Not recorded</dd>
             </div>
             <div>
-              <dt>Report name</dt>
-              <dd id="report-name">Not recorded</dd>
+              <dt><label for="report-name-input">Report name</label></dt>
+              <dd>
+                <span class="report-name-editor screen-only">
+                  <input
+                    id="report-name-input"
+                    class="report-name-input"
+                    type="text"
+                    maxlength="80"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-describedby="report-name-help report-name-feedback"
+                    disabled
+                  >
+                  <span id="report-name-help" class="visually-hidden">
+                    Press Enter or leave this field to save. Escape cancels edits.
+                    Clear the name to restore the default date-based name.
+                  </span>
+                  <span
+                    id="report-name-feedback"
+                    class="report-name-feedback"
+                    role="status"
+                    aria-live="polite"
+                    hidden
+                  ></span>
+                </span>
+                <span id="report-name" class="report-name-print">Not recorded</span>
+              </dd>
             </div>
           </dl>
         </header>
@@ -195,33 +220,7 @@
               <button id="download-inventory" class="secondary-action" type="button">
                 Download Updated Inventory CSV
               </button>
-              <button
-                id="toggle-inventory-instructions"
-                class="secondary-action inventory-instructions-toggle"
-                type="button"
-                aria-expanded="false"
-                aria-controls="inventory-instructions"
-              >
-                Show instructions +
-              </button>
             </div>
-          </div>
-          <div
-            id="inventory-instructions"
-            class="inventory-instructions"
-            role="region"
-            aria-label="Google Sheets handoff instructions"
-            hidden
-          >
-            <ol class="inventory-workflow">
-              <li>At the bottom of Google Sheets, duplicate the <strong>Inventory</strong> tab as a backup.</li>
-              <li>On this report, click <strong>Copy Updated Inventory</strong>.</li>
-              <li>Return to the original <strong>Inventory</strong> tab and click cell <strong>A1</strong>.</li>
-              <li>Press <strong>Cmd+V</strong> on macOS or <strong>Ctrl+V</strong> on Windows.</li>
-            </ol>
-            <p class="section-intro">
-              The pasted six-column rectangle replaces cells by position; it does not look up or merge rows by SKU. Keep the rows in this exported order. Download Updated Inventory CSV is available as an alternative.
-            </p>
           </div>
           <div class="table-scroll screen-scroll" tabindex="0">
             <table class="data-table inventory-table">

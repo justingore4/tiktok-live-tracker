@@ -85,7 +85,6 @@ const REPORT_SELECTORS = [
   "#completed-sales-disclosure",
   "#copy-inventory",
   "#download-inventory",
-  "#inventory-instructions",
   "#inventory-rows",
   "#mapping-correction-availability",
   "#mapping-correction-disclosure",
@@ -119,6 +118,9 @@ const REPORT_SELECTORS = [
   "#report-error-message",
   "#report-generated-at",
   "#report-name",
+  "#report-name-feedback",
+  "#report-name-help",
+  "#report-name-input",
   "#report-loading",
   "#report-warnings",
   "#retry-report",
@@ -131,7 +133,6 @@ const REPORT_SELECTORS = [
   "#stream-reference",
   "#stream-started",
   "#summary-grid",
-  "#toggle-inventory-instructions",
   "#unit-cost-correction-disclosure",
   "#unit-cost-correction-section",
   "#unit-cost-feedback",
@@ -347,6 +348,57 @@ function createClient(options = {}) {
   });
 }
 
+function mountReportNameEditor(options = {}) {
+  const document = options.document ?? new FakeDocument();
+  const location = options.location ?? {
+    search: `?reportId=${encodeURIComponent(REPORT_ID)}`,
+  };
+  const renameRequests = [];
+  let savedName = options.displayName ?? null;
+  const client = {
+    getReport: options.getReport ?? (async ({ reportId }) => ({
+      reportId,
+      lifecycleStatus: options.lifecycleStatus ?? "finalized",
+      displayName: savedName,
+      report: options.report ?? createReport({ reportId }),
+    })),
+    async renameReport(input) {
+      renameRequests.push({ ...input });
+      if (options.renameReport) {
+        return options.renameReport(input);
+      }
+      savedName = input.displayName;
+      return { reportId: input.reportId, displayName: input.displayName };
+    },
+    ...options.client,
+  };
+  if (options.canRename === false) {
+    delete client.renameReport;
+  }
+  const mounted = reportPage.mountStreamReportPage({
+    document,
+    location,
+    navigator: options.navigator ?? {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: { createStreamReportClient: () => client },
+    inlineCorrectionModule: options.inlineCorrectionModule,
+    print: options.print ?? (() => {}),
+  });
+
+  return {
+    document,
+    location,
+    mounted,
+    renameRequests,
+    input: document.querySelector("#report-name-input"),
+    feedback: document.querySelector("#report-name-feedback"),
+    printName: document.querySelector("#report-name"),
+    ready: new Promise((resolve) => setImmediate(resolve)),
+  };
+}
+
 test("packaged report surface is local, printable, and exposes the required actions", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
@@ -392,10 +444,6 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.doesNotMatch(html, /Simple replacement list/i);
   assert.doesNotMatch(html, /SKU updated counts/i);
   assert.doesNotMatch(html, /id="(?:copy-sku-counts|sku-count-list)"/);
-  assert.match(html, /duplicate the <strong>Inventory<\/strong> tab as a backup/);
-  assert.match(html, /click cell <strong>A1<\/strong>/);
-  assert.match(html, /Cmd\+V/);
-  assert.match(html, /Ctrl\+V/);
   assert.match(
     html,
     new RegExp([
@@ -466,7 +514,7 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
   assert.doesNotMatch(cover, /Edit in Offline Tracker|offline-editor/i);
   assert.match(
     cover,
-    /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?<dt>Report name<\/dt>[\s\S]*?id="report-name"[\s\S]*?<\/dl>/,
+    /<dl class="report-meta"[\s\S]*?id="stream-started"[\s\S]*?id="stream-ended"[\s\S]*?<dt>\s*<label for="report-name-input">Report name<\/label>\s*<\/dt>[\s\S]*?id="report-name"[\s\S]*?<\/dl>/,
   );
   assert.match(
     html,
@@ -543,11 +591,488 @@ test("report name replaces the header reference while the footer and filename re
   assert.equal(defaultDocument.title, expectedDocumentTitle);
 });
 
+test("report name editor is labeled and screen-only while the saved name prints", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const printIndex = css.indexOf("@media print");
+  const screenCss = css.slice(0, printIndex);
+  const printCss = css.slice(printIndex);
+
+  assert.match(html, /<label for="report-name-input">Report name<\/label>/);
+  assert.match(html, /class="[^"]*report-name-editor[^"]*screen-only[^"]*"/);
+  assert.match(
+    html,
+    /<input\b(?=[^>]*id="report-name-input")(?=[^>]*type="text")(?=[^>]*maxlength="80")(?=[^>]*aria-describedby="[^"]*report-name-help[^"]*")(?=[^>]*disabled)[^>]*>/,
+  );
+  assert.match(
+    html,
+    /<[^>]+(?=[^>]*id="report-name-help")(?=[^>]*class="[^"]*visually-hidden[^"]*")[^>]*>/,
+  );
+  assert.match(
+    html,
+    /class="report-name-editor screen-only"[\s\S]*?<span\b(?=[^>]*id="report-name-feedback")(?=[^>]*role="status")[^>]*>[\s\S]*?<\/span>\s*<\/span>/,
+  );
+  assert.match(
+    html,
+    /<span\b(?=[^>]*id="report-name")(?=[^>]*class="[^"]*report-name-print[^"]*")[^>]*>/,
+  );
+  assert.match(screenCss, /\.report-name-print\s*\{[^}]*display:\s*none;/);
+  assert.match(printCss, /\.report-name-print\s*\{[^}]*display:\s*(?:block|inline);/);
+  assert.match(printCss, /\.screen-only,[\s\S]*?display:\s*none !important;/);
+});
+
+test("report name input waits for loading and displays the custom or default saved name", async (t) => {
+  for (const displayName of [null, "Sunday evening stream"]) {
+    await t.test(displayName ?? "default name", async () => {
+      const pendingReport = createDeferred();
+      const report = createReport();
+      const surface = mountReportNameEditor({
+        getReport: () => pendingReport.promise,
+      });
+      assert.equal(surface.input.disabled, true);
+
+      pendingReport.resolve({
+        reportId: REPORT_ID,
+        lifecycleStatus: "finalized",
+        displayName,
+        report,
+      });
+      await surface.ready;
+
+      const expected = displayName ?? reportPage.formatTimestamp(ENDED_AT);
+      assert.equal(surface.input.value, expected);
+      assert.equal(surface.printName.textContent, expected);
+      assert.equal(surface.input.disabled, false);
+      assert.deepEqual(surface.renameRequests, []);
+    });
+  }
+});
+
+test("Enter saves a trimmed report name once and keeps drafts out of print and report metrics", async () => {
+  const save = createDeferred();
+  const printedNames = [];
+  const surface = mountReportNameEditor({
+    displayName: "Previously saved name",
+    renameReport: () => save.promise,
+    print: () => printedNames.push(surface.printName.textContent),
+  });
+  await surface.ready;
+  const unchangedSelectors = [
+    "#summary-grid",
+    "#completed-sales-rows",
+    "#performance-rows",
+    "#inventory-rows",
+    "#stream-started",
+    "#stream-ended",
+    "#stream-reference",
+    "#report-generated-at",
+  ];
+  const originalText = unchangedSelectors.map((selector) =>
+    allText(surface.document.querySelector(selector)));
+  const originalTitle = surface.document.title;
+  let prevented = false;
+  surface.input.value = "  Friday night sale  ";
+  await surface.input.dispatch("input");
+  assert.equal(surface.printName.textContent, "Previously saved name");
+  const submitted = surface.input.dispatch("keydown", {
+    key: "Enter",
+    preventDefault() { prevented = true; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(prevented, true);
+  assert.equal(surface.input.disabled, true);
+  assert.equal(surface.printName.textContent, "Previously saved name");
+  assert.match(surface.feedback.textContent, /saving/i);
+  const duplicateBlur = surface.input.dispatch("blur");
+  await surface.input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  assert.deepEqual(surface.renameRequests, [{
+    reportId: REPORT_ID,
+    displayName: "Friday night sale",
+  }]);
+
+  save.resolve({ reportId: REPORT_ID, displayName: "Friday night sale" });
+  await Promise.all([submitted, duplicateBlur]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(surface.input.value, "Friday night sale");
+  assert.equal(surface.printName.textContent, "Friday night sale");
+  assert.equal(surface.input.disabled, false);
+  assert.match(surface.feedback.textContent, /saved/i);
+  await surface.document.querySelector("#print-report").click();
+  assert.deepEqual(printedNames, ["Friday night sale"]);
+  assert.deepEqual(
+    unchangedSelectors.map((selector) => allText(surface.document.querySelector(selector))),
+    originalText,
+  );
+  assert.equal(surface.document.title, originalTitle);
+});
+
+test("Print waits for an in-flight blur rename and prints the saved name without a second request", async () => {
+  const save = createDeferred();
+  const printedNames = [];
+  const surface = mountReportNameEditor({
+    displayName: "Original name",
+    renameReport: () => save.promise,
+    print: () => printedNames.push(surface.printName.textContent),
+  });
+  await surface.ready;
+  surface.input.value = "Name to print";
+  await surface.input.dispatch("input");
+  const pendingSave = surface.input.dispatch("blur");
+  const pendingPrint = surface.document.querySelector("#print-report").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(printedNames, []);
+  assert.equal(surface.printName.textContent, "Original name");
+  assert.deepEqual(surface.renameRequests, [{
+    reportId: REPORT_ID,
+    displayName: "Name to print",
+  }]);
+
+  save.resolve({ reportId: REPORT_ID, displayName: "Name to print" });
+  await Promise.all([pendingSave, pendingPrint]);
+  assert.deepEqual(printedNames, ["Name to print"]);
+  assert.equal(surface.input.value, "Name to print");
+  assert.equal(surface.input.disabled, false);
+  assert.equal(surface.renameRequests.length, 1);
+});
+
+test("Print saves a dirty report name before opening the print dialog", async () => {
+  const printedNames = [];
+  const surface = mountReportNameEditor({
+    displayName: "Original name",
+    print: () => printedNames.push(surface.printName.textContent),
+  });
+  await surface.ready;
+  surface.input.value = "  New PDF report name  ";
+  await surface.input.dispatch("input");
+  await surface.document.querySelector("#print-report").click();
+  assert.deepEqual(surface.renameRequests, [{
+    reportId: REPORT_ID,
+    displayName: "New PDF report name",
+  }]);
+  assert.deepEqual(printedNames, ["New PDF report name"]);
+});
+
+test("Print does not open when the report name cannot be validated or saved", async (t) => {
+  for (const failure of ["validation", "storage"]) {
+    await t.test(failure, async () => {
+      const printedNames = [];
+      const surface = mountReportNameEditor({
+        displayName: "Original name",
+        async renameReport() {
+          throw new Error("The report name could not be saved. Try again.");
+        },
+        print: () => printedNames.push(surface.printName.textContent),
+      });
+      await surface.ready;
+      const draft = failure === "validation" ? "x".repeat(81) : "Unsaved PDF name";
+      surface.input.value = draft;
+      await surface.input.dispatch("input");
+      await surface.document.querySelector("#print-report").click();
+      assert.deepEqual(printedNames, []);
+      assert.equal(surface.renameRequests.length, failure === "validation" ? 0 : 1);
+      assert.equal(surface.input.value, draft);
+      assert.equal(surface.printName.textContent, "Original name");
+      assert.equal(surface.input.disabled, false);
+      assert.match(surface.feedback.className, /is-error/);
+    });
+  }
+});
+
+test("Print waiting for a report rename never prints a different report after navigation", async () => {
+  const save = createDeferred();
+  const printedNames = [];
+  const surface = mountReportNameEditor({
+    async getReport({ reportId }) {
+      return {
+        reportId,
+        lifecycleStatus: "finalized",
+        displayName: reportId === REPORT_ID ? "Original name" : "Second report name",
+        report: createReport({ reportId }),
+      };
+    },
+    renameReport: () => save.promise,
+    print: () => printedNames.push(surface.printName.textContent),
+  });
+  await surface.ready;
+  surface.input.value = "First report draft";
+  await surface.input.dispatch("input");
+  const pendingSave = surface.input.dispatch("blur");
+  const pendingPrint = surface.document.querySelector("#print-report").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(printedNames, []);
+  surface.location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+  await surface.mounted.load();
+  save.resolve({ reportId: REPORT_ID, displayName: "First report draft" });
+  await Promise.all([pendingSave, pendingPrint]);
+  assert.deepEqual(printedNames, []);
+  assert.equal(surface.input.value, "Second report name");
+  assert.equal(surface.printName.textContent, "Second report name");
+
+  await surface.document.querySelector("#print-report").click();
+  assert.deepEqual(printedNames, ["Second report name"]);
+});
+
+test("blur persists a report name and clearing it restores the default date", async () => {
+  const surface = mountReportNameEditor({ displayName: "Original name" });
+  await surface.ready;
+  surface.input.value = "  Updated on blur  ";
+  await surface.input.dispatch("input");
+  await surface.input.dispatch("blur");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(surface.input.value, "Updated on blur");
+  assert.equal(surface.printName.textContent, "Updated on blur");
+
+  surface.input.value = "   ";
+  await surface.input.dispatch("input");
+  await surface.input.dispatch("blur");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(surface.renameRequests, [
+    { reportId: REPORT_ID, displayName: "Updated on blur" },
+    { reportId: REPORT_ID, displayName: null },
+  ]);
+  assert.equal(surface.input.value, reportPage.formatTimestamp(ENDED_AT));
+  assert.equal(surface.printName.textContent, reportPage.formatTimestamp(ENDED_AT));
+  await surface.mounted.load();
+  assert.equal(surface.input.value, reportPage.formatTimestamp(ENDED_AT));
+});
+
+test("unchanged report names and Escape do not send rename requests", async (t) => {
+  for (const displayName of [null, "Saved custom name"]) {
+    await t.test(displayName ?? "default name", async () => {
+      const surface = mountReportNameEditor({ displayName });
+      await surface.ready;
+      const expected = surface.input.value;
+      await surface.input.dispatch("blur");
+      await surface.input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+      surface.input.value = `  ${expected}  `;
+      await surface.input.dispatch("input");
+      await surface.input.dispatch("blur");
+      assert.equal(surface.input.value, expected);
+
+      surface.input.value = "Unsaved draft";
+      await surface.input.dispatch("input");
+      let prevented = false;
+      await surface.input.dispatch("keydown", {
+        key: "Escape",
+        preventDefault() { prevented = true; },
+      });
+      await surface.input.dispatch("blur");
+      assert.equal(prevented, true);
+      assert.equal(surface.input.value, expected);
+      assert.equal(surface.printName.textContent, expected);
+      assert.deepEqual(surface.renameRequests, []);
+    });
+  }
+});
+
+test("report name validation rejects long names and control characters without losing the draft", async (t) => {
+  for (const draft of ["x".repeat(81), "line\nbreak", "embedded\u0000control", "delete\u007fcontrol"]) {
+    await t.test(JSON.stringify(draft), async () => {
+      const surface = mountReportNameEditor({ displayName: "Saved name" });
+      await surface.ready;
+      surface.input.value = draft;
+      await surface.input.dispatch("input");
+      await surface.input.dispatch("blur");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(surface.renameRequests, []);
+      assert.equal(surface.input.value, draft);
+      assert.equal(surface.printName.textContent, "Saved name");
+      assert.equal(surface.input.disabled, false);
+      assert.notEqual(surface.feedback.textContent, "");
+      assert.match(surface.feedback.className, /is-error/);
+    });
+  }
+});
+
+test("report name accepts the 80-character boundary and renders markup-like names as text", async () => {
+  const surface = mountReportNameEditor();
+  await surface.ready;
+  for (const draft of ["x".repeat(80), '<img src=x onerror="stealOAuthToken()">']) {
+    surface.input.value = draft;
+    await surface.input.dispatch("input");
+    await surface.input.dispatch("blur");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(surface.printName.textContent, draft);
+    assert.equal(surface.input.value, draft);
+    assert.deepEqual(surface.printName.children, []);
+  }
+  assert.equal(surface.renameRequests.length, 2);
+  assert.equal(surface.document.createdTags.includes("img"), false);
+});
+
+test("failed report rename keeps its draft and saved print name and allows retry", async () => {
+  let attempts = 0;
+  const surface = mountReportNameEditor({
+    displayName: "Saved name",
+    async renameReport(input) {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("The report name could not be saved. Try again.");
+      }
+      return { reportId: input.reportId, displayName: input.displayName };
+    },
+  });
+  await surface.ready;
+  surface.input.value = "Retry this name";
+  await surface.input.dispatch("input");
+  await surface.input.dispatch("blur");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(surface.input.value, "Retry this name");
+  assert.equal(surface.printName.textContent, "Saved name");
+  assert.equal(surface.input.disabled, false);
+  assert.match(surface.feedback.textContent, /could not be saved|try again/i);
+  assert.match(surface.feedback.className, /is-error/);
+  assert.equal(surface.document.querySelector("#report-content").hidden, false);
+  assert.equal(surface.document.querySelector("#print-report").disabled, false);
+
+  await surface.input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  assert.equal(surface.input.value, "Retry this name");
+  assert.equal(surface.printName.textContent, "Retry this name");
+  assert.doesNotMatch(surface.feedback.className, /is-error/);
+});
+
+test("report name only accepts a matching persisted rename echo", async (t) => {
+  for (const response of [
+    null,
+    { reportId: SECOND_REPORT_ID, displayName: "Requested name" },
+    { reportId: REPORT_ID, displayName: "Altered name" },
+    { reportId: REPORT_ID },
+  ]) {
+    await t.test(JSON.stringify(response), async () => {
+      const surface = mountReportNameEditor({
+        displayName: "Saved name",
+        renameReport: async () => response,
+      });
+      await surface.ready;
+      surface.input.value = "Requested name";
+      await surface.input.dispatch("input");
+      await surface.input.dispatch("blur");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(surface.input.value, "Requested name");
+      assert.equal(surface.printName.textContent, "Saved name");
+      assert.equal(surface.input.disabled, false);
+      assert.match(surface.feedback.className, /is-error/);
+      assert.notEqual(surface.feedback.textContent, "");
+    });
+  }
+});
+
+test("report name stays disabled when rename support is unavailable", async () => {
+  const surface = mountReportNameEditor({
+    displayName: "Readable saved name",
+    canRename: false,
+  });
+  await surface.ready;
+  assert.equal(surface.input.value, "Readable saved name");
+  assert.equal(surface.printName.textContent, "Readable saved name");
+  assert.equal(surface.input.disabled, true);
+  surface.input.value = "Cannot save this";
+  await surface.input.dispatch("blur");
+  await surface.input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  assert.deepEqual(surface.renameRequests, []);
+  assert.equal(surface.printName.textContent, "Readable saved name");
+  assert.equal(surface.document.querySelector("#print-report").disabled, false);
+});
+
+test("stale rename success or failure cannot overwrite a newly loaded report", async (t) => {
+  for (const newReportId of [REPORT_ID, SECOND_REPORT_ID]) {
+    for (const outcome of ["success", "failure"]) {
+      await t.test(`${newReportId} ${outcome}`, async () => {
+        const save = createDeferred();
+        let loadCount = 0;
+        const surface = mountReportNameEditor({
+          async getReport({ reportId }) {
+            loadCount += 1;
+            return {
+              reportId,
+              lifecycleStatus: "finalized",
+              displayName: loadCount === 1 ? "Original name" : "Newly loaded name",
+              report: createReport({ reportId }),
+            };
+          },
+          renameReport: () => save.promise,
+        });
+        await surface.ready;
+        surface.input.value = "Old rename request";
+        await surface.input.dispatch("input");
+        const pendingSave = surface.input.dispatch("blur");
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(surface.input.disabled, true);
+        surface.location.search = `?reportId=${encodeURIComponent(newReportId)}`;
+        await surface.mounted.load();
+        const expectedInput = newReportId === REPORT_ID
+          ? "Old rename request"
+          : "Newly loaded name";
+        assert.equal(surface.input.value, expectedInput);
+        assert.equal(surface.printName.textContent, "Newly loaded name");
+        assert.equal(surface.input.disabled, false);
+        const feedbackBefore = surface.feedback.textContent;
+
+        if (outcome === "success") {
+          save.resolve({ reportId: REPORT_ID, displayName: "Old rename request" });
+        } else {
+          save.reject(new Error("Old rename failed."));
+        }
+        await pendingSave;
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(surface.input.value, expectedInput);
+        assert.equal(surface.printName.textContent, "Newly loaded name");
+        assert.equal(surface.input.disabled, false);
+        assert.equal(surface.feedback.textContent, feedbackBefore);
+      });
+    }
+  }
+});
+
+test("same-report correction refresh preserves a dirty name draft and refreshes only the saved print name", async () => {
+  let onMappingSaved;
+  let loadCount = 0;
+  const originalReport = createReport();
+  const updatedReport = createReport({
+    totals: { ...originalReport.totals, grossProfitCents: 700 },
+  });
+  const surface = mountReportNameEditor({
+    async getReport({ reportId }) {
+      loadCount += 1;
+      return {
+        reportId,
+        lifecycleStatus: "finalized",
+        displayName: loadCount === 1 ? "Original saved name" : "Latest saved name",
+        report: loadCount === 1 ? originalReport : updatedReport,
+      };
+    },
+    inlineCorrectionModule: {
+      createInlineReportCorrectionController(options) {
+        onMappingSaved = options.onSaved;
+        return { async load() {}, getState: () => ({ busy: false }) };
+      },
+    },
+  });
+  await surface.ready;
+  surface.input.value = "Keep my unsaved name";
+  await surface.input.dispatch("input");
+  await onMappingSaved({ reportId: REPORT_ID });
+  assert.equal(surface.input.value, "Keep my unsaved name");
+  assert.equal(surface.printName.textContent, "Latest saved name");
+  assert.deepEqual(surface.renameRequests, []);
+  assert.match(allText(surface.document.querySelector("#summary-grid")), /Gross profit[\s\S]*\$7\.00/);
+
+  await surface.input.dispatch("keydown", { key: "Escape", preventDefault() {} });
+  assert.equal(surface.input.value, "Latest saved name");
+  assert.deepEqual(surface.renameRequests, []);
+});
+
 test("report notices stay compact inside Stream summary and disappear when empty", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
-  const printCss = css.slice(css.indexOf("@media print"));
+  const printIndex = css.indexOf("@media print");
+  const screenCss = css.slice(0, printIndex);
+  const mobileCss = screenCss.slice(screenCss.indexOf("@media (max-width: 720px)"));
   const summaryStart = html.indexOf(
     '<section class="report-section" aria-labelledby="summary-title">',
   );
@@ -570,16 +1095,17 @@ test("report notices stay compact inside Stream summary and disappear when empty
   assert.doesNotMatch(html, /<section[^>]+id="warnings-section"/);
   assert.equal((html.match(/id="warnings-section"/g) ?? []).length, 1);
   assert.match(
-    css,
-    /\.summary-notices\s*\{[\s\S]*?grid-template-columns:\s*max-content minmax\(0, 1fr\);[\s\S]*?max-width:\s*860px;[\s\S]*?padding:\s*9px 12px;/,
+    screenCss,
+    /\.section-heading\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*flex-start;[^}]*gap:\s*18px;[^}]*margin-bottom:\s*16px;/,
   );
   assert.match(
-    css,
-    /@media \(max-width:\s*720px\)[\s\S]*?\.summary-heading\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?\.summary-notices\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+    screenCss,
+    /\.summary-notices\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\);[^}]*flex:\s*1 1 520px;[^}]*gap:\s*14px;[^}]*max-width:\s*860px;[^}]*margin-left:\s*auto;[^}]*padding:\s*9px 12px;/,
   );
+  assert.doesNotMatch(mobileCss, /\.summary-heading\b|\.summary-notices\b/);
   assert.match(
-    printCss,
-    /\.summary-notices\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?grid-template-columns:\s*1fr;/,
+    mobileCss,
+    /\.table-heading,\s*\.section-actions,\s*\.report-footer\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/,
   );
 
   const warningDocument = new FakeDocument();
@@ -599,6 +1125,132 @@ test("report notices stay compact inside Stream summary and disappear when empty
   });
   assert.equal(clearDocument.querySelector("#warnings-section").hidden, true);
   assert.equal(clearDocument.querySelector("#report-warnings").children.length, 0);
+});
+
+test("report notices use the approved concise text with dynamic counts and oversold SKU details", () => {
+  const document = new FakeDocument();
+  const warnings = [
+    { code: "active_bidding_at_end", count: 1, sku: null },
+    { code: "unresolved_orders", count: 12, sku: null },
+    { code: "pending_inventory_reservations", count: 3, sku: null },
+    { code: "payment_fixing_orders", count: 40, sku: null },
+    { code: "unmapped_completed_sales", count: 5, sku: null },
+    { code: "reconciliation_conflicts", count: 60, sku: null },
+    { code: "inventory_recount_required", count: 7, sku: "SKU-OVERSOLD-BLUE-XL" },
+  ];
+  const originalWarnings = warnings.map((warning) => ({ ...warning }));
+  const report = createReport({ warnings });
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  assert.equal(document.querySelector("#warnings-section").hidden, false);
+  assert.deepEqual(
+    document.querySelector("#report-warnings").children.map((item) => item.textContent),
+    [
+      "A variation was still bidding when tracking ended. Count: 1.",
+      "Orders were still unresolved when tracking ended. Count: 12.",
+      "Inventory reservations were still pending when tracking ended. Count: 3.",
+      "Payments were still unresolved when tracking ended. Count: 40.",
+      "Completed sales have no item assigned. Metrics are incomplete. Count: 5.",
+      "Order records contain conflicting information. Review these orders. Count: 60.",
+      "More units were allocated than starting stock. Check oversold units and recount stock. Oversold: 7. SKU: SKU-OVERSOLD-BLUE-XL.",
+    ],
+  );
+  assert.equal(report.warnings, warnings);
+  assert.deepEqual(report.warnings, originalWarnings);
+});
+
+test("print keeps compact Report notices to the right of Stream summary without clipping warnings", () => {
+  const css = fs.readFileSync(
+    path.join(__dirname, "..", "extension", "report", "report.css"),
+    "utf8",
+  );
+  const printIndex = css.indexOf("@media print");
+  const screenCss = css.slice(0, printIndex);
+  const printCss = css.slice(printIndex);
+  const summaryHeading = printCss.match(/\.summary-heading\s*\{([^}]*)\}/)?.[1];
+  const notices = printCss.match(/\.summary-notices\s*\{([^}]*)\}/)?.[1];
+  const warningList = printCss.match(
+    /\.summary-notices \.warning-list\s*\{([^}]*)\}/,
+  )?.[1];
+
+  assert.ok(printIndex >= 0);
+  assert.ok(summaryHeading);
+  assert.ok(notices);
+  assert.ok(warningList);
+  assert.match(summaryHeading, /display:\s*grid;/);
+  assert.match(summaryHeading, /grid-template-columns:\s*max-content minmax\(0, 1fr\);/);
+  assert.match(summaryHeading, /align-items:\s*center;/);
+  assert.match(summaryHeading, /gap:\s*0\.12in;/);
+  assert.match(summaryHeading, /margin-bottom:\s*0\.12in;/);
+  assert.match(summaryHeading, /break-inside:\s*avoid-page;/);
+  assert.doesNotMatch(summaryHeading, /flex-direction:\s*column;/);
+  assert.match(notices, /grid-template-columns:\s*minmax\(0, 1\.15in\) minmax\(0, 1fr\);/);
+  assert.match(notices, /min-width:\s*0;/);
+  assert.match(notices, /(?:^|;)\s*width:\s*auto;/);
+  assert.match(notices, /max-width:\s*none;/);
+  assert.match(notices, /margin-left:\s*0;/);
+  assert.match(notices, /gap:\s*0\.08in;/);
+  assert.match(notices, /padding:\s*0\.07in 0\.09in;/);
+  assert.match(notices, /border-radius:\s*0\.08in;/);
+  assert.match(notices, /overflow-wrap:\s*anywhere;/);
+  assert.match(
+    printCss,
+    /\.summary-notices-heading \.eyebrow\s*\{[^}]*font-size:\s*6pt;/,
+  );
+  assert.match(
+    printCss,
+    /\.summary-notices-heading h3\s*\{[^}]*margin:\s*0;[^}]*font-size:\s*9pt;/,
+  );
+  assert.match(warningList, /font-size:\s*7pt;/);
+  assert.match(warningList, /line-height:\s*1\.3;/);
+  assert.match(warningList, /gap:\s*0\.03in;/);
+  assert.match(warningList, /padding-left:\s*0\.12in;/);
+
+  assert.match(
+    screenCss,
+    /\.summary-notices-heading \.eyebrow\s*\{[^}]*font-size:\s*8px;/,
+  );
+  assert.match(screenCss, /\.summary-notices-heading h3\s*\{[^}]*font-size:\s*13px;/);
+  assert.match(
+    screenCss,
+    /\.warning-list\s*\{[^}]*gap:\s*4px;[^}]*padding-left:\s*17px;[^}]*font-size:\s*11px;[^}]*line-height:\s*1\.35;/,
+  );
+  assert.doesNotMatch(screenCss, /\.summary-heading\s*\{/);
+
+  const noticeRules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((rule) => /\.summary-heading\b|\.summary-notices\b|\.warning-list\b|#warnings-section\b|#report-warnings\b/.test(rule[1]));
+  for (const [, selector, declarations] of noticeRules) {
+    assert.doesNotMatch(
+      declarations,
+      /(?:^|;)\s*(?:height|max-height)\s*:/,
+      `${selector.trim()} must expand to fit every report notice`,
+    );
+    assert.doesNotMatch(
+      declarations,
+      /(?:overflow(?:-[xy])?\s*:\s*(?:hidden|clip|scroll|auto)|text-overflow\s*:\s*ellipsis|(?:-webkit-)?line-clamp\s*:|white-space\s*:\s*nowrap)/,
+      `${selector.trim()} must wrap warning text without clipping`,
+    );
+  }
+
+  const warningDocument = new FakeDocument();
+  const warnings = Array.from({ length: 12 }, (_, index) => ({
+    message: `Notice ${index + 1}: Review SKU-${"LONGREFERENCE".repeat(15)} before updating inventory.`,
+  }));
+  reportPage.renderReport(warningDocument, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report: createReport({ warnings }),
+  });
+  assert.equal(warningDocument.querySelector("#warnings-section").hidden, false);
+  assert.deepEqual(
+    warningDocument.querySelector("#report-warnings").children.map((item) => item.textContent),
+    warnings.map((warning) => warning.message),
+  );
 });
 
 test("completed and canceled item variations print only when the user expands their disclosure", () => {
@@ -655,6 +1307,44 @@ test("completed and canceled item variations print only when the user expands th
   assert.doesNotMatch(
     printCss,
     /#completed-sales-toggle\s*\{[^}]*display:\s*none/s,
+  );
+});
+
+test("print uses white dark-section headings without recoloring metric cards or tables", () => {
+  const css = fs.readFileSync(
+    path.join(__dirname, "..", "extension", "report", "report.css"),
+    "utf8",
+  );
+  const printIndex = css.indexOf("@media print");
+  const screenCss = css.slice(0, printIndex);
+  const printCss = css.slice(printIndex);
+  const selectors = [
+    ".section-heading h2",
+    ".section-heading .eyebrow",
+    ".section-heading .section-count",
+    ".summary-notices-heading h3",
+    ".completed-sales-summary-heading",
+    ".completed-sales-summary-heading .eyebrow",
+    ".completed-sales-summary-heading .section-count",
+  ];
+  const headingRule = printCss.match(
+    /(\.section-heading h2,[^{}]+)\{\s*color: #ffffff;\s*\}/,
+  );
+
+  assert.ok(printIndex >= 0);
+  assert.ok(headingRule, "white header text must be scoped to print/PDF");
+  assert.deepEqual(headingRule[1].split(",").map((selector) => selector.trim()), selectors);
+  assert.doesNotMatch(screenCss, /\.section-heading h2,[^{}]+\{\s*color: #ffffff;/);
+  assert.match(screenCss, /\.eyebrow\s*\{[^}]*color: var\(--text-subtle\);/);
+  assert.match(screenCss, /\.section-count\s*\{[^}]*color: var\(--text-muted\);/);
+  assert.match(printCss, /--surface-raised: #f5f7fa;/);
+  assert.match(printCss, /--text: #111820;/);
+  assert.match(printCss, /\.summary-grid dd\s*\{[^}]*color: #086c5c;/);
+  assert.match(printCss, /\.summary-card-row-value\s*\{[^}]*color: #086c5c;/);
+  assert.match(printCss, /\.performer-value\s*\{[^}]*color: #086c5c;/);
+  assert.match(
+    printCss,
+    /\.data-table th,\s*\.data-table td\s*\{\s*color: #000000 !important;/,
   );
 });
 
@@ -870,41 +1560,48 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
   assert.equal(rows[1].children[4].className, "number-cell");
 });
 
-test("Google Sheets instructions start collapsed and stay hidden in print", () => {
+test("Google Sheets handoff retains its actions and table without instructions", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const source = fs.readFileSync(path.join(directory, "report-page.js"), "utf8");
   const sectionStart = html.indexOf("inventory-update-section");
   const sectionEnd = html.indexOf("</section>", sectionStart);
   const section = html.slice(sectionStart, sectionEnd);
   const copyIndex = section.indexOf('id="copy-inventory"');
   const downloadIndex = section.indexOf('id="download-inventory"');
-  const toggleIndex = section.indexOf('id="toggle-inventory-instructions"');
-  const instructionsIndex = section.indexOf('id="inventory-instructions"');
   const tableIndex = section.indexOf('<table class="data-table inventory-table">');
-  const printCss = css.slice(css.indexOf("@media print"));
 
   assert.ok(sectionStart >= 0);
   assert.ok(copyIndex >= 0);
   assert.ok(downloadIndex > copyIndex);
-  assert.ok(toggleIndex > downloadIndex);
-  assert.ok(instructionsIndex > toggleIndex);
-  assert.ok(tableIndex > instructionsIndex);
+  assert.ok(tableIndex > downloadIndex);
+  assert.match(section, /Google Sheets handoff/);
+  assert.match(section, /<h2 id="inventory-title">Updated inventory<\/h2>/);
   assert.match(
     section,
-    /id="toggle-inventory-instructions"[\s\S]*?aria-expanded="false"[\s\S]*?aria-controls="inventory-instructions"[\s\S]*?Show instructions \+/,
+    /id="copy-inventory"[^>]*type="button">\s*Copy Updated Inventory\s*<\/button>/,
   );
   assert.match(
     section,
-    /id="inventory-instructions"[\s\S]*?role="region"[\s\S]*?aria-label="Google Sheets handoff instructions"[\s\S]*?hidden[\s\S]*?>[\s\S]*?<ol class="inventory-workflow">[\s\S]*?The pasted six-column rectangle/,
+    /id="download-inventory"[^>]*type="button">\s*Download Updated Inventory CSV\s*<\/button>/,
   );
-  assert.match(
-    printCss,
-    /#inventory-instructions\s*\{\s*display:\s*none !important;/,
+  assert.match(section, /<tbody id="inventory-rows"><\/tbody>/);
+  assert.doesNotMatch(
+    html,
+    /inventory-instructions|inventory-workflow|(?:Show|Hide) instructions|Google Sheets handoff instructions/,
   );
   assert.doesNotMatch(
-    printCss,
-    /#inventory-instructions\[hidden\][\s\S]*?display:\s*block !important;/,
+    html,
+    /duplicate the <strong>Inventory<\/strong> tab as a backup|Return to the original|click cell <strong>A1<\/strong>|Cmd\+V|Ctrl\+V|The pasted six-column rectangle|Keep the rows in this exported order|Download Updated Inventory CSV is available as an alternative/,
+  );
+  assert.doesNotMatch(
+    source,
+    /inventory-instructions|inventoryInstructions|setInventoryInstructionsExpanded|(?:Show|Hide) instructions/,
+  );
+  assert.doesNotMatch(
+    css,
+    /inventory-instructions|inventory-workflow/,
   );
 });
 
@@ -946,15 +1643,13 @@ test("mapping correction sits between Sheets handoff and stream variations", () 
   assert.doesNotMatch(css, /\.definitions-|\.definition-list|#definitions-/);
 });
 
-test("Print preserves handoff and item-variation screen state", async () => {
+test("Print preserves item-variation screen state without handoff instructions", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
-  const inventoryInstructions = document.querySelector("#inventory-instructions");
-  const inventoryInstructionsToggle = document.querySelector(
-    "#toggle-inventory-instructions",
-  );
   const printedStates = [];
 
+  assert.equal(document.querySelector("#inventory-instructions"), null);
+  assert.equal(document.querySelector("#toggle-inventory-instructions"), null);
   completedSales.open = false;
   reportPage.mountStreamReportPage({
     document,
@@ -986,26 +1681,16 @@ test("Print preserves handoff and item-variation screen state", async () => {
   });
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(inventoryInstructions.hidden, true);
-  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "false");
-  assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
-  inventoryInstructionsToggle.click();
-  assert.equal(inventoryInstructions.hidden, false);
-  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "true");
-  assert.equal(inventoryInstructionsToggle.textContent, "Hide instructions -");
-  document.querySelector("#print-report").click();
+  assert.equal(document.querySelector("#report-content").hidden, false);
+  assert.equal(document.querySelector("#copy-inventory").disabled, false);
+  assert.equal(document.querySelector("#download-inventory").disabled, false);
+  assert.equal(document.querySelector("#inventory-rows").children.length, 1);
+  await document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [false]);
   assert.equal(completedSales.open, false);
-  assert.equal(inventoryInstructions.hidden, false);
-  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "true");
-  assert.equal(inventoryInstructionsToggle.textContent, "Hide instructions -");
 
-  inventoryInstructionsToggle.click();
-  assert.equal(inventoryInstructions.hidden, true);
-  assert.equal(inventoryInstructionsToggle.attributes.get("aria-expanded"), "false");
-  assert.equal(inventoryInstructionsToggle.textContent, "Show instructions +");
   completedSales.open = true;
-  document.querySelector("#print-report").click();
+  await document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [false, true]);
   assert.equal(completedSales.open, true);
 });
@@ -2003,7 +2688,7 @@ test("SKU sell-through caps at 100% while retaining the oversold quantity", () =
   assert.equal(inventoryRow.children[8].textContent, "1");
   assert.match(
     allText(document.querySelector("#report-warnings")),
-    /allocated beyond its opening quantity/,
+    /More units were allocated than starting stock\.[\s\S]*Oversold: 1\. SKU: SKU-OVER\./,
   );
 });
 
@@ -2121,6 +2806,15 @@ test("post-stream payment controls render only supplied unresolved rows and coll
       style: null,
       size: null,
     },
+    {
+      variationNumber: 223,
+      observedPaymentStatus: "order_processing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
   ];
 
   const controls = reportPage.renderPaymentFixingOrders(
@@ -2133,11 +2827,11 @@ test("post-stream payment controls render only supplied unresolved rows and coll
 
   assert.equal(section.hidden, false);
   assert.equal(section.attributes.get("aria-busy"), "false");
-  assert.equal(rows.children.length, 3);
-  assert.equal(controls.length, 9);
+  assert.equal(rows.children.length, 4);
+  assert.equal(controls.length, 12);
   assert.equal(
     document.querySelector("#payment-resolution-count").textContent,
-    "3 unresolved orders",
+    "4 unresolved orders",
   );
   assert.match(
     allText(rows),
@@ -2145,6 +2839,7 @@ test("post-stream payment controls render only supplied unresolved rows and coll
   );
   assert.match(allText(rows), /Variation #221[\s\S]*No inventory item selected/);
   assert.match(allText(rows), /Variation #222[\s\S]*Payment processing/);
+  assert.match(allText(rows), /Variation #223[\s\S]*Order processing/);
 
   const firstPriceInput = rows.children[0].children[1].children[1];
   firstPriceInput.value = "18.25";
@@ -3260,6 +3955,15 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
     {
       variationNumber: 222,
       observedPaymentStatus: "payment_processing",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
+    {
+      variationNumber: 223,
+      observedPaymentStatus: "order_processing",
       mapped: false,
       sku: null,
       item: null,

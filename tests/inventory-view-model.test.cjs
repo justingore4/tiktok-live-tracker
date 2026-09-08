@@ -17,7 +17,6 @@ const {
   getStockDisplay,
   groupInventoryEntries,
   normalizeSearchText,
-  orderInventoryGroupsByRecentMappedVariations,
 } = require("../extension/tagger/inventory-view-model.js");
 
 const TEST_INVENTORY = LEGACY_RECOVERY_INVENTORY;
@@ -159,457 +158,206 @@ test("normalizes only the item and style pair used as the inventory group key", 
   );
 });
 
-test("keeps Sheet order until ended mapped variations establish recent-item order", () => {
+test("inventory keeps original Sheet order through sales and payment changes", () => {
   const groups = groupInventoryEntries([
-    {
-      sku: "KOREA-TEE-OS",
-      item: "Korea",
-      style: "tee",
-      size: "OS",
-    },
-    {
-      sku: "RUNNER-BLACK-8",
-      item: "Runner",
-      style: "black",
-      size: "8",
-    },
-    {
-      sku: "RUNNER-BLACK-9",
-      item: "Runner",
-      style: "black",
-      size: "9",
-    },
-    {
-      sku: "SOCCER-TEE-OS",
-      item: "Soccer",
-      style: "tee",
-      size: "OS",
-    },
-    {
-      sku: "STUSSY-TEE-OS",
-      item: "Stussy",
-      style: "tee",
-      size: "OS",
-    },
+    { sku: "C", item: "Charlie", style: "three", size: "OS" },
+    { sku: "A", item: "Alpha", style: "one", size: "OS" },
+    { sku: "B-8", item: "Bravo", style: "two", size: "8" },
+    { sku: "B-9", item: "Bravo", style: "two", size: "9" },
+    { sku: "D", item: "Delta", style: "four", size: "OS" },
   ]);
-  const originalGroups = [...groups];
-
-  const initialOrder = orderInventoryGroupsByRecentMappedVariations(
-    groups,
-    [],
-  );
-
-  assert.deepEqual(initialOrder, groups);
-  assert.notEqual(initialOrder, groups);
-
-  const recentOrder = orderInventoryGroupsByRecentMappedVariations(groups, [
-    {
-      variationNumber: 104,
-      recorded: true,
-      bidding: false,
-      sku: "RUNNER-BLACK-8",
-      observedPaymentStatus: "payment_processing",
-    },
-    {
-      variationNumber: 106,
-      recorded: true,
-      bidding: true,
-      sku: "STUSSY-TEE-OS",
-      observedPaymentStatus: "not_observed",
-    },
-    {
-      variationNumber: 103,
-      recorded: true,
-      bidding: false,
-      sku: "RUNNER-BLACK-9",
-      observedPaymentStatus: "payment_complete",
-    },
-    {
-      variationNumber: 105,
-      recorded: true,
-      bidding: false,
-      sku: "SOCCER-TEE-OS",
-      observedPaymentStatus: "canceled",
-    },
-    {
-      variationNumber: 107,
-      recorded: false,
-      bidding: false,
-      sku: "KOREA-TEE-OS",
-      observedPaymentStatus: "not_observed",
-    },
-    {
-      variationNumber: 108,
-      recorded: true,
-      bidding: false,
-      sku: "UNKNOWN-SKU",
-      observedPaymentStatus: "payment_failed",
-    },
-    {
-      variationNumber: 109,
-      recorded: true,
-      sku: "KOREA-TEE-OS",
-      observedPaymentStatus: "payment_complete",
-    },
-  ]);
-
-  assert.deepEqual(
-    recentOrder.map((group) => group.item),
-    ["Soccer", "Runner", "Korea", "Stussy"],
-  );
-  assert.equal(
-    recentOrder.filter((group) => group.item === "Runner").length,
-    1,
-    "multiple sizes and repeat sales must keep one grouped card",
-  );
-  assert.deepEqual(groups, originalGroups, "ordering must not mutate groups");
-});
-
-test("moves a mapped item only after its recorded bid is no longer active", () => {
-  const groups = groupInventoryEntries([
-    { sku: "FIRST", item: "First", style: "one", size: "OS" },
-    { sku: "SECOND", item: "Second", style: "two", size: "OS" },
-  ]);
+  const originalGroups = structuredClone(groups);
+  const controller = createInventoryGroupOrderController();
   const currentVariation = {
-    variationNumber: 200,
+    variationNumber: 104,
     recorded: true,
     bidding: true,
-    sku: "SECOND",
+    sku: "D",
     observedPaymentStatus: "not_observed",
   };
-
-  assert.deepEqual(
-    orderInventoryGroupsByRecentMappedVariations(
-      groups,
-      [currentVariation],
-    ).map((group) => group.item),
-    ["First", "Second"],
-  );
-  assert.deepEqual(
-    orderInventoryGroupsByRecentMappedVariations(
-      groups,
-      [{ ...currentVariation, bidding: false }],
-    ).map((group) => group.item),
-    ["Second", "First"],
-  );
-});
-
-test("each newly ended mapped item moves ahead of the prior recent item", () => {
-  const groups = groupInventoryEntries([
-    { sku: "FIRST", item: "First", style: "one", size: "OS" },
-    { sku: "SECOND", item: "Second", style: "two", size: "OS" },
-    { sku: "THIRD", item: "Third", style: "three", size: "OS" },
-  ]);
-  const variations = [];
-  const endMappedVariation = (variationNumber, sku, paymentStatus) => {
-    variations.push({
-      variationNumber,
-      recorded: true,
-      bidding: false,
-      sku,
-      observedPaymentStatus: paymentStatus,
-    });
-
-    return orderInventoryGroupsByRecentMappedVariations(
-      groups,
-      variations,
-    ).map((group) => group.item);
-  };
-
-  assert.deepEqual(
-    endMappedVariation(101, "SECOND", "payment_processing"),
-    ["Second", "First", "Third"],
-  );
-  assert.deepEqual(
-    endMappedVariation(102, "THIRD", "canceled"),
-    ["Third", "Second", "First"],
-  );
-  assert.deepEqual(
-    endMappedVariation(103, "SECOND", "payment_complete"),
-    ["Second", "Third", "First"],
-  );
-});
-
-test("recent-item ordering validates only its array boundaries", () => {
-  assert.throws(
-    () => orderInventoryGroupsByRecentMappedVariations(null, []),
-    /Inventory groups must be an array/,
-  );
-  assert.throws(
-    () => orderInventoryGroupsByRecentMappedVariations([], null),
-    /Variations must be an array/,
-  );
-});
-
-test("historical inventory order freezes and pins the mapping present on entry", () => {
-  const groups = groupInventoryEntries([
-    { sku: "A", item: "Alpha", style: "one", size: "OS" },
-    { sku: "B", item: "Bravo", style: "two", size: "OS" },
-    { sku: "C", item: "Charlie", style: "three", size: "OS" },
-    { sku: "D", item: "Delta", style: "four", size: "OS" },
-  ]);
-  const controller = createInventoryGroupOrderController();
-  const endedVariations = [
-    { variationNumber: 100, recorded: true, bidding: false, sku: "B" },
-    { variationNumber: 101, recorded: true, bidding: false, sku: "C" },
+  const priorVariations = [
+    { variationNumber: 102, recorded: true, bidding: false, sku: "B-8" },
+    { variationNumber: 101, recorded: true, bidding: false, sku: "B-9" },
   ];
-  const orderNames = (view) =>
-    controller.order(groups, view).map((group) => group.item);
-
-  assert.deepEqual(
-    orderNames({
-      variations: endedVariations,
-      selectedVariationNumber: 101,
-      isReviewingHistory: false,
-      auction: { sku: "C" },
-    }),
-    ["Charlie", "Bravo", "Alpha", "Delta"],
-  );
-  assert.deepEqual(
-    orderNames({
-      variations: endedVariations,
-      selectedVariationNumber: 100,
-      isReviewingHistory: true,
-      auction: { sku: "B" },
-    }),
-    ["Bravo", "Charlie", "Alpha", "Delta"],
-  );
-
-  const correctedHistoricalVariations = [
-    { variationNumber: 100, recorded: true, bidding: false, sku: "D" },
-    endedVariations[1],
-  ];
-
-  assert.deepEqual(
-    orderNames({
-      variations: correctedHistoricalVariations,
-      selectedVariationNumber: 100,
-      isReviewingHistory: true,
-      auction: { sku: "D" },
-    }),
-    ["Bravo", "Charlie", "Alpha", "Delta"],
-    "changing the open historical mapping must not replace its pinned card",
-  );
-  assert.deepEqual(
-    orderNames({
-      variations: correctedHistoricalVariations,
-      selectedVariationNumber: 101,
-      isReviewingHistory: true,
-      auction: { sku: "C" },
-    }),
-    ["Charlie", "Bravo", "Alpha", "Delta"],
-    "switching historical variations must pin the newly viewed mapping",
-  );
-  assert.deepEqual(
-    orderNames({
-      variations: correctedHistoricalVariations,
-      selectedVariationNumber: 100,
-      isReviewingHistory: true,
-      auction: { sku: "D" },
-    }),
-    ["Bravo", "Charlie", "Alpha", "Delta"],
-    "returning to a corrected historical variation must restore its original pin",
-  );
-  assert.deepEqual(
-    orderNames({
-      variations: correctedHistoricalVariations,
-      selectedVariationNumber: 99,
-      isReviewingHistory: true,
-      auction: { sku: null },
-    }),
-    ["Charlie", "Bravo", "Alpha", "Delta"],
-    "an unmapped historical variation must use the frozen live order",
-  );
-});
-
-test("live bids update recent order only after ending while history stays frozen", () => {
-  const groups = groupInventoryEntries([
-    { sku: "A", item: "Alpha", style: "one", size: "OS" },
-    { sku: "B", item: "Bravo", style: "two", size: "OS" },
-    { sku: "C", item: "Charlie", style: "three", size: "OS" },
-    { sku: "D", item: "Delta", style: "four", size: "OS" },
-  ]);
-  const controller = createInventoryGroupOrderController();
-  const baseVariations = [
-    { variationNumber: 100, recorded: true, bidding: false, sku: "B" },
-    { variationNumber: 101, recorded: true, bidding: false, sku: "C" },
-  ];
-  const historicalView = {
-    variations: baseVariations,
-    selectedVariationNumber: 100,
-    isReviewingHistory: true,
-    auction: { sku: "B" },
-  };
-  const orderNames = (view) =>
-    controller.order(groups, view).map((group) => group.item);
-
-  orderNames({
-    ...historicalView,
-    selectedVariationNumber: 101,
-    isReviewingHistory: false,
-    auction: { sku: "C" },
-  });
-  assert.deepEqual(orderNames(historicalView), [
-    "Bravo",
-    "Charlie",
-    "Alpha",
-    "Delta",
-  ]);
-
-  const biddingWhileReviewing = [
-    { variationNumber: 100, recorded: true, bidding: false, sku: "A" },
-    baseVariations[1],
-    { variationNumber: 102, recorded: true, bidding: true, sku: "D" },
-  ];
-
-  assert.deepEqual(
-    orderNames({
-      ...historicalView,
-      variations: biddingWhileReviewing,
-      auction: { sku: "A" },
-    }),
-    ["Bravo", "Charlie", "Alpha", "Delta"],
-    "historical and current-bidding mapping changes must not move cards",
-  );
-
-  const endedWhileReviewing = biddingWhileReviewing.map((variation) =>
-    variation.variationNumber === 102
-      ? { ...variation, bidding: false }
-      : variation,
-  );
-
-  assert.deepEqual(
-    orderNames({
-      ...historicalView,
-      variations: endedWhileReviewing,
-      auction: { sku: "A" },
-    }),
-    ["Bravo", "Charlie", "Alpha", "Delta"],
-    "a real bid ending must not disturb the frozen historical screen",
-  );
-  assert.deepEqual(
-    orderNames({
-      variations: endedWhileReviewing,
-      selectedVariationNumber: 102,
-      isReviewingHistory: false,
-      auction: { sku: "D" },
-    }),
-    ["Delta", "Charlie", "Bravo", "Alpha"],
-    "returning live must apply the real ended bid but ignore historical edits",
-  );
-
-  controller.reset();
-  assert.deepEqual(
-    orderNames({
-      variations: [],
-      selectedVariationNumber: 203,
-      isReviewingHistory: false,
-      auction: null,
-    }),
-    ["Alpha", "Bravo", "Charlie", "Delta"],
-  );
-});
-
-test("late older variations keep numeric recency instead of arrival order", () => {
-  const groups = groupInventoryEntries([
-    { sku: "A", item: "Alpha", style: "one", size: "OS" },
-    { sku: "B", item: "Bravo", style: "two", size: "OS" },
-    { sku: "C", item: "Charlie", style: "three", size: "OS" },
-    { sku: "D", item: "Delta", style: "four", size: "OS" },
-  ]);
-  const controller = createInventoryGroupOrderController();
-  const orderNames = (variations) =>
-    controller.order(groups, {
-      variations,
-      currentVariationNumber: 102,
-      selectedVariationNumber: 102,
-      isReviewingHistory: false,
-      auction: { sku: "D" },
-    }).map((group) => group.item);
-  const initiallyCaptured = [
-    { variationNumber: 100, recorded: true, bidding: false, sku: "B" },
-    { variationNumber: 102, recorded: true, bidding: false, sku: "D" },
-  ];
-
-  assert.deepEqual(orderNames(initiallyCaptured), [
-    "Delta",
-    "Bravo",
-    "Alpha",
-    "Charlie",
-  ]);
-  assert.deepEqual(
-    orderNames([
-      ...initiallyCaptured,
-      { variationNumber: 101, recorded: true, bidding: false, sku: "C" },
+  const snapshots = [
+    [],
+    [currentVariation],
+    [...priorVariations, currentVariation],
+    ...[
+      "not_observed",
+      "payment_processing",
+      "payment_complete",
+      "payment_failed",
+      "canceled",
+    ].map((observedPaymentStatus) => [
+      ...priorVariations,
+      { ...currentVariation, bidding: false, observedPaymentStatus },
     ]),
-    ["Delta", "Charlie", "Bravo", "Alpha"],
-    "a late variation must be inserted by variation number, not moved to first",
-  );
+    [
+      { ...currentVariation, bidding: false },
+      ...priorVariations,
+      { variationNumber: 103, recorded: true, bidding: false, sku: "A" },
+      { variationNumber: 105, recorded: true, bidding: false, sku: "D" },
+      { variationNumber: 106, recorded: false, bidding: false, sku: "A" },
+      { variationNumber: 107, recorded: true, bidding: false, sku: "UNKNOWN" },
+    ],
+  ];
+
+  for (const variations of snapshots) {
+    const view = {
+      variations,
+      currentVariationNumber: 104,
+      selectedVariationNumber: 104,
+      isReviewingHistory: false,
+      auction: variations.find((variation) => variation.variationNumber === 104),
+    };
+    const originalView = structuredClone(view);
+    const ordered = controller.order(groups, view);
+
+    assert.deepEqual(ordered.map((group) => group.item), [
+      "Charlie", "Alpha", "Bravo", "Delta",
+    ]);
+    assert.notEqual(ordered, groups, "ordering must return a new array");
+    assert.deepEqual(ordered, groups);
+    assert.equal(
+      ordered.filter((group) => group.item === "Bravo").length,
+      1,
+      "repeat sales and multiple sizes must retain exactly one grouped card",
+    );
+    assert.deepEqual(view, originalView, "ordering must not mutate sales or selection");
+    assert.deepEqual(groups, originalGroups, "ordering must not mutate inventory");
+  }
 });
 
-test("live late mapping is accepted while historical late mapping stays excluded", () => {
+test("current and historical mappings, remaps, unmaps, and selection never promote items", () => {
   const groups = groupInventoryEntries([
     { sku: "A", item: "Alpha", style: "one", size: "OS" },
     { sku: "B", item: "Bravo", style: "two", size: "OS" },
+    { sku: "C", item: "Charlie", style: "three", size: "OS" },
+    { sku: "D", item: "Delta", style: "four", size: "OS" },
   ]);
-  const liveController = createInventoryGroupOrderController();
-  const endedUnmapped = {
-    variationNumber: 200,
+  const controller = createInventoryGroupOrderController();
+  const currentVariation = {
+    variationNumber: 101,
     recorded: true,
     bidding: false,
-    sku: null,
+    sku: "C",
   };
-  const createView = (overrides = {}) => ({
-    variations: [endedUnmapped],
-    currentVariationNumber: 200,
-    selectedVariationNumber: 200,
-    isReviewingHistory: false,
-    auction: { sku: null },
-    ...overrides,
-  });
-  const orderNames = (controller, view) =>
-    controller.order(groups, view).map((group) => group.item);
 
-  assert.deepEqual(
-    orderNames(liveController, createView()),
-    ["Alpha", "Bravo"],
+  for (const isReviewingHistory of [false, true, false]) {
+    for (const sku of [null, "B", "D", null, "C"]) {
+      for (const selectedVariationNumber of [100, 101, 99]) {
+        const view = {
+          variations: [
+            { variationNumber: 100, recorded: true, bidding: false, sku },
+            { ...currentVariation, sku: isReviewingHistory ? "C" : sku },
+          ],
+          currentVariationNumber: 101,
+          selectedVariationNumber,
+          isReviewingHistory,
+          auction: { sku },
+        };
+        const originalView = structuredClone(view);
+
+        assert.deepEqual(
+          controller.order(groups, view).map((group) => group.item),
+          ["Alpha", "Bravo", "Charlie", "Delta"],
+          "neither viewing nor correcting an auction may reorder inventory",
+        );
+        assert.deepEqual(view, originalView, "the selected auction must remain unchanged");
+        assert.ok(groups.every((group) => !controller.isGroupPinned(group.key)));
+      }
+    }
+  }
+});
+
+test("selected and queued sizes retain their preference without changing group order", () => {
+  const groups = groupInventoryEntries([
+    { sku: "A", item: "Alpha", style: "one", size: "OS" },
+    { sku: "B-8", item: "Bravo", style: "two", size: "8" },
+    { sku: "B-9", item: "Bravo", style: "two", size: "9" },
+  ]);
+  const controller = createInventoryGroupOrderController();
+
+  for (const isReviewingHistory of [false, true]) {
+    for (const preferences of [
+      { selectedSku: "B-8", currentMappedSku: "B-9", queuedSku: "B-9" },
+      { currentMappedSku: "B-8", queuedSku: "B-9" },
+      { queuedSku: "B-8" },
+    ]) {
+      const view = {
+        variations: [],
+        currentVariationNumber: 101,
+        selectedVariationNumber: isReviewingHistory ? 100 : 101,
+        isReviewingHistory,
+        auction: { sku: preferences.currentMappedSku ?? null },
+      };
+
+      assert.equal(getPreferredInventoryGroupEntry(groups[1], preferences).sku, "B-8");
+      assert.deepEqual(controller.order(groups, view), groups);
+    }
+  }
+});
+
+test("inventory ordering validates group and view boundaries", () => {
+  const controller = createInventoryGroupOrderController();
+
+  assert.throws(
+    () => controller.order(null, { variations: [] }),
+    /Inventory groups must be an array/,
   );
+  for (const view of [undefined, null, {}, { variations: null }]) {
+    assert.throws(
+      () => controller.order([], view),
+      /An inventory ordering view with variations is required/,
+    );
+  }
+  for (const group of [null, {}, { key: 1, entries: [] }, { key: "A" }]) {
+    assert.throws(
+      () => controller.order([group], { variations: [] }),
+      /Inventory groups must contain a key and entries array/,
+    );
+  }
+});
+
+test("inventory refresh follows current Sheet order and removes unavailable pins", () => {
+  const groups = groupInventoryEntries([
+    { sku: "A", item: "Alpha", style: "one", size: "OS" },
+    { sku: "B", item: "Bravo", style: "two", size: "OS" },
+    { sku: "C", item: "Charlie", style: "three", size: "OS" },
+    { sku: "D", item: "Delta", style: "four", size: "OS" },
+  ]);
+  const controller = createInventoryGroupOrderController();
+  const view = {
+    variations: [{ variationNumber: 100, recorded: true, bidding: false, sku: "D" }],
+    selectedVariationNumber: 100,
+    isReviewingHistory: true,
+    auction: { sku: "D" },
+  };
+
+  controller.togglePinnedGroup(groups[1].key);
+  controller.togglePinnedGroup(groups[3].key);
   assert.deepEqual(
-    orderNames(liveController, createView({
-      variations: [{ ...endedUnmapped, sku: "B" }],
-      auction: { sku: "B" },
-    })),
-    ["Bravo", "Alpha"],
-    "an ended current item mapped before leaving live view should become recent",
+    controller.order(groups, view).map((group) => group.item),
+    ["Bravo", "Delta", "Alpha", "Charlie"],
   );
 
-  const historicalController = createInventoryGroupOrderController();
+  const refreshedGroups = [groups[2], groups[0], groups[3]];
   assert.deepEqual(
-    orderNames(historicalController, createView({
-      isReviewingHistory: true,
-    })),
-    ["Alpha", "Bravo"],
+    controller.order(refreshedGroups, view).map((group) => group.item),
+    ["Delta", "Charlie", "Alpha"],
+    "remaining pins lead and unpinned inventory follows the refreshed Sheet",
   );
+  assert.equal(controller.isGroupPinned(groups[1].key), false);
+  assert.equal(controller.isGroupPinned(groups[3].key), true);
   assert.deepEqual(
-    orderNames(historicalController, createView({
-      variations: [{ ...endedUnmapped, sku: "B" }],
-      isReviewingHistory: true,
-      auction: { sku: "B" },
-    })),
-    ["Alpha", "Bravo"],
-    "mapping the same open historical variation must not change its pin",
-  );
-  assert.deepEqual(
-    orderNames(historicalController, createView({
-      variations: [{ ...endedUnmapped, sku: "B" }],
-      auction: { sku: "B" },
-    })),
-    ["Alpha", "Bravo"],
-    "the historical mapping must not affect live recent order after returning",
+    controller.order(groups, view).map((group) => group.item),
+    ["Delta", "Alpha", "Bravo", "Charlie"],
+    "a returning inventory group must not recover an unavailable pin",
   );
 });
 
-test("user pins stay ahead of sale recency in the order they were pinned", () => {
+test("user pins lead in pin order and unpinning restores original inventory position", () => {
   const groups = groupInventoryEntries([
     { sku: "A", item: "Alpha", style: "one", size: "OS" },
     { sku: "B", item: "Bravo", style: "two", size: "OS" },
@@ -634,7 +382,7 @@ test("user pins stay ahead of sale recency in the order they were pinned", () =>
     controller.order(groups, createLiveView(variations))
       .map((group) => group.item);
 
-  assert.deepEqual(orderNames(), ["Charlie", "Bravo", "Alpha", "Delta"]);
+  assert.deepEqual(orderNames(), ["Alpha", "Bravo", "Charlie", "Delta"]);
   assert.deepEqual(controller.togglePinnedGroup(groupKey("Alpha")), {
     changed: true,
     pinned: true,
@@ -642,21 +390,21 @@ test("user pins stay ahead of sale recency in the order they were pinned", () =>
     pinnedCount: 1,
     pinnedPosition: 1,
   });
-  assert.deepEqual(orderNames(), ["Alpha", "Charlie", "Bravo", "Delta"]);
+  assert.deepEqual(orderNames(), ["Alpha", "Bravo", "Charlie", "Delta"]);
   assert.equal(controller.isGroupPinned(groupKey("Alpha")), true);
 
   assert.equal(
     controller.togglePinnedGroup(groupKey("Delta")).pinnedPosition,
     2,
   );
-  assert.deepEqual(orderNames(), ["Alpha", "Delta", "Charlie", "Bravo"]);
+  assert.deepEqual(orderNames(), ["Alpha", "Delta", "Bravo", "Charlie"]);
   assert.deepEqual(
     orderNames([
       ...endedVariations,
       { variationNumber: 102, recorded: true, bidding: false, sku: "B" },
     ]),
     ["Alpha", "Delta", "Bravo", "Charlie"],
-    "new sales must reorder only the unpinned cards",
+    "new sales must not reorder pinned or unpinned cards",
   );
 
   assert.equal(controller.togglePinnedGroup(groupKey("Alpha")).pinned, false);
@@ -665,13 +413,23 @@ test("user pins stay ahead of sale recency in the order they were pinned", () =>
       ...endedVariations,
       { variationNumber: 102, recorded: true, bidding: false, sku: "B" },
     ]),
-    ["Delta", "Bravo", "Charlie", "Alpha"],
-    "an unpinned card must return to its actual sale-recency position",
+    ["Delta", "Alpha", "Bravo", "Charlie"],
+    "an unpinned card must return to its original Sheet position after the pins",
   );
 
+  assert.equal(controller.togglePinnedGroup(groupKey("Alpha")).pinnedPosition, 2);
+  assert.deepEqual(orderNames(), ["Delta", "Alpha", "Bravo", "Charlie"]);
+  assert.equal(new Set(orderNames()).size, groups.length);
+  assert.equal(controller.togglePinnedGroup(groupKey("Delta")).pinned, false);
+  assert.deepEqual(orderNames(), ["Alpha", "Bravo", "Charlie", "Delta"]);
+  assert.equal(controller.togglePinnedGroup(groupKey("Delta")).pinnedPosition, 2);
+
   controller.reset();
+  assert.equal(controller.isGroupPinned(groupKey("Alpha")), false);
   assert.equal(controller.isGroupPinned(groupKey("Delta")), false);
   assert.deepEqual(orderNames([]), ["Alpha", "Bravo", "Charlie", "Delta"]);
+  assert.deepEqual(orderNames(), ["Alpha", "Bravo", "Charlie", "Delta"]);
+  assert.equal(controller.togglePinnedGroup(groupKey("Delta")).pinnedPosition, 1);
 });
 
 test("inventory pins enforce a strict nine-item limit", () => {
@@ -736,8 +494,9 @@ test("expanded inventory can pin every item and collapsing keeps only the first 
     maxPinnedGroups: 9,
   });
   const groupKeys = groups.map((group) => group.key);
+  const pinKeys = [...groupKeys].reverse();
 
-  groupKeys.forEach((groupKey, index) => {
+  pinKeys.forEach((groupKey, index) => {
     const result = controller.togglePinnedGroup(groupKey, groups.length);
 
     assert.equal(result.pinned, true);
@@ -752,7 +511,7 @@ test("expanded inventory can pin every item and collapsing keeps only the first 
       isReviewingHistory: false,
       auction: null,
     }).map((group) => group.key),
-    groupKeys,
+    pinKeys,
     "every item may remain pinned while the list is expanded",
   );
 
@@ -761,11 +520,11 @@ test("expanded inventory can pin every item and collapsing keeps only the first 
   assert.deepEqual(trimmed, {
     changed: true,
     pinnedCount: 9,
-    unpinnedGroupKeys: groupKeys.slice(9),
+    unpinnedGroupKeys: pinKeys.slice(9),
   });
   assert.deepEqual(
     groupKeys.map((groupKey) => controller.isGroupPinned(groupKey)),
-    [...Array(9).fill(true), false, false, false],
+    [false, false, false, ...Array(9).fill(true)],
   );
   assert.deepEqual(
     controller.order(groups, {
@@ -774,22 +533,22 @@ test("expanded inventory can pin every item and collapsing keeps only the first 
           variationNumber: 100,
           recorded: true,
           bidding: false,
-          sku: "SKU-10",
+          sku: "SKU-2",
         },
         {
           variationNumber: 101,
           recorded: true,
           bidding: false,
-          sku: "SKU-11",
+          sku: "SKU-3",
         },
       ],
       currentVariationNumber: 101,
       selectedVariationNumber: 101,
       isReviewingHistory: false,
-      auction: { sku: "SKU-11" },
+      auction: { sku: "SKU-3" },
     }).map((group) => group.key),
-    [...groupKeys.slice(0, 9), groupKeys[10], groupKeys[9], groupKeys[11]],
-    "pins removed by collapsing must return to recent-sale and Sheet order",
+    [...pinKeys.slice(0, 9), ...groupKeys.slice(0, 3)],
+    "collapsing retains the first nine pins and restores the others to Sheet order",
   );
   assert.deepEqual(controller.trimPinnedGroups(9), {
     changed: false,
@@ -806,7 +565,7 @@ test("expanded inventory can pin every item and collapsing keeps only the first 
   );
 });
 
-test("historical mapping stays first ahead of the frozen pin-aware live order", () => {
+test("historical views use the same pin order and only explicit pin changes move cards", () => {
   const groups = groupInventoryEntries([
     { sku: "A", item: "Alpha", style: "one", size: "OS" },
     { sku: "B", item: "Bravo", style: "two", size: "OS" },
@@ -834,7 +593,7 @@ test("historical mapping stays first ahead of the frozen pin-aware live order", 
     auction: { sku: "C" },
   };
 
-  assert.deepEqual(orderNames(liveView), ["Alpha", "Delta", "Charlie", "Bravo"]);
+  assert.deepEqual(orderNames(liveView), ["Alpha", "Delta", "Bravo", "Charlie"]);
 
   const historicalView = {
     ...liveView,
@@ -845,21 +604,21 @@ test("historical mapping stays first ahead of the frozen pin-aware live order", 
 
   assert.deepEqual(
     orderNames(historicalView),
-    ["Bravo", "Alpha", "Delta", "Charlie"],
-    "the historical mapping must lead without duplicating its frozen card",
+    ["Alpha", "Delta", "Bravo", "Charlie"],
+    "viewing a historical mapping must not promote its card ahead of user pins",
   );
 
   controller.togglePinnedGroup(groupKey("Charlie"));
   controller.togglePinnedGroup(groupKey("Alpha"));
   assert.deepEqual(
     orderNames(historicalView),
-    ["Bravo", "Alpha", "Delta", "Charlie"],
-    "pin changes must not disturb the open historical order",
+    ["Delta", "Charlie", "Alpha", "Bravo"],
+    "explicit pin changes take effect immediately while reviewing history",
   );
   assert.deepEqual(
     orderNames(liveView),
-    ["Delta", "Charlie", "Bravo", "Alpha"],
-    "returning live must apply pin changes ahead of current recency",
+    ["Delta", "Charlie", "Alpha", "Bravo"],
+    "returning live preserves the same pins and original unpinned order",
   );
 });
 
@@ -943,6 +702,8 @@ test("aggregates grouped stock without one oversold size hiding other available 
       item: "Runner",
       style: "Black",
       size: "7",
+      quantityOnHandAtImport: 10,
+      quantityReceived: 10,
       remainingQuantity: 5,
       availableToTagQuantity: 4,
       reservedQuantity: 1,
@@ -953,6 +714,8 @@ test("aggregates grouped stock without one oversold size hiding other available 
       item: "Runner",
       style: "Black",
       size: "8",
+      quantityOnHandAtImport: 0,
+      quantityReceived: 0,
       remainingQuantity: 0,
       availableToTagQuantity: -1,
       reservedQuantity: 1,
@@ -963,6 +726,8 @@ test("aggregates grouped stock without one oversold size hiding other available 
       item: "Runner",
       style: "Black",
       size: "10",
+      quantityOnHandAtImport: 5,
+      quantityReceived: 5,
       remainingQuantity: 2,
       availableToTagQuantity: 2,
       reservedQuantity: 0,
@@ -977,7 +742,8 @@ test("aggregates grouped stock without one oversold size hiding other available 
   assert.equal(stock.reservedQuantity, 2);
   assert.equal(stock.oversoldQuantity, 1);
   assert.equal(stock.state, "oversold");
-  assert.equal(stock.primaryLabel, "6 left");
+  assert.equal(stock.primaryLabel, "6/15");
+  assert.match(stock.ariaLabel, /starting baseline quantity 15/);
   assert.match(stock.secondaryLabel, /2 pending/);
   assert.match(stock.secondaryLabel, /Oversold by 1/);
 });

@@ -266,6 +266,10 @@ test("binds sanitized payment-status batches to the worker-owned active stream",
       variationNumber: 42,
       observedPaymentStatus: "canceled",
     },
+    {
+      variationNumber: 41,
+      observedPaymentStatus: "order_processing",
+    },
   ];
 
   assert.deepEqual(

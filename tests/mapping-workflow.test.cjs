@@ -52,6 +52,7 @@ test("uses friendly labels for every observed TikTok payment status", () => {
     [
       ["not_observed", "Payment not yet observed"],
       ["payment_processing", "Payment processing"],
+      ["order_processing", "Order processing"],
       ["payment_fixing", "Payment fixing"],
       ["payment_failed", "Payment failed"],
       ["canceled", "Canceled"],

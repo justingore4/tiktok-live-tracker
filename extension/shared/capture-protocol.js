@@ -21,6 +21,7 @@
     const OBSERVED_PAYMENT_STATUSES = Object.freeze({
       NOT_OBSERVED: "not_observed",
       PAYMENT_PROCESSING: "payment_processing",
+      ORDER_PROCESSING: "order_processing",
       PAYMENT_FIXING: "payment_fixing",
       PAYMENT_FAILED: "payment_failed",
       CANCELED: "canceled",
@@ -29,6 +30,7 @@
     });
     const OUTBOUND_PAYMENT_STATUSES = new Set([
       OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
       OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
       OBSERVED_PAYMENT_STATUSES.CANCELED,

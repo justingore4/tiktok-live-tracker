@@ -451,6 +451,7 @@ function validateSender(sender, command, boundary) {
       fromReportPage &&
       !reportReadCommandTypes.has(command.type) &&
       ![
+        streamReportProtocol.COMMAND_TYPES.RENAME_REPORT,
         streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
         streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
       ].includes(command.type)

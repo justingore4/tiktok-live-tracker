@@ -840,6 +840,52 @@ test("a mapped canonical-unknown variation stays reserved through every observed
   assert.equal(availability.currentAllocation, "sold");
 });
 
+test("order processing remains pending, hydrated, and manually resolvable", () => {
+  for (const resolution of ["payment_complete", "canceled"]) {
+    const state = createState();
+    const key = auctionInput(249, { sku: "BLACK-TEE-M" });
+
+    mapVariation(state, key);
+    observePendingPayment(state, 249, OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING);
+
+    const summary = calculateSummary(state, { streamId: STREAM_ONE });
+    const availability = getInventoryAvailability(state, key);
+
+    assert.equal(getAuction(state, key).paymentStatus, "unknown");
+    assert.equal(getAuction(state, key).observedPaymentStatus, "order_processing");
+    assert.equal(availability.reservedQuantity, 1);
+    assert.equal(availability.currentAllocation, "reserved");
+    assert.equal(availability.soldQuantity, 0);
+    assert.equal(summary.totals.paymentFixingCount, 1);
+    assert.equal(summary.totals.pendingMappedCount, 1);
+    assert.equal(summary.totals.totalSalesCount, 0);
+    assert.equal(summary.totals.committedSalesCount, 0);
+    assert.equal(summary.totals.completedGmvCents, 0);
+    assert.equal(summary.totals.costOfGoodsCents, 0);
+    assert.equal(summary.totals.profitCents, 0);
+    assert.deepEqual(hydrateReconciliationState(JSON.parse(JSON.stringify(state))), state);
+    assert.deepEqual(listPaymentFixingOrders(state, { streamId: STREAM_ONE }), [{
+      variationNumber: 249,
+      observedPaymentStatus: "order_processing",
+      mapped: true,
+      sku: "BLACK-TEE-M",
+      item: "Black Tee",
+      style: "",
+      size: "M",
+    }]);
+
+    const result = resolvePaymentFixingOrder(state, {
+      ...auctionInput(249),
+      resolution,
+      soldPriceCents: resolution === "payment_complete" ? 2500 : null,
+    });
+
+    assert.equal(result.paymentStatus, resolution);
+    assert.equal(getInventoryAvailability(state, key).reservedQuantity, 0);
+    assert.deepEqual(listPaymentFixingOrders(state, { streamId: STREAM_ONE }), []);
+  }
+});
+
 test("zero stock never blocks mapping and reports total pending over-allocation", () => {
   const state = createState();
 

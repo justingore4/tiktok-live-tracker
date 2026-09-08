@@ -420,7 +420,7 @@
       >
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
-          <p id="variation-context" class="current-auction-label">
+          <p id="variation-context" class="visually-hidden">
             Waiting for a live auction variation
           </p>
           <div class="variation-picker">
@@ -459,7 +459,6 @@
             Return to live item
           </button>
         </div>
-        <span id="data-mode-badge" class="session-badge">Live session</span>
       </section>
 
       <section
@@ -470,7 +469,7 @@
         <div class="live-auction-heading">
           <div>
             <p class="eyebrow">Live auction</p>
-            <h2 id="live-auction-title">Variation # -</h2>
+            <h2 id="live-auction-title">Variation # - Status | -</h2>
           </div>
           <span class="live-auction-indicator" aria-hidden="true"></span>
         </div>
@@ -487,14 +486,11 @@
             <dt>Live gross profit</dt>
             <dd id="live-gross-profit-value" data-tone="neutral">&mdash;</dd>
           </div>
+          <div>
+            <dt>Inventory</dt>
+            <dd id="live-remaining-inventory-value">&mdash;</dd>
+          </div>
         </dl>
-        <p
-          id="live-auction-note"
-          class="live-auction-note"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        ></p>
       </section>
 
       <section
@@ -504,37 +500,10 @@
         hidden
       >
         <div class="pending-heading">
-          <div>
-            <p id="auction-eyebrow" class="eyebrow">Live order status</p>
-            <h2 id="pending-mapping-title">
-              Variation <span data-field="mapped-variation">#&mdash;</span>
-            </h2>
-          </div>
-        </div>
-        <div class="pending-card">
-          <p id="mapped-item" class="mapped-item"></p>
-          <dl id="auction-status" class="order-statuses" tabindex="-1">
-            <div class="order-status-row">
-              <dt>TikTok payment</dt>
-              <dd
-                id="tiktok-payment-status"
-                class="pending-status"
-                data-payment-status="not_observed"
-              >
-                <span class="pending-status-dot" aria-hidden="true"></span>
-                <span data-field="observed-payment-status">
-                  Payment not yet observed
-                </span>
-                <span id="payment-price" class="payment-price" hidden></span>
-              </dd>
-            </div>
-            <div class="order-status-row">
-              <dt>Inventory tag</dt>
-              <dd class="inventory-tag-status" data-field="mapping-status">
-                No item selected
-              </dd>
-            </div>
-          </dl>
+          <h2 id="pending-mapping-title" tabindex="-1">
+            Variation <span data-field="mapped-variation">#&mdash;</span> Status |
+            <span id="mapped-item">-</span>
+          </h2>
         </div>
 
         <div id="sale-results" class="sale-results">
@@ -556,7 +525,6 @@
               <dd data-field="remaining-inventory">&mdash;</dd>
             </div>
           </dl>
-          <p>Gross profit excludes platform fees, shipping, refunds, and taxes.</p>
         </div>
 
         <p id="state-warning" class="state-warning" role="status" hidden></p>
@@ -1091,7 +1059,26 @@
               <span data-field="item"></span>
               <span data-field="style"></span>
             </span>
-            <span class="selected-label" data-field="selected" hidden>Selected</span>
+            <span class="inventory-card-badges" hidden>
+              <span
+                class="inventory-card-badge selected-label"
+                data-field="selected"
+                data-tone="selected"
+                hidden
+              >Selected</span>
+              <span
+                class="inventory-card-badge"
+                data-field="current-mapped"
+                data-tone="current"
+                hidden
+              >Live</span>
+              <span
+                class="inventory-card-badge"
+                data-field="queued"
+                data-tone="queued"
+                hidden
+              >Queued</span>
+            </span>
           </span>
           <span class="card-meta">
             <span class="size-label">

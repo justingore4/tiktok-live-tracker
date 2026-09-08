@@ -57,19 +57,19 @@
     const ACTION_FEEDBACK_DURATION_MS = 4_000;
     const WARNING_MESSAGES = Object.freeze({
       active_bidding_at_end:
-        "A bidding variation was still active when tracking ended.",
+        "A variation was still bidding when tracking ended.",
       reconciliation_conflicts:
-        "At least one captured order contains conflicting observations and should be reviewed.",
+        "Order records contain conflicting information. Review these orders.",
       inventory_recount_required:
-        "At least one SKU was allocated beyond its opening quantity. Review the oversold amount and recount physical stock.",
+        "More units were allocated than starting stock. Check oversold units and recount stock.",
       payment_fixing_orders:
-        "At least one payment result was unresolved when tracking ended.",
+        "Payments were still unresolved when tracking ended.",
       pending_inventory_reservations:
-        "At least one inventory reservation was unresolved when tracking ended.",
+        "Inventory reservations were still pending when tracking ended.",
       unmapped_completed_sales:
-        "At least one completed sale has no inventory item, so inventory and gross profit are incomplete.",
+        "Completed sales have no item assigned. Metrics are incomplete.",
       unresolved_orders:
-        "At least one captured order was unresolved when tracking ended.",
+        "Orders were still unresolved when tracking ended.",
     });
 
     function isPlainRecord(value) {
@@ -442,11 +442,12 @@
       const base = WARNING_MESSAGES[code] ??
         `Review report notice: ${code.replace(/_/g, " ") || "unknown issue"}.`;
       const count = safeInteger(warning.count);
+      const countLabel = code === "inventory_recount_required" ? "Oversold" : "Count";
       const sku = typeof warning.sku === "string" ? warning.sku : null;
 
       return [
         base,
-        count > 0 ? `Count: ${count}.` : "",
+        count > 0 ? `${countLabel}: ${count}.` : "",
         sku ? `SKU: ${sku}.` : "",
       ].filter(Boolean).join(" ");
     }
@@ -584,6 +585,10 @@
     }
 
     function getObservedPaymentLabel(status) {
+      if (status === "order_processing") {
+        return "Order processing";
+      }
+
       if (status === "payment_processing") {
         return "Payment processing";
       }
@@ -1062,6 +1067,13 @@
       return selectedEntry;
     }
 
+    function getReportDisplayName(record) {
+      return typeof record.displayName === "string" &&
+        record.displayName.trim() !== ""
+        ? record.displayName
+        : formatDefaultReportName(record.report?.metadata?.endedAt);
+    }
+
     function renderReport(document, record) {
       const report = record.report;
       const metadata = isPlainRecord(report?.metadata) ? report.metadata : {};
@@ -1070,10 +1082,7 @@
       document.querySelector("#stream-ended").textContent =
         formatTimestamp(metadata.endedAt);
       document.querySelector("#report-name").textContent =
-        typeof record.displayName === "string" &&
-        record.displayName.trim() !== ""
-          ? record.displayName
-          : formatDefaultReportName(metadata.endedAt);
+        getReportDisplayName(record);
       document.querySelector("#stream-reference").textContent =
         `Stream reference: ${
           typeof metadata.streamId === "string"
@@ -1276,22 +1285,46 @@
       let mappingCorrectionRefreshSequence = 0;
       let actionFeedbackSequence = 0;
       let actionFeedbackTimerId = null;
-      const inventoryInstructions = document.querySelector("#inventory-instructions");
-      const inventoryInstructionsToggle = document.querySelector(
-        "#toggle-inventory-instructions",
-      );
-      const setInventoryInstructionsExpanded = (expanded) => {
-        inventoryInstructions.hidden = !expanded;
-        inventoryInstructionsToggle.setAttribute(
-          "aria-expanded",
-          String(expanded),
-        );
-        inventoryInstructionsToggle.textContent = expanded
-          ? "Hide instructions -"
-          : "Show instructions +";
+      const reportNameInput = document.querySelector("#report-name-input");
+      const reportNameFeedback = document.querySelector("#report-name-feedback");
+      let reportNameDraftId = null;
+      let reportNameDirty = false;
+      let reportNameSave = null;
+
+      const showReportNameFeedback = (message, isError = false) => {
+        if (reportNameFeedback) {
+          reportNameFeedback.textContent = message;
+          reportNameFeedback.hidden = message === "";
+          reportNameFeedback.className = isError
+            ? "report-name-feedback is-error"
+            : "report-name-feedback";
+        }
+        reportNameInput?.setAttribute("aria-invalid", String(isError));
       };
 
-      setInventoryInstructionsExpanded(false);
+      const syncReportNameInput = () => {
+        if (!reportNameInput || !currentRecord) {
+          return;
+        }
+        if (reportNameDraftId !== currentRecord.reportId) {
+          reportNameDraftId = currentRecord.reportId;
+          reportNameDirty = false;
+          reportNameSave = null;
+          showReportNameFeedback("");
+        }
+        if (!reportNameDirty) {
+          reportNameInput.value = getReportDisplayName(currentRecord);
+        }
+        reportNameInput.disabled = reportNameSave !== null ||
+          currentRecord.lifecycleStatus !== "finalized" ||
+          typeof client.renameReport !== "function";
+        reportNameInput.setAttribute("aria-busy", String(reportNameSave !== null));
+      };
+
+      const renderCurrentReport = () => {
+        renderReport(document, currentRecord);
+        syncReportNameInput();
+      };
 
       const feedback = (message) => {
         const target = document.querySelector("#action-feedback");
@@ -1570,7 +1603,7 @@
                 }
 
                 currentRecord = hydrateRecord(response);
-                renderReport(document, currentRecord);
+                renderCurrentReport();
 
                 try {
                   const entries = await getReportUnitCosts(reportId);
@@ -1708,7 +1741,7 @@
           }
 
           currentRecord = hydrateRecord(response);
-          renderReport(document, currentRecord);
+          renderCurrentReport();
           displayPaymentFixingOrders(
             currentPaymentFixingOrders.filter(
               (candidate) => candidate.variationNumber !== variationNumber,
@@ -1818,7 +1851,7 @@
           }
 
           currentRecord = hydrateRecord(response);
-          renderReport(document, currentRecord);
+          renderCurrentReport();
 
           const successMessage =
             `${entry.sku} now uses ${formatUsdCents(unitCostCents)} in this report. Its metrics and Google Sheets handoff were updated; other reports and future streams were not changed.`;
@@ -1859,8 +1892,92 @@
         }
       };
 
+      const saveReportName = async () => {
+        if (reportNameSave) {
+          return reportNameSave.done;
+        }
+        if (
+          !reportNameInput || reportNameInput.disabled ||
+          !currentRecord || typeof client.renameReport !== "function"
+        ) {
+          return;
+        }
+
+        const enteredName = reportNameInput.value;
+        const trimmedName = enteredName.trim();
+        const displayName = trimmedName === "" ? null : trimmedName;
+        const maxLength = protocol.MAX_REPORT_DISPLAY_NAME_LENGTH;
+
+        if (
+          trimmedName.length > maxLength ||
+          /[\u0000-\u001f\u007f]/.test(enteredName)
+        ) {
+          showReportNameFeedback(
+            `Use at most ${maxLength} characters with no line breaks or control characters.`,
+            true,
+          );
+          return;
+        }
+        if (
+          trimmedName === getReportDisplayName(currentRecord) ||
+          displayName === currentRecord.displayName
+        ) {
+          reportNameDirty = false;
+          showReportNameFeedback("");
+          syncReportNameInput();
+          return;
+        }
+
+        const reportId = currentRecord.reportId;
+        const sequence = loadSequence;
+        let finishSave;
+        const save = {
+          done: new Promise((resolve) => { finishSave = resolve; }),
+        };
+        reportNameSave = save;
+        reportNameDirty = true;
+        showReportNameFeedback("Saving report name...");
+        syncReportNameInput();
+
+        try {
+          const response = await client.renameReport({ reportId, displayName });
+          if (!isCurrentReportView(reportId, sequence) || reportNameSave !== save) {
+            return;
+          }
+          if (response?.reportId !== reportId || response.displayName !== displayName) {
+            throw new Error("The saved report name could not be confirmed. Try again.");
+          }
+
+          currentRecord = { ...currentRecord, displayName: response.displayName };
+          reportNameDirty = false;
+          document.querySelector("#report-name").textContent =
+            getReportDisplayName(currentRecord);
+          showReportNameFeedback(displayName === null
+            ? "Default report name restored."
+            : "Report name saved.");
+        } catch (error) {
+          if (isCurrentReportView(reportId, sequence) && reportNameSave === save) {
+            showReportNameFeedback(
+              error?.message ?? "The report name could not be saved. Try again.",
+              true,
+            );
+          }
+        } finally {
+          if (reportNameSave === save) {
+            reportNameSave = null;
+            syncReportNameInput();
+          }
+          finishSave();
+        }
+      };
+
       const load = async () => {
         const sequence = ++loadSequence;
+        reportNameSave = null;
+        showReportNameFeedback("");
+        if (reportNameInput) {
+          reportNameInput.disabled = true;
+        }
         document.querySelector("#report-loading").hidden = false;
         document.querySelector("#report-loading").setAttribute("aria-busy", "true");
         document.querySelector("#report-error").hidden = true;
@@ -1903,7 +2020,7 @@
             displayReportUnitCosts([]);
           }
 
-          renderReport(document, currentRecord);
+          renderCurrentReport();
           resolutionFeedback("");
           if (
             unitCostRefreshFailure === null ||
@@ -1978,6 +2095,27 @@
         }
       };
 
+      reportNameInput?.addEventListener("input", () => {
+        reportNameDirty = true;
+        showReportNameFeedback("");
+      });
+      reportNameInput?.addEventListener("blur", saveReportName);
+      reportNameInput?.addEventListener("keydown", (event) => {
+        if (event.isComposing || reportNameSave) {
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          return saveReportName();
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          reportNameDirty = false;
+          showReportNameFeedback("");
+          syncReportNameInput();
+        }
+      });
+
       document.querySelector("#retry-report").addEventListener("click", load);
       document.querySelector("#unit-cost-sku")?.addEventListener("change", () => {
         const entry = getSelectedUnitCostEntry();
@@ -1997,13 +2135,16 @@
         "click",
         updateSelectedUnitCost,
       );
-      document.querySelector("#print-report").addEventListener("click", () => {
-        if (currentRecord) {
+      document.querySelector("#print-report").addEventListener("click", async () => {
+        if (!currentRecord) {
+          return;
+        }
+        const reportId = currentRecord.reportId;
+        const sequence = loadSequence;
+        await saveReportName();
+        if (isCurrentReportView(reportId, sequence) && !reportNameDirty) {
           dependencies.print();
         }
-      });
-      inventoryInstructionsToggle.addEventListener("click", () => {
-        setInventoryInstructionsExpanded(inventoryInstructions.hidden);
       });
       document.querySelector("#copy-inventory").addEventListener("click", async () => {
         if (!currentRecord) {
