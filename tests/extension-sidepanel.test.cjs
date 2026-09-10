@@ -298,6 +298,11 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "persistent-tagger-controller.js",
     "../shared/stream-report.js",
     "../report/stream-report-client.js",
+    "../vendor/jspdf/jspdf.umd.min.js",
+    "../vendor/jspdf-autotable/jspdf.plugin.autotable.min.js",
+    "../report/report-page.js",
+    "../report/report-pdf.js",
+    "../report/report-downloads.js",
     "sidepanel.js",
   ]);
   assert.ok(
@@ -2660,7 +2665,7 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
 });
 
-test("dashboard report names use the saved custom name with the timestamp as the default", () => {
+test("dashboard report names use the saved custom name with tracking start as the default", () => {
   const panelSource = fs.readFileSync(
     path.join(extensionDirectory, "tagger", "sidepanel.js"),
     "utf8",
@@ -2684,11 +2689,11 @@ test("dashboard report names use the saved custom name with the timestamp as the
   assert.ok(renameSubmitSource);
   assert.match(
     displayNameSource,
-    /typeof summary\?\.displayName === "string"[\s\S]+summary\.displayName\.trim\(\) !== ""[\s\S]+\? summary\.displayName[\s\S]+: formatReportTimestamp\(summary\?\.endedAt\)/,
+    /typeof summary\?\.displayName === "string"[\s\S]+summary\.displayName\.trim\(\) !== ""[\s\S]+\? summary\.displayName[\s\S]+: formatReportTimestamp\(summary\?\.startedAt\)/,
   );
   assert.match(
     requestRenameSource,
-    /const defaultName = formatReportTimestamp\(summary\.endedAt\)/,
+    /const defaultName = formatReportTimestamp\(summary\.startedAt\)/,
   );
   assert.match(
     requestRenameSource,
@@ -2727,6 +2732,34 @@ test("dashboard report names use the saved custom name with the timestamp as the
     panelSource,
     /resetReportNameButton\.addEventListener\("click"[\s\S]+savePendingReportName\(null\)/,
   );
+});
+
+test("current and archived report labels prefer tracking start without changing custom names or timestamps", () => {
+  const panelSource = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.js"), "utf8",
+  );
+  const context = vm.createContext({});
+  const timestampFunction = panelSource.match(
+    /function formatReportTimestamp\(value\)[\s\S]*?(?=function describeReportReadiness)/,
+  )[0];
+  const nameFunction = panelSource.match(
+    /function getReportDisplayName\(summary\)[\s\S]*?(?=function setReportRenameError)/,
+  )[0];
+  vm.runInContext(`${timestampFunction}\n${nameFunction}`, context);
+  const startedAt = "2026-09-08T01:00:00.000Z";
+  const endedAt = "2026-09-08T03:00:00.000Z";
+  const startName = context.formatReportTimestamp(startedAt);
+  const endName = context.formatReportTimestamp(endedAt);
+  assert.notEqual(startName, endName);
+  for (const displayName of [undefined, null, "", "  ", "Friends stream", endName]) {
+    const summary = Object.freeze({ startedAt, endedAt, displayName });
+    assert.equal(context.getReportDisplayName(summary), displayName?.trim() ? displayName : startName);
+    assert.equal(summary.startedAt, startedAt);
+    assert.equal(summary.endedAt, endedAt);
+  }
+  for (const startedAt of [undefined, "invalid"]) {
+    assert.equal(context.getReportDisplayName({ startedAt, endedAt }), "Saved stream");
+  }
 });
 
 test("Business Records exposes a dedicated accessible archived-report dashboard", () => {

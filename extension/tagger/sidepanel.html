@@ -816,17 +816,29 @@
           </button>
         </div>
         <div class="stream-reports-navigation">
-          <button
-            id="view-archived-reports"
-            class="secondary-action"
-            type="button"
-          >
-            View archived reports
-          </button>
+          <div class="stream-reports-archive-actions">
+            <button
+              id="view-archived-reports"
+              class="secondary-action"
+              type="button"
+            >
+              View archived reports
+            </button>
+            <span
+              id="stream-reports-capacity-warning"
+              class="stream-reports-capacity-warning"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              hidden
+            ></span>
+          </div>
           <span id="archived-reports-short-count" class="archived-reports-short-count">
             0 archived
           </span>
         </div>
+        <p id="stream-report-download-status" class="report-download-status"
+          role="status" aria-live="polite" aria-atomic="true" hidden></p>
       </section>
 
       <section
@@ -894,6 +906,10 @@
           </div>
           <p id="archived-restore-guidance" class="archived-restore-guidance"></p>
           <div class="archived-selection-actions">
+            <button id="download-selected-reports" class="secondary-action"
+              type="button" disabled>
+              Download selected
+            </button>
             <button
               id="restore-selected-reports"
               class="secondary-action"
@@ -911,6 +927,8 @@
           </div>
         </div>
 
+        <p id="archived-report-download-status" class="report-download-status"
+          role="status" aria-live="polite" aria-atomic="true" hidden></p>
         <div
           id="archived-reports-list"
           class="stream-reports-list archived-reports-list"
@@ -1124,6 +1142,11 @@
     <script src="persistent-tagger-controller.js"></script>
     <script src="../shared/stream-report.js"></script>
     <script src="../report/stream-report-client.js"></script>
+    <script src="../vendor/jspdf/jspdf.umd.min.js"></script>
+    <script src="../vendor/jspdf-autotable/jspdf.plugin.autotable.min.js"></script>
+    <script src="../report/report-page.js"></script>
+    <script src="../report/report-pdf.js"></script>
+    <script src="../report/report-downloads.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

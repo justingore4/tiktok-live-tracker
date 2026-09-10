@@ -207,7 +207,7 @@ auctioned again, the employee maps its new variation number.
   and mark the order complete. The worker updates canonical inventory/payment state and
   regenerates the same report rather than editing display text alone. Current reports can
   be renamed from **More actions** or archived manually when space permits. A renamed
-  title is local display metadata only: the existing timestamp remains the default, the
+  title is local display metadata only: the tracking-start timestamp is the default, the
   immutable stream reference does not change, and the name follows the report through
   archive and restore.
   Archived reports can be restored only into available Business Records slots, with a
@@ -217,6 +217,39 @@ auctioned again, the employee maps its new variation number.
   by default for screen browsing and remains collapsed in printed/PDF output unless the
   user opens **Show details** before printing. The screen-only **Correct SKU Unit Cost**
   disclosure appears at the bottom of the report.
+- Direct local PDF downloads from **More actions > Download PDF** on both current and
+  archived reports. In Archived Reports, use **Select**, choose reports (or **Select all**),
+  and press **Download selected** for one separate PDF per report. Keep the tracker panel
+  open until its progress message finishes. The existing **Print / Save as PDF** button
+  still opens Chrome's print dialog and is unchanged.
+  Direct PDFs include all report tables, including every item-variation row regardless
+  of the report page's collapsed disclosure, with repeating table headings across pages.
+  They use the saved name (or tracking-start date/time when unnamed) and the same report
+  presentation/calculations, with a fixed print-style layout rather than browser-selected
+  print settings.
+  Before downloading a batch, the tracker loads every selected report and checks final
+  sanitized filenames, ignoring capitalization. If names collide, nothing downloads;
+  rename reports through the existing rename flow or deselect duplicates and retry.
+  This does not change the existing rename rules. Single-report re-downloads are allowed.
+  Existing files are not overwritten: Chrome may add a suffix for a disk-file collision,
+  separate from the tracker's stricter within-batch collision check.
+  No report data is uploaded, deleted, archived, renamed, or otherwise changed by export.
+  The narrow `downloads` permission starts separate downloads and observes their own
+  completion/interruption; it is not used to enumerate the user's downloads or files.
+  Chrome settings or device policies may still require a destination/approval prompt.
+  The bundled font supports Latin, Greek, and Cyrillic text; unsupported characters
+  (such as CJK or emoji) produce a clear export failure instead of a PDF missing text.
+  Use the existing browser print option for those reports.
+  Synthetic PDF visual QA can be repeated with
+  `npm.cmd install --prefix tmp/pdf-qa --no-save --ignore-scripts mupdf@1.28.1`
+  followed by `node scripts/verify-report-pdfs.mjs`. This creates PDFs, extracted text,
+  and page PNGs under ignored `tmp/pdfs/`, without opening Chrome or accessing reports.
+  Before distributing, use an isolated Chrome profile with synthetic reports to verify
+  both individual menus, selected downloads, duplicate-name blocking, interruption
+  feedback, and the unchanged print button. Reload the extension after updating files;
+  review any Chrome prompt for the new downloads permission. Keep the panel open during
+  a batch. Closing it or reloading the extension stops the remaining batch, not a saved
+  resumable job.
 - End-of-stream analytics containing captured completed/canceled/fixing counts, exact
   **Gross Item Sales**, its completed-sale **AOV**, TikTok's last
   Attributed GMV display, its approximate **TikTok 6% Fees** breakdown and **Est. Profit
@@ -954,6 +987,18 @@ the employee requests them; the extension does not upload those files.
 
 The library retains up to five Business Records and 25 archived reports within a combined
 cap of approximately 4 MiB. It never silently prunes an archived record to make room.
+A red badge beside **View archived reports** appears when three or fewer of the 30
+total report slots remain. It counts Business Records and archived reports together;
+at zero slots it asks the employee to delete an archived report. This is a slot-count
+warning, not a remaining-byte estimate: the separate size cap can be reached earlier.
+The manifest's `unlimitedStorage` permission removes Chrome's normal
+[`chrome.storage.local` quota](https://developer.chrome.com/docs/extensions/reference/api/storage#property-local)
+for saved inventory baselines, stream history, and reports. It does not remove these
+application-defined report-library limits or change Google Sheets access. The safeguard
+does not delete, prune, or migrate saved data. History can still grow and become more
+costly to process; the permission does not provide unlimited disk space or solve those
+long-term storage and performance concerns.
+
 Permanent archive deletion requires an explicit employee selection and confirmation; it
 cannot be undone by the tracker. Removing the unpacked extension or clearing its extension
 storage still deletes the entire in-extension library. Save required PDF or CSV files outside the

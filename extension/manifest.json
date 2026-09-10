@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "description": "Track live-stream item sales, inventory, and metrics.",
   "minimum_chrome_version": "114",
-  "permissions": ["storage", "sidePanel", "identity"],
+  "permissions": ["storage", "unlimitedStorage", "sidePanel", "identity", "downloads"],
   "host_permissions": ["https://sheets.googleapis.com/*"],
   "oauth2": {
     "client_id": "627721501298-v850an3m2mog3re717nd4kd6rnp76eh7.apps.googleusercontent.com",

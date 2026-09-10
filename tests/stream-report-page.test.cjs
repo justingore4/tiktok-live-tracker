@@ -554,6 +554,8 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
 
 test("report name replaces the header reference while the footer and filename retain stream identity", () => {
   const report = createReport();
+  const original = structuredClone(report);
+  assert.notEqual(report.metadata.startedAt, report.metadata.endedAt);
   const expectedDocumentTitle = reportPage
     .createReportFilename(report, "Stream-Report", "pdf")
     .replace(/\.pdf$/i, "");
@@ -586,9 +588,18 @@ test("report name replaces the header reference while the footer and filename re
 
   assert.equal(
     defaultDocument.querySelector("#report-name").textContent,
-    reportPage.formatTimestamp(report.metadata.endedAt),
+    reportPage.formatTimestamp(report.metadata.startedAt),
   );
   assert.equal(defaultDocument.title, expectedDocumentTitle);
+  assert.equal(
+    defaultDocument.querySelector("#stream-started").textContent,
+    reportPage.formatTimestamp(report.metadata.startedAt),
+  );
+  assert.equal(
+    defaultDocument.querySelector("#stream-ended").textContent,
+    reportPage.formatTimestamp(report.metadata.endedAt),
+  );
+  assert.deepEqual(report, original, "Default naming must not rewrite the saved report");
 });
 
 test("report name editor is labeled and screen-only while the saved name prints", () => {
@@ -640,7 +651,7 @@ test("report name input waits for loading and displays the custom or default sav
       });
       await surface.ready;
 
-      const expected = displayName ?? reportPage.formatTimestamp(ENDED_AT);
+      const expected = displayName ?? reportPage.formatTimestamp(STARTED_AT);
       assert.equal(surface.input.value, expected);
       assert.equal(surface.printName.textContent, expected);
       assert.equal(surface.input.disabled, false);
@@ -832,10 +843,10 @@ test("blur persists a report name and clearing it restores the default date", as
     { reportId: REPORT_ID, displayName: "Updated on blur" },
     { reportId: REPORT_ID, displayName: null },
   ]);
-  assert.equal(surface.input.value, reportPage.formatTimestamp(ENDED_AT));
-  assert.equal(surface.printName.textContent, reportPage.formatTimestamp(ENDED_AT));
+  assert.equal(surface.input.value, reportPage.formatTimestamp(STARTED_AT));
+  assert.equal(surface.printName.textContent, reportPage.formatTimestamp(STARTED_AT));
   await surface.mounted.load();
-  assert.equal(surface.input.value, reportPage.formatTimestamp(ENDED_AT));
+  assert.equal(surface.input.value, reportPage.formatTimestamp(STARTED_AT));
 });
 
 test("unchanged report names and Escape do not send rename requests", async (t) => {

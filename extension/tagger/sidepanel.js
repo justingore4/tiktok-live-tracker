@@ -50,6 +50,8 @@
     globalThis.TikTokLiveTrackerNextItemQueueProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
+  const MAX_TOTAL_REPORTS =
+    streamReportProtocol?.MAX_TOTAL_REPORTS ?? 30;
   const MAX_REPORT_DISPLAY_NAME_LENGTH =
     streamReportProtocol?.MAX_REPORT_DISPLAY_NAME_LENGTH ?? 80;
   const streamReportClientModule =
@@ -246,6 +248,9 @@
   const viewArchivedReportsButton = document.querySelector(
     "#view-archived-reports",
   );
+  const streamReportsCapacityWarning = document.querySelector(
+    "#stream-reports-capacity-warning",
+  );
   const archivedReportsShortCount = document.querySelector(
     "#archived-reports-short-count",
   );
@@ -273,6 +278,13 @@
   const clearArchivedSelectionButton = document.querySelector(
     "#clear-archived-selection",
   );
+  const downloadSelectedReportsButton = document.querySelector(
+    "#download-selected-reports",
+  );
+  const reportDownloadStatusElements = [
+    document.querySelector("#stream-report-download-status"),
+    document.querySelector("#archived-report-download-status"),
+  ];
   const restoreSelectedReportsButton = document.querySelector(
     "#restore-selected-reports",
   );
@@ -592,6 +604,8 @@
   let selectedArchivedReportIds = new Set();
   let openReportActions = null;
   let reportMutationBusy = false;
+  let reportDownloadBusy = false;
+  let reportDownloadController = null;
   let pendingReportDeletion = null;
   let pendingReportDeletionReturnFocus = null;
   let pendingReportRename = null;
@@ -1634,7 +1648,7 @@
     return typeof summary?.displayName === "string" &&
       summary.displayName.trim() !== ""
       ? summary.displayName
-      : formatReportTimestamp(summary?.endedAt);
+      : formatReportTimestamp(summary?.startedAt);
   }
 
   function setReportRenameError(message = null) {
@@ -1661,11 +1675,11 @@
   }
 
   function requestReportRename(summary, returnFocusTarget) {
-    if (reportRenameBusy || reportMutationBusy) {
+    if (reportRenameBusy || reportMutationBusy || reportDownloadBusy) {
       return;
     }
 
-    const defaultName = formatReportTimestamp(summary.endedAt);
+    const defaultName = formatReportTimestamp(summary.startedAt);
     const customName = typeof summary.displayName === "string"
       ? summary.displayName
       : null;
@@ -1802,7 +1816,7 @@
     moreButton.type = "button";
     moreButton.className = "report-more-button";
     moreButton.dataset.reportId = summary.reportId;
-    moreButton.disabled = reportMutationBusy;
+    moreButton.disabled = reportMutationBusy || reportDownloadBusy;
     moreButton.setAttribute("aria-haspopup", "menu");
     moreButton.setAttribute("aria-expanded", "false");
     moreButton.setAttribute("aria-controls", menuId);
@@ -1820,6 +1834,12 @@
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", `Actions for ${reportDisplayName}`);
     menu.hidden = true;
+
+    menu.append(
+      createReportMenuAction("Download PDF", "download-pdf", () => {
+        void runReportDownload([summary.reportId]);
+      }),
+    );
 
     if (!archived) {
       menu.append(
@@ -1898,10 +1918,14 @@
     restoreSelectedReportsButton.hidden = availableSlots === 0;
     restoreSelectedReportsButton.disabled =
       reportMutationBusy ||
+      reportDownloadBusy ||
       selectedCount === 0 ||
       selectedCount > availableSlots;
     deleteSelectedReportsButton.disabled =
-      reportMutationBusy || selectedCount === 0;
+      reportMutationBusy || reportDownloadBusy || selectedCount === 0;
+    downloadSelectedReportsButton.disabled =
+      reportMutationBusy || reportDownloadBusy || streamReportsLoading ||
+      selectedCount === 0;
 
     if (availableSlots === 0) {
       archivedRestoreGuidance.textContent =
@@ -1974,6 +1998,29 @@
     renderArchivedSelectionControls();
   }
 
+  function renderReportCapacityWarning() {
+    const remainingSlots = Math.max(
+      0,
+      MAX_TOTAL_REPORTS -
+        streamReportSummaries.length -
+        archivedReportSummaries.length,
+    );
+    const hidden =
+      streamSnapshot.activeSession !== null ||
+      streamReportsLoading ||
+      reportMutationBusy ||
+      typeof streamReportsLoadError === "string" ||
+      typeof archivedReportsLoadError === "string" ||
+      remainingSlots > 3;
+
+    streamReportsCapacityWarning.hidden = hidden;
+    streamReportsCapacityWarning.textContent = hidden
+      ? ""
+      : remainingSlots === 0
+        ? "Report library full — delete an archived report"
+        : `${remainingSlots} report ${remainingSlots === 1 ? "slot" : "slots"} left`;
+  }
+
   function renderStreamReportsPanel() {
     const inactive = streamSnapshot.activeSession === null;
     const hasReports = streamReportSummaries.length > 0;
@@ -1992,6 +2039,7 @@
       `${streamReportSummaries.length}/${MAX_DASHBOARD_REPORTS} saved`;
     archivedReportsShortCount.textContent =
       `${archivedReportSummaries.length} archived`;
+    renderReportCapacityWarning();
     viewArchivedReportsButton.disabled =
       streamReportsLoading || reportMutationBusy;
     streamReportsList.replaceChildren(
@@ -2043,11 +2091,81 @@
     mappingAnnouncement.textContent = message;
   }
 
+  function renderReportDownloadProgress(progress) {
+    const phase = progress.phase ?? progress.status;
+    const running = ["preflight", "generating", "downloading"].includes(phase);
+    let message = progress.message ?? "";
+    if (running) {
+      const completed = progress.completed ?? 0;
+      const failed = progress.failed ?? 0;
+      message = phase === "preflight"
+        ? `Checking ${progress.total} report filenames before downloading...`
+        : `${completed} of ${progress.total} PDFs downloaded${failed ? `; ${failed} failed` : ""}. ` +
+          `${phase === "generating" ? "Preparing" : "Downloading"}: ${progress.name}`;
+      message += " Keep the tracker panel open until the downloads finish.";
+    }
+    if (phase === "duplicate") {
+      const names = (progress.conflicts ?? []).map((group) =>
+        group.map((entry) => `"${entry.name}"`).join(" and ") +
+        ` -> ${group[0].filename}`,
+      );
+      message += `\n${names.join("\n")}\nNo PDFs were downloaded.`;
+    } else if (Array.isArray(progress.failures) && progress.failures.length > 0) {
+      const details = progress.failures.filter((failure) =>
+        failure.name || failure.message !== message,
+      ).map((failure) => failure.name
+        ? `${failure.name}: ${failure.message}` : failure.message,
+      );
+      if (details.length) message += "\n" + details.join("\n");
+    }
+    for (const element of reportDownloadStatusElements) {
+      element.hidden = !message;
+      element.textContent = message;
+      element.dataset.error = String(["failed", "partial", "duplicate"].includes(phase));
+    }
+  }
+
+  async function runReportDownload(reportIds) {
+    // Selection may change while generation runs; the job owns this snapshot.
+    const ids = [...new Set(reportIds)];
+    if (reportDownloadBusy || reportMutationBusy || reportRenameBusy ||
+        streamReportsLoading || ids.length === 0) {
+      return;
+    }
+    reportDownloadBusy = true;
+    renderStreamReportsPanel();
+    try {
+      if (!reportDownloadController) {
+        reportDownloadController = globalThis.TikTokLiveTrackerReportDownloads
+          .createReportDownloadController({
+            getReport: (reportId) => streamReportClient.getReport({ reportId }),
+            generatePdf: (record) => globalThis.TikTokLiveTrackerReportPdf
+              .generateReportPdf(record),
+            downloads: chrome.downloads,
+            runtime: chrome.runtime,
+            Blob: globalThis.Blob,
+            URL: globalThis.URL,
+            onProgress: renderReportDownloadProgress,
+          });
+      }
+      const result = await reportDownloadController.download(ids);
+      renderReportDownloadProgress(result);
+    } catch (error) {
+      renderReportDownloadProgress({
+        status: "failed",
+        message: error?.message ?? "PDF downloads could not be prepared. Please retry.",
+      });
+    } finally {
+      reportDownloadBusy = false;
+      renderStreamReportsPanel();
+    }
+  }
+
   async function runReportMutation(action, reportIds) {
     const ids = [...new Set(reportIds)];
     const archivedAction = action !== "archive";
 
-    if (reportMutationBusy || ids.length === 0) {
+    if (reportMutationBusy || reportDownloadBusy || ids.length === 0) {
       return;
     }
 
@@ -2100,7 +2218,7 @@
   function requestPermanentReportDeletion(reportIds, returnFocusTarget = null) {
     const ids = [...new Set(reportIds)];
 
-    if (ids.length === 0 || reportMutationBusy) {
+    if (ids.length === 0 || reportMutationBusy || reportDownloadBusy) {
       return;
     }
 
@@ -5562,6 +5680,10 @@
     selectedArchivedReportIds.clear();
     syncArchivedReportCheckboxes();
     renderArchivedSelectionControls();
+  });
+
+  downloadSelectedReportsButton.addEventListener("click", () => {
+    void runReportDownload([...selectedArchivedReportIds]);
   });
 
   restoreSelectedReportsButton.addEventListener("click", () => {

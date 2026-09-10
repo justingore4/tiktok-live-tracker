@@ -640,7 +640,7 @@ the **End Stream Tracking** action. Setup, resume, loading, and error states ret
 full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
 error alerts remain available near the top so failures are not hidden by that layout.
 After End, the inactive side panel shows up to five **Business Records**. Each record
-shows its timestamp-based default name, completed/total sales, and exact Gross Item Sales,
+shows its tracking-start timestamp as the default name, completed/total sales, and exact Gross Item Sales,
 then opens the
 same extension report page in a new tab. **View archived reports** switches to a managed
 archive of up to 25 additional records; archived records remain openable and therefore
@@ -651,13 +651,36 @@ panel does not read `chrome.storage` directly.
 Each current record's **More actions** menu can assign an optional local display name or
 move that record into archive. Renaming changes neither the canonical report snapshot nor
 its immutable report/stream IDs; the display name survives reload, archive, restore, and
-report-only corrections. The report cover shows that name (or the timestamp fallback),
+report-only corrections. The report cover shows that name (or the tracking-start timestamp fallback),
 while its footer retains the stream reference. Archived
 selection mode supports Select/Select all/Clear selection, atomic **Restore selected**
 into currently available Business Records slots, and **Delete selected** behind an
 explicit permanent-delete confirmation. Restore rejects the entire selection when it is
 larger than the available slot count. Archive deletion applies only to archived records;
 canceling confirmation or any failed worker command changes nothing.
+
+Direct PDF export is a read-only side-panel workflow. `report/report-downloads.js`
+snapshots IDs, loads all records through the existing report client, normalizes and
+sanitizes final filenames, then rejects the whole batch on case-insensitive collisions.
+`report/report-pdf.js` reuses report-page presentation and summary calculations to
+render a local, selectable-text PDF with bundled jsPDF/AutoTable and embedded DejaVu Sans.
+All printed tables are included in direct exports, with repeated headings and no editing
+controls; browser print still preserves the on-screen variation disclosure state.
+Dependency versions, official sources, hashes, and licenses are in `extension/vendor/`.
+Unsupported font glyphs cause a visible per-report failure rather than dropped content.
+
+The `downloads` permission is used only to create PDF downloads, watch their terminal
+events, and query each newly created download by its own ID to cover event races.
+`conflictAction: "uniquify"` protects existing disk files; it does not bypass the earlier
+within-batch collision rejection. Each file must reach Chrome's `complete` state before
+it is counted as downloaded. Load/preflight failure prevents all downloads; per-file
+generation/start/interruption failures are reported individually and the remaining files
+continue. Concurrent clicks in the panel are rejected, and report mutations in that
+panel are disabled until export finishes. Selection changes do not alter the snapshot.
+Keep that panel open for the job: this is not a background queue and does not resume
+after closing/reloading it. No storage writes, export-state schema, data migration,
+automatic deletion, or report-limit changes are introduced. PDFs are not restorable
+backups. All downloads and font loading remain local to the extension.
 
 Shared tagger behavior includes:
 
@@ -1002,6 +1025,14 @@ does not consume one of the five finalized Business Records slots, and still cou
 toward the total-record and byte caps. A small fixed allowance lets a valid near-cap
 version-1 envelope acquire archive fields and reserves bounded room for optional report
 names without data loss while keeping the effective enforced ceiling approximately 4 MiB.
+The manifest requests `unlimitedStorage` to remove Chrome's normal
+[`chrome.storage.local` quota](https://developer.chrome.com/docs/extensions/reference/api/storage#property-local)
+for the extension's persisted data. The five-current/25-archived report limits and
+`MAX_ARCHIVE_BYTES` remain application-enforced, independent of that permission.
+This permission-only safeguard does not introduce a storage-schema change, migration,
+pruning, or deletion. It also does not bound reconciliation history, eliminate the cost
+of processing and saving that history, or prevent disk/resource failures.
+
 Finalizing what would be a sixth
 Business Record atomically moves the oldest finalized Business Record into archive when
 capacity permits. Equal end times use report identity as the stable tie-break.

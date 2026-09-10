@@ -13,6 +13,11 @@
 
   if (root.document && root.addEventListener) {
     const start = () => {
+      // The side panel also loads these presentation helpers for direct PDFs.
+      // Only the actual report page should mount its editor and print controls.
+      if (!root.document.querySelector?.("#report-content")) {
+        return;
+      }
       streamReportPage.mountStreamReportPage({
         document: root.document,
         location: root.location,
@@ -1071,7 +1076,7 @@
       return typeof record.displayName === "string" &&
         record.displayName.trim() !== ""
         ? record.displayName
-        : formatDefaultReportName(record.report?.metadata?.endedAt);
+        : formatDefaultReportName(record.report?.metadata?.startedAt);
     }
 
     function renderReport(document, record) {
