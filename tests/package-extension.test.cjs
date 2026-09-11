@@ -30,11 +30,14 @@ async function writeFixtureFile(rootDir, relativePath, content) {
   await fs.writeFile(target, content);
 }
 
-async function fixture(t, extraFiles = {}) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), FIXTURE_PREFIX));
+async function fixture(t, extraFiles = {}, temporaryDirectory = os.tmpdir()) {
+  // macOS can expose /var through TMPDIR while Node uses /private/var for cwd.
+  // Use canonical paths for fixture assertions and their guarded cleanup alike.
+  const temporaryRoot = await fs.realpath(temporaryDirectory);
+  const rootDir = await fs.realpath(await fs.mkdtemp(path.join(temporaryRoot, FIXTURE_PREFIX)));
   t.after(async () => {
     // Only remove the exact directory this test allocated, never a broad temp root.
-    assert.equal(path.dirname(rootDir), path.resolve(os.tmpdir()));
+    assert.equal(path.dirname(rootDir), temporaryRoot);
     assert.ok(path.basename(rootDir).startsWith(FIXTURE_PREFIX));
     await fs.rm(rootDir, { recursive: true, force: true });
   });
@@ -49,6 +52,41 @@ async function fixture(t, extraFiles = {}) {
   await Promise.all(Object.entries(files).map(([name, bytes]) => writeFixtureFile(rootDir, name, bytes)));
   return rootDir;
 }
+
+test('fixture resolves aliased temporary paths and cleans up only its allocated directory', async (t) => {
+  const rootDir = await fixture(t);
+  const temporaryRoot = path.join(rootDir, 'temporary-target');
+  const temporaryAlias = path.join(rootDir, 'temporary-alias');
+  await fs.mkdir(temporaryRoot);
+  await fs.writeFile(path.join(temporaryRoot, 'keep.txt'), 'preserve sibling data');
+  try {
+    await fs.symlink(temporaryRoot, temporaryAlias, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) {
+      t.skip(`OS does not permit creating a test link: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  const cleanups = [];
+  try {
+    const aliasedFixture = await fixture({ after: (cleanup) => cleanups.push(cleanup) }, {}, temporaryAlias);
+    assert.equal(path.dirname(aliasedFixture), await fs.realpath(temporaryRoot));
+    assert.equal(aliasedFixture, await fs.realpath(aliasedFixture));
+    assert.notEqual(aliasedFixture, path.join(temporaryAlias, path.basename(aliasedFixture)));
+    const result = await packageExtension({
+      rootDir: aliasedFixture,
+      runTests: async (testRoot) => assert.equal(testRoot, aliasedFixture),
+    });
+    assert.equal(result.outputPath, path.join(aliasedFixture, 'dist', OUTPUT_NAME));
+  } finally {
+    for (const cleanup of cleanups) await cleanup();
+    await fs.unlink(temporaryAlias);
+  }
+  assert.deepEqual(await fs.readdir(temporaryRoot), ['keep.txt']);
+  assert.equal(await fs.readFile(path.join(temporaryRoot, 'keep.txt'), 'utf8'), 'preserve sibling data');
+});
 
 async function diskTree(directory) {
   const result = {};
