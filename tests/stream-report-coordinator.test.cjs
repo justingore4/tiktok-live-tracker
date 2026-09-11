@@ -16,10 +16,13 @@ function clone(value) {
 function createStore(options = {}) {
   let records = clone(options.records ?? []);
   const saves = [];
+  const loads = [];
 
   return {
     saves,
-    async loadRecords() {
+    loads,
+    async loadRecords(loadOptions) {
+      loads.push(loadOptions);
       return clone(records);
     },
     async saveRecords(candidate) {
@@ -107,6 +110,7 @@ function createCoordinator(
   store,
   timestamps = ["2026-08-10T12:00:00.000Z"],
   reportModule = streamReport,
+  storageModule = storage,
 ) {
   let index = 0;
   return coordinatorModule.createStreamReportCoordinator({
@@ -114,7 +118,7 @@ function createCoordinator(
     protocol,
     reconciliation,
     reportStore: store,
-    storage,
+    storage: storageModule,
     streamReport: reportModule,
   });
 }
@@ -240,6 +244,218 @@ function createOfflineEditorRecord(index, options = {}) {
 
   return record;
 }
+
+test("capacity reads count pending records and cache detached exact envelope metadata without saves", async () => {
+  const records = [
+    createSavedRecord(1, { displayName: "été 漢字 🧶" }),
+    createSavedRecord(2, { archived: true }),
+    createSavedRecord(3, { lifecycleStatus: "pending_end" }),
+  ];
+  const store = createStore({ records });
+  let measurements = 0;
+  const coordinator = createCoordinator(store, undefined, streamReport, {
+    ...storage,
+    measureRecordsByteLength(candidate) {
+      measurements += 1;
+      return storage.measureRecordsByteLength(candidate);
+    },
+  });
+  const expected = {
+    usedBytes: Buffer.byteLength(JSON.stringify({
+      schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+      records,
+    }), "utf8"),
+    maxBytes: storage.MAX_ARCHIVE_BYTES,
+    totalReports: 3,
+    maxReports: storage.MAX_TOTAL_REPORTS,
+  };
+  const first = await coordinator.getLibraryCapacity();
+  assert.deepEqual(first, expected);
+  first.usedBytes = 0;
+  assert.deepEqual(
+    await coordinator.dispatch({ type: "get_library_capacity" }),
+    expected,
+  );
+  assert.deepEqual(store.loads, [{ readOnly: true }]);
+  assert.equal(measurements, 1);
+  assert.equal(store.saves.length, 0);
+  assert.deepEqual(store.read(), records);
+  assert.equal((await coordinator.listReports()).reports.length, 1);
+  assert.equal((await coordinator.listArchivedReports()).reports.length, 1);
+  assert.deepEqual(await coordinator.getLibraryCapacity(), expected);
+  assert.deepEqual(store.loads, [{ readOnly: true }, { readOnly: false }]);
+  assert.equal(measurements, 2);
+  await coordinator.getLibraryCapacity();
+  assert.equal(measurements, 2);
+});
+
+test("capacity refreshes after every saved library change and remains serialized with mutations", async () => {
+  const existing = createOfflineEditorRecord(1);
+  const store = createStore({ records: [existing] });
+  let measurements = 0;
+  const coordinator = createCoordinator(store, undefined, streamReport, {
+    ...storage,
+    measureRecordsByteLength(candidate) {
+      measurements += 1;
+      return storage.measureRecordsByteLength(candidate);
+    },
+  });
+  await coordinator.listReports();
+  async function checkCapacity(expectedCount) {
+    const previousMeasurements = measurements;
+    const expected = {
+      usedBytes: storage.measureRecordsByteLength(store.read()),
+      maxBytes: storage.MAX_ARCHIVE_BYTES,
+      totalReports: expectedCount,
+      maxReports: storage.MAX_TOTAL_REPORTS,
+    };
+    assert.deepEqual(await coordinator.getLibraryCapacity(), expected);
+    assert.equal(measurements, previousMeasurements + 1);
+    assert.deepEqual(await coordinator.getLibraryCapacity(), expected);
+    assert.equal(measurements, previousMeasurements + 1);
+  }
+  await checkCapacity(1);
+  const renamed = coordinator.renameReport({
+    reportId: existing.reportId,
+    displayName: "新增 🙂",
+  });
+  const readAfterRename = coordinator.getLibraryCapacity();
+  await renamed;
+  assert.equal(
+    (await readAfterRename).usedBytes,
+    storage.measureRecordsByteLength(store.read()),
+  );
+  await coordinator.correctFinalizedReportUnitCost({
+    reportId: existing.reportId, sku: "TEE-M", unitCostCents: 1000,
+  });
+  await checkCapacity(1);
+  await coordinator.correctFinalizedReportMappings({
+    reportId: existing.reportId,
+    changes: [{
+      variationNumber: 10,
+      expectedStatus: "payment_complete",
+      expectedSku: "TEE-M",
+      sku: "TEE-L",
+    }],
+  });
+  await checkCapacity(1);
+  await coordinator.replaceFinalizedReport({
+    reportId: existing.reportId,
+    reconciliationState: { completed: 4, total: 5, gmv: 12345 },
+  });
+  await checkCapacity(1);
+  await coordinator.archiveReports([existing.reportId]);
+  await checkCapacity(1);
+  await coordinator.restoreReports([existing.reportId]);
+  await checkCapacity(1);
+  const prepared = await coordinator.prepareReport({
+    reconciliationState: {}, streamId: STREAM_ONE, startedAt: STARTED_AT,
+  });
+  await checkCapacity(2);
+  await coordinator.finalizeReport(prepared.reportId);
+  await checkCapacity(2);
+  await coordinator.archiveReports([existing.reportId]);
+  await checkCapacity(2);
+  await coordinator.deleteArchivedReports([existing.reportId]);
+  await checkCapacity(1);
+  const pending = createSavedRecord(4);
+  await coordinator.prepareReport({
+    reconciliationState: {},
+    streamId: pending.report.metadata.streamId,
+    startedAt: STARTED_AT,
+  });
+  await checkCapacity(2);
+  await coordinator.discardPendingReportForStream(pending.report.metadata.streamId);
+  await checkCapacity(1);
+  await coordinator.prepareReport({
+    reconciliationState: {},
+    streamId: pending.report.metadata.streamId,
+    startedAt: STARTED_AT,
+  });
+  await checkCapacity(2);
+  await coordinator.repairPendingReports(null);
+  await checkCapacity(2);
+});
+
+test("failed saves leave capacity unchanged and failed reads can be retried", async () => {
+  const existing = createSavedRecord(1);
+  const options = { records: [existing], failSave: true };
+  const store = createStore(options);
+  const coordinator = createCoordinator(store);
+  await coordinator.listReports();
+  const before = await coordinator.getLibraryCapacity();
+  await assert.rejects(
+    coordinator.renameReport({ reportId: existing.reportId, displayName: "New" }),
+    (error) => error.code === "STORAGE_WRITE_FAILED",
+  );
+  assert.deepEqual(await coordinator.getLibraryCapacity(), before);
+  assert.deepEqual(store.read(), [existing]);
+  options.failSave = false;
+  await coordinator.renameReport({ reportId: existing.reportId, displayName: "New" });
+  assert.ok((await coordinator.getLibraryCapacity()).usedBytes > before.usedBytes);
+
+  const retryStore = createStore();
+  let attempts = 0;
+  const retryCoordinator = createCoordinator({
+    ...retryStore,
+    async loadRecords(loadOptions) {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new storage.StreamReportStorageError("STORAGE_READ_FAILED", "Failed.");
+      }
+      return retryStore.loadRecords(loadOptions);
+    },
+  });
+  await assert.rejects(
+    retryCoordinator.getLibraryCapacity(),
+    (error) => error.code === "STORAGE_READ_FAILED",
+  );
+  assert.deepEqual(await retryCoordinator.getLibraryCapacity(), {
+    usedBytes: storage.measureRecordsByteLength([]),
+    maxBytes: storage.MAX_ARCHIVE_BYTES,
+    totalReports: 0,
+    maxReports: storage.MAX_TOTAL_REPORTS,
+  });
+  assert.equal(attempts, 2);
+});
+
+test("capacity-only legacy loads leave persisted bytes unchanged and do not suppress later migration", async () => {
+  const legacy = createSavedRecord(1, { lifecycleStatus: "pending_end" });
+  delete legacy.archived;
+  const values = {
+    [storage.STORAGE_KEY]: {
+      schemaVersion: storage.LEGACY_STORAGE_SCHEMA_VERSION,
+      records: [legacy],
+    },
+  };
+  const before = JSON.stringify(values);
+  let writes = 0;
+  const store = storage.createStreamReportStore({
+    streamReport,
+    storageArea: {
+      async get() { return clone(values); },
+      async set(entries) {
+        writes += 1;
+        Object.assign(values, clone(entries));
+      },
+    },
+  });
+  const coordinator = createCoordinator(store);
+  const capacity = await coordinator.getLibraryCapacity();
+  assert.equal(capacity.totalReports, 1);
+  assert.equal(capacity.usedBytes, storage.measureRecordsByteLength([
+    { ...legacy, archived: false },
+  ]));
+  assert.deepEqual(await coordinator.getLibraryCapacity(), capacity);
+  assert.equal(writes, 0);
+  assert.equal(JSON.stringify(values), before);
+  assert.deepEqual(await coordinator.listReports(), { reports: [] });
+  assert.equal(writes, 1);
+  assert.equal(values[storage.STORAGE_KEY].schemaVersion, storage.STORAGE_SCHEMA_VERSION);
+  assert.equal(values[storage.STORAGE_KEY].records[0].lifecycleStatus, "pending_end");
+  assert.deepEqual(await coordinator.getLibraryCapacity(), capacity);
+  assert.equal(writes, 1);
+});
 
 test("prepares before End, finalizes idempotently, and exposes strict reads", async () => {
   const store = createStore();

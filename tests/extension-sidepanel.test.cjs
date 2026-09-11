@@ -201,6 +201,16 @@ test("service worker opens the side panel from the toolbar action", () => {
         LIST_REPORTS: "list_reports",
       },
       StreamReportProtocolError: FakeStreamReportProtocolError,
+      createReportLibraryChangedNotification() {
+        return {
+          channel: "tiktok-live-tracker.stream-report",
+          version: 1,
+          event: { type: "report_library_changed" },
+        };
+      },
+      isReportLibraryChangedNotification() {
+        return false;
+      },
     },
     TikTokLiveTrackerStreamReportStorage: {
       StreamReportStorageError: FakeStreamReportStorageError,
@@ -2772,7 +2782,7 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
   assert.match(
     panelSource,
-    /async function refreshStreamReports\(options = \{\}\)[\s\S]+Promise\.all\([\s\S]+streamReportClient\.listReports\(\)[\s\S]+streamReportClient\.listArchivedReports\(\)[\s\S]+dashboardResponse\.reports[\s\S]+archivedResponse\.reports[\s\S]+options\.openLatest === true[\s\S]+openStreamReport\(latest\.reportId\)/,
+    /async function refreshStreamReports\(options = \{\}\)[\s\S]+streamReportsOpenLatestPending \|\|= options\.openLatest === true[\s\S]+Promise\.all\([\s\S]+streamReportClient\.listReports\(\)[\s\S]+streamReportClient\.listArchivedReports\(\)[\s\S]+streamReportClient\.getLibraryCapacity\(\)[\s\S]+dashboardResponse\.reports[\s\S]+archivedResponse\.reports[\s\S]+const openLatest = streamReportsOpenLatestPending[\s\S]+openStreamReport\(latest\.reportId\)/,
   );
   assert.match(
     panelSource,
@@ -2806,9 +2816,10 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
     /streamSessionController\.endActiveStreamWithoutReport\(\)/,
   );
   assert.match(endWithoutReportSource, /ended without a new report/);
+  assert.match(endWithoutReportSource, /await refreshStreamReports\(\)/);
   assert.doesNotMatch(
     endWithoutReportSource,
-    /refreshStreamReports|openStreamReport|\.endActiveStream\(\)/,
+    /openLatest:\s*true|openStreamReport|\.endActiveStream\(\)/,
   );
   assert.match(
     panelSource,

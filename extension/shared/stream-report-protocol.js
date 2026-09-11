@@ -25,6 +25,7 @@
     const COMMAND_TYPES = Object.freeze({
       LIST_REPORTS: "list_reports",
       LIST_ARCHIVED_REPORTS: "list_archived_reports",
+      GET_LIBRARY_CAPACITY: "get_library_capacity",
       GET_REPORT: "get_report",
       LIST_PAYMENT_FIXING_ORDERS: "list_payment_fixing_orders",
       RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
@@ -40,6 +41,7 @@
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.LIST_REPORTS]: ["type"],
       [COMMAND_TYPES.LIST_ARCHIVED_REPORTS]: ["type"],
+      [COMMAND_TYPES.GET_LIBRARY_CAPACITY]: ["type"],
       [COMMAND_TYPES.GET_REPORT]: ["reportId", "type"],
       [COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS]: ["reportId", "type"],
       [COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER]: [
@@ -72,6 +74,9 @@
       COMMAND_TYPES.RESTORE_REPORTS,
       COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
     ]);
+    const NOTIFICATION_TYPES = Object.freeze({
+      REPORT_LIBRARY_CHANGED: "report_library_changed",
+    });
 
     class StreamReportProtocolError extends Error {
       constructor(code, message) {
@@ -372,6 +377,24 @@
       return message;
     }
 
+    function createReportLibraryChangedNotification() {
+      return {
+        channel: MESSAGE_CHANNEL,
+        version: MESSAGE_VERSION,
+        event: { type: NOTIFICATION_TYPES.REPORT_LIBRARY_CHANGED },
+      };
+    }
+
+    function isReportLibraryChangedNotification(message) {
+      return (
+        hasExactKeys(message, ["channel", "event", "version"]) &&
+        message.channel === MESSAGE_CHANNEL &&
+        message.version === MESSAGE_VERSION &&
+        hasExactKeys(message.event, ["type"]) &&
+        message.event.type === NOTIFICATION_TYPES.REPORT_LIBRARY_CHANGED
+      );
+    }
+
     return Object.freeze({
       COMMAND_TYPES,
       MAX_ACTIVE_REPORTS,
@@ -381,9 +404,12 @@
       MAX_TOTAL_REPORTS,
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,
+      NOTIFICATION_TYPES,
       REPORT_ID_PATTERN,
       StreamReportProtocolError,
       createStreamReportMessage,
+      createReportLibraryChangedNotification,
+      isReportLibraryChangedNotification,
       validateCommand,
       validateStreamReportMessage,
     });

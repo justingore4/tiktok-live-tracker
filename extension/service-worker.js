@@ -178,6 +178,7 @@ const inventoryImportService =
 const sidePanelUrl = chrome.runtime.getURL("tagger/sidepanel.html");
 const reportPageUrl = chrome.runtime.getURL("report/report.html");
 const reportReadCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.GET_LIBRARY_CAPACITY,
   streamReportProtocol.COMMAND_TYPES.LIST_REPORTS,
   streamReportProtocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS,
   streamReportProtocol.COMMAND_TYPES.GET_REPORT,
@@ -189,6 +190,15 @@ const reportPageOnlyCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
   streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
   streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+]);
+const reportMutationCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.RENAME_REPORT,
+  streamReportProtocol.COMMAND_TYPES.ARCHIVE_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.RESTORE_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
+  streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+  streamReportProtocol.COMMAND_TYPES.SAVE_OFFLINE_EDITOR_MAPPINGS,
 ]);
 const captureDashboardUrlPattern =
   /^https:\/\/shop\.tiktok\.com\/streamer\/live\/product\/dashboard(?:[?#]|$)/;
@@ -202,6 +212,9 @@ const liveBidChangedNotification = Object.freeze(
 );
 const nextItemQueueChangedNotification = Object.freeze(
   nextItemQueueProtocol.createQueueChangedNotification(),
+);
+const reportLibraryChangedNotification = Object.freeze(
+  streamReportProtocol.createReportLibraryChangedNotification(),
 );
 let messageTail = Promise.resolve();
 const captureHealthStore = captureHealth?.createCaptureHealthStore({
@@ -283,6 +296,10 @@ function getMessageBoundary(message) {
   }
 
   if (message.channel === streamReportProtocol.MESSAGE_CHANNEL) {
+    if (streamReportProtocol.isReportLibraryChangedNotification(message)) {
+      return null;
+    }
+
     return {
       coordinator: reportCoordinator,
       label: "stream-report",
@@ -1312,6 +1329,13 @@ function dispatchBoundaryCommand(boundary, command) {
   }
 
   if (boundary.protocol === streamReportProtocol) {
+    if (
+      command.type === streamReportProtocol.COMMAND_TYPES.GET_LIBRARY_CAPACITY
+    ) {
+      // Capacity includes pending records and must not repair or mutate them.
+      return reportCoordinator.dispatch(command);
+    }
+
     return getStreamSessionResponse().then(async ({ state }) => {
       if (
         command.type ===
@@ -1530,6 +1554,20 @@ function handleCaptureHealthMessage(message, sender, sendResponse) {
   return true;
 }
 
+function notifyReportLibraryChanged() {
+  try {
+    const delivery = chrome.runtime.sendMessage(
+      reportLibraryChangedNotification,
+    );
+
+    if (delivery && typeof delivery.catch === "function") {
+      delivery.catch(() => undefined);
+    }
+  } catch {
+    // Report persistence already succeeded; delivery is best-effort.
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (captureHealthStore && message?.channel === captureHealth.CHANNEL) {
     return handleCaptureHealthMessage(message, sender, sendResponse);
@@ -1561,6 +1599,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   execution.then(
     (data) => {
+      if (
+        boundary.protocol === streamReportProtocol &&
+        reportMutationCommandTypes.has(message.command?.type)
+      ) {
+        notifyReportLibraryChanged();
+      }
+
       if (
         boundary.protocol === captureProtocol &&
         isRecord(data) &&

@@ -26,6 +26,7 @@
     const REQUIRED_COMMAND_TYPES = Object.freeze([
       "LIST_REPORTS",
       "LIST_ARCHIVED_REPORTS",
+      "GET_LIBRARY_CAPACITY",
       "GET_REPORT",
       "LIST_PAYMENT_FIXING_ORDERS",
       "RESOLVE_PAYMENT_FIXING_ORDER",
@@ -119,6 +120,9 @@
         protocol.MAX_ACTIVE_REPORTS < 1 ||
         !Number.isSafeInteger(protocol.MAX_ARCHIVED_REPORTS) ||
         protocol.MAX_ARCHIVED_REPORTS < 1 ||
+        !Number.isSafeInteger(protocol.MAX_TOTAL_REPORTS) ||
+        protocol.MAX_TOTAL_REPORTS !==
+          protocol.MAX_ACTIVE_REPORTS + protocol.MAX_ARCHIVED_REPORTS ||
         !Number.isSafeInteger(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH) ||
         protocol.MAX_REPORT_DISPLAY_NAME_LENGTH < 1 ||
         typeof protocol.createStreamReportMessage !== "function"
@@ -763,6 +767,31 @@
       );
     }
 
+    function parseLibraryCapacityData(data, protocol) {
+      if (
+        !hasExactKeys(data, [
+          "usedBytes", "maxBytes", "totalReports", "maxReports",
+        ]) ||
+        !Number.isSafeInteger(data.usedBytes) ||
+        data.usedBytes < 0 ||
+        !Number.isSafeInteger(data.maxBytes) ||
+        data.maxBytes < 1 ||
+        data.usedBytes > data.maxBytes ||
+        !Number.isSafeInteger(data.totalReports) ||
+        data.totalReports < 0 ||
+        !Number.isSafeInteger(data.maxReports) ||
+        data.maxReports !== protocol.MAX_TOTAL_REPORTS ||
+        data.totalReports > data.maxReports
+      ) {
+        fail(
+          "INVALID_RESPONSE",
+          "The stream-report service returned invalid library capacity.",
+        );
+      }
+
+      return { ...data };
+    }
+
     function createStreamReportClient(options) {
       const {
         runtime,
@@ -884,6 +913,13 @@
             };
           },
           (data) => parseRenameData(data, protocol, requested),
+        );
+      }
+
+      function getLibraryCapacity() {
+        return enqueueCommand(
+          () => ({ type: protocol.COMMAND_TYPES.GET_LIBRARY_CAPACITY }),
+          (data) => parseLibraryCapacityData(data, protocol),
         );
       }
 
@@ -1035,6 +1071,7 @@
       return Object.freeze({
         archiveReports,
         deleteArchivedReports,
+        getLibraryCapacity,
         getReport,
         listArchivedReports,
         listPaymentFixingOrders,

@@ -3619,6 +3619,267 @@ test("a post-End finalization failure returns the saved pending report for resta
   assert.equal(harness.consoleErrors.length, 1);
 });
 
+test("report capacity reads bypass session reads, repairs, and all mutations", async () => {
+  const capacity = {
+    usedBytes: 2048,
+    maxBytes: (4 * 1024 * 1024) + (8 * 1024),
+    totalReports: 3,
+    maxReports: 30,
+  };
+  const harness = createWorkerHarness({
+    dispatchError: "known",
+    streamDispatchError: "known",
+    reportRepairError: true,
+    reportDispatchResult: capacity,
+  });
+  const message = harness.createReportMessage({ type: "get_library_capacity" });
+
+  for (const url of [
+    harness.sidePanelUrl,
+    harness.reportPageUrl,
+    `${harness.reportPageUrl}?reportId=test`,
+    `${harness.reportPageUrl}#saved`,
+  ]) {
+    const response = await harness.send(
+      message,
+      harness.createSender({ url }),
+    ).response;
+    assert.deepEqual(response, { ok: true, data: capacity });
+  }
+
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+  assert.deepEqual(harness.runtimeSendMessages, []);
+  assert.deepEqual(harness.reportCalls.slice(2), Array.from({ length: 4 }, () => ({
+    type: "dispatch",
+    command: { type: "get_library_capacity" },
+  })));
+  assert.deepEqual(harness.consoleErrors, []);
+});
+
+test("worker capacity counts pending and archived records without changing persisted reports", async () => {
+  const storage = require("../extension/shared/stream-report-storage.js");
+  const coordinatorModule = require("../extension/shared/stream-report-coordinator.js");
+  const fixture = createPaymentCorrectionFixture();
+  const records = [
+    { lifecycleStatus: "finalized", archived: false },
+    { lifecycleStatus: "finalized", archived: true },
+    { lifecycleStatus: "pending_end", archived: false },
+  ].map((status, index) => {
+    const uuid = `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`;
+    const reportId = `stream-report:${uuid}`;
+    const report = JSON.parse(JSON.stringify(fixture.record.report));
+    report.reportId = reportId;
+    report.metadata.streamId = `local-stream:${uuid}`;
+    return { reportId, ...status, displayName: `Stream ${index + 1} — 茶`, report };
+  });
+  const persisted = {
+    schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+    records,
+  };
+  const originalJson = JSON.stringify(persisted);
+  let reads = 0;
+  let writes = 0;
+  const store = storage.createStreamReportStore({
+    storageArea: {
+      async get(key) {
+        reads += 1;
+        assert.equal(key, storage.STORAGE_KEY);
+        return { [key]: JSON.parse(JSON.stringify(persisted)) };
+      },
+      async set() {
+        writes += 1;
+        throw new Error("Capacity must not write report storage.");
+      },
+    },
+    streamReport: {
+      hydrateStreamReport: (report) => JSON.parse(JSON.stringify(report)),
+    },
+  });
+  const coordinator = coordinatorModule.createStreamReportCoordinator({
+    now: () => "2026-09-10T12:00:00.000Z",
+    protocol: streamReportProtocol,
+    reconciliation: require("../extension/shared/reconciliation.js"),
+    reportStore: store,
+    storage,
+    streamReport: require("../extension/shared/stream-report.js"),
+  });
+  const harness = createWorkerHarness({
+    streamDispatchError: "known",
+    dispatchError: "known",
+    reportRepairError: true,
+  });
+  harness.reportCoordinator.dispatch = coordinator.dispatch;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await harness.send(harness.createReportMessage({
+      type: "get_library_capacity",
+    })).response;
+    assert.deepEqual(response, {
+      ok: true,
+      data: {
+        usedBytes: Buffer.byteLength(originalJson, "utf8"),
+        maxBytes: storage.MAX_ARCHIVE_BYTES,
+        totalReports: 3,
+        maxReports: storage.MAX_TOTAL_REPORTS,
+      },
+    });
+  }
+
+  assert.equal(reads, 1);
+  assert.equal(writes, 0);
+  assert.equal(JSON.stringify(persisted), originalJson);
+  assert.equal(persisted.records[2].lifecycleStatus, "pending_end");
+  assert.equal(harness.reportCalls.length, 2);
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+  assert.deepEqual(harness.runtimeSendMessages, []);
+});
+
+test("report capacity rejects untrusted senders before reading storage", async () => {
+  const harness = createWorkerHarness();
+  const message = harness.createReportMessage({ type: "get_library_capacity" });
+
+  for (const sender of [
+    harness.createCaptureSender(),
+    harness.createSender({
+      url: `chrome-extension://${harness.extensionId}/other.html`,
+    }),
+    harness.createSender({ url: `${harness.sidePanelUrl}?untrusted` }),
+    harness.createSender({ url: `${harness.reportPageUrl}.untrusted` }),
+    harness.createSender({ id: "another-extension" }),
+  ]) {
+    const response = await harness.send(message, sender).response;
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "UNAUTHORIZED_MESSAGE_SENDER");
+  }
+
+  assert.equal(harness.reportCalls.length, 2);
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+  assert.deepEqual(harness.runtimeSendMessages, []);
+});
+
+test("successful report mutations publish a validated library change notification", async () => {
+  const fixture = createPaymentCorrectionFixture();
+  const commands = [
+    { type: "rename_report", reportId: fixture.reportId, displayName: "Launch" },
+    ...["archive_reports", "restore_reports", "delete_archived_reports"].map(
+      (type) => ({ type, reportIds: [fixture.reportId] }),
+    ),
+    {
+      type: "update_report_unit_cost",
+      reportId: fixture.reportId,
+      sku: "KOREA-TEE-OS",
+      unitCostCents: 625,
+    },
+    {
+      type: "save_offline_editor_mappings",
+      reportId: fixture.reportId,
+      changes: [{
+        variationNumber: 10,
+        expectedStatus: "payment_complete",
+        expectedSku: "TEE-M",
+        sku: "TEE-L",
+      }],
+    },
+    {
+      type: "resolve_payment_fixing_order",
+      reportId: fixture.reportId,
+      variationNumber: 299,
+      resolution: "canceled",
+      soldPriceCents: null,
+    },
+  ];
+
+  for (const command of commands) {
+    const harness = createWorkerHarness({
+      statefulReconciliation: true,
+      initialReconciliationState: fixture.reconciliationState,
+      paymentReportRecord: fixture.record,
+    });
+    const sender = harness.createSender({
+      url: command.reportIds ? harness.sidePanelUrl : harness.reportPageUrl,
+    });
+    const response = await harness.send(
+      harness.createReportMessage(command), sender,
+    ).response;
+
+    assert.equal(response.ok, true, command.type);
+    assert.deepEqual(harness.runtimeSendMessages, [
+      streamReportProtocol.createReportLibraryChangedNotification(),
+    ], command.type);
+    assert.equal(streamReportProtocol.isReportLibraryChangedNotification(
+      harness.runtimeSendMessages[0],
+    ), true);
+  }
+});
+
+test("report library notification waits for a successful persisted mutation", async () => {
+  const harness = createWorkerHarness();
+  const enteredDispatch = createDeferred();
+  const persisted = createDeferred();
+  harness.reportCoordinator.dispatch = async () => {
+    enteredDispatch.resolve();
+    await persisted.promise;
+    return { reportId: "stream-report:11111111-1111-4111-8111-111111111111" };
+  };
+  const request = harness.send(harness.createReportMessage({
+    type: "rename_report",
+    reportId: "stream-report:11111111-1111-4111-8111-111111111111",
+    displayName: "Launch",
+  }));
+
+  await enteredDispatch.promise;
+  assert.deepEqual(harness.runtimeSendMessages, []);
+  assert.equal(request.getResponseCount(), 0);
+  persisted.resolve();
+  assert.equal((await request.response).ok, true);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    streamReportProtocol.createReportLibraryChangedNotification(),
+  ]);
+});
+
+test("report mutation notifications are best-effort and omit failures", async () => {
+  const command = {
+    type: "rename_report",
+    reportId: "stream-report:11111111-1111-4111-8111-111111111111",
+    displayName: "Launch",
+  };
+  for (const options of [
+    { runtimeSendMessageThrows: new Error("No listener") },
+    { runtimeSendMessageError: new Error("No listener") },
+  ]) {
+    const harness = createWorkerHarness(options);
+    const response = await harness.send(
+      harness.createReportMessage(command),
+    ).response;
+    assert.equal(response.ok, true);
+    assert.equal(harness.runtimeSendMessages.length, 1);
+    assert.deepEqual(harness.consoleErrors, []);
+  }
+
+  const failedHarness = createWorkerHarness({ reportRepairError: true });
+  const response = await failedHarness.send(
+    failedHarness.createReportMessage(command),
+  ).response;
+  assert.equal(response.ok, false);
+  assert.deepEqual(failedHarness.runtimeSendMessages, []);
+});
+
+test("the worker ignores validated report library notifications without dispatch", async () => {
+  const harness = createWorkerHarness();
+  const request = harness.send(
+    streamReportProtocol.createReportLibraryChangedNotification(),
+  );
+
+  assert.equal(request.returnValue, false);
+  assert.equal(request.getResponseCount(), 0);
+  assert.equal(harness.reportCalls.length, 2);
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.runtimeSendMessages, []);
+});
+
 test("report reads, rename, and archive mutations enforce exact extension senders", async () => {
   const harness = createWorkerHarness();
   const message = harness.createReportMessage({ type: "list_reports" });
@@ -3891,7 +4152,9 @@ test("report mapping-correction commands enforce the exact packaged report page"
   assert.equal(harness.captureDispatchCalls.length, 0);
   assert.equal(harness.nextItemQueueCalls.length, 0);
   assert.equal(harness.inventoryImportCalls.length, 0);
-  assert.equal(harness.runtimeSendMessages.length, 0);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    streamReportProtocol.createReportLibraryChangedNotification(),
+  ]);
   assert.equal(harness.streamDispatchCalls.length, 2);
   assert.ok(harness.streamDispatchCalls.every(
     (command) =>

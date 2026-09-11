@@ -592,15 +592,21 @@ serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet
 
 The extension-owned report page loads only the local saved record. It supports native
 Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
-full-table clipboard copy for pasting at A1. Its handoff instructions start collapsed
-behind a screen toggle beside those two actions, while print styling includes the full
-instructions. The two screen-only correction disclosures have different authority
-boundaries.
+full-table clipboard copy for pasting at A1. There is no handoff-instructions toggle or
+instruction block in the report or its printed output; the README documents the backup
+and full-table replacement workflow. The three screen-only correction sections have
+different authority boundaries.
 **Finish unresolved payments** exposes only canonical-unresolved `payment_fixing` or
 temporary `payment_failed` orders. Cancellation needs no price and releases the
 reservation; completion requires a seller-verified positive final price and commits the
 mapped unit. This canonical payment correction remains limited to the newest eligible
 report while no tracker stream is active and its baseline/stream are still current.
+**Correct Item Mapping** changes completed/canceled variation mappings only in the
+selected finalized report. It requires no active tracker, no active bidding variation,
+no unresolved payments or pending reservations, and at least one editable variation.
+Unlike canonical payment correction, it is not restricted to the newest report. It
+recalculates that report and its inventory handoff without changing canonical inventory,
+other reports, or future streams.
 **Correct SKU Unit Cost** is available on every finalized current or archived report. It
 lists every SKU saved in that report's inventory, including unsold SKUs, accepts exact
 nonnegative integer-cent costs, and requires confirmation. The worker replaces only that
@@ -631,14 +637,14 @@ persistent local active stream, restores the last durable reconciliation state, 
 mapping corrections, and displays loading, saving, success, and retryable error states.
 
 Before Start, Live session presents Google Sheets inventory import followed by the local
-Start controls. Once a stream is started or resumed, the tracker workspace and Variation
-selector move directly below the header. The Local stream session section containing End
-is the last substantive section, followed by one saved-state footer indicator. While the
-stream is actively tracking, that section compacts to its tracker-active date row, moves
-the **Active** pill into the row, hides the redundant heading and safety note, and retains
-the **End Stream Tracking** action. Setup, resume, loading, and error states retain the
-full lifecycle context. A duplicate saved-status box is intentionally omitted. Retryable
-error alerts remain available near the top so failures are not hidden by that layout.
+Start controls. Once a stream is started or resumed, the logo/title header is hidden and
+the compact capture-health row sits above the Variation selector. Inventory and
+Performance Metrics use single-line section headings. The Local stream session section
+is the last substantive section and shows a small status dot plus
+`Tracker Active | Started [formatted session start]`, followed by **End Stream Tracking**.
+The active view has no separate Active pill, persistence explanation, or restored-data
+footer. Setup and Resume/End-only screens retain their lifecycle context. Genuine
+save/error status remains available; removing routine footer text does not suppress it.
 After End, the inactive side panel shows up to five **Business Records**. Each record
 shows its tracking-start timestamp as the default name, completed/total sales, and exact Gross Item Sales,
 then opens the
@@ -1036,6 +1042,25 @@ does not consume one of the five finalized Business Records slots, and still cou
 toward the total-record and byte caps. A small fixed allowance lets a valid near-cap
 version-1 envelope acquire archive fields and reserves bounded room for optional report
 names without data loss while keeping the effective enforced ceiling approximately 4 MiB.
+The pre-stream capacity warning combines remaining total-record slots with actual UTF-8
+JSON envelope bytes. Its read-only `get_library_capacity` command returns validated
+`usedBytes`, `maxBytes`, `totalReports`, and `maxReports`, including staged pending records.
+Measurement shares the save guard's envelope helper and exact `MAX_ARCHIVE_BYTES`, not a
+rounded 4 MiB estimate or Chrome's total storage usage. Capacity inspection does not
+repair pending reports or persist legacy migrations. The coordinator caches usage for
+loaded records until a successful save changes them.
+
+The side panel requests usage alongside its existing report lists, discards superseded
+responses, and refreshes after worker report-mutation notifications without polling.
+Missing or failed metadata uses the report-loading error path, never a zero-usage
+fallback. Yellow starts at 80% used, red at 90%; three or fewer slots also warn red.
+Combined warnings show both values, while either exhausted limit shows the full-library
+message. Thresholds use unrounded usage and displayed percentages round down. The
+compact, keyboard-accessible bubble remains beside View archived reports before Start,
+not in the active tracker. It adds no Start restriction or automatic deletion. Even
+below 80%, a large next report can exceed remaining capacity; the existing End-time save
+guard remains authoritative.
+
 The manifest requests `unlimitedStorage` to remove Chrome's normal
 [`chrome.storage.local` quota](https://developer.chrome.com/docs/extensions/reference/api/storage#property-local)
 for the extension's persisted data. The five-current/25-archived report limits and

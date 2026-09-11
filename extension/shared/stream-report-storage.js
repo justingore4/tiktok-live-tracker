@@ -325,6 +325,13 @@
       return new TextEncoder().encode(JSON.stringify(envelope)).byteLength;
     }
 
+    // Measure the same canonical JSON envelope used by saveRecords, including
+    // its schema metadata and every lifecycle state. Records are already
+    // hydrated by the store; measuring must not write or change them.
+    function measureRecordsByteLength(records) {
+      return getEnvelopeByteLength(createEnvelope(records));
+    }
+
     function requireSafeEnvelopeSize(
       envelope,
       maxBytes = MAX_ARCHIVE_BYTES,
@@ -342,7 +349,7 @@
     function createStreamReportStore(options) {
       const { storageArea, streamReport } = validateDependencies(options);
 
-      async function loadRecords() {
+      async function loadRecords({ readOnly = false } = {}) {
         let storedValues;
 
         try {
@@ -421,7 +428,10 @@
           createEnvelope(hydratedRecords),
         );
 
-        if (envelope.schemaVersion !== STORAGE_SCHEMA_VERSION) {
+        if (
+          envelope.schemaVersion !== STORAGE_SCHEMA_VERSION &&
+          !readOnly
+        ) {
           try {
             await storageArea.set({ [STORAGE_KEY]: migratedEnvelope });
           } catch (error) {
@@ -476,6 +486,7 @@
       TARGET_ARCHIVE_BYTES,
       StreamReportStorageError,
       createStreamReportStore,
+      measureRecordsByteLength,
     });
   },
 );

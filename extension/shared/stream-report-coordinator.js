@@ -146,6 +146,7 @@
       if (
         !storage ||
         !storage.LIFECYCLE_STATUSES ||
+        typeof storage.measureRecordsByteLength !== "function" ||
         storage.MAX_ACTIVE_REPORTS !== protocol.MAX_ACTIVE_REPORTS ||
         storage.MAX_ARCHIVED_REPORTS !== protocol.MAX_ARCHIVED_REPORTS ||
         storage.MAX_TOTAL_REPORTS !== protocol.MAX_TOTAL_REPORTS ||
@@ -177,16 +178,22 @@
         storage,
       } = validateDependencies(options);
       let loaded = false;
+      let loadedReadOnly = false;
       let records = [];
+      let libraryCapacity = null;
       let operationTail = Promise.resolve();
 
-      async function ensureLoaded() {
-        if (loaded) {
+      async function ensureLoaded({ readOnly = false } = {}) {
+        if (loaded || (readOnly && loadedReadOnly)) {
           return;
         }
 
-        records = await reportStore.loadRecords();
-        loaded = true;
+        records = await reportStore.loadRecords({ readOnly });
+        libraryCapacity = null;
+        // A capacity-only load must not persist a legacy migration. An
+        // ordinary later operation still performs the existing normal load.
+        loaded = !readOnly;
+        loadedReadOnly = readOnly;
       }
 
       function createTimestamp() {
@@ -215,6 +222,7 @@
 
       async function persist(candidateRecords) {
         records = await reportStore.saveRecords(candidateRecords);
+        libraryCapacity = null;
         return records;
       }
 
@@ -514,6 +522,21 @@
             .sort(sortNewestFirst)
             .map(createSummary),
         };
+      }
+
+      async function getLibraryCapacity() {
+        await ensureLoaded({ readOnly: true });
+
+        if (libraryCapacity === null) {
+          libraryCapacity = {
+            usedBytes: storage.measureRecordsByteLength(records),
+            maxBytes: storage.MAX_ARCHIVE_BYTES,
+            totalReports: records.length,
+            maxReports: storage.MAX_TOTAL_REPORTS,
+          };
+        }
+
+        return { ...libraryCapacity };
       }
 
       async function getReport(reportId) {
@@ -1071,6 +1094,8 @@
             return listReports();
           case protocol.COMMAND_TYPES.LIST_ARCHIVED_REPORTS:
             return listArchivedReports();
+          case protocol.COMMAND_TYPES.GET_LIBRARY_CAPACITY:
+            return getLibraryCapacity();
           case protocol.COMMAND_TYPES.GET_REPORT:
             return getReport(validated.reportId);
           case protocol.COMMAND_TYPES.RENAME_REPORT:
@@ -1169,6 +1194,9 @@
         },
         getReport(reportId) {
           return enqueue(() => getReport(reportId));
+        },
+        getLibraryCapacity() {
+          return enqueue(getLibraryCapacity);
         },
         getReportForStream(streamId) {
           return enqueue(() => getReportForStream(streamId));

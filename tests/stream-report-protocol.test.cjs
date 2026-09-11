@@ -15,6 +15,7 @@ test("creates strict read and archive-management stream-report messages", () => 
   assert.deepEqual(protocol.COMMAND_TYPES, {
     LIST_REPORTS: "list_reports",
     LIST_ARCHIVED_REPORTS: "list_archived_reports",
+    GET_LIBRARY_CAPACITY: "get_library_capacity",
     GET_REPORT: "get_report",
     LIST_PAYMENT_FIXING_ORDERS: "list_payment_fixing_orders",
     RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
@@ -32,6 +33,15 @@ test("creates strict read and archive-management stream-report messages", () => 
   assert.equal(protocol.MAX_OFFLINE_MAPPING_CHANGES, 1000);
   assert.equal(protocol.MAX_REPORT_DISPLAY_NAME_LENGTH, 80);
   assert.equal(protocol.MAX_TOTAL_REPORTS, 30);
+
+  assert.deepEqual(
+    protocol.createStreamReportMessage({ type: "get_library_capacity" }),
+    {
+      channel: protocol.MESSAGE_CHANNEL,
+      version: 1,
+      command: { type: "get_library_capacity" },
+    },
+  );
 
   assert.deepEqual(
     protocol.createStreamReportMessage({
@@ -309,6 +319,8 @@ test("rejects malformed report messages and IDs", () => {
     null,
     {},
     { type: "list_reports", extra: true },
+    { type: "get_library_capacity", extra: true },
+    { type: "get_library_capacity", reportId: REPORT_ID },
     { type: "get_report", reportId: "stream-report:bad" },
     { type: "list_payment_fixing_orders", reportId: "bad" },
     { type: "list_report_unit_costs", reportId: "bad" },
@@ -435,5 +447,39 @@ test("rejects malformed report messages and IDs", () => {
   assert.throws(
     () => protocol.validateStreamReportMessage({ ...valid, extra: true }),
     (error) => error.code === "INVALID_MESSAGE",
+  );
+});
+
+test("report-library change notifications have a strict non-command shape", () => {
+  const notification = protocol.createReportLibraryChangedNotification();
+  assert.deepEqual(notification, {
+    channel: protocol.MESSAGE_CHANNEL,
+    version: protocol.MESSAGE_VERSION,
+    event: { type: "report_library_changed" },
+  });
+  assert.equal(protocol.isReportLibraryChangedNotification(notification), true);
+  const invalid = [
+    null,
+    {},
+    { ...notification, extra: true },
+    { ...notification, channel: "another-channel" },
+    { ...notification, version: protocol.MESSAGE_VERSION + 1 },
+    { ...notification, event: { type: "another-event" } },
+    { ...notification, event: { type: "report_library_changed", extra: true } },
+    protocol.createStreamReportMessage({ type: "get_library_capacity" }),
+  ];
+  invalid.forEach((message) => {
+    assert.equal(protocol.isReportLibraryChangedNotification(message), false);
+  });
+  assert.throws(
+    () => protocol.validateStreamReportMessage(notification),
+    (error) => error.code === "INVALID_MESSAGE",
+  );
+  notification.event.type = "modified";
+  assert.equal(
+    protocol.isReportLibraryChangedNotification(
+      protocol.createReportLibraryChangedNotification(),
+    ),
+    true,
   );
 });

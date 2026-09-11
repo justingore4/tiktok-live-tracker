@@ -425,3 +425,119 @@ test("reports typed storage read and write failures", async () => {
     (error) => error.code === "STORAGE_WRITE_FAILED",
   );
 });
+
+test("capacity measurement matches UTF-8 bytes of the complete saved envelope", async () => {
+  const storageArea = createStorageArea();
+  const store = storage.createStreamReportStore({ storageArea, streamReport });
+  const records = [
+    {
+      reportId: createReport(1).reportId,
+      lifecycleStatus: "finalized",
+      archived: true,
+      displayName: "été 漢字 🧶",
+      report: createReport(1),
+    },
+    {
+      reportId: createReport(2).reportId,
+      lifecycleStatus: "pending_end",
+      archived: false,
+      report: { ...createReport(2), note: "🙂 中文 café" },
+    },
+  ];
+  const saved = await store.saveRecords(records);
+  const snapshot = clone(saved);
+  const envelope = storageArea.values[storage.STORAGE_KEY];
+  const serialized = JSON.stringify(envelope);
+  assert.equal(
+    storage.measureRecordsByteLength(saved),
+    Buffer.byteLength(serialized, "utf8"),
+  );
+  assert.ok(storage.measureRecordsByteLength(saved) > serialized.length);
+  assert.ok(
+    storage.measureRecordsByteLength(saved) >
+      storage.measureRecordsByteLength(saved.slice(0, 1)),
+  );
+  assert.deepEqual(saved, snapshot);
+  assert.equal(
+    storage.measureRecordsByteLength([]),
+    Buffer.byteLength(JSON.stringify({
+      schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+      records: [],
+    }), "utf8"),
+  );
+  assert.ok(storage.measureRecordsByteLength([]) > 0);
+});
+
+test("the byte guard accepts the exact measured ceiling and rejects one extra UTF-8 byte", async () => {
+  const storageArea = createStorageArea();
+  const store = storage.createStreamReportStore({ storageArea, streamReport });
+  const report = { ...createReport(), padding: "é🙂" };
+  const records = [{
+    reportId: report.reportId,
+    lifecycleStatus: "pending_end",
+    archived: false,
+    report,
+  }];
+  report.padding += "x".repeat(
+    storage.MAX_ARCHIVE_BYTES - storage.measureRecordsByteLength(records),
+  );
+  assert.equal(storage.measureRecordsByteLength(records), storage.MAX_ARCHIVE_BYTES);
+  await store.saveRecords(records);
+  const saved = clone(storageArea.values);
+  report.padding += "x";
+  assert.equal(
+    storage.measureRecordsByteLength(records),
+    storage.MAX_ARCHIVE_BYTES + 1,
+  );
+  await assert.rejects(
+    store.saveRecords(records),
+    (error) => error.code === "REPORT_ARCHIVE_FULL",
+  );
+  assert.deepEqual(storageArea.values, saved);
+});
+
+test("read-only legacy loads measure canonical bytes without persisting the existing migration", async () => {
+  for (const schemaVersion of [
+    storage.LEGACY_STORAGE_SCHEMA_VERSION,
+    storage.PREVIOUS_STORAGE_SCHEMA_VERSION,
+  ]) {
+    const report = createReport();
+    const records = [{
+      reportId: report.reportId,
+      lifecycleStatus: "pending_end",
+      ...(schemaVersion === storage.LEGACY_STORAGE_SCHEMA_VERSION
+        ? {}
+        : { archived: false }),
+      report,
+    }];
+    const storageArea = createStorageArea({
+      [storage.STORAGE_KEY]: { schemaVersion, records },
+    });
+    const before = JSON.stringify(storageArea.values);
+    let writes = 0;
+    const set = storageArea.set;
+    storageArea.set = async (entries) => {
+      writes += 1;
+      return set(entries);
+    };
+    const store = storage.createStreamReportStore({ storageArea, streamReport });
+    const loaded = await store.loadRecords({ readOnly: true });
+    assert.equal(writes, 0);
+    assert.equal(JSON.stringify(storageArea.values), before);
+    assert.equal(loaded[0].archived, false);
+    assert.equal(loaded[0].lifecycleStatus, "pending_end");
+    assert.equal(
+      storage.measureRecordsByteLength(loaded),
+      Buffer.byteLength(JSON.stringify({
+        schemaVersion: storage.STORAGE_SCHEMA_VERSION,
+        records: loaded,
+      }), "utf8"),
+    );
+    await store.loadRecords();
+    assert.equal(writes, 1);
+    assert.equal(
+      storageArea.values[storage.STORAGE_KEY].schemaVersion,
+      storage.STORAGE_SCHEMA_VERSION,
+    );
+  }
+});

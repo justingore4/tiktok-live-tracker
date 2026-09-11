@@ -50,8 +50,6 @@
     globalThis.TikTokLiveTrackerNextItemQueueProtocol;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
-  const MAX_TOTAL_REPORTS =
-    streamReportProtocol?.MAX_TOTAL_REPORTS ?? 30;
   const MAX_REPORT_DISPLAY_NAME_LENGTH =
     streamReportProtocol?.MAX_REPORT_DISPLAY_NAME_LENGTH ?? 80;
   const streamReportClientModule =
@@ -610,6 +608,10 @@
   let activeStreamInventoryUpdateFeedbackSequence = 0;
   let streamReportSummaries = [];
   let archivedReportSummaries = [];
+  let reportLibraryCapacity = null;
+  let streamReportsRefreshGeneration = 0;
+  let streamReportsOpenLatestPending = false;
+  let reportLibraryDisposed = false;
   let streamReportsLoading = false;
   let streamReportsLoadError = null;
   let archivedReportsLoadError = null;
@@ -2099,26 +2101,43 @@
   }
 
   function renderReportCapacityWarning() {
-    const remainingSlots = Math.max(
-      0,
-      MAX_TOTAL_REPORTS -
-        streamReportSummaries.length -
-        archivedReportSummaries.length,
-    );
     const hidden =
       streamSnapshot.activeSession !== null ||
       streamReportsLoading ||
       reportMutationBusy ||
       typeof streamReportsLoadError === "string" ||
       typeof archivedReportsLoadError === "string" ||
-      remainingSlots > 3;
+      reportLibraryCapacity === null;
 
-    streamReportsCapacityWarning.hidden = hidden;
-    streamReportsCapacityWarning.textContent = hidden
-      ? ""
-      : remainingSlots === 0
-        ? "Report library full — delete an archived report"
-        : `${remainingSlots} report ${remainingSlots === 1 ? "slot" : "slots"} left`;
+    let message = "";
+    let tone = "danger";
+    if (!hidden) {
+      const { usedBytes, maxBytes, totalReports, maxReports } = reportLibraryCapacity;
+      const remainingSlots = Math.max(0, maxReports - totalReports);
+      const usage = usedBytes / maxBytes;
+      // Thresholds use the unrounded ratio; floor only the displayed percentage.
+      const percent = Math.floor(usage * 100);
+      const slotWarning = remainingSlots <= 3;
+      const sizeWarning = usage >= 0.8;
+      const slots = `${remainingSlots} report ${remainingSlots === 1 ? "slot" : "slots"} left`;
+
+      if (remainingSlots === 0 || usedBytes >= maxBytes) {
+        message = "Report library full — delete an archived report";
+      } else if (slotWarning && sizeWarning) {
+        message = `${slots} · Storage ${percent}% full`;
+      } else if (sizeWarning) {
+        tone = usage >= 0.9 ? "danger" : "warning";
+        message = usage >= 0.9
+          ? `Report storage nearly full — ${percent}% used`
+          : `Report storage getting full — ${percent}% used`;
+      } else if (slotWarning) {
+        message = slots;
+      }
+    }
+
+    streamReportsCapacityWarning.hidden = message === "";
+    streamReportsCapacityWarning.dataset.tone = tone;
+    streamReportsCapacityWarning.textContent = message;
   }
 
   function renderStreamReportsPanel() {
@@ -2337,28 +2356,45 @@
   }
 
   async function refreshStreamReports(options = {}) {
+    if (reportLibraryDisposed) return null;
+    // Preserve End's auto-open intent if a library notification supersedes its read.
+    streamReportsOpenLatestPending ||= options.openLatest === true;
+    const generation = ++streamReportsRefreshGeneration;
+    reportLibraryCapacity = null;
     streamReportsLoading = true;
     streamReportsLoadError = null;
     archivedReportsLoadError = null;
     renderStreamReportsPanel();
 
     try {
-      const [dashboardResponse, archivedResponse] = await Promise.all([
+      const [dashboardResponse, archivedResponse, capacity] = await Promise.all([
         streamReportClient.listReports(),
         streamReportClient.listArchivedReports(),
+        streamReportClient.getLibraryCapacity(),
       ]);
+      if (reportLibraryDisposed || generation !== streamReportsRefreshGeneration) {
+        return null;
+      }
       streamReportSummaries = dashboardResponse.reports;
       archivedReportSummaries = archivedResponse.reports;
+      reportLibraryCapacity = capacity;
       streamReportsLoading = false;
       renderStreamReportsPanel();
 
       const latest = streamReportSummaries[0] ?? null;
-      if (options.openLatest === true && latest) {
+      const openLatest = streamReportsOpenLatestPending;
+      streamReportsOpenLatestPending = false;
+      if (openLatest && latest) {
         await openStreamReport(latest.reportId);
       }
 
       return latest;
     } catch (error) {
+      if (reportLibraryDisposed || generation !== streamReportsRefreshGeneration) {
+        return null;
+      }
+      reportLibraryCapacity = null;
+      streamReportsOpenLatestPending = false;
       streamReportsLoading = false;
       const message =
         error?.message ?? "Saved reports could not be loaded. Nothing was changed.";
@@ -2374,6 +2410,20 @@
 
       return null;
     }
+  }
+
+  function handleReportLibraryChanged(message, sender) {
+    if (
+      reportLibraryDisposed ||
+      sender?.id !== chrome.runtime.id ||
+      sender.tab !== undefined ||
+      !streamReportProtocol.isReportLibraryChangedNotification(message)
+    ) {
+      return;
+    }
+    // Also refresh during own mutations: a notification can arrive after their
+    // refresh has finished. The generation guard discards any superseded read.
+    void refreshStreamReports();
   }
 
   function formatItemName(entry) {
@@ -5761,8 +5811,9 @@
 
     Promise.resolve()
       .then(() => streamSessionController.endActiveStreamWithoutReport())
-      .then((snapshot) => {
+      .then(async (snapshot) => {
         if (snapshot.phase === "ready" && snapshot.activeSession === null) {
+          await refreshStreamReports();
           startStreamButton.focus();
           mappingAnnouncement.textContent =
             "Tracker stream ended without a new report. TikTok LIVE was not changed.";
@@ -5987,15 +6038,19 @@
   });
 
   chrome.runtime.onMessage.addListener(handleCaptureStateChanged);
+  chrome.runtime.onMessage.addListener(handleReportLibraryChanged);
   window.addEventListener(
     "pagehide",
     () => {
+      reportLibraryDisposed = true;
+      ++streamReportsRefreshGeneration;
       captureHealthController.dispose();
       captureHealthBadgeVisibilityController.dispose();
       clearCaptureRefreshTimer();
       resetLiveBidTracking();
       resetConfirmedInventoryPreview();
       chrome.runtime.onMessage.removeListener(handleCaptureStateChanged);
+      chrome.runtime.onMessage.removeListener(handleReportLibraryChanged);
     },
     { once: true },
   );

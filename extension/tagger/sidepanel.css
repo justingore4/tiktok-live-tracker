@@ -915,6 +915,7 @@ button {
 }
 
 .stream-reports-capacity-warning {
+  min-width: 0;
   max-width: 100%;
   padding: 4px 8px;
   border: 1px solid rgb(244 99 111 / 55%);
@@ -925,6 +926,17 @@ button {
   font-weight: 750;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.stream-reports-capacity-warning[data-tone="warning"] {
+  border-color: rgb(247 190 67 / 55%);
+  color: #ffdb85;
+  background: rgb(247 190 67 / 14%);
+}
+
+.stream-reports-capacity-warning:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 .archived-reports-short-count {

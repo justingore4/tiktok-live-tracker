@@ -473,13 +473,14 @@ distribution; reassess Google's requirements before expanding the audience.
    and Start a local tracker stream from the confirmed baseline, or Resume the
    already-active stream.
    Before Start, confirm Google Sheets inventory appears before the local Start controls.
-   After Start or Resume, confirm Variation is the first section below the header. The
-   final substantive section should compact to the tracker-active date row, with the
-   **Active** pill inside that row, followed by **End Stream Tracking**. Its redundant
-   heading and safety note should be hidden only while actively tracking. A single
-   saved-state indicator belongs in the footer; there should not be a duplicate status
-   box below Metrics. Retryable saved-data errors must remain visible near the top. This
-   does not start or control TikTok LIVE.
+   After Start or Resume, confirm the logo/title header is hidden and the compact
+   capture-health row sits above Variation. Inventory and Performance Metrics should
+   have single-line headings. The final substantive section should show the status dot
+   and `Tracker Active | Started [formatted session start]`, followed by
+   **End Stream Tracking**. There should be no separate Active pill, persistence
+   explanation, or restored-data footer. Setup and Resume/End-only screens should retain
+   their lifecycle context, and genuine save/error messages must remain available.
+   Starting the tracker does not start or control TikTok LIVE.
 4. Open `https://shop.tiktok.com/streamer/live/product/dashboard`. Keep the video auction
    card visible and select TikTok's left-side **Sold items** view so all three scoped
    capture paths can be checked.
@@ -698,8 +699,9 @@ distribution; reassess Google's requirements before expanding the audience.
     is active. Confirm canonical inventory, other reports, and future streams retain the
     original cost. The payment-resolution section retains its stricter eligibility guards.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
-    backup. Confirm the instructions start hidden, **Show instructions +** follows the CSV
-    action, and toggling it reveals the full workflow without hiding the inventory table.
+    backup. Confirm **Copy Updated Inventory** and **Download Updated Inventory CSV**
+    are available with the inventory table, with no instructions toggle or instruction
+    block on screen or in print.
     In the report select **Copy Updated Inventory**, return to the original
     `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
     macOS. Before copying, verify the report table shows the saved unit cost for every SKU,
@@ -734,6 +736,18 @@ distribution; reassess Google's requirements before expanding the audience.
     likewise fail without a mutation when archive capacity is unavailable. Delete
     selected archived test records and retry End, or deliberately choose **End without report**. No report may be silently
     pruned on any capacity path.
+20. With synthetic report libraries, check the pre-stream bubble beside **View archived
+    reports** immediately below/at 80% and 90% byte usage, and at the exact byte limit.
+    Expect yellow at 80%, red at 90%, and the full-library message at the limit. With
+    three, two, or one slots left, verify the red slot warning or combined slot/size
+    wording. Percentages must round down without shifting thresholds. Include Unicode,
+    envelope overhead, and pending records when measuring against `MAX_ARCHIVE_BYTES`.
+    Rename/correct a report in another report tab and verify the warning refreshes;
+    delete disposable archived reports and verify usage falls. Failed/stale reads must
+    not show a reassuring zero or overwrite a newer response. Check keyboard access to
+    the explanatory text and wrapping at narrow widths. The active tracker should have
+    no library warning, and Start behavior must be unchanged. Warn users that a large
+    next report may not fit even below 80%; archiving alone does not free space.
 
 Only the persisted `activeBiddingVariationNumber` from the strict on-video card is called
 the current bidding auction. A changed marker is selected automatically only while the
@@ -1118,12 +1132,14 @@ outbound Sheets writes remain intentionally absent.
 - A report is limited to facts durably captured before End. It cannot recover a Sold
   Items row TikTok did not render. Internal completeness metadata does not independently
   verify TikTok's full stream totals and is not shown as a customer-facing state label.
-- The narrow canonical report correction can resolve fixing/temporary-failed payments
-  only on the newest safe ended stream. Unit cost can be corrected in any finalized
-  current or archived report, but only that report and its handoff change. Neither path
-  reopens capture or edits mappings, and the report-only cost path never changes canonical
-  inventory, other reports, or future streams. The employee must enter a seller-verified
-  price for payment completion and explicitly confirm a nonnegative cost.
+- The narrow canonical payment correction resolves fixing/temporary-failed payments
+  only on the newest safe ended stream. Report-only item-mapping correction supports
+  completed/canceled variations in an eligible finalized report, with no active tracker
+  or unfinished/pending report conditions. Unit cost can be corrected in any finalized
+  current or archived report. The mapping and cost paths change only the selected report
+  and its handoff, never canonical inventory, other reports, or future streams. None of
+  these paths reopens capture. Payment completion requires a seller-verified price;
+  unit-cost correction requires confirmation of a nonnegative cost.
 - Reports are stored locally as five Business Records plus as many as 25 archived records
   under a combined cap of approximately 4 MiB. Capacity never silently deletes an
   existing report; archive deletion is employee-selected and explicitly confirmed.
