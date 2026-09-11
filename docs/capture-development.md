@@ -643,13 +643,13 @@ distribution; reassess Google's requirements before expanding the audience.
     Repeat these checks across later tracker streams and imported baselines.
 14. Select **End Stream Tracking**. Confirm the compact panel lists each pending, fixing,
     unmapped, conflicting, or oversold attention count without a Final/Provisional label,
-    and offers both **End and create report** and
-    **End without report** action. Select **Keep stream active** once, then reopen and
+    and offers two full-width buttons: **Keep stream active** above **End and create report**.
+    Select **Keep stream active** once, then reopen and
     select **End and create report**. The local stream must end only after its report is
     saved; TikTok LIVE must not change. If report persistence is deliberately failed,
-    normal End must retain the active stream and expose **End without report** as the
-    explicit fallback. On a disposable tracker stream, select **End without report**
-    directly and confirm no report is added or opened.
+    normal End must retain the active stream and expose Retry, with no action that skips
+    report creation. Resolve the synthetic save failure and retry; exactly one report
+    must be saved before the local stream ends.
 15. Confirm the report opens in a new extension tab. Verify its start/end timestamps,
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
@@ -680,7 +680,7 @@ distribution; reassess Google's requirements before expanding the audience.
     separate run, mark the order canceled and verify the reservation is released, Canceled
     Orders increases, and the order never enters completed sales. Confirm processing and
     other statuses never appear. Also confirm controls disappear for older reports, an
-    older inventory baseline, a later End-without-report stream, or while a tracker is
+    older inventory baseline, a later tracker stream, or while a tracker is
     active.
     Fail report replacement after the canonical correction saves, then reload the report;
     confirm the read-time repair regenerates the report and does not ask for a second
@@ -733,8 +733,10 @@ distribution; reassess Google's requirements before expanding the audience.
 19. Fill five Business Records and 25 archived slots, or use a test fixture that reaches
     the combined cap of approximately 4 MiB. The next report-aware End must fail
     explicitly before ending the stream and preserve every record. Manual Archive must
-    likewise fail without a mutation when archive capacity is unavailable. Delete
-    selected archived test records and retry End, or deliberately choose **End without report**. No report may be silently
+    likewise fail without a mutation when archive capacity is unavailable. Release
+    capacity through the synthetic fixture, then retry End. Report management remains
+    hidden during an active session; do not use real saved data for this recovery test.
+    No report may be silently
     pruned on any capacity path.
 20. With synthetic report libraries, check the pre-stream bubble beside **View archived
     reports** immediately below/at 80% and 90% byte usage, and at the exact byte limit.
@@ -820,10 +822,10 @@ Until a later identity stage finds such an ID, follow these rules:
   reservations, completed sales without items, and every other reconciliation exception
   do not block the confirmation; the readiness area lists them as attention counts. The
   employee can End without first resuming the inventory workspace.
-- Normal End freezes and saves the local report before it clears the active stream. The
-  same confirmation also offers **End without report** as a deliberate direct choice, and
-  a report/storage failure leaves the stream active with that choice still available for
-  recovery. Neither action ends TikTok LIVE. Ended streams cannot yet be reopened in the
+- Normal End freezes and saves the local report before it clears the active stream.
+  A report/storage failure leaves the stream active so the error can be resolved and
+  report-saving End retried. **Keep stream active** cancels the confirmation without
+  ending the local session. Neither action ends TikTok LIVE. Ended streams cannot yet be reopened in the
   tagger, so employees should make corrections before End when practical even though the
   UI does not enforce that workflow.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the

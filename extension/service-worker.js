@@ -775,9 +775,9 @@ async function repairPendingReportsForSession(state, options = {}) {
   }
 }
 
-function createEndResponse(response, reportRecord, statusOverride = null) {
+function createEndResponse(response, reportRecord) {
   const state = hydrateStreamSessionResponse(response);
-  const status = statusOverride ?? response?.result?.status;
+  const status = response?.result?.status;
 
   return {
     state,
@@ -795,32 +795,6 @@ async function clearNextItemQueueForEndedStream(streamId) {
   if (result?.status === "cleared") {
     notifyNextItemQueueChanged();
   }
-}
-
-async function endStreamWithoutReport(command) {
-  const { state: sessionState } = await getStreamSessionResponse();
-
-  if (
-    sessionState.activeSession !== null &&
-    sessionState.activeSession.streamId !== command.streamId
-  ) {
-    return activeStreamCoordinator.dispatch(command);
-  }
-
-  if (sessionState.activeSession !== null) {
-    await reportCoordinator.discardPendingReportForStream(command.streamId);
-  } else {
-    await repairPendingReportsForSession(sessionState, { required: true });
-  }
-
-  const response = await activeStreamCoordinator.dispatch(command);
-
-  await clearNextItemQueueForEndedStream(command.streamId);
-  const status = response?.result?.status === "ended"
-    ? "ended_without_report"
-    : response?.result?.status;
-
-  return createEndResponse(response, null, status);
 }
 
 async function endStreamWithReport(command) {
@@ -922,13 +896,6 @@ async function dispatchStreamSessionCommand(command) {
     command.type === streamSessionCoordinator.COMMAND_TYPES.END_STREAM
   ) {
     return endStreamWithReport(command);
-  }
-
-  if (
-    command.type ===
-      streamSessionCoordinator.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT
-  ) {
-    return endStreamWithoutReport(command);
   }
 
   return activeStreamCoordinator.dispatch(command);

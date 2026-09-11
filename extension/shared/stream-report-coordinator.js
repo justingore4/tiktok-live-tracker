@@ -487,25 +487,6 @@
         return { repairedCount: repairIds.length };
       }
 
-      async function discardPendingReportForStream(streamId) {
-        await ensureLoaded();
-        const normalizedStreamId = requireNonEmptyString(streamId, "streamId");
-        const existing = findByStreamId(normalizedStreamId);
-
-        if (
-          !existing ||
-          existing.lifecycleStatus !==
-            storage.LIFECYCLE_STATUSES.PENDING_END
-        ) {
-          return { discarded: false, reportId: null };
-        }
-
-        await persist(
-          records.filter((record) => record.reportId !== existing.reportId),
-        );
-        return { discarded: true, reportId: existing.reportId };
-      }
-
       async function listReports() {
         await ensureLoaded();
         return {
@@ -1262,9 +1243,6 @@
           }
 
           return enqueue(() => correctFinalizedReportMappings(snapshot));
-        },
-        discardPendingReportForStream(streamId) {
-          return enqueue(() => discardPendingReportForStream(streamId));
         },
         finalizeReport(reportId) {
           return enqueue(() => finalizeReport(reportId));

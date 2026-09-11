@@ -57,8 +57,8 @@ copy or CSV export to update the Sheet manually.
 5. Assign inventory items to variations as they appear. Review unresolved payments,
    unmapped sales, and stock warnings before ending.
 6. Choose **End Stream Tracking → End and create report** to save the report and
-   end local tracking. This does not end the TikTok broadcast. The explicit
-   end-without-report option does not create a saved report.
+   end local tracking. This does not end the TikTok broadcast. If the report cannot
+   be saved, tracking stays active; resolve the error and retry.
 
 Closing the panel does not end the session. After reloading/updating the extension,
 refresh the TikTok dashboard to load its current capture scripts.
@@ -135,7 +135,9 @@ renaming it.
   reports to free space; archiving alone does not free space. Even below 80%, a large
   new report may exceed the remaining space, so this is not a guarantee it will fit.
 - If the library cannot accept a report, the normal End action fails without ending
-  the session. Export and deliberately delete unwanted archived reports before retrying.
+  the session. Free report space before starting: saved-report management is hidden
+  during tracking. If capacity blocks End, contact the maintainer for recovery; Retry
+  alone does not free space. Do not clear extension storage or uninstall to recover.
 - Each report's three-dot menu offers **Download PDF**. Archived Reports supports
   checkboxes, **Select all**, **Clear selection**, and **Download selected**.
 - To remove a recent report without archiving it first, choose **Delete** in its

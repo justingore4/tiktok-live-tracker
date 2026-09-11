@@ -13,7 +13,6 @@ const protocol = Object.freeze({
     GET_STREAM_SESSION: "get_stream_session",
     START_STREAM: "start_stream",
     END_STREAM: "end_stream",
-    END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
   }),
 });
 const STREAM_ID =
@@ -107,7 +106,6 @@ test("sends exact versioned envelopes for stream lifecycle commands", async () =
     startedAt: "caller-cannot-inject-this",
   });
   await client.endStream({ streamId: `  ${STREAM_ID}  ` });
-  await client.endStreamWithoutReport({ streamId: STREAM_ID });
 
   assert.deepEqual(harness.calls, [
     {
@@ -128,14 +126,6 @@ test("sends exact versioned envelopes for stream lifecycle commands", async () =
         streamId: STREAM_ID,
       },
     },
-    {
-      channel: protocol.MESSAGE_CHANNEL,
-      version: protocol.MESSAGE_VERSION,
-      command: {
-        type: protocol.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
-        streamId: STREAM_ID,
-      },
-    },
   ]);
 });
 
@@ -148,13 +138,27 @@ test("exposes only the employee stream lifecycle API", () => {
   assert.equal(Object.isFrozen(client), true);
   assert.deepEqual(Object.keys(client).sort(), [
     "endStream",
-    "endStreamWithoutReport",
     "getSession",
     "startStream",
   ]);
   assert.equal(client.storage, undefined);
   assert.equal(client.recordPaymentComplete, undefined);
   assert.equal(client.setStreamId, undefined);
+  assert.equal(client.endStreamWithoutReport, undefined);
+});
+
+test("normal End rejects the removed bypass status", async () => {
+  const client = createStreamSessionClient({
+    protocol,
+    runtime: createRuntime(() => Promise.resolve({
+      ok: true,
+      data: {
+        state: state(false),
+        result: { status: "ended_without_report", reportId: null, reportLifecycleStatus: null },
+      },
+    })).runtime,
+  });
+  await assertClientError(client.endStream({ streamId: STREAM_ID }), "INVALID_RESPONSE");
 });
 
 test("unwraps and detaches strict successful responses", async () => {

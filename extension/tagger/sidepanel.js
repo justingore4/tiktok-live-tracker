@@ -221,9 +221,6 @@
   const confirmEndStreamButton = document.querySelector(
     "#confirm-end-stream",
   );
-  const confirmEndStreamWithoutReportButton = document.querySelector(
-    "#confirm-end-stream-without-report",
-  );
   const streamSessionError = document.querySelector("#stream-session-error");
   const streamSessionErrorTitle = document.querySelector(
     "#stream-session-error-title",
@@ -233,9 +230,6 @@
   );
   const retryStreamSessionButton = document.querySelector(
     "#retry-stream-session",
-  );
-  const endStreamWithoutReportButton = document.querySelector(
-    "#end-stream-without-report",
   );
   const endReportReadiness = document.querySelector(
     "#end-report-readiness",
@@ -4287,10 +4281,7 @@
     resumeStreamButton.disabled = busy;
     endStreamButton.disabled = busy;
     confirmEndStreamButton.disabled = busy;
-    confirmEndStreamWithoutReportButton.disabled = busy;
     cancelEndStreamButton.disabled = busy;
-    endStreamWithoutReportButton.hidden = true;
-    endStreamWithoutReportButton.disabled = busy;
 
     if (failed) {
       endConfirmationOpen = false;
@@ -4305,10 +4296,6 @@
         : "The tracker stream could not be updated. Nothing was changed.";
       retryStreamSessionButton.textContent =
         snapshot.error?.scope === "load" ? "Retry loading" : "Retry change";
-      endStreamWithoutReportButton.hidden = !(
-        snapshot.error?.scope === "end" &&
-        snapshot.activeSession !== null
-      );
 
       if (!hasFocusedStreamError) {
         streamSessionError.focus();
@@ -5807,52 +5794,6 @@
         );
       });
   });
-
-  function endActiveStreamWithoutReport() {
-    if (streamSnapshot.busy) {
-      mappingAnnouncement.textContent =
-        "Wait for the current tracker stream change to finish before ending.";
-      return;
-    }
-
-    endConfirmationOpen = false;
-    streamSessionEndConfirmation.hidden = true;
-    streamSessionError.hidden = true;
-    streamSessionStatus.hidden = false;
-    streamSessionStatusTitle.textContent = "Ending without a report...";
-    streamSessionStatusMessage.textContent =
-      "The tracker will stop locally without creating a new business report.";
-    streamSessionStatus.focus();
-
-    Promise.resolve()
-      .then(() => streamSessionController.endActiveStreamWithoutReport())
-      .then(async (snapshot) => {
-        if (snapshot.phase === "ready" && snapshot.activeSession === null) {
-          await refreshStreamReports();
-          startStreamButton.focus();
-          mappingAnnouncement.textContent =
-            "Tracker stream ended without a new report. TikTok LIVE was not changed.";
-        }
-      })
-      .catch((error) => {
-        renderStreamSnapshot(streamSessionController.getSnapshot());
-        mappingAnnouncement.textContent =
-          error?.message ?? "The tracker stream could not be ended.";
-        console.error(
-          "[TikTok Live Tracker] Unexpected end-without-report failure.",
-          error,
-        );
-      });
-  }
-
-  confirmEndStreamWithoutReportButton.addEventListener(
-    "click",
-    endActiveStreamWithoutReport,
-  );
-  endStreamWithoutReportButton.addEventListener(
-    "click",
-    endActiveStreamWithoutReport,
-  );
 
   retryStreamReportsButton.addEventListener("click", () => {
     Promise.resolve(refreshStreamReports({ focusError: true })).catch((error) => {

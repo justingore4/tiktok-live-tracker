@@ -15,7 +15,6 @@
       "GET_STREAM_SESSION",
       "START_STREAM",
       "END_STREAM",
-      "END_STREAM_WITHOUT_REPORT",
     ]);
     const START_STATUSES = new Set(["started", "already_active"]);
     const LOCAL_STREAM_ID_PATTERN =
@@ -164,11 +163,7 @@
           state.activeSession !== null;
       }
 
-      const endCommand =
-        commandType === commandTypes.END_STREAM ||
-        commandType === commandTypes.END_STREAM_WITHOUT_REPORT;
-
-      if (!endCommand || state.activeSession !== null) {
+      if (commandType !== commandTypes.END_STREAM || state.activeSession !== null) {
         return false;
       }
 
@@ -194,13 +189,6 @@
         ["finalized", "pending_end"].includes(
           result.reportLifecycleStatus,
         );
-
-      if (commandType === commandTypes.END_STREAM_WITHOUT_REPORT) {
-        return noReport && [
-          "already_ended",
-          "ended_without_report",
-        ].includes(result.status);
-      }
 
       return (noReport || savedReport) &&
         ["already_ended", "ended"].includes(result.status);
@@ -345,25 +333,8 @@
         });
       }
 
-      function endStreamWithoutReport(optionsValue) {
-        return enqueueCommand(() => {
-          if (!hasExactKeys(optionsValue, ["streamId"])) {
-            fail(
-              "INVALID_CLIENT_COMMAND",
-              "Command options must contain exactly: streamId.",
-            );
-          }
-
-          return {
-            type: protocol.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
-            streamId: requireNonEmptyString(optionsValue.streamId, "streamId"),
-          };
-        });
-      }
-
       return Object.freeze({
         endStream,
-        endStreamWithoutReport,
         getSession,
         startStream,
       });

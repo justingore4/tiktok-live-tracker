@@ -45,10 +45,6 @@ function createClient(overrides = {}) {
       calls.push(["end", { ...options }]);
       return Promise.resolve(response(null, "ended"));
     },
-    endStreamWithoutReport(options) {
-      calls.push(["end_without_report", { ...options }]);
-      return Promise.resolve(response(null, "ended"));
-    },
     ...overrides,
   };
 
@@ -133,29 +129,11 @@ test("ends a restored tracker stream without resuming its saved workspace", asyn
   ]);
 });
 
-test("ends an active tracker stream without creating a report", async () => {
-  const { calls, client } = createClient({
-    getSession() {
-      calls.push(["get"]);
-      return Promise.resolve(response(SESSION));
-    },
-    endStreamWithoutReport(options) {
-      calls.push(["end_without_report", { ...options }]);
-      return Promise.resolve(response(null, "ended_without_report"));
-    },
-  });
+test("the controller exposes no report-bypass End API", () => {
+  const { client } = createClient();
   const controller = controllerModule.createStreamSessionController({ client });
-
-  await controller.start();
-  const ended = await controller.endActiveStreamWithoutReport();
-
-  assert.equal(ended.phase, "ready");
-  assert.equal(ended.activeSession, null);
-  assert.equal(ended.resumed, false);
-  assert.deepEqual(calls, [
-    ["get"],
-    ["end_without_report", { streamId: SESSION.streamId }],
-  ]);
+  assert.equal(controller.endActiveStreamWithoutReport, undefined);
+  assert.equal(typeof controller.endActiveStream, "function");
 });
 
 test("starts, publishes, and ends one durable tracker stream", async () => {
@@ -241,7 +219,7 @@ test("a lost end response keeps the frozen ID and converges on retry", async () 
   ]);
 });
 
-test("a failed report End can explicitly recover by ending without a report", async () => {
+test("a failed report End retains the active session until normal End is successfully retried", async () => {
   const calls = [];
   const { client } = createClient({
     getSession() {
@@ -249,14 +227,13 @@ test("a failed report End can explicitly recover by ending without a report", as
     },
     endStream(options) {
       calls.push(["end", { ...options }]);
-      return Promise.reject(
-        Object.assign(new Error("Could not save report."), {
-          code: "STORAGE_WRITE_FAILED",
-        }),
-      );
-    },
-    endStreamWithoutReport(options) {
-      calls.push(["end_without_report", { ...options }]);
+      if (calls.length === 1) {
+        return Promise.reject(
+          Object.assign(new Error("Could not save report."), {
+            code: "STORAGE_WRITE_FAILED",
+          }),
+        );
+      }
       return Promise.resolve(response(null, "ended"));
     },
   });
@@ -270,13 +247,15 @@ test("a failed report End can explicitly recover by ending without a report", as
   assert.equal(failed.operation, "end");
   assert.equal(failed.activeSession.streamId, SESSION.streamId);
 
-  const recovered = await controller.endActiveStreamWithoutReport();
+  assert.equal(failed.resumed, true);
+  assert.equal(controller.endActiveStreamWithoutReport, undefined);
+  const recovered = await controller.retry();
 
   assert.equal(recovered.phase, "ready");
   assert.equal(recovered.activeSession, null);
   assert.deepEqual(calls, [
     ["end", { streamId: SESSION.streamId }],
-    ["end_without_report", { streamId: SESSION.streamId }],
+    ["end", { streamId: SESSION.streamId }],
   ]);
   assert.deepEqual(await controller.retry(), recovered);
 });
@@ -338,7 +317,7 @@ test("snapshots and subscriber values are detached", async () => {
 test("validates dependencies and rejects invalid client responses", async () => {
   assert.throws(
     () => controllerModule.createStreamSessionController({ client: {} }),
-    /getSession, startStream, endStream, and endStreamWithoutReport/,
+    /getSession, startStream, and endStream/,
   );
 
   const { client } = createClient({

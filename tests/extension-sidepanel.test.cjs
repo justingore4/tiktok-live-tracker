@@ -447,11 +447,7 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   );
   assert.match(html, />\s*Keep stream active\s*</);
   assert.match(html, />\s*End and create report\s*</);
-  assert.match(
-    html,
-    /id="confirm-end-stream-without-report"[\s\S]+type="button"[\s\S]+End without report/,
-  );
-  assert.match(html, /id="end-stream-without-report"[\s\S]+End without report/);
+  assert.doesNotMatch(html, /id="(?:confirm-)?end-stream-without-report"|End without report/);
   assert.match(html, /id="retry-stream-session"[\s\S]+type="button"/);
   assert.match(
     html,
@@ -2715,7 +2711,7 @@ test("End Stream confirmation is not gated by unresolved payment or mapping stat
   );
 });
 
-test("tagger lists, opens, refreshes, and safely bypasses local stream reports", () => {
+test("tagger lists, opens, refreshes, and requires local report creation when ending", () => {
   const html = fs.readFileSync(
     path.join(extensionDirectory, manifest.side_panel.default_path),
     "utf8",
@@ -2734,16 +2730,12 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   const reportLinkSource = panelSource.match(
     /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderStreamReportsPanel/,
   )?.[0];
-  const endWithoutReportSource = panelSource.match(
-    /function endActiveStreamWithoutReport\(\)[\s\S]*?retryStreamReportsButton\.addEventListener/,
-  )?.[0];
   const endConfirmation = html.match(
     /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
   )?.[0];
 
   assert.ok(readinessSource);
   assert.ok(reportLinkSource);
-  assert.ok(endWithoutReportSource);
   assert.ok(endConfirmation);
   assert.match(
     readinessSource,
@@ -2800,7 +2792,7 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
   );
   assert.match(
     endConfirmation,
-    /id="confirm-end-stream-without-report"[\s\S]+End without report[\s\S]+id="confirm-end-stream"[\s\S]+stream-session-full-end-action[\s\S]+End and create report/,
+    /id="cancel-end-stream"[\s\S]+Keep stream active[\s\S]+id="confirm-end-stream"[\s\S]+stream-session-full-end-action[\s\S]+End and create report/,
   );
   assert.match(
     styleSource,
@@ -2815,26 +2807,11 @@ test("tagger lists, opens, refreshes, and safely bypasses local stream reports",
     /\.stream-session-end-confirmation \.end-report-readiness\s*\{[\s\S]*?margin:\s*0;[\s\S]*?line-height:\s*1\.35;/,
   );
   assert.doesNotMatch(styleSource, /\.stream-session-end-confirmation h3/);
-  assert.match(endWithoutReportSource, /if \(streamSnapshot\.busy\)/);
-  assert.match(endWithoutReportSource, /endConfirmationOpen = false/);
-  assert.match(
-    endWithoutReportSource,
-    /streamSessionController\.endActiveStreamWithoutReport\(\)/,
-  );
-  assert.match(endWithoutReportSource, /ended without a new report/);
-  assert.match(endWithoutReportSource, /await refreshStreamReports\(\)/);
-  assert.doesNotMatch(
-    endWithoutReportSource,
-    /openLatest:\s*true|openStreamReport|\.endActiveStream\(\)/,
-  );
-  assert.match(
-    panelSource,
-    /confirmEndStreamWithoutReportButton\.addEventListener\(\s*"click",\s*endActiveStreamWithoutReport/,
-  );
-  assert.match(
-    panelSource,
-    /endStreamWithoutReportButton\.addEventListener\(\s*"click",\s*endActiveStreamWithoutReport/,
-  );
+  assert.doesNotMatch(panelSource,
+    /endActiveStreamWithoutReport|confirmEndStreamWithoutReportButton|endStreamWithoutReportButton/);
+  assert.doesNotMatch(html, /(?:confirm-)?end-stream-without-report|End without report/);
+  assert.match(styleSource,
+    /\.stream-session-confirm-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
 });
 
 test("dashboard report names use the saved custom name with tracking start as the default", () => {

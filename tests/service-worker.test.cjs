@@ -457,10 +457,7 @@ function createWorkerHarness(options = {}) {
       if (
         options.endStreamDispatchError &&
         remainingEndFailures > 0 &&
-        [
-          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
-          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
-        ].includes(command.type)
+        command.type === streamCoordinatorModule.COMMAND_TYPES.END_STREAM
       ) {
         remainingEndFailures -= 1;
         throw options.endStreamDispatchError === "known"
@@ -509,10 +506,7 @@ function createWorkerHarness(options = {}) {
       }
 
       if (
-        [
-          streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
-          streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
-        ].includes(command.type)
+        command.type === streamCoordinatorModule.COMMAND_TYPES.END_STREAM
       ) {
         persistedActiveSession = null;
 
@@ -540,7 +534,6 @@ function createWorkerHarness(options = {}) {
       GET_STREAM_SESSION: "get_stream_session",
       START_STREAM: "start_stream",
       END_STREAM: "end_stream",
-      END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
     },
     StreamSessionCoordinatorError: FakeStreamCoordinatorError,
     createStreamSessionCoordinator(receivedOptions) {
@@ -812,19 +805,6 @@ function createWorkerHarness(options = {}) {
         displayName: null,
         report: null,
       };
-    },
-    async discardPendingReportForStream(streamId) {
-      reportCalls.push({ type: "discard", streamId });
-      const discarded =
-        lastPreparedReport?.report.metadata.streamId === streamId &&
-        lastPreparedReport.lifecycleStatus === "pending_end";
-      const reportId = discarded ? lastPreparedReport.reportId : null;
-
-      if (discarded) {
-        lastPreparedReport = null;
-      }
-
-      return { discarded, reportId };
     },
     async dispatch(command) {
       reportCalls.push({
@@ -1312,6 +1292,8 @@ function createWorkerHarness(options = {}) {
     getStoreOptions: () => storeOptions,
     getStreamCoordinatorOptions: () => streamCoordinatorOptions,
     getStreamStoreOptions: () => streamStoreOptions,
+    getPreparedReport: () => JSON.parse(JSON.stringify(lastPreparedReport)),
+    getPersistedActiveSession: () => JSON.parse(JSON.stringify(persistedActiveSession)),
     getCaptureIntegrationOptions: () => captureIntegrationOptions,
     getNextItemQueueCoordinatorOptions: () =>
       nextItemQueueCoordinatorOptions,
@@ -3443,7 +3425,7 @@ test("normal End saves and finalizes a report before clearing the active session
   ]);
 });
 
-test("End without report skips report creation and ends only the local tracker stream", async () => {
+test("the removed End bypass command is rejected by the worker without writes or queue clearing", async () => {
   const activeSession = {
     streamId: "local-stream:11111111-1111-4111-8111-111111111111",
     startedAt: "2026-08-08T20:00:00.000Z",
@@ -3454,56 +3436,61 @@ test("End without report skips report creation and ends only the local tracker s
     nextItemQueueClearResult: { status: "cleared" },
     usePreparedState: true,
   });
+  const session = require("../extension/shared/stream-session.js");
+  const coordinatorModule = require("../extension/shared/stream-session-coordinator.js");
+  let reads = 0;
+  let writes = 0;
+  const original = { version: 1, activeSession };
+  const coordinator = coordinatorModule.createStreamSessionCoordinator({
+    streamSession: session,
+    stateStore: {
+      async loadState() { reads += 1; return JSON.parse(JSON.stringify(original)); },
+      async saveState() { writes += 1; },
+    },
+    createId: () => activeSession.streamId,
+    now: () => activeSession.startedAt,
+  });
+  Object.assign(harness.streamCoordinatorModule, coordinatorModule);
+  harness.streamCoordinator.dispatch = (command) => coordinator.dispatch(
+    JSON.parse(JSON.stringify(command)),
+  );
   const request = harness.send(
     harness.createStreamMessage({
-      type:
-        harness.streamCoordinatorModule.COMMAND_TYPES
-          .END_STREAM_WITHOUT_REPORT,
+      type: "end_stream_without_report",
       streamId: activeSession.streamId,
     }),
   );
 
   assert.deepEqual(await request.response, {
-    ok: true,
-    data: {
-      state: { version: 1, activeSession: null },
-      result: {
-        status: "ended_without_report",
-        reportId: null,
-        reportLifecycleStatus: null,
-      },
+    ok: false,
+    error: {
+      code: "UNKNOWN_COMMAND",
+      message: "Stream-session command end_stream_without_report is not supported.",
     },
   });
-  assert.deepEqual(
-    harness.reportCalls
-      .filter(({ type }) => ["discard", "prepare", "finalize"].includes(type))
-      .map(({ type }) => type),
-    ["discard"],
-  );
-  assert.deepEqual(
-    harness.streamDispatchCalls.map(({ type }) => type),
-    [
-      harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION,
-      harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM_WITHOUT_REPORT,
-    ],
-  );
-  assert.deepEqual(harness.nextItemQueueCalls, [
-    { type: "clear_for_stream", streamId: activeSession.streamId },
-  ]);
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+  assert.equal(harness.reportCalls.length, 2);
+  assert.deepEqual(harness.nextItemQueueCalls, []);
+  assert.deepEqual(harness.dispatchCalls, []);
+  assert.deepEqual(harness.runtimeSendMessages, []);
+  assert.deepEqual(harness.getPersistedActiveSession(), activeSession);
 });
 
-test("a report save failure leaves the stream active and exposes End without report", async () => {
+test("a report save failure retains the stream and data until a normal End retry saves its report", async () => {
   const activeSession = {
     streamId: "local-stream:11111111-1111-4111-8111-111111111111",
     startedAt: "2026-08-08T20:00:00.000Z",
     identitySource: "local_session",
   };
-  const harness = createWorkerHarness({
+  const options = {
     initialActiveSession: activeSession,
     nextItemQueueClearResult: { status: "cleared" },
     usePreparedState: true,
     reportPrepareError: "known",
-  });
+  };
+  const harness = createWorkerHarness(options);
+  const originalInventory = JSON.parse(JSON.stringify(harness.preparedReconciliationState));
   const failed = harness.send(
     harness.createStreamMessage({
       type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
@@ -3523,33 +3510,37 @@ test("a report save failure leaves the stream active and exposes End without rep
     [harness.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION],
   );
   assert.deepEqual(harness.nextItemQueueCalls, []);
+  assert.deepEqual(harness.getPersistedActiveSession(), activeSession);
+  assert.deepEqual(harness.preparedReconciliationState, originalInventory);
+  assert.equal(harness.getPreparedReport(), null);
+  assert.deepEqual(harness.runtimeSendMessages, []);
 
-  const fallback = harness.send(
+  options.reportPrepareError = null;
+  const retry = harness.send(
     harness.createStreamMessage({
-      type:
-        harness.streamCoordinatorModule.COMMAND_TYPES
-          .END_STREAM_WITHOUT_REPORT,
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
       streamId: activeSession.streamId,
     }),
   );
 
-  assert.deepEqual(await fallback.response, {
+  assert.deepEqual(await retry.response, {
     ok: true,
     data: {
       state: { version: 1, activeSession: null },
       result: {
-        status: "ended_without_report",
-        reportId: null,
-        reportLifecycleStatus: null,
+        status: "ended",
+        reportId: "stream-report:11111111-1111-4111-8111-111111111111",
+        reportLifecycleStatus: "finalized",
       },
     },
   });
   assert.deepEqual(harness.nextItemQueueCalls, [
     { type: "clear_for_stream", streamId: activeSession.streamId },
   ]);
+  assert.deepEqual(harness.preparedReconciliationState, originalInventory);
 });
 
-test("End without report removes a pending draft left by a failed session End", async () => {
+test("normal End retains and retries the pending draft after session persistence fails", async () => {
   const activeSession = {
     streamId: "local-stream:11111111-1111-4111-8111-111111111111",
     startedAt: "2026-08-08T20:00:00.000Z",
@@ -3569,31 +3560,36 @@ test("End without report removes a pending draft left by a failed session End", 
   );
 
   assert.equal((await normalEnd.response).ok, false);
+  const pending = harness.getPreparedReport();
+  assert.equal(pending.lifecycleStatus, "pending_end");
+  assert.equal(pending.report.metadata.streamId, activeSession.streamId);
+  assert.deepEqual(harness.getPersistedActiveSession(), activeSession);
+  assert.deepEqual(harness.nextItemQueueCalls, []);
   assert.deepEqual(
     harness.reportCalls
-      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .filter(({ type }) => ["prepare", "finalize"].includes(type))
       .map(({ type }) => type),
     ["prepare"],
   );
 
-  const fallback = harness.send(
+  const retry = harness.send(
     harness.createStreamMessage({
-      type:
-        harness.streamCoordinatorModule.COMMAND_TYPES
-          .END_STREAM_WITHOUT_REPORT,
+      type: harness.streamCoordinatorModule.COMMAND_TYPES.END_STREAM,
       streamId: activeSession.streamId,
     }),
   );
-  const response = await fallback.response;
+  const response = await retry.response;
 
   assert.equal(response.ok, true);
-  assert.equal(response.data.result.status, "ended_without_report");
-  assert.equal(response.data.result.reportId, null);
+  assert.equal(response.data.result.status, "ended");
+  assert.equal(response.data.result.reportId, pending.reportId);
+  assert.equal(response.data.result.reportLifecycleStatus, "finalized");
+  assert.deepEqual(harness.getPreparedReport(), pending);
   assert.deepEqual(
     harness.reportCalls
-      .filter(({ type }) => ["prepare", "discard"].includes(type))
+      .filter(({ type }) => ["prepare", "finalize"].includes(type))
       .map(({ type }) => type),
-    ["prepare", "discard"],
+    ["prepare", "prepare", "finalize"],
   );
 });
 

@@ -112,32 +112,6 @@ function createRefreshHarness(overrides = {}) {
   };
 }
 
-function createEndWithoutReportHarness() {
-  const harness = createRefreshHarness({ streamSnapshot: { busy: false, activeSession: { streamId: "active" } } });
-  const { sandbox } = harness;
-  const ending = deferred();
-  const events = [];
-  const announcements = { textContent: "" };
-  Object.assign(sandbox, {
-    endConfirmationOpen: true,
-    mappingAnnouncement: announcements,
-    streamSessionEndConfirmation: { hidden: false },
-    streamSessionError: { hidden: false },
-    streamSessionStatus: { hidden: true, focus() { events.push("status-focus"); } },
-    streamSessionStatusTitle: {},
-    streamSessionStatusMessage: {},
-    startStreamButton: { focus() { events.push("start-focus"); } },
-    streamSessionController: {
-      endActiveStreamWithoutReport() { events.push("end-request"); return ending.promise; },
-      getSnapshot() { return sandbox.streamSnapshot; },
-    },
-    renderStreamSnapshot(snapshot) { events.push("snapshot-render"); sandbox.streamSnapshot = snapshot; },
-    console: { error() { events.push("error-log"); } },
-  });
-  vm.runInContext(functionSource("endActiveStreamWithoutReport"), sandbox);
-  return { ...harness, ending, events, announcements };
-}
-
 test("exact byte thresholds use the unrounded ratio and floor displayed percentages", () => {
   const harness = createHarness();
   for (const [usedBytes, message, tone] of [
@@ -475,52 +449,6 @@ test("mutation completion uses fresh capacity and keeps its intermediate warning
   assert.equal(sandbox.selectedArchivedReportIds.size, 0);
   assertWarning(harness, combined(1, 81));
   assert.ok(harness.rendered.slice(0, -1).every((render) => render.hidden));
-});
-
-test("successful End without report waits for fresh capacity before focusing and announcing completion", async () => {
-  const harness = createEndWithoutReportHarness();
-  const { sandbox } = harness;
-  sandbox.endActiveStreamWithoutReport();
-  assert.equal(sandbox.endConfirmationOpen, false);
-  assert.equal(sandbox.streamSessionEndConfirmation.hidden, true);
-  assert.deepEqual(harness.events, ["status-focus"]);
-  assert.equal(harness.calls.capacity.length, 0);
-  sandbox.streamSnapshot = { phase: "ready", busy: false, activeSession: null };
-  harness.ending.resolve(sandbox.streamSnapshot);
-  await new Promise(setImmediate);
-  assert.equal(harness.calls.capacity.length, 1);
-  assert.equal(sandbox.reportLibraryCapacity, null);
-  assert.equal(harness.events.includes("start-focus"), false);
-  assert.equal(harness.announcements.textContent, "");
-  const afterDiscard = capacity({ totalReports: 26, usedBytes: 70_000 });
-  harness.resolve(0, afterDiscard);
-  await new Promise(setImmediate);
-  assert.equal(sandbox.reportLibraryCapacity, afterDiscard);
-  assert.deepEqual(harness.events, ["status-focus", "end-request", "start-focus"]);
-  assert.equal(harness.announcements.textContent,
-    "Tracker stream ended without a new report. TikTok LIVE was not changed.");
-  assertWarning(harness, "");
-  assert.deepEqual(harness.opened, [], "ending without a report does not request auto-open");
-});
-
-test("failed or still-active End without report does not refresh capacity or announce success", async () => {
-  for (const failure of ["rejection", "failed-snapshot", "still-active"]) {
-    const harness = createEndWithoutReportHarness();
-    const previousCapacity = harness.sandbox.reportLibraryCapacity;
-    harness.sandbox.endActiveStreamWithoutReport();
-    if (failure === "rejection") {
-      harness.ending.reject(new Error("End failed"));
-    } else {
-      harness.ending.resolve(failure === "failed-snapshot"
-        ? { phase: "error", activeSession: null }
-        : { phase: "ready", activeSession: { streamId: "active" } });
-    }
-    await new Promise(setImmediate);
-    for (const calls of Object.values(harness.calls)) assert.equal(calls.length, 0);
-    assert.equal(harness.sandbox.reportLibraryCapacity, previousCapacity);
-    assert.equal(harness.events.includes("start-focus"), false);
-    assert.equal(harness.announcements.textContent, failure === "rejection" ? "End failed" : "");
-  }
 });
 
 test("only valid trusted library notifications refresh, including notifications during own writes", () => {

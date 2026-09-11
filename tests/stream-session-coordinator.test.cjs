@@ -152,7 +152,6 @@ test("exports a separate strict protocol", () => {
     GET_STREAM_SESSION: "get_stream_session",
     START_STREAM: "start_stream",
     END_STREAM: "end_stream",
-    END_STREAM_WITHOUT_REPORT: "end_stream_without_report",
   });
 });
 
@@ -400,8 +399,8 @@ test("rejects malformed commands before storage access", async () => {
     { type: COMMAND_TYPES.START_STREAM, streamId: FIRST_ID },
     { type: COMMAND_TYPES.END_STREAM },
     { type: COMMAND_TYPES.END_STREAM, streamId: "" },
-    { type: COMMAND_TYPES.END_STREAM_WITHOUT_REPORT },
-    { type: COMMAND_TYPES.END_STREAM_WITHOUT_REPORT, streamId: "" },
+    { type: "end_stream_without_report" },
+    { type: "end_stream_without_report", streamId: "" },
   ];
 
   for (const command of invalidCommands) {
@@ -411,6 +410,19 @@ test("rejects malformed commands before storage access", async () => {
     );
   }
   assert.equal(memory.calls.load, 0);
+});
+
+test("the removed report-bypass command is rejected without reading or writing the active session", async () => {
+  const original = createActiveState();
+  const memory = createMemoryStore(original);
+  const { coordinator } = createCoordinator(memory);
+  await assertCode(() => coordinator.dispatch({
+    type: "end_stream_without_report", streamId: FIRST_ID,
+  }), "UNKNOWN_COMMAND", StreamSessionCoordinatorError);
+  assert.equal(memory.calls.load, 0);
+  assert.equal(memory.calls.save.length, 0);
+  assert.deepEqual(memory.persisted(), original);
+  assert.equal(COMMAND_TYPES.END_STREAM_WITHOUT_REPORT, undefined);
 });
 
 test("validates coordinator dependencies immediately", () => {

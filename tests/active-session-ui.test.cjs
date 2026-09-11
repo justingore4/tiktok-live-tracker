@@ -74,8 +74,7 @@ function renderFixture() {
     "streamSessionHeading", "streamSessionStatus", "streamSessionStatusTitle",
     "streamSessionStatusMessage", "streamSessionError", "streamSessionActions",
     "startStreamButton", "resumeStreamButton", "endStreamButton",
-    "confirmEndStreamButton", "confirmEndStreamWithoutReportButton",
-    "cancelEndStreamButton", "endStreamWithoutReportButton",
+    "confirmEndStreamButton", "cancelEndStreamButton",
     "streamSessionEndConfirmation", "streamSessionErrorTitle",
     "streamSessionErrorMessage", "retryStreamSessionButton", "savedSessionError",
   ]) context[name] = node();
@@ -128,7 +127,7 @@ test("active session preserves End Stream Tracking and its confirmation controls
   f.render(snapshot());
   assert.equal(f.context.endStreamButton.hidden, true);
   assert.equal(f.context.streamSessionEndConfirmation.hidden, false);
-  for (const name of ["confirmEndStreamButton", "confirmEndStreamWithoutReportButton", "cancelEndStreamButton"]) {
+  for (const name of ["confirmEndStreamButton", "cancelEndStreamButton"]) {
     assert.equal(f.context[name].disabled, false);
   }
   f.render(snapshot({ phase: "saving", operation: "end", busy: true }));
@@ -141,7 +140,7 @@ test("active session preserves End Stream Tracking and its confirmation controls
   assert.equal(f.context.streamSessionHeading.hidden, false);
   assert.equal(f.context.streamSessionPanel.dataset.view, "tracker");
   assert.equal(f.context.streamSessionStatusMessage.hidden, false);
-  for (const name of ["endStreamButton", "confirmEndStreamButton", "confirmEndStreamWithoutReportButton", "cancelEndStreamButton"]) {
+  for (const name of ["endStreamButton", "confirmEndStreamButton", "cancelEndStreamButton"]) {
     assert.equal(f.context[name].disabled, true);
   }
   assert.deepEqual(f.calls.at(-1), ["busy", true]);
@@ -181,7 +180,7 @@ test("leaving active view restores setup, resume and checking badges and descrip
   }
 });
 
-test("active session errors keep visible attention labels, retry messages and end-without-report recovery", () => {
+test("active session errors keep visible attention labels and retry recovery without a report bypass", () => {
   const f = renderFixture();
   f.render(snapshot());
   f.context.endConfirmationOpen = true;
@@ -195,7 +194,7 @@ test("active session errors keep visible attention labels, retry messages and en
   assert.equal(f.context.streamSessionError.hidden, false);
   assert.equal(f.context.streamSessionErrorMessage.textContent, "Synthetic storage error. Nothing was changed.");
   assert.equal(f.context.retryStreamSessionButton.textContent, "Retry change");
-  assert.equal(f.context.endStreamWithoutReportButton.hidden, false);
+  assert.equal(f.context.retryStreamSessionButton.disabled, false);
   assert.equal(f.context.endConfirmationOpen, false);
   assert.equal(f.context.streamSessionEndConfirmation.hidden, true);
   assert.equal(f.context.streamSessionError.focusCount, 1);
@@ -203,7 +202,6 @@ test("active session errors keep visible attention labels, retry messages and en
   f.render(snapshot({ phase: "error", resumed: false, error: { scope: "load" } }));
   assert.equal(f.context.streamSessionErrorTitle.textContent, "Tracker stream unavailable");
   assert.equal(f.context.retryStreamSessionButton.textContent, "Retry loading");
-  assert.equal(f.context.endStreamWithoutReportButton.hidden, true);
   assert.deepEqual(f.calls.at(-1), ["unmount"]);
 });
 
@@ -306,7 +304,6 @@ test("setup errors keep the header attention badge, visible focused errors and r
       scope === "load" ? "Retry loading" : "Retry change");
     assert.equal(f.context.streamSessionError.focusCount, 1);
     assert.equal(f.context.streamSessionEndConfirmation.hidden, true);
-    assert.equal(f.context.endStreamWithoutReportButton.hidden, true);
     assert.equal(f.context.streamSessionActions.hidden, true);
     assert.deepEqual(f.calls.at(-1), ["unmount"]);
     f.render(current);

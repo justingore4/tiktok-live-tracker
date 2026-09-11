@@ -492,11 +492,10 @@ Normal **End and create report** is one serialized lifecycle operation:
 4. end that exact local stream; and
 5. mark the same report record `finalized`.
 
-The End confirmation also exposes a deliberate **End without report** action that skips
-report preparation and persistence. If preparation or persistence fails, normal
-report-aware End fails closed and leaves the stream active with the same no-report action
-available for recovery, so a local-storage problem can never trap the employee in an
-active tracker session. A worker restart repairs a
+The End confirmation offers **Keep stream active** and **End and create report** as
+two full-width actions. If preparation or persistence fails, report-aware End fails
+closed and leaves the stream active; resolve the error and retry the same report-saving
+operation. A worker restart repairs a
 `pending_end` record: it finalizes it when the matching stream is no longer active and
 keeps it pending when the stream still exists. One stream has at most one report.
 
@@ -839,8 +838,11 @@ SKUs through the strict append-only action stays inside that same boundary. End 
 known active local stream, including before the inventory workspace is resumed and while
 pending reservations or completed sales without items remain unresolved; those states
 are retained as attention notices rather than blockers. If report persistence itself
-fails, the normal action preserves the active stream and offers an explicit **End
-without report** fallback.
+fails, the normal action preserves the active stream and offers Retry without bypassing
+report creation.
+Saved-report management remains hidden during an active session. Check capacity before
+Start: a capacity failure at End currently requires separate recovery/support to free
+space, since Retry alone cannot reduce library usage.
 
 Ended streams cannot be reopened in the tagger. The guarded payment-buffer correction is
 limited to the newest safe report; report-only SKU-cost correction is available on any
@@ -1108,8 +1110,8 @@ This ordering prevents simultaneous commands from overwriting one another and pr
 memory from getting ahead of disk. When an MV3 worker is suspended and later restarted,
 the next command reloads the last durable snapshot.
 
-A second FIFO coordinator owns `get_stream_session`, `start_stream`, `end_stream`, and
-the explicit `end_stream_without_report` recovery command. Only the worker can generate
+A second FIFO coordinator owns `get_stream_session`, `start_stream`, and `end_stream`.
+Only the worker can generate
 the stream UUID and timestamp. Start is idempotent when a session already exists, and End
 includes the expected active ID so a stale panel cannot close a newer session. A strict
 report coordinator owns prepare/finalize/recovery plus authorized list/get reads. The

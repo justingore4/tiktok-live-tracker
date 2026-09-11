@@ -44,7 +44,6 @@ test("requested labels and separate confirmation controls retain their markup an
     ["preview-inventory", "Connect and preview", "primary-action"],
     ["start-stream", "Start stream tracking", "primary-action"],
     ["confirm-end-stream", "End and create report", "danger-action stream-session-full-end-action"],
-    ["confirm-end-stream-without-report", "End without report", "danger-action"],
     ["cancel-end-stream", "Keep stream active", "secondary-action"],
     ["confirm-inventory-import", "Confirm inventory baseline", "primary-action"],
   ]) {

@@ -369,7 +369,9 @@ test("capacity refreshes after every saved library change and remains serialized
     startedAt: STARTED_AT,
   });
   await checkCapacity(2);
-  await coordinator.discardPendingReportForStream(pending.report.metadata.streamId);
+  await coordinator.finalizeReport(pending.reportId);
+  await checkCapacity(2);
+  await coordinator.deleteReports([pending.reportId]);
   await checkCapacity(1);
   await coordinator.prepareReport({
     reconciliationState: {},
@@ -742,7 +744,7 @@ test("a report save failure rejects before any End caller can proceed", async ()
   );
 });
 
-test("End-without-report discards only the exact pending stream report", async () => {
+test("a pending report stays saved for normal End retry and exposes no discard API", async () => {
   const store = createStore();
   const coordinator = createCoordinator(store);
   const prepared = await coordinator.prepareReport({
@@ -751,15 +753,18 @@ test("End-without-report discards only the exact pending stream report", async (
     startedAt: STARTED_AT,
   });
 
-  assert.deepEqual(
-    await coordinator.discardPendingReportForStream(STREAM_ONE),
-    { discarded: true, reportId: prepared.reportId },
-  );
-  assert.deepEqual(store.read(), []);
-  assert.deepEqual(
-    await coordinator.discardPendingReportForStream(STREAM_ONE),
-    { discarded: false, reportId: null },
-  );
+  assert.equal(coordinator.discardPendingReportForStream, undefined);
+  const saved = store.read();
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].lifecycleStatus, "pending_end");
+  assert.deepEqual(await coordinator.repairPendingReports(STREAM_ONE), { repairedCount: 0 });
+  const retried = await coordinator.prepareReport({
+    reconciliationState: {}, streamId: STREAM_ONE, startedAt: STARTED_AT,
+  });
+  assert.deepEqual(retried, prepared);
+  assert.deepEqual(store.read(), saved);
+  assert.equal(store.saves.length, 2, "Normal End retry refreshes the same pending record, not a second report");
+  assert.deepEqual(store.saves[1], store.saves[0]);
 });
 
 test("archive byte cap rejects a new report without deleting saved records", async () => {
