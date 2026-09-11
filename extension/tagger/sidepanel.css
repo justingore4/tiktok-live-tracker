@@ -59,10 +59,21 @@ button {
 
 .app-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 11px;
   align-items: center;
   margin-bottom: 17px;
+}
+
+.app-header > .stream-session-badge {
+  justify-self: end;
+}
+
+.app-shell:not(.archived-reports-open) .app-header .brand-copy h1 {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .brand-mark {
@@ -100,6 +111,7 @@ button {
 
 .brand-copy h1 {
   overflow: hidden;
+  color: var(--blue-bright);
   font-size: clamp(15px, 4.5vw, 18px);
   font-weight: 720;
   letter-spacing: -0.025em;
@@ -118,7 +130,7 @@ button {
 
 .inventory-import-panel {
   margin-bottom: 14px;
-  padding: 14px;
+  padding: 16px 12px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-medium);
   background: rgb(18 23 32 / 92%);
@@ -136,6 +148,12 @@ button {
   gap: 12px;
 }
 
+.inventory-import-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .inventory-import-heading h2,
 .inventory-import-preview-heading h3,
 .inventory-import-progress h3,
@@ -149,8 +167,9 @@ button {
 }
 
 .inventory-import-heading h2 {
-  font-size: 14px;
-  font-weight: 700;
+  min-width: 0;
+  color: var(--blue-bright);
+  overflow-wrap: anywhere;
 }
 
 .inventory-import-badge {
@@ -182,7 +201,7 @@ button {
 .inventory-import-form {
   display: grid;
   gap: 8px;
-  margin-top: 13px;
+  margin-top: 8px;
 }
 
 .inventory-import-form label {
@@ -597,6 +616,17 @@ button {
   padding: 10px;
 }
 
+.stream-session-panel[data-view="setup"] {
+  padding: 10px;
+}
+
+.stream-session-panel[data-view="setup"] .stream-session-actions,
+.stream-session-panel[data-view="setup"] .stream-session-status,
+.stream-session-panel[data-view="setup"] .stream-session-error,
+.stream-session-panel[data-view="setup"][data-state="resume"] .stream-session-end-confirmation {
+  margin-top: 0;
+}
+
 .stream-session-panel[data-state="active"] .stream-session-heading {
   display: none;
 }
@@ -830,7 +860,7 @@ button {
 
 .stream-reports-panel {
   margin-bottom: 14px;
-  padding: 14px;
+  padding: 16px 12px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-medium);
   background: rgb(18 23 32 / 92%);
@@ -848,22 +878,21 @@ button {
 }
 
 .stream-reports-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 12px;
 }
 
 .stream-reports-heading h2,
-.stream-reports-description,
 .stream-reports-error p {
   margin: 0;
 }
 
 .stream-reports-heading h2 {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
+  min-width: 0;
+  color: var(--blue-bright);
+  overflow-wrap: anywhere;
 }
 
 .stream-reports-count {
@@ -877,17 +906,14 @@ button {
   white-space: nowrap;
 }
 
-.stream-reports-description {
-  margin-top: 8px;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
 .stream-reports-list {
   display: grid;
   gap: 8px;
   margin-top: 11px;
+}
+
+#stream-reports-list {
+  margin-top: 8px;
 }
 
 .stream-reports-navigation {
@@ -1116,6 +1142,14 @@ button {
 .app-shell.archived-reports-open >
   :not(.app-header):not(.archived-reports-view):not(.report-action-confirmation):not(#mapping-announcement) {
   display: none !important;
+}
+
+.app-shell.archived-reports-open .app-header {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.app-shell.archived-reports-open .app-header > .stream-session-badge {
+  display: none;
 }
 
 .archive-back-button {
@@ -2990,6 +3024,16 @@ button {
 
   .inventory-card {
     min-height: 112px;
+  }
+}
+
+@media (max-width: 320px) {
+  .app-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-header > .stream-session-badge {
+    grid-column: 1 / -1;
   }
 }
 

@@ -195,6 +195,7 @@ const reportMutationCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.RENAME_REPORT,
   streamReportProtocol.COMMAND_TYPES.ARCHIVE_REPORTS,
   streamReportProtocol.COMMAND_TYPES.RESTORE_REPORTS,
+  streamReportProtocol.COMMAND_TYPES.DELETE_REPORTS,
   streamReportProtocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
   streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
   streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
@@ -1333,6 +1334,11 @@ function dispatchBoundaryCommand(boundary, command) {
       command.type === streamReportProtocol.COMMAND_TYPES.GET_LIBRARY_CAPACITY
     ) {
       // Capacity includes pending records and must not repair or mutate them.
+      return reportCoordinator.dispatch(command);
+    }
+
+    if (command.type === streamReportProtocol.COMMAND_TYPES.DELETE_REPORTS) {
+      // Deletion must reject pending records, never finalize them as a side effect.
       return reportCoordinator.dispatch(command);
     }
 

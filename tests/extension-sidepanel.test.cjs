@@ -343,17 +343,24 @@ test("side-panel header keeps a compact decorative mark centered beside the unch
 
   const headerRule = css.match(/\.app-header\s*\{([^}]+)\}/)?.[1];
   const markRule = css.match(/\.brand-mark\s*\{([^}]+)\}/)?.[1];
-  const titleRule = css.match(/\.brand-copy h1\s*\{([^}]+)\}/)?.[1];
+  const titleRule = css.match(/(?:^|\n)\.brand-copy h1\s*\{([^}]+)\}/)?.[1];
   assert.ok(headerRule);
   assert.ok(markRule);
   assert.ok(titleRule);
-  assert.match(headerRule, /grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+  assert.match(headerRule, /grid-template-columns:\s*auto minmax\(0, 1fr\) auto;/);
   assert.match(headerRule, /align-items:\s*center/);
   assert.match(markRule, /width:\s*32px/);
   assert.match(markRule, /height:\s*32px/);
   assert.match(markRule, /border-radius:\s*10px/);
   assert.match(markRule, /font-size:\s*16px/);
   assert.match(markRule, /place-items:\s*center/);
+  assert.match(markRule, /background:\s*linear-gradient\(145deg, var\(--cyan\), var\(--blue\)\)/);
+  const secondaryActionRule = css.match(/(?:^|\n)\.secondary-action\s*\{([^}]+)\}/)?.[1];
+  assert.ok(secondaryActionRule);
+  assert.match(titleRule, /color:\s*var\(--blue-bright\);/);
+  assert.equal(titleRule.match(/color:\s*([^;]+);/)?.[1],
+    secondaryActionRule.match(/color:\s*([^;]+);/)?.[1], "Title matches View archived reports text");
+  assert.doesNotMatch(titleRule, /background(?:-clip)?\s*:/);
   assert.match(titleRule, /font-size:\s*clamp\(15px, 4\.5vw, 18px\)/);
   assert.match(titleRule, /font-weight:\s*720/);
   assert.doesNotMatch(titleRule, /(?:margin|padding)(?:-top|-block-start)?\s*:/);
@@ -495,12 +502,11 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     html,
     /id="stream-reports-panel"[\s\S]+aria-labelledby="stream-reports-title"[\s\S]+aria-busy="true"[\s\S]+hidden/,
   );
-  assert.match(html, /id="stream-reports-title">Stream reports</);
+  assert.match(html, /id="stream-reports-title" class="eyebrow">STREAM REPORT RECORDS</);
   assert.match(html, /id="stream-reports-count"[\s\S]+0 saved/);
-  assert.match(html, /print or save it as a PDF[\s\S]+updated Inventory table[\s\S]+Google Sheets-ready CSV/i);
-  assert.match(
+  assert.doesNotMatch(
     html,
-    /Limit of 5 reports on this dashboard, older reports will go to archived[\s\S]+once the limit is reached/,
+    /class="stream-reports-description"|print or save it as a PDF|Limit of 5 reports on this dashboard/,
   );
   assert.match(html, /id="stream-reports-list"[\s\S]+role="list"/);
   assert.match(
@@ -1043,7 +1049,7 @@ test("stable stream states hide redundant status copy while active tracking stay
   );
   assert.match(
     renderSource,
-    /const badgeContainer = dataState === "active"\s*\? streamSessionStatus\s*:\s*streamSessionHeading;/,
+    /const badgeContainer = !active\s*\? appHeader\s*:\s*dataState === "active"\s*\? streamSessionStatus\s*:\s*streamSessionHeading;/,
   );
   assert.match(
     renderSource,
@@ -3008,7 +3014,7 @@ test("archived-report actions enforce dashboard capacity and remain keyboard ope
     /function createStreamReportLink\(summary, options = \{\}\)[\s\S]*?function renderArchivedSelectionControls/,
   )?.[0];
   const mutationSource = panelSource.match(
-    /async function runReportMutation\(action, reportIds\)[\s\S]*?function requestPermanentReportDeletion/,
+    /async function runReportMutation\(action, reportIds, options = \{\}\)[\s\S]*?function requestPermanentReportDeletion/,
   )?.[0];
 
   assert.ok(reportLinkSource);
@@ -3024,6 +3030,7 @@ test("archived-report actions enforce dashboard capacity and remain keyboard ope
     /if \(!archived\) \{[\s\S]+createReportMenuAction\("Rename", "rename"[\s\S]+requestReportRename\(summary, moreButton\)[\s\S]+createReportMenuAction\("Archive", "archive"/,
   );
   assert.match(reportLinkSource, /"Archive", "archive"/);
+  assert.match(reportLinkSource, /"Delete", "delete"/);
   assert.match(reportLinkSource, /"Restore", "restore"/);
   assert.match(reportLinkSource, /"Delete forever", "delete"/);
   assert.match(reportLinkSource, /getAvailableDashboardReportSlots\(\) > 0/);
@@ -3039,6 +3046,7 @@ test("archived-report actions enforce dashboard capacity and remain keyboard ope
   assert.match(mutationSource, /streamReportClient\.archiveReports\(\{ reportIds: ids \}\)/);
   assert.match(mutationSource, /streamReportClient\.restoreReports\(\{ reportIds: ids \}\)/);
   assert.match(mutationSource, /streamReportClient\.deleteArchivedReports\(\{ reportIds: ids \}\)/);
+  assert.match(mutationSource, /streamReportClient\.deleteReports\(\{ reportIds: ids \}\)/);
   assert.match(
     panelSource,
     /restoreSelectedReportsButton\.hidden = availableSlots === 0/,
@@ -3057,7 +3065,7 @@ test("archived-report actions enforce dashboard capacity and remain keyboard ope
   );
   assert.match(
     panelSource,
-    /confirmReportActionButton\.addEventListener\("click"[\s\S]+pendingReportDeletion = null;[\s\S]+reportActionConfirmation\.close\(\)[\s\S]+runReportMutation\("delete", reportIds\)/,
+    /confirmReportActionButton\.addEventListener\("click"[\s\S]+pendingReportDeletion = null;[\s\S]+reportActionConfirmation\.close\(\)[\s\S]+runReportMutation\("delete", reportIds, \{ archived \}\)/,
   );
   assert.match(
     panelSource,

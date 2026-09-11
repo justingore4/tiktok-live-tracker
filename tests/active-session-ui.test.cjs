@@ -19,9 +19,17 @@ function functionSource(name, nextName) {
 function node() {
   return {
     hidden: false, disabled: false, textContent: "", dataset: {}, attributes: {},
-    parentElement: null, focusCount: 0,
+    parentElement: null, focusCount: 0, children: [], appendCount: 0,
     setAttribute(name, value) { this.attributes[name] = value; },
-    append(child) { child.parentElement = this; },
+    append(child) {
+      if (child.parentElement) {
+        const siblings = child.parentElement.children;
+        siblings.splice(siblings.indexOf(child), 1);
+      }
+      this.children.push(child);
+      child.parentElement = this;
+      this.appendCount += 1;
+    },
     focus() { this.focusCount += 1; },
   };
 }
@@ -62,7 +70,7 @@ function renderFixture() {
     setTrackerWorkspaceVisible: (visible) => calls.push(["workspace", visible]),
   };
   for (const name of [
-    "endReportReadiness", "streamSessionPanel", "streamSessionBadge",
+    "appHeader", "endReportReadiness", "streamSessionPanel", "streamSessionBadge",
     "streamSessionHeading", "streamSessionStatus", "streamSessionStatusTitle",
     "streamSessionStatusMessage", "streamSessionError", "streamSessionActions",
     "startStreamButton", "resumeStreamButton", "endStreamButton",
@@ -71,7 +79,7 @@ function renderFixture() {
     "streamSessionEndConfirmation", "streamSessionErrorTitle",
     "streamSessionErrorMessage", "retryStreamSessionButton", "savedSessionError",
   ]) context[name] = node();
-  context.streamSessionHeading.append(context.streamSessionBadge);
+  context.appHeader.append(context.streamSessionBadge);
   const render = vm.runInNewContext(
     `${functionSource("formatStreamStart", "isInventoryReadyForStart")}\n` +
     `${functionSource("renderStreamSnapshot", "announceSavedAction")}\nrenderStreamSnapshot;`,
@@ -96,6 +104,7 @@ test("active session combines the real formatted start time in one uniform text 
     assert.equal(f.context.streamSessionStatus.hidden, false);
     assert.equal(f.context.streamSessionBadge.parentElement, f.context.streamSessionStatus);
     assert.equal(f.context.streamSessionPanel.dataset.state, "active");
+    assert.equal(f.context.streamSessionPanel.dataset.view, "tracker");
     assert.equal(f.context.streamSessionPanel.attributes["aria-busy"], "false");
     assert.equal(JSON.stringify(current), before);
     assert.ok(f.calls.some(([action, value]) => action === "mount" && value === current.activeSession));
@@ -128,6 +137,9 @@ test("active session preserves End Stream Tracking and its confirmation controls
   assert.equal(f.context.streamSessionActions.hidden, true);
   assert.equal(f.context.streamSessionBadge.hidden, false);
   assert.equal(f.context.streamSessionBadge.textContent, "Ending");
+  assert.equal(f.context.streamSessionBadge.parentElement, f.context.streamSessionHeading);
+  assert.equal(f.context.streamSessionHeading.hidden, false);
+  assert.equal(f.context.streamSessionPanel.dataset.view, "tracker");
   assert.equal(f.context.streamSessionStatusMessage.hidden, false);
   for (const name of ["endStreamButton", "confirmEndStreamButton", "confirmEndStreamWithoutReportButton", "cancelEndStreamButton"]) {
     assert.equal(f.context[name].disabled, true);
@@ -137,16 +149,19 @@ test("active session preserves End Stream Tracking and its confirmation controls
 
 test("leaving active view restores setup, resume and checking badges and descriptions", () => {
   for (const state of [
-    { value: snapshot({ resumed: false }), label: "Ready to resume", dataState: "resume", statusHidden: true },
-    { value: snapshot({ activeSession: null, resumed: false }), label: "Not started", dataState: "inactive", statusHidden: true },
-    { value: snapshot({ phase: "loading", busy: true }), label: "Checking", dataState: "checking", statusHidden: false },
+    { value: snapshot({ resumed: false }), label: "Ready to resume", dataState: "resume", statusHidden: true, setup: true },
+    { value: snapshot({ activeSession: null, resumed: false }), label: "Not started", dataState: "inactive", statusHidden: true, setup: true },
+    { value: snapshot({ phase: "loading", busy: true }), label: "Checking", dataState: "checking", statusHidden: false, setup: false },
   ]) {
     const f = renderFixture();
     f.render(snapshot());
     f.render(state.value);
     assert.equal(f.context.streamSessionBadge.hidden, false);
     assert.equal(f.context.streamSessionStatusMessage.hidden, false);
-    assert.equal(f.context.streamSessionBadge.parentElement, f.context.streamSessionHeading);
+    assert.equal(f.context.streamSessionBadge.parentElement,
+      state.setup ? f.context.appHeader : f.context.streamSessionHeading);
+    assert.equal(f.context.streamSessionHeading.hidden, state.setup);
+    assert.equal(f.context.streamSessionPanel.dataset.view, state.setup ? "setup" : "tracker");
     assert.equal(f.context.streamSessionBadge.textContent, state.label);
     assert.equal(f.context.streamSessionPanel.dataset.state, state.dataState);
     assert.equal(f.context.streamSessionStatus.hidden, state.statusHidden);
@@ -174,6 +189,8 @@ test("active session errors keep visible attention labels, retry messages and en
   assert.equal(f.context.streamSessionBadge.hidden, false);
   assert.equal(f.context.streamSessionBadge.textContent, "Needs attention");
   assert.equal(f.context.streamSessionBadge.parentElement, f.context.streamSessionHeading);
+  assert.equal(f.context.streamSessionHeading.hidden, false);
+  assert.equal(f.context.streamSessionPanel.dataset.view, "tracker");
   assert.equal(f.context.streamSessionStatus.hidden, true);
   assert.equal(f.context.streamSessionError.hidden, false);
   assert.equal(f.context.streamSessionErrorMessage.textContent, "Synthetic storage error. Nothing was changed.");
@@ -188,6 +205,146 @@ test("active session errors keep visible attention labels, retry messages and en
   assert.equal(f.context.retryStreamSessionButton.textContent, "Retry loading");
   assert.equal(f.context.endStreamWithoutReportButton.hidden, true);
   assert.deepEqual(f.calls.at(-1), ["unmount"]);
+});
+
+test("setup Start and Resume views put the existing live badge in the header and keep controls usable", () => {
+  for (const resumedSession of [null, session]) {
+    const f = renderFixture();
+    const current = snapshot({ activeSession: resumedSession, resumed: false });
+    const before = JSON.stringify(current);
+    f.render(current);
+    assert.equal(f.context.streamSessionBadge.parentElement, f.context.appHeader);
+    assert.equal(f.context.streamSessionBadge.hidden, false);
+    assert.equal(f.context.streamSessionBadge.textContent,
+      resumedSession === null ? "Not started" : "Ready to resume");
+    assert.equal(f.context.streamSessionHeading.hidden, true);
+    assert.equal(f.context.streamSessionPanel.dataset.view, "setup");
+    assert.equal(f.context.streamSessionStatus.hidden, true);
+    assert.equal(f.context.streamSessionActions.hidden, false);
+    assert.equal(f.context.streamSessionError.hidden, true);
+    assert.equal(f.context.startStreamButton.hidden, resumedSession !== null);
+    assert.equal(f.context.resumeStreamButton.hidden, resumedSession === null);
+    assert.equal(f.context.endStreamButton.hidden, resumedSession === null);
+    assert.equal(f.context.startStreamButton.disabled, false);
+    assert.equal(f.context.resumeStreamButton.disabled, false);
+    assert.equal(f.context.endStreamButton.disabled, false);
+    assert.equal(JSON.stringify(current), before);
+    assert.deepEqual(f.calls.at(-1), ["unmount"]);
+    if (resumedSession === null) {
+      f.context.isInventoryReadyForStart = () => false;
+      f.render(current);
+      assert.equal(f.context.startStreamButton.disabled, true,
+        "Moving the badge does not bypass inventory readiness");
+    } else {
+      f.context.endConfirmationOpen = true;
+      f.render(current);
+      assert.equal(f.context.streamSessionEndConfirmation.hidden, false);
+      assert.equal(f.context.resumeStreamButton.hidden, true);
+      assert.equal(f.context.endStreamButton.hidden, true);
+      assert.equal(f.context.streamSessionBadge.parentElement, f.context.appHeader);
+    }
+  }
+});
+
+test("initial loading and Start/Resume progress keep header badges dynamic without hiding useful status", () => {
+  for (const scenario of [
+    { phase: "idle", operation: "load", activeSession: null, label: "Checking", title: "Checking saved stream..." },
+    { phase: "loading", operation: "load", activeSession: null, label: "Checking", title: "Checking saved stream..." },
+    { phase: "saving", operation: "start", activeSession: null, label: "Saving", title: "Starting tracker stream..." },
+    { phase: "loading", operation: "resume", activeSession: session, label: "Checking", title: "Checking saved stream..." },
+    { phase: "saving", operation: "resume", activeSession: session, label: "Saving", title: "Checking saved stream..." },
+  ]) {
+    const f = renderFixture();
+    f.context.persistentController = null;
+    f.render(snapshot({
+      phase: scenario.phase, operation: scenario.operation,
+      activeSession: scenario.activeSession, resumed: false, busy: true,
+    }));
+    assert.equal(f.context.streamSessionBadge.parentElement, f.context.appHeader);
+    assert.equal(f.context.streamSessionBadge.textContent, scenario.label);
+    assert.equal(f.context.streamSessionBadge.dataset.state, "checking");
+    assert.equal(f.context.streamSessionBadge.hidden, false);
+    assert.equal(f.context.streamSessionHeading.hidden, true);
+    assert.equal(f.context.streamSessionPanel.dataset.view, "setup");
+    assert.equal(f.context.streamSessionPanel.attributes["aria-busy"], "true");
+    assert.equal(f.context.streamSessionStatus.hidden, false);
+    assert.equal(f.context.streamSessionStatusTitle.textContent, scenario.title);
+    assert.equal(f.context.streamSessionStatusMessage.hidden, false);
+    assert.match(f.context.streamSessionStatusMessage.textContent,
+      /Looking for an active tracker stream|Waiting for the local session change/);
+    assert.equal(f.context.streamSessionActions.hidden, true);
+    for (const name of ["startStreamButton", "resumeStreamButton", "endStreamButton"]) {
+      assert.equal(f.context[name].hidden, true);
+      assert.equal(f.context[name].disabled, true);
+    }
+    assert.ok(f.calls.some(([action, value]) => action === "workspace" && value === false));
+    assert.deepEqual(f.calls.at(-1), ["busy", true]);
+  }
+});
+
+test("setup errors keep the header attention badge, visible focused errors and retries", () => {
+  for (const scope of ["load", "start", "resume"]) {
+    const f = renderFixture();
+    const current = snapshot({
+      phase: "error", resumed: false, activeSession: scope === "resume" ? session : null,
+      error: { scope, message: "Synthetic setup failure." },
+    });
+    f.context.endConfirmationOpen = true;
+    f.render(current);
+    assert.equal(f.context.streamSessionBadge.parentElement, f.context.appHeader);
+    assert.equal(f.context.streamSessionBadge.textContent, "Needs attention");
+    assert.equal(f.context.streamSessionBadge.dataset.state, "error");
+    assert.equal(f.context.streamSessionBadge.hidden, false);
+    assert.equal(f.context.streamSessionHeading.hidden, true);
+    assert.equal(f.context.streamSessionPanel.dataset.view, "setup");
+    assert.equal(f.context.streamSessionPanel.attributes["aria-busy"], "false");
+    assert.equal(f.context.streamSessionStatus.hidden, true);
+    assert.equal(f.context.streamSessionError.hidden, false);
+    assert.equal(f.context.streamSessionErrorMessage.textContent,
+      "Synthetic setup failure. Nothing was changed.");
+    assert.equal(f.context.retryStreamSessionButton.textContent,
+      scope === "load" ? "Retry loading" : "Retry change");
+    assert.equal(f.context.streamSessionError.focusCount, 1);
+    assert.equal(f.context.streamSessionEndConfirmation.hidden, true);
+    assert.equal(f.context.endStreamWithoutReportButton.hidden, true);
+    assert.equal(f.context.streamSessionActions.hidden, true);
+    assert.deepEqual(f.calls.at(-1), ["unmount"]);
+    f.render(current);
+    assert.equal(f.context.streamSessionError.focusCount, 1,
+      "Unchanged errors retain the existing one-time focus behavior");
+    f.render(snapshot({ activeSession: null, resumed: false }));
+    assert.equal(f.context.streamSessionError.hidden, true);
+    assert.equal(f.context.streamSessionBadge.textContent, "Not started");
+  }
+});
+
+test("setup, tracker, busy and error transitions move one badge without clones or stale header content", () => {
+  const f = renderFixture();
+  const badge = f.context.streamSessionBadge;
+  const containers = [f.context.appHeader, f.context.streamSessionHeading, f.context.streamSessionStatus];
+  for (const [current, container, label] of [
+    [snapshot({ phase: "loading", busy: true, activeSession: null, resumed: false }), f.context.appHeader, "Checking"],
+    [snapshot({ activeSession: null, resumed: false }), f.context.appHeader, "Not started"],
+    [snapshot({ resumed: false }), f.context.appHeader, "Ready to resume"],
+    [snapshot(), f.context.streamSessionStatus, ""],
+    [snapshot({ busy: true, phase: "saving", operation: "end" }), f.context.streamSessionHeading, "Ending"],
+    [snapshot({ phase: "error", error: { scope: "end" } }), f.context.streamSessionHeading, "Needs attention"],
+    [snapshot(), f.context.streamSessionStatus, ""],
+    [snapshot({ activeSession: null, resumed: false }), f.context.appHeader, "Not started"],
+  ]) {
+    f.render(current);
+    assert.equal(f.context.streamSessionBadge, badge);
+    assert.equal(badge.parentElement, container);
+    assert.equal(badge.textContent, label);
+    assert.equal(containers.flatMap((parent) => parent.children).filter((child) => child === badge).length, 1);
+    for (const parent of containers.filter((candidate) => candidate !== container)) {
+      assert.equal(parent.children.includes(badge), false);
+    }
+    const appends = containers.reduce((sum, parent) => sum + parent.appendCount, 0);
+    f.render(current);
+    assert.equal(containers.reduce((sum, parent) => sum + parent.appendCount, 0), appends,
+      "A repeated render does not move or recreate the badge");
+  }
 });
 
 function footerFixture() {
@@ -245,6 +402,46 @@ test("restored-data footer suppression stays scoped and retains existing setup/r
   f.context.archivedReportsViewOpen = true;
   f.setFooterStatus("Saved locally", "ready");
   assert.equal(f.context.appFooter.hidden, true, "Existing archive view rule remains");
+});
+
+test("setup markup has one accessible live header badge and retains the session section label", () => {
+  const header = html.match(/<header class="app-header">[\s\S]*?<\/header>/)?.[0];
+  const panel = html.match(/<section\s+id="stream-session-panel"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(header);
+  assert.ok(panel);
+  assert.equal((html.match(/id="stream-session-badge"/g) ?? []).length, 1);
+  assert.match(header, /id="stream-session-badge"[^>]*data-state="checking"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+  assert.ok(header.indexOf("<h1>TikTok Live Tracker</h1>") < header.indexOf('id="stream-session-badge"'));
+  assert.doesNotMatch(panel, /id="stream-session-badge"/);
+  assert.match(panel, /aria-labelledby="stream-session-title"/);
+  assert.match(panel, /data-view="setup"/);
+  assert.match(panel, /<div class="stream-session-heading" hidden>[\s\S]*?<h2 id="stream-session-title">Tracker stream<\/h2>/);
+  assert.match(panel, /id="stream-session-status"[^>]*role="status"[^>]*tabindex="-1"[^>]*aria-live="polite"/);
+  assert.match(panel, /id="stream-session-error"[^>]*role="alert"[^>]*tabindex="-1"/);
+});
+
+test("compact setup spacing and responsive header layout stay scoped away from active and archive views", () => {
+  const rule = (selector) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+    ([, selectors]) => selectors.split(",").some((candidate) => candidate.trim() === selector),
+  )?.[2];
+  assert.match(rule('.stream-session-panel[data-view="setup"]'), /padding:\s*10px;/);
+  for (const selector of [
+    '.stream-session-panel[data-view="setup"] .stream-session-actions',
+    '.stream-session-panel[data-view="setup"] .stream-session-status',
+    '.stream-session-panel[data-view="setup"] .stream-session-error',
+    '.stream-session-panel[data-view="setup"][data-state="resume"] .stream-session-end-confirmation',
+  ]) assert.match(rule(selector), /margin-top:\s*0;/);
+  assert.match(rule(".app-header"), /grid-template-columns:\s*auto minmax\(0, 1fr\) auto;/);
+  assert.match(rule(".app-header > .stream-session-badge"), /justify-self:\s*end;/);
+  const title = rule(".app-shell:not(.archived-reports-open) .app-header .brand-copy h1");
+  assert.match(title, /overflow:\s*visible;/);
+  assert.match(title, /white-space:\s*normal;/);
+  assert.match(title, /overflow-wrap:\s*anywhere;/);
+  assert.match(css, /@media\s*\(max-width:\s*320px\)\s*\{\s*\.app-header\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);\s*\}\s*\.app-header > \.stream-session-badge\s*\{[^}]*grid-column:\s*1 \/ -1;/);
+  assert.match(rule(".app-shell.archived-reports-open .app-header"),
+    /grid-template-columns:\s*auto minmax\(0, 1fr\);/);
+  assert.match(rule(".app-shell.archived-reports-open .app-header > .stream-session-badge"),
+    /display:\s*none;/);
 });
 
 test("compact status styles affect only active view and preserve natural wrapping, the dot and live status semantics", () => {

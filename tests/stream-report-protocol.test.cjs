@@ -26,6 +26,7 @@ test("creates strict read and archive-management stream-report messages", () => 
     RENAME_REPORT: "rename_report",
     ARCHIVE_REPORTS: "archive_reports",
     RESTORE_REPORTS: "restore_reports",
+    DELETE_REPORTS: "delete_reports",
     DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
   });
   assert.equal(protocol.MAX_ACTIVE_REPORTS, 5);
@@ -448,6 +449,31 @@ test("rejects malformed report messages and IDs", () => {
     () => protocol.validateStreamReportMessage({ ...valid, extra: true }),
     (error) => error.code === "INVALID_MESSAGE",
   );
+});
+
+test("direct report deletion snapshots exact report IDs and rejects malformed selections", () => {
+  const reportIds = [REPORT_ID];
+  const message = protocol.createStreamReportMessage({
+    type: protocol.COMMAND_TYPES.DELETE_REPORTS, reportIds,
+  });
+  reportIds.length = 0;
+  assert.deepEqual(message.command, { type: "delete_reports", reportIds: [REPORT_ID] });
+  for (const command of [
+    { type: "delete_reports", reportIds: [] },
+    { type: "delete_reports", reportIds: [REPORT_ID, REPORT_ID] },
+    { type: "delete_reports", reportIds: ["bad"] },
+    { type: "delete_reports", reportIds: [null] },
+    { type: "delete_reports", reportIds: Array(1) },
+    { type: "delete_reports", reportId: REPORT_ID },
+    { type: "delete_reports", reportIds: [REPORT_ID], archived: false },
+    { type: "delete_reports", reportIds: Array.from(
+      { length: protocol.MAX_ARCHIVED_REPORTS + 1 },
+      (_, index) => `stream-report:${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    ) },
+  ]) {
+    assert.throws(() => protocol.createStreamReportMessage(command),
+      (error) => error instanceof protocol.StreamReportProtocolError);
+  }
 });
 
 test("report-library change notifications have a strict non-command shape", () => {

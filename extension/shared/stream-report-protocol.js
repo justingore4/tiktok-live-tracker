@@ -36,6 +36,7 @@
       RENAME_REPORT: "rename_report",
       ARCHIVE_REPORTS: "archive_reports",
       RESTORE_REPORTS: "restore_reports",
+      DELETE_REPORTS: "delete_reports",
       DELETE_ARCHIVED_REPORTS: "delete_archived_reports",
     });
     const COMMAND_KEYS = Object.freeze({
@@ -67,11 +68,13 @@
       [COMMAND_TYPES.RENAME_REPORT]: ["displayName", "reportId", "type"],
       [COMMAND_TYPES.ARCHIVE_REPORTS]: ["reportIds", "type"],
       [COMMAND_TYPES.RESTORE_REPORTS]: ["reportIds", "type"],
+      [COMMAND_TYPES.DELETE_REPORTS]: ["reportIds", "type"],
       [COMMAND_TYPES.DELETE_ARCHIVED_REPORTS]: ["reportIds", "type"],
     });
     const REPORT_ID_LIST_COMMANDS = new Set([
       COMMAND_TYPES.ARCHIVE_REPORTS,
       COMMAND_TYPES.RESTORE_REPORTS,
+      COMMAND_TYPES.DELETE_REPORTS,
       COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
     ]);
     const NOTIFICATION_TYPES = Object.freeze({

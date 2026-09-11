@@ -68,6 +68,7 @@ function createReport(options) {
       activeBiddingVariationNumber: null,
     },
     completeness: { status: "final", reasonCodes: [] },
+    inventory: clone(options.reconciliationState.inventory ?? []),
     totals: {
       completedPaymentCount: options.reconciliationState.completed ?? 0,
       totalSalesCount: options.reconciliationState.total ?? 0,
@@ -341,7 +342,10 @@ test("capacity refreshes after every saved library change and remains serialized
   await checkCapacity(1);
   await coordinator.replaceFinalizedReport({
     reportId: existing.reportId,
-    reconciliationState: { completed: 4, total: 5, gmv: 12345 },
+    reconciliationState: {
+      completed: 4, total: 5, gmv: 12345,
+      inventory: existing.report.inventory,
+    },
   });
   await checkCapacity(1);
   await coordinator.archiveReports([existing.reportId]);
@@ -1526,6 +1530,92 @@ test("mapping transform and storage failures leave every saved report unchanged"
   );
   assert.deepEqual(saveStore.read(), records);
   assert.equal(saveStore.saves.length, 0);
+});
+
+test("direct deletion removes only selected finalized reports without archiving or recalculating", async () => {
+  const recent = createSavedRecord(1, { displayName: "Current report" });
+  const archived = createSavedRecord(2, { archived: true });
+  const other = createSavedRecord(3);
+  const pending = createSavedRecord(4, { lifecycleStatus: "pending_end" });
+  const records = [recent, archived, other, pending];
+  const store = createStore({ records });
+  const coordinator = createCoordinator(store, undefined, {
+    ...streamReport,
+    createStreamReport() { assert.fail("Deletion must not rebuild a report"); },
+    correctReportUnitCost() { assert.fail("Deletion must not correct costs"); },
+  });
+  const capacityBefore = await coordinator.getLibraryCapacity();
+  assert.deepEqual(await coordinator.dispatch({
+    type: protocol.COMMAND_TYPES.DELETE_REPORTS,
+    reportIds: [recent.reportId, archived.reportId],
+  }), { reportIds: [recent.reportId, archived.reportId] });
+  assert.equal(store.saves.length, 1);
+  assert.deepEqual(store.read(), [other, pending]);
+  assert.deepEqual(await coordinator.getReport(recent.reportId), {
+    reportId: null, lifecycleStatus: null, displayName: null, report: null,
+  });
+  const capacityAfter = await coordinator.getLibraryCapacity();
+  assert.ok(capacityAfter.usedBytes < capacityBefore.usedBytes);
+});
+
+test("direct deletion works with all 25 archive slots occupied without an archive-first write", async () => {
+  const recent = createSavedRecord(1);
+  const archived = Array.from({ length: storage.MAX_ARCHIVED_REPORTS },
+    (_, index) => createSavedRecord(index + 2, { archived: true }));
+  const store = createStore({ records: [recent, ...archived] });
+  const coordinator = createCoordinator(store);
+  await coordinator.deleteReports([recent.reportId]);
+  assert.equal(store.saves.length, 1);
+  assert.deepEqual(store.read(), archived);
+});
+
+test("direct deletion rejects missing, pending, duplicate, and invalid IDs without partial writes", async () => {
+  const recent = createSavedRecord(1);
+  const pending = createSavedRecord(2, { lifecycleStatus: "pending_end" });
+  const missing = createSavedRecord(3);
+  const records = [recent, pending];
+  for (const [reportIds, code] of [
+    [[recent.reportId, missing.reportId], "REPORT_NOT_FOUND"],
+    [[recent.reportId, pending.reportId], "REPORT_NOT_FINALIZED"],
+    [[recent.reportId, recent.reportId], "INVALID_REPORT_IDS"],
+    [["invalid"], "INVALID_REPORT_IDS"],
+    [[], "INVALID_REPORT_IDS"],
+  ]) {
+    const store = createStore({ records });
+    const coordinator = createCoordinator(store);
+    await assert.rejects(coordinator.deleteReports(reportIds), (error) => error.code === code);
+    assert.deepEqual(store.read(), records);
+    assert.equal(store.saves.length, 0);
+  }
+});
+
+test("direct deletion snapshots queued IDs and reads the latest serialized library", async () => {
+  const first = createSavedRecord(1);
+  const second = createSavedRecord(2);
+  const third = createSavedRecord(3);
+  const store = createStore({ records: [first, second, third] });
+  const coordinator = createCoordinator(store);
+  const reportIds = [first.reportId];
+  const deletion = coordinator.deleteReports(reportIds);
+  reportIds[0] = third.reportId;
+  const nextDeletion = coordinator.dispatch({ type: "delete_reports", reportIds: [second.reportId] });
+  await Promise.all([deletion, nextDeletion]);
+  assert.equal(store.saves.length, 2);
+  assert.deepEqual(store.read(), [third]);
+});
+
+test("a failed direct deletion keeps saved and in-memory reports unchanged", async () => {
+  const recent = createSavedRecord(1);
+  const other = createSavedRecord(2, { archived: true });
+  const records = [recent, other];
+  const store = createStore({ records, failSave: true });
+  const coordinator = createCoordinator(store);
+  const before = await coordinator.getReport(recent.reportId);
+  await assert.rejects(coordinator.deleteReports([recent.reportId]),
+    (error) => error.code === "STORAGE_WRITE_FAILED");
+  assert.deepEqual(await coordinator.getReport(recent.reportId), before);
+  assert.deepEqual(store.read(), records);
+  assert.equal(store.saves.length, 0);
 });
 
 test("bulk restore and permanent delete reject mixed selections without partial changes", async () => {

@@ -14,6 +14,16 @@
         <div class="brand-copy">
           <h1>TikTok Live Tracker</h1>
         </div>
+        <span
+          id="stream-session-badge"
+          class="stream-session-badge"
+          data-state="checking"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          Checking
+        </span>
       </header>
 
       <section
@@ -23,10 +33,7 @@
         aria-busy="true"
       >
         <div class="inventory-import-heading">
-          <div>
-            <p class="eyebrow">Pre-stream inventory</p>
-            <h2 id="inventory-import-title">Google Sheets inventory</h2>
-          </div>
+          <h2 id="inventory-import-title" class="eyebrow">Pre-stream inventory check</h2>
           <span
             id="inventory-import-badge"
             class="inventory-import-badge"
@@ -257,21 +264,15 @@
       <section
         id="stream-session-panel"
         class="stream-session-panel"
+        data-view="setup"
         aria-labelledby="stream-session-title"
         aria-busy="true"
       >
-        <div class="stream-session-heading">
+        <div class="stream-session-heading" hidden>
           <div>
             <p class="eyebrow">Local stream session</p>
             <h2 id="stream-session-title">Tracker stream</h2>
           </div>
-          <span
-            id="stream-session-badge"
-            class="stream-session-badge"
-            data-state="checking"
-          >
-            Checking
-          </span>
         </div>
 
         <div
@@ -787,18 +788,9 @@
         hidden
       >
         <div class="stream-reports-heading">
-          <div>
-            <p class="eyebrow">Business records</p>
-            <h2 id="stream-reports-title">Stream reports</h2>
-          </div>
+          <h2 id="stream-reports-title" class="eyebrow">STREAM REPORT RECORDS</h2>
           <span id="stream-reports-count" class="stream-reports-count">0 saved</span>
         </div>
-        <p class="stream-reports-description">
-          Open a saved report to print or save it as a PDF, copy the complete
-          updated Inventory table, or download its Google Sheets-ready CSV.
-          Limit of 5 reports on this dashboard, older reports will go to archived
-          once the limit is reached
-        </p>
         <div
           id="stream-reports-list"
           class="stream-reports-list"

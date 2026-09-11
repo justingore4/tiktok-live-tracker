@@ -4270,6 +4270,48 @@ test("stream report client lists archived reports and strictly echoes archive mu
   ]);
 });
 
+test("stream report client sends direct deletion with an immutable exact-ID snapshot", async () => {
+  const sentCommands = [];
+  const client = createClient({ runtime: {
+    async sendMessage(message) {
+      sentCommands.push(message.command);
+      return { ok: true, data: { reportIds: [...message.command.reportIds] } };
+    },
+  } });
+  const reportIds = [REPORT_ID];
+  const result = client.deleteReports({ reportIds });
+  reportIds[0] = SECOND_REPORT_ID;
+  assert.deepEqual(await result, { reportIds: [REPORT_ID] });
+  assert.deepEqual(sentCommands, [{ type: "delete_reports", reportIds: [REPORT_ID] }]);
+});
+
+test("stream report client rejects invalid direct deletion requests and nonexact responses", async () => {
+  let deliveryCount = 0;
+  const client = createClient({ runtime: {
+    async sendMessage() { deliveryCount += 1; return { ok: true, data: { reportIds: [] } }; },
+  } });
+  for (const options of [
+    { reportIds: [] }, { reportIds: [REPORT_ID, REPORT_ID] },
+    { reportIds: ["bad"] }, { reportIds: [REPORT_ID], extra: true },
+  ]) {
+    await assert.rejects(client.deleteReports(options), (error) => error.code === "INVALID_CLIENT_COMMAND");
+  }
+  assert.equal(deliveryCount, 0);
+  for (const data of [
+    { reportIds: [] }, { reportIds: [SECOND_REPORT_ID] },
+    { reportIds: [REPORT_ID], extra: true },
+  ]) {
+    const altered = createClient({ runtime: { async sendMessage() { return { ok: true, data }; } } });
+    await assert.rejects(altered.deleteReports({ reportIds: [REPORT_ID] }),
+      (error) => error.code === "INVALID_RESPONSE");
+  }
+  const failed = createClient({ runtime: { async sendMessage() {
+    return { ok: false, error: { code: "STORAGE_WRITE_FAILED", message: "Could not save." } };
+  } } });
+  await assert.rejects(failed.deleteReports({ reportIds: [REPORT_ID] }),
+    (error) => error.code === "STORAGE_WRITE_FAILED");
+});
+
 test("stream report client strictly renames a report and can restore its default name", async () => {
   const sentCommands = [];
   const client = createClient({

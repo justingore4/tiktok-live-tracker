@@ -138,6 +138,9 @@ renaming it.
   the session. Export and deliberately delete unwanted archived reports before retrying.
 - Each report's three-dot menu offers **Download PDF**. Archived Reports supports
   checkboxes, **Select all**, **Clear selection**, and **Download selected**.
+- To remove a recent report without archiving it first, choose **Delete** in its
+  three-dot menu, then **Delete forever** in the confirmation dialog. Cancel keeps
+  the report. Archived reports use the same permanent-delete confirmation.
 - Bulk downloads create one PDF per report, with progress and failure reporting.
   Keep the panel open until the job finishes; closing/reloading it does not resume
   unfinished exports as a background job.

@@ -35,6 +35,7 @@
       "RENAME_REPORT",
       "ARCHIVE_REPORTS",
       "RESTORE_REPORTS",
+      "DELETE_REPORTS",
       "DELETE_ARCHIVED_REPORTS",
     ]);
 
@@ -1064,12 +1065,16 @@
       const restoreReports = createMutationMethod(
         protocol.COMMAND_TYPES.RESTORE_REPORTS,
       );
+      const deleteReports = createMutationMethod(
+        protocol.COMMAND_TYPES.DELETE_REPORTS,
+      );
       const deleteArchivedReports = createMutationMethod(
         protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS,
       );
 
       return Object.freeze({
         archiveReports,
+        deleteReports,
         deleteArchivedReports,
         getLibraryCapacity,
         getReport,

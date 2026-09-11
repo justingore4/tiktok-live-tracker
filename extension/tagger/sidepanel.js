@@ -623,6 +623,7 @@
   let reportDownloadBusy = false;
   let reportDownloadController = null;
   let pendingReportDeletion = null;
+  let pendingReportDeletionArchived = true;
   let pendingReportDeletionReturnFocus = null;
   let pendingReportRename = null;
   let reportRenameBusy = false;
@@ -1951,6 +1952,11 @@
         createReportMenuAction("Archive", "archive", () => {
           void runReportMutation("archive", [summary.reportId]);
         }),
+        createReportMenuAction("Delete", "delete", () => {
+          requestPermanentReportDeletion([summary.reportId], moreButton, {
+            archived: false,
+          });
+        }),
       );
     } else {
       if (getAvailableDashboardReportSlots() > 0) {
@@ -2280,9 +2286,9 @@
     }
   }
 
-  async function runReportMutation(action, reportIds) {
+  async function runReportMutation(action, reportIds, options = {}) {
     const ids = [...new Set(reportIds)];
-    const archivedAction = action !== "archive";
+    const archivedAction = options.archived ?? (action !== "archive");
 
     if (reportMutationBusy || reportDownloadBusy || ids.length === 0) {
       return;
@@ -2311,7 +2317,11 @@
       } else if (action === "restore") {
         await streamReportClient.restoreReports({ reportIds: ids });
       } else if (action === "delete") {
-        await streamReportClient.deleteArchivedReports({ reportIds: ids });
+        if (archivedAction) {
+          await streamReportClient.deleteArchivedReports({ reportIds: ids });
+        } else {
+          await streamReportClient.deleteReports({ reportIds: ids });
+        }
       } else {
         throw new Error("The report action is not supported.");
       }
@@ -2334,7 +2344,7 @@
     }
   }
 
-  function requestPermanentReportDeletion(reportIds, returnFocusTarget = null) {
+  function requestPermanentReportDeletion(reportIds, returnFocusTarget = null, options = {}) {
     const ids = [...new Set(reportIds)];
 
     if (ids.length === 0 || reportMutationBusy || reportDownloadBusy) {
@@ -2342,6 +2352,7 @@
     }
 
     pendingReportDeletion = ids;
+    pendingReportDeletionArchived = options.archived !== false;
     pendingReportDeletionReturnFocus = returnFocusTarget;
     reportActionConfirmationTitle.textContent =
       ids.length === 1
@@ -4250,13 +4261,17 @@
     endReportReadiness.textContent = describeReportReadiness();
 
     streamSessionPanel.dataset.state = dataState;
+    streamSessionPanel.dataset.view = active ? "tracker" : "setup";
     streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
+    streamSessionHeading.hidden = !active;
     streamSessionBadge.dataset.state = dataState;
     streamSessionBadge.hidden = dataState === "active";
     streamSessionStatusMessage.hidden = dataState === "active";
-    const badgeContainer = dataState === "active"
-      ? streamSessionStatus
-      : streamSessionHeading;
+    const badgeContainer = !active
+      ? appHeader
+      : dataState === "active"
+        ? streamSessionStatus
+        : streamSessionHeading;
 
     if (streamSessionBadge.parentElement !== badgeContainer) {
       badgeContainer.append(streamSessionBadge);
@@ -5907,6 +5922,7 @@
 
   confirmReportActionButton.addEventListener("click", () => {
     const reportIds = pendingReportDeletion;
+    const archived = pendingReportDeletionArchived;
 
     if (!reportIds || reportIds.length === 0) {
       reportActionConfirmation.close();
@@ -5915,7 +5931,7 @@
 
     pendingReportDeletion = null;
     reportActionConfirmation.close();
-    void runReportMutation("delete", reportIds);
+    void runReportMutation("delete", reportIds, { archived });
   });
 
   reportActionConfirmation.addEventListener("close", () => {
@@ -5923,6 +5939,7 @@
     const returnFocusTarget = pendingReportDeletionReturnFocus;
 
     pendingReportDeletion = null;
+    pendingReportDeletionArchived = true;
     pendingReportDeletionReturnFocus = null;
 
     if (

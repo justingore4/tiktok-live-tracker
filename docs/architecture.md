@@ -654,8 +654,9 @@ retain the report page's PDF and inventory-download actions. **Back to Business 
 returns to the five current slots. Report-list Retry refetches the canonical library; the
 panel does not read `chrome.storage` directly.
 
-Each current record's **More actions** menu can assign an optional local display name or
-move that record into archive. Renaming changes neither the canonical report snapshot nor
+Each current record's **More actions** menu offers Download PDF, Rename, Archive, and
+Delete. Delete uses the same separate permanent-delete confirmation as archived reports;
+no intermediate archive operation is required. Renaming changes neither the canonical report snapshot nor
 its immutable report/stream IDs; the display name survives reload, archive, restore, and
 report-only corrections. The report cover shows that name (or the tracking-start timestamp fallback),
 while its footer retains the stream reference. Archived
@@ -1076,10 +1077,12 @@ capacity permits. Equal end times use report identity as the stable tie-break.
 There is no automatic report deletion. If the archive already contains 25 reports, the
 combined byte cap is reached, or no finalized current record can move, preparation fails
 before the active stream is cleared and leaves every record intact. Manual archive,
-multi-report restore, and archived-only deletion are serialized worker operations.
+multi-report restore, and permanent deletion are serialized worker operations.
 Archive and restore are all-or-none; restore additionally rejects a selection larger
-than the available Business Records slots. Permanent deletion accepts only archived
-records and requires the separate employee confirmation in the panel. Clearing extension
+than the available Business Records slots. The `delete_reports` command accepts finalized
+current or archived records; `delete_archived_reports` retains its archive-only guard.
+Both reject pending recovery records and persist the complete selection atomically.
+Deletion requires the separate employee confirmation in the panel. Clearing extension
 storage or uninstalling the extension still deletes the complete in-extension library.
 A PDF or CSV explicitly saved outside the extension is not part of that library.
 

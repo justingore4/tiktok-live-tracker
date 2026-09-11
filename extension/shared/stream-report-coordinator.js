@@ -752,6 +752,49 @@
             generatedAt: createTimestamp(),
           });
           replacement = streamReport.hydrateStreamReport(replacement);
+
+          // Payment resolution rebuilds quantities/statuses from canonical data,
+          // but saved report-only costs remain authoritative for this report.
+          // Read them here, inside the serialized operation, not at request time.
+          const savedUnitCosts = new Map(
+            previous.inventory.map((item) => [item.sku, item.unitCostCents]),
+          );
+
+          if (
+            replacement.inventory.length !== savedUnitCosts.size ||
+            replacement.inventory.some((item) => !savedUnitCosts.has(item.sku))
+          ) {
+            throw new Error("The rebuilt report inventory does not match the saved SKUs.");
+          }
+
+          const changedCosts = replacement.inventory.filter(
+            (item) => item.unitCostCents !== savedUnitCosts.get(item.sku),
+          );
+          // Lower costs first so intermediate totals cannot overflow when the
+          // final set of saved costs would still produce valid report totals.
+          changedCosts.sort((left, right) =>
+            Number(savedUnitCosts.get(left.sku) > left.unitCostCents) -
+            Number(savedUnitCosts.get(right.sku) > right.unitCostCents),
+          );
+
+          for (const item of changedCosts) {
+            replacement = streamReport.correctReportUnitCost(replacement, {
+              sku: item.sku,
+              unitCostCents: savedUnitCosts.get(item.sku),
+            });
+          }
+
+          replacement = streamReport.hydrateStreamReport(replacement);
+
+          if (
+            replacement.inventory.length !== savedUnitCosts.size ||
+            replacement.inventory.some(
+              (item) => !savedUnitCosts.has(item.sku) ||
+                item.unitCostCents !== savedUnitCosts.get(item.sku),
+            )
+          ) {
+            throw new Error("The rebuilt report could not preserve its saved unit costs.");
+          }
         } catch (error) {
           fail(
             "REPORT_GENERATION_FAILED",
@@ -1009,6 +1052,24 @@
         return { reportIds: [...reportIds] };
       }
 
+      async function deleteReports(reportIds) {
+        await ensureLoaded();
+        const selected = requireReportsById(reportIds);
+
+        if (selected.some((record) => !isFinalized(record))) {
+          fail(
+            "REPORT_NOT_FINALIZED",
+            "A report awaiting End recovery cannot be permanently deleted.",
+          );
+        }
+
+        const selectedIds = new Set(reportIds);
+        await persist(
+          records.filter((record) => !selectedIds.has(record.reportId)),
+        );
+        return { reportIds: [...reportIds] };
+      }
+
       async function deleteArchivedReports(reportIds) {
         await ensureLoaded();
         const selected = requireReportsById(reportIds);
@@ -1107,6 +1168,8 @@
             return archiveReports(validated.reportIds);
           case protocol.COMMAND_TYPES.RESTORE_REPORTS:
             return restoreReports(validated.reportIds);
+          case protocol.COMMAND_TYPES.DELETE_REPORTS:
+            return deleteReports(validated.reportIds);
           case protocol.COMMAND_TYPES.DELETE_ARCHIVED_REPORTS:
             return deleteArchivedReports(validated.reportIds);
           default:
@@ -1149,6 +1212,20 @@
           }
 
           return enqueue(() => archiveReports(command.reportIds));
+        },
+        deleteReports(reportIds) {
+          let command;
+
+          try {
+            command = snapshotReportIdCommand(
+              protocol.COMMAND_TYPES.DELETE_REPORTS,
+              reportIds,
+            );
+          } catch (error) {
+            return Promise.reject(error);
+          }
+
+          return enqueue(() => deleteReports(command.reportIds));
         },
         deleteArchivedReports(reportIds) {
           let command;
