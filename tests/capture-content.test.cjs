@@ -365,6 +365,7 @@ function createHarness({
   schedulerDisposeFailures = 0,
   bodyDisconnectFailures = 0,
   autoRun = true,
+  healthReporterModule = null,
 } = {}) {
   const calls = [];
   const infos = [];
@@ -580,6 +581,8 @@ function createHarness({
     TikTokLiveTrackerCaptureClient: clientAvailable
       ? captureClientModule
       : undefined,
+    TikTokLiveTrackerCaptureHealth: { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 1 },
+    TikTokLiveTrackerCaptureHealthReporter: healthReporterModule,
     chrome: {
       runtime: {
         async sendMessage(message) {
@@ -652,6 +655,7 @@ function createHarness({
     observerInstances,
     schedulerSessions,
     warnings,
+    document,
     completedSaleLogs() {
       return infos.filter(
         ([message]) =>
@@ -2859,4 +2863,148 @@ test("capture remains page-read-only and delegates only extension messages", () 
     contentSource,
     /\.append(?:Child)?\s*\(|\.prepend\s*\(|\.remove\s*\(|innerHTML\s*=|textContent\s*=/,
   );
+});
+
+function createHealthProbeHarness(options = {}) {
+  let readHealth;
+  let started = 0;
+  let disposed = 0;
+  const metric = createAttributedGmvMetric();
+  const body = createBody();
+  body.append(metric.root);
+  const sale = createSaleRow("Buyer has won: $15.00 Variation: #1 Payment complete");
+  const harness = createHarness({
+    body, rows: [sale], ...options,
+    healthReporterModule: {
+      createCaptureHealthReporter({ getSample }) {
+        readHealth = getSample;
+        return { start() { started++; }, dispose() { disposed++; } };
+      },
+    },
+  });
+  return {
+    harness, metric, sale, sample: () => JSON.parse(JSON.stringify(readHealth())),
+    get started() { return started; }, get disposed() { return disposed; },
+  };
+}
+
+test("capture health probes a quiet dashboard without queueing observations or scheduling scans", async () => {
+  const health = createHealthProbeHarness();
+  await flushAsync();
+  const beforeMessages = health.harness.captureMessages.length;
+  const beforeRequests = health.harness.schedulerSessions.map((entry) => entry.requestCount);
+  assert.equal(health.started, 1);
+  assert.deepEqual(health.sample(), { readable: true, pending: 0, inFlight: false, retrying: false, visible: true });
+  health.sample(); health.sample();
+  assert.equal(health.harness.captureMessages.length, beforeMessages);
+  assert.deepEqual(health.harness.schedulerSessions.map((entry) => entry.requestCount), beforeRequests);
+  health.harness.document.visibilityState = "hidden";
+  assert.equal(health.sample().visible, false);
+  health.harness.setPathname(`${DASHBOARD_PATH}/unsupported`);
+  assert.equal(health.sample().readable, false);
+  health.harness.dispatchWindow("pagehide");
+  assert.equal(health.disposed, 1);
+});
+
+test("capture health accepts scoped known-empty Sold Items but never a bare root or unrelated empty text", async () => {
+  const health = createHealthProbeHarness({ rows: [] });
+  await flushAsync();
+  assert.equal(health.sample().readable, false);
+  const empty = new FakeElement({ ownText: "Orders placed during your LIVE will show up here" });
+  health.harness.currentBody().append(empty);
+  assert.equal(health.sample().readable, false);
+  health.harness.currentRoot().append(empty);
+  assert.equal(health.sample().readable, true);
+  empty.height = 0;
+  assert.equal(health.sample().readable, false);
+});
+
+test("capture health freshly validates all three paths including malformed visible auctions and GMV", async () => {
+  const health = createHealthProbeHarness();
+  const auction = createBiddingAuctionCard(2, "Bids: $9.00");
+  health.harness.currentBody().append(auction.root);
+  health.harness.tickIntervals(); await flushAsync();
+  assert.equal(health.sample().readable, true);
+  auction.titleText.textContent = "TikTok changed the variation layout";
+  assert.equal(health.sample().readable, false);
+  auction.titleText.textContent = "#2 Sample auction";
+  auction.bidPriceText.textContent = "Bids: unavailable";
+  assert.equal(health.sample().readable, false);
+  auction.bidPriceText.textContent = "";
+  assert.equal(health.sample().readable, true, "No bid yet is valid waiting");
+  health.metric.value.children[0].textContent = "Changed GMV display";
+  assert.equal(health.sample().readable, false);
+  health.metric.value.children[0].textContent = "$4.64K";
+  assert.equal(health.sample().readable, true);
+  health.sale.variationLabel.ownText = "Changed variation layout";
+  assert.equal(health.sample().readable, false);
+});
+
+test("capture health includes pending work, in-flight work and retries from every delivery path", async () => {
+  const health = createHealthProbeHarness({
+    captureResponseHandler: async () => ({ ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } }),
+  });
+  const auction = createBiddingAuctionCard(2, "Bids: $9.00");
+  health.harness.currentBody().append(auction.root);
+  health.harness.tickIntervals();
+  assert.equal(health.sample().inFlight, true);
+  await flushAsync();
+  const state = health.sample();
+  assert.equal(state.readable, true);
+  assert.equal(state.inFlight, false);
+  assert.equal(state.retrying, true);
+  assert.ok(state.pending >= 3);
+  assert.deepEqual(Object.keys(state).sort(), ["inFlight", "pending", "readable", "retrying", "visible"]);
+});
+
+test("capture health retains scan and scheduling faults until successful capture recovery", async () => {
+  const health = createHealthProbeHarness({ schedulerRequestFailures: 1, scanOnRequest: true });
+  await flushAsync();
+  const soldScheduler = health.harness.schedulerSessions[0];
+  const soldObserver = health.harness.captureObservers().find((observer) => observer.target === health.harness.currentRoot());
+  assert.equal(health.sample().readable, true);
+  soldObserver.trigger();
+  assert.equal(health.sample().readable, false);
+  assert.equal(health.sample().readable, false, "A quiet DOM read must not clear scheduling errors");
+  soldObserver.trigger(); await flushAsync();
+  assert.equal(health.sample().readable, true);
+  soldScheduler.options.onError(new Error("scan failed"));
+  assert.equal(health.sample().readable, false);
+  soldScheduler.options.scan(); await flushAsync();
+  assert.equal(health.sample().readable, true);
+});
+
+test("capture health is unavailable after observer startup failure and recovers with a new ready session", async () => {
+  const health = createHealthProbeHarness({ bodyObserveFailures: 1 });
+  await flushAsync();
+  assert.equal(health.sample().readable, false);
+  health.harness.tickIntervals(); await flushAsync();
+  assert.equal(health.sample().readable, true);
+});
+
+test("a fresh capture health read exception is contained and does not enqueue or expose raw text", async () => {
+  const health = createHealthProbeHarness();
+  await flushAsync();
+  const before = health.harness.captureMessages.length;
+  const root = health.harness.currentRoot();
+  const previous = root.onQuery;
+  root.onQuery = () => { throw new Error("private page text must not be sent"); };
+  assert.equal(health.sample().readable, false);
+  assert.equal(health.harness.captureMessages.length, before);
+  root.onQuery = previous;
+  assert.equal(health.sample().readable, true);
+});
+
+test("unrecognized payment text and unparseable completed prices cannot report readable capture", async () => {
+  const health = createHealthProbeHarness();
+  await flushAsync();
+  const before = health.harness.captureMessages.length;
+  setPaymentText(health.sale, "Unexpected TikTok payment label");
+  assert.equal(health.sample().readable, false);
+  setPaymentText(health.sale, "Payment complete");
+  setSaleSummary(health.sale, "Buyer has won: price unavailable Variation: #1");
+  assert.equal(health.sample().readable, false);
+  setSaleSummary(health.sale, "Buyer has won: $15.00 Variation: #1");
+  assert.equal(health.sample().readable, true);
+  assert.equal(health.harness.captureMessages.length, before);
 });

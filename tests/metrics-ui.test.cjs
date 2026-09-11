@@ -88,7 +88,7 @@ test("side panel exposes bottom performance metrics and renders their values", (
     metricsSection,
     /aria-labelledby="metrics-title"/,
   );
-  assert.match(metricsSection, /id="metrics-title"[^>]*>Metrics</);
+  assert.match(metricsSection, /id="metrics-title"[^>]*>Performance Metrics</);
   assert.match(metricsSection, />\s*Gross Item Sales\s*</);
   assert.match(metricsSection, />\s*AOV\s*</);
   assert.match(metricsSection, />\s*Total GMV\s*</);
@@ -310,6 +310,48 @@ test("side panel exposes bottom performance metrics and renders their values", (
     source,
     /function renderAll\(options = {}\)[\s\S]*?renderMetrics\(view\)/,
   );
+});
+
+test("performance metrics has one compact heading with the Inventory typography", () => {
+  const taggerDirectory = path.join(__dirname, "..", "extension", "tagger");
+  const html = fs.readFileSync(path.join(taggerDirectory, "sidepanel.html"), "utf8");
+  const css = fs.readFileSync(path.join(taggerDirectory, "sidepanel.css"), "utf8");
+  const metricsSection = html.match(
+    /<section[^>]+id="metrics-section"[\s\S]*?<\/section>/,
+  )?.[0];
+  const sharedHeadingStyle = css.match(/\.section-heading h2\s*\{([^}]+)\}/)?.[1];
+  const metricsHeadingStyle = css.match(/\.metrics-heading h2\s*\{([^}]+)\}/)?.[1];
+  const inventoryHeadingStyle = css.match(
+    /\.inventory-heading-label h2\s*\{([^}]+)\}/,
+  )?.[1];
+
+  assert.ok(metricsSection);
+  assert.match(
+    metricsSection,
+    /<div class="section-heading metrics-heading">\s*<h2 id="metrics-title">Performance Metrics<\/h2>\s*<\/div>\s*<dl class="metrics-grid">/,
+    "one semantic heading must sit immediately above the unchanged metric grid",
+  );
+  assert.equal([...metricsSection.matchAll(/<h2\b/g)].length, 1);
+  assert.doesNotMatch(metricsSection, /class="eyebrow"|>\s*Performance\s*<|>\s*Metrics\s*</);
+  assert.match(html, /class="section-heading inventory-heading"[\s\S]*?<h2 id="inventory-title">Inventory<\/h2>/);
+  assert.ok(sharedHeadingStyle);
+  assert.match(sharedHeadingStyle, /font-size:\s*17px;/);
+  assert.match(sharedHeadingStyle, /font-weight:\s*690;/);
+  assert.match(sharedHeadingStyle, /letter-spacing:\s*-0\.025em;/);
+  for (const style of [metricsHeadingStyle, inventoryHeadingStyle]) {
+    assert.ok(style);
+    assert.doesNotMatch(
+      style,
+      /(?:font(?:-[\w-]+)?|color|letter-spacing):/,
+      "both headings must retain shared typography and inherited text color",
+    );
+    assert.match(style, /min-width:\s*0;/);
+    assert.match(style, /overflow-wrap:\s*anywhere;/);
+  }
+  assert.match(css, /\.metrics-section\s*\{\s*padding-top:\s*14px;\s*\}/);
+  assert.match(css, /\.section-heading\.metrics-heading\s*\{\s*margin-bottom:\s*8px;\s*\}/);
+  assert.match(css, /\.metrics-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fill, minmax\(150px, 1fr\)\);[^}]*gap:\s*10px;/);
+  assert.match(css, /\.metric-card\s*\{[^}]*min-height:\s*120px;[^}]*padding:\s*15px;/);
 });
 
 test("Gross Item Sales is the exact sum of unique canonical priced completed payments", () => {

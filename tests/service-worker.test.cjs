@@ -5,6 +5,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const captureProtocol = require("../extension/shared/capture-protocol.js");
+const captureHealth = require("../extension/shared/capture-health.js");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js"
 );
@@ -33,6 +34,8 @@ function createDeferred() {
 function createWorkerHarness(options = {}) {
   const imports = [];
   const listeners = [];
+  const tabUpdatedListeners = [];
+  const tabRemovedListeners = [];
   const dispatchCalls = [];
   const streamDispatchCalls = [];
   const captureDispatchCalls = [];
@@ -1116,6 +1119,7 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerStreamSessionStorage: streamStorageModule,
     TikTokLiveTrackerStreamSessionCoordinator: streamCoordinatorModule,
     TikTokLiveTrackerCaptureProtocol: captureProtocol,
+    TikTokLiveTrackerCaptureHealth: captureHealth,
     TikTokLiveTrackerCaptureIntegration: captureIntegrationModule,
     TikTokLiveTrackerLiveBidProtocol: liveBidProtocolModule,
     TikTokLiveTrackerLiveBidStorage: liveBidStorageModule,
@@ -1129,6 +1133,9 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerGoogleSheetsInventoryImport:
       googleSheetsInventoryImportModule,
     AbortController,
+    Date: class extends Date {
+      static now() { return options.healthNow ? options.healthNow() : Date.now(); }
+    },
     clearTimeout: options.receiverStrictTimers
       ? receiverStrictClearTimeout
       : clearTimeout,
@@ -1142,6 +1149,10 @@ function createWorkerHarness(options = {}) {
       },
     },
     chrome: {
+      tabs: {
+        onUpdated: { addListener(listener) { tabUpdatedListeners.push(listener); } },
+        onRemoved: { addListener(listener) { tabRemovedListeners.push(listener); } },
+      },
       storage: { local: storageArea, session: storageArea },
       runtime: {
         id: extensionId,
@@ -1311,6 +1322,8 @@ function createWorkerHarness(options = {}) {
     reportCoordinator,
     reportPageUrl,
     listeners,
+    tabUpdatedListeners,
+    tabRemovedListeners,
     liveBidSyncCalls,
     nextItemQueueCalls,
     nextItemQueueCoordinator,
@@ -1330,6 +1343,175 @@ function createWorkerHarness(options = {}) {
     timerCalls,
   };
 }
+
+const HEALTH_STREAM_ID = "local-stream:11111111-1111-4111-8111-111111111111";
+const healthMessage = (type, fields = {}) => ({
+  channel: captureHealth.CHANNEL, version: captureHealth.VERSION, type, ...fields,
+});
+const cleanHealthSample = Object.freeze({ readable: true, pending: 0, inFlight: false, retrying: false, visible: true });
+
+function createHealthWorkerHarness(options = {}) {
+  let at = 0;
+  const harness = createWorkerHarness({
+    initialActiveSession: {
+      streamId: HEALTH_STREAM_ID, startedAt: "2026-08-08T20:00:00.000Z", identitySource: "local_session",
+    },
+    ...options,
+    healthNow: () => at,
+  });
+  return { ...harness, at(value) { at = value; }, now: () => at };
+}
+
+test("health context/pulses/polls read session state only and never dispatch accounting or report mutations", async () => {
+  const h = createHealthWorkerHarness();
+  const sender = h.createCaptureSender({ documentId: "health-document" });
+  const contextResponse = await h.send(healthMessage("context"), sender).response;
+  assert.equal(contextResponse.ok, true);
+  assert.equal(contextResponse.data.streamId, HEALTH_STREAM_ID);
+  const context = contextResponse.data;
+  const poll = () => h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
+  const pulse = (sequence) => h.send(healthMessage("pulse", { ...context, sequence, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
+  assert.equal((await poll()).data.phase, "connecting");
+  assert.deepEqual(await pulse(0), { ok: true, data: { accepted: true } });
+  h.at(5000);
+  assert.deepEqual(await pulse(1), { ok: true, data: { accepted: true } });
+  assert.deepEqual((await poll()).data, { streamId: HEALTH_STREAM_ID, phase: "active", reason: "healthy" });
+  assert.ok(h.streamDispatchCalls.length >= 5);
+  assert.ok(h.streamDispatchCalls.every((call) => call.type === h.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION));
+  assert.deepEqual(h.dispatchCalls, [], "No inventory pin, reconciliation update, or state initialization occurs.");
+  assert.deepEqual(h.captureDispatchCalls, []);
+  assert.deepEqual(h.nextItemQueueCalls, []);
+  assert.deepEqual(h.inventoryImportCalls, []);
+  assert.deepEqual(h.runtimeSendMessages, []);
+  assert.deepEqual(h.reportCalls.map((call) => call.type), ["create_store", "create_coordinator"]);
+});
+
+test("health boundary rejects malformed data and unauthorized frame/document/panel senders before session reads", async () => {
+  const h = createHealthWorkerHarness();
+  const sender = h.createCaptureSender({ documentId: "health-document" });
+  const badRequests = [
+    [healthMessage("context", { orders: [] }), sender],
+    [healthMessage("context", { version: 2 }), sender],
+    [healthMessage("context"), { ...sender, frameId: 1 }],
+    [healthMessage("context"), { ...sender, documentId: undefined }],
+    [healthMessage("context"), { ...sender, documentLifecycle: "cached" }],
+    [healthMessage("context"), { ...sender, id: "different-extension" }],
+    [healthMessage("context"), { ...sender, url: "https://shop.tiktok.com/other" }],
+    [healthMessage("get", { streamId: HEALTH_STREAM_ID }), sender],
+    [healthMessage("get", { streamId: HEALTH_STREAM_ID }), h.createSender({ url: h.reportPageUrl })],
+    [healthMessage("pulse", { streamId: HEALTH_STREAM_ID, contextId: "x", sequence: 0, sampledAt: 0, sample: { ...cleanHealthSample, rawRows: [] } }), sender],
+  ];
+  for (const [request, source] of badRequests) {
+    const response = await h.send(request, source).response;
+    assert.equal(response.ok, false);
+    assert.ok(["INVALID_HEALTH_MESSAGE", "UNAUTHORIZED_HEALTH_SENDER"].includes(response.error.code));
+  }
+  assert.equal(h.streamDispatchCalls.length, 0);
+  assert.equal(h.dispatchCalls.length, 0);
+  assert.equal(h.captureDispatchCalls.length, 0);
+});
+
+test("tab navigation/closure and newer documents invalidate health independently of capture accounting", async () => {
+  const h = createHealthWorkerHarness();
+  const sender = h.createCaptureSender({ documentId: "old-health-document" });
+  const first = (await h.send(healthMessage("context"), sender).response).data;
+  const poll = () => h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
+  await h.send(healthMessage("pulse", { ...first, sequence: 0, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
+  h.at(5000);
+  await h.send(healthMessage("pulse", { ...first, sequence: 1, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
+  assert.equal((await poll()).data.phase, "active");
+  h.tabUpdatedListeners[0](9, { status: "loading" });
+  assert.notEqual((await poll()).data.phase, "active");
+  assert.equal((await h.send(healthMessage("context"), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  assert.equal((await h.send(healthMessage("pulse", { ...first, sequence: 2, sampledAt: h.now(), sample: cleanHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  const replacementSender = { ...sender, documentId: "new-health-document" };
+  const next = (await h.send(healthMessage("context"), replacementSender).response).data;
+  assert.notEqual(next.contextId, first.contextId);
+  assert.equal((await h.send(healthMessage("context"), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  h.tabRemovedListeners[0](9);
+  assert.equal((await h.send(healthMessage("context"), replacementSender).response).error.code, "STALE_HEALTH_CONTEXT");
+  assert.notEqual((await poll()).data.phase, "active");
+  assert.deepEqual(h.captureDispatchCalls, []);
+  assert.deepEqual(h.dispatchCalls, []);
+});
+
+test("ending a stream makes health Not tracking and rejects old heartbeat context", async () => {
+  const h = createHealthWorkerHarness();
+  const sender = h.createCaptureSender({ documentId: "health-document" });
+  const context = (await h.send(healthMessage("context"), sender).response).data;
+  await h.streamCoordinator.dispatch({ type: h.streamCoordinatorModule.COMMAND_TYPES.END_STREAM });
+  const result = await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
+  assert.deepEqual(result, { ok: true, data: { streamId: null, phase: "not_tracking", reason: "not_tracking" } });
+  assert.equal((await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt: h.now(), sample: cleanHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  assert.deepEqual((await h.send(healthMessage("context"), sender).response).data, { streamId: null, contextId: null });
+  assert.deepEqual(h.dispatchCalls, []);
+});
+
+test("health requests honor storage access failures and do not expose unexpected internal errors", async () => {
+  for (const options of [
+    { accessLevelError: new Error("private storage failure") },
+    { streamDispatchError: "unexpected" },
+  ]) {
+    const h = createHealthWorkerHarness(options);
+    const response = await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "HEALTH_UNAVAILABLE");
+    assert.doesNotMatch(response.error.message, /private storage failure|sensitive stream failure details/);
+    assert.deepEqual(h.dispatchCalls, []);
+    assert.deepEqual(h.captureDispatchCalls, []);
+  }
+});
+
+test("health requests queued or awaiting session reads past three seconds cannot refresh capture health", async () => {
+  const gate = createDeferred();
+  const entered = createDeferred();
+  let block = false;
+  const h = createHealthWorkerHarness({
+    async beforeStreamDispatch() {
+      if (block) { entered.resolve(); await gate.promise; }
+    },
+  });
+  const sender = h.createCaptureSender({ documentId: "delayed-health-document" });
+  const context = (await h.send(healthMessage("context"), sender).response).data;
+  const pulse = (sequence, sampledAt = h.now()) => healthMessage("pulse", { ...context, sequence, sampledAt, sample: cleanHealthSample });
+  await h.send(pulse(0), sender).response;
+  h.at(5000); await h.send(pulse(1), sender).response;
+  block = true;
+  const pendingRead = h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID }));
+  await entered.promise;
+  const pendingPulse = h.send(pulse(2), sender);
+  const pendingContext = h.send(healthMessage("context"), sender);
+  const pendingGet = h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID }));
+  h.at(45000);
+  block = false;
+  gate.resolve();
+  for (const pending of [pendingRead, pendingPulse, pendingContext, pendingGet]) {
+    const response = await pending.response;
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "STALE_HEALTH_MESSAGE");
+  }
+  const healthState = (await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data;
+  assert.deepEqual(healthState, { streamId: HEALTH_STREAM_ID, phase: "loading", reason: "stale" });
+  assert.deepEqual(await h.send(pulse(2), sender).response, { ok: true, data: { accepted: true } }, "expired queued pulse did not consume its sequence or renew freshness");
+  assert.equal((await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data.reason, "warming_up");
+  assert.deepEqual(h.dispatchCalls, []);
+  assert.deepEqual(h.captureDispatchCalls, []);
+});
+
+test("heartbeats delayed before worker receipt or dated in the future are rejected", async () => {
+  const h = createHealthWorkerHarness();
+  const sender = h.createCaptureSender({ documentId: "late-ipc-document" });
+  const context = (await h.send(healthMessage("context"), sender).response).data;
+  h.at(10000);
+  for (const sampledAt of [0, 10001]) {
+    const response = await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt, sample: cleanHealthSample }), sender).response;
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "STALE_HEALTH_SAMPLE");
+  }
+  assert.deepEqual((await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data,
+    { streamId: HEALTH_STREAM_ID, phase: "unavailable", reason: "no_source" },
+    "Rejected samples do not extend the ten-second first-sample deadline");
+});
 
 test("loads state dependencies and wires the canonical coordinator", () => {
   const harness = createWorkerHarness();
@@ -1352,6 +1534,7 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/next-item-queue-storage.js",
     "shared/next-item-queue-coordinator.js",
     "shared/capture-protocol.js",
+    "shared/capture-health.js",
     "shared/capture-integration.js",
     "shared/inventory-sheet-import.js",
     "shared/inventory-import-protocol.js",

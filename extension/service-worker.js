@@ -18,6 +18,7 @@ importScripts(
   "shared/next-item-queue-storage.js",
   "shared/next-item-queue-coordinator.js",
   "shared/capture-protocol.js",
+  "shared/capture-health.js",
   "shared/capture-integration.js",
   "shared/inventory-sheet-import.js",
   "shared/inventory-import-protocol.js",
@@ -52,6 +53,7 @@ const nextItemQueueStorage =
 const nextItemQueueCoordinatorModule =
   globalThis.TikTokLiveTrackerNextItemQueueCoordinator;
 const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
+const captureHealth = globalThis.TikTokLiveTrackerCaptureHealth;
 const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
 const inventorySheetImport =
   globalThis.TikTokLiveTrackerInventorySheetImport;
@@ -202,6 +204,27 @@ const nextItemQueueChangedNotification = Object.freeze(
   nextItemQueueProtocol.createQueueChangedNotification(),
 );
 let messageTail = Promise.resolve();
+const captureHealthStore = captureHealth?.createCaptureHealthStore({
+  now: () => Date.now(),
+  createContextId: () => globalThis.crypto.randomUUID(),
+});
+
+function invalidateCaptureHealthTab(tabId, closed = false, documentChanged = false) {
+  if (!captureHealthStore) return;
+  const execution = messageTail.then(() => {
+    captureHealthStore.invalidateTab(tabId, { closed, documentChanged });
+  });
+  messageTail = execution.catch(() => undefined);
+}
+
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  invalidateCaptureHealthTab(tabId, true);
+});
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading" || typeof changeInfo.url === "string") {
+    invalidateCaptureHealthTab(tabId, false, changeInfo.status === "loading");
+  }
+});
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -1461,7 +1484,56 @@ function notifyNextItemQueueChanged() {
   }
 }
 
+function handleCaptureHealthMessage(message, sender, sendResponse) {
+  const receivedAt = Date.now();
+  function requireCurrentHealthRequest() {
+    const elapsed = Date.now() - receivedAt;
+    if (elapsed < 0 || elapsed > captureHealth.MESSAGE_MAX_AGE_MS) {
+      throw new captureHealth.CaptureHealthError(
+        "STALE_HEALTH_MESSAGE", "The capture-health request expired before it could be processed.",
+      );
+    }
+  }
+  const execution = messageTail
+    .then(() => storageAccessReady)
+    .then(async () => {
+      const request = captureHealth.parseRequest(message);
+      const source = captureHealth.validateSender(sender, request.type, {
+        extensionId: chrome.runtime.id,
+        sidePanelUrl,
+      });
+      requireCurrentHealthRequest();
+      if (storageAccessError) {
+        throw new captureHealth.CaptureHealthError(
+          "HEALTH_UNAVAILABLE", "Capture health is unavailable until storage access is restored.",
+        );
+      }
+      // This uses only the session coordinator's read command; it does not pin,
+      // repair, migrate, or update reports, inventory, or capture accounting.
+      const { state } = await getStreamSessionResponse();
+      requireCurrentHealthRequest();
+      captureHealthStore.setSession(state.activeSession?.streamId ?? null);
+      if (request.type === "get") return captureHealthStore.get(request.streamId);
+      if (request.type === "context") return captureHealthStore.context(source);
+      return captureHealthStore.pulse(source, request);
+    });
+  messageTail = execution.catch(() => undefined);
+  execution.then(
+    (data) => sendResponse({ ok: true, data }),
+    (error) => sendResponse({
+      ok: false,
+      error: error instanceof captureHealth.CaptureHealthError
+        ? { code: error.code, message: error.message }
+        : { code: "HEALTH_UNAVAILABLE", message: "Capture health could not be read. Please retry." },
+    }),
+  );
+  return true;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (captureHealthStore && message?.channel === captureHealth.CHANNEL) {
+    return handleCaptureHealthMessage(message, sender, sendResponse);
+  }
   const boundary = getMessageBoundary(message);
 
   if (boundary === null) {

@@ -22,6 +22,8 @@
       "js": [
         "shared/sale-parser.js",
         "shared/capture-protocol.js",
+        "shared/capture-health.js",
+        "capture/capture-health-reporter.js",
         "capture/capture-client.js",
         "capture/attributed-gmv-locator.js",
         "capture/bidding-variation-locator.js",

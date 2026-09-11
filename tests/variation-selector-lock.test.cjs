@@ -140,7 +140,8 @@ test("side panel freezes only custom selector mutations while the rest of the vi
   );
   assert.doesNotMatch(navigationRenderer, /replaceChildren|showPopover|hidePopover/);
   assert.match(navigationRenderer, /variationContext\.textContent/);
-  assert.match(navigationRenderer, /inventoryTitle\.textContent/);
+  assert.doesNotMatch(navigationRenderer, /inventoryTitle/,
+    "Variation updates leave the static Inventory heading and its separate item count alone");
   assert.match(navigationRenderer, /returnToCurrentButton\.hidden/);
 });
 

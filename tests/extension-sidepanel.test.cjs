@@ -278,6 +278,8 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/reconciliation.js",
     "../shared/reconciliation-coordinator.js",
     "../shared/stream-session-coordinator.js",
+    "../shared/capture-health.js",
+    "capture-health-view.js",
     "../shared/inventory-import-protocol.js",
     "../shared/stream-report-protocol.js",
     "../shared/live-bid-protocol.js",
@@ -311,6 +313,46 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     ),
   );
   assert.doesNotMatch(html, /<script(?![^>]+src=)[^>]*>/i);
+});
+
+test("side-panel header keeps a compact decorative mark centered beside the unchanged title", () => {
+  const html = fs.readFileSync(
+    path.join(extensionDirectory, manifest.side_panel.default_path),
+    "utf8",
+  );
+  const css = fs.readFileSync(
+    path.join(extensionDirectory, "tagger", "sidepanel.css"),
+    "utf8",
+  );
+  const header = html.match(/<header class="app-header">[\s\S]*?<\/header>/)?.[0];
+  assert.ok(header);
+  assert.match(header, /<div class="brand-mark" aria-hidden="true">T<\/div>/);
+  assert.match(header, /<div class="brand-copy">\s*<h1>TikTok Live Tracker<\/h1>\s*<\/div>/);
+  assert.doesNotMatch(header, /Seller tool|class="eyebrow"/i);
+  assertTextOrder(header, ['class="brand-mark"', 'class="brand-copy"', "<h1>"]);
+
+  const headerRule = css.match(/\.app-header\s*\{([^}]+)\}/)?.[1];
+  const markRule = css.match(/\.brand-mark\s*\{([^}]+)\}/)?.[1];
+  const titleRule = css.match(/\.brand-copy h1\s*\{([^}]+)\}/)?.[1];
+  assert.ok(headerRule);
+  assert.ok(markRule);
+  assert.ok(titleRule);
+  assert.match(headerRule, /grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+  assert.match(headerRule, /align-items:\s*center/);
+  assert.match(markRule, /width:\s*32px/);
+  assert.match(markRule, /height:\s*32px/);
+  assert.match(markRule, /border-radius:\s*10px/);
+  assert.match(markRule, /font-size:\s*16px/);
+  assert.match(markRule, /place-items:\s*center/);
+  assert.match(titleRule, /font-size:\s*clamp\(15px, 4\.5vw, 18px\)/);
+  assert.match(titleRule, /font-weight:\s*720/);
+  assert.doesNotMatch(titleRule, /(?:margin|padding)(?:-top|-block-start)?\s*:/);
+  const titleMarginReset = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+    ([, selectors, declarations]) =>
+      selectors.split(",").some((selector) => selector.trim() === ".brand-copy h1") &&
+      /margin:\s*0\s*;/.test(declarations),
+  );
+  assert.ok(titleMarginReset, "The title keeps its existing zero-margin reset with no eyebrow gap.");
 });
 
 test("side panel exposes accessible Live lifecycle controls", () => {
@@ -665,7 +707,7 @@ test("active streams expose an append-only Google Sheets inventory action", () =
   assert.ok(actionSource);
   assert.match(
     html,
-    /id="add-active-stream-skus"[\s\S]+aria-expanded="false"[\s\S]+aria-controls="active-stream-inventory-update-form"[\s\S]+Add new SKUs from Sheet/,
+    /id="add-active-stream-skus"[\s\S]+aria-expanded="false"[\s\S]+aria-controls="active-stream-inventory-update-form"[\s\S]+Add new SKUs from updated Sheet/,
   );
   assert.match(
     html,
@@ -880,6 +922,68 @@ test("side panel keeps setup and active-stream controls in their intended order"
   assert.doesNotMatch(panelSource, /savedSessionStatus(?:Text)?/);
 });
 
+test("the complete header collapses only in the resumed active workspace and returns after tracking ends", () => {
+  const taggerDirectory = path.join(extensionDirectory, "tagger");
+  const panelSource = fs.readFileSync(path.join(taggerDirectory, "sidepanel.js"), "utf8");
+  const css = fs.readFileSync(path.join(taggerDirectory, "sidepanel.css"), "utf8");
+  const layoutSource = panelSource.match(
+    /function updateLayoutOrder\(snapshot = streamSnapshot\) \{[\s\S]*?\n  \}/,
+  )?.[0];
+  assert.ok(layoutSource);
+  assert.match(panelSource, /const appHeader = document\.querySelector\("\.app-header"\)/);
+
+  const sectionNames = [
+    "inventoryImportPanel", "streamSessionPanel", "savedSessionError",
+    "trackerWorkspace", "streamReportsPanel", "appFooter",
+  ];
+  const setupOrder = [...sectionNames];
+  const activeOrder = [
+    "inventoryImportPanel", "savedSessionError", "trackerWorkspace",
+    "streamSessionPanel", "streamReportsPanel", "appFooter",
+  ];
+  const activeErrorOrder = [
+    "inventoryImportPanel", "savedSessionError", "streamSessionPanel",
+    "trackerWorkspace", "streamReportsPanel", "appFooter",
+  ];
+  const appHeader = { hidden: false };
+  const orders = [];
+  const context = vm.createContext({
+    appHeader,
+    ...Object.fromEntries(sectionNames.map((name) => [name, Object.freeze({ id: name })])),
+    reorderAppSections(sections) {
+      orders.push(Array.from(sections, (section) => section.id));
+    },
+  });
+  vm.runInContext(layoutSource, context);
+  const activeSession = Object.freeze({ streamId: "synthetic-header-stream" });
+  const transitions = [
+    { label: "pre-stream", activeSession: null, resumed: false, phase: "idle", hidden: false, order: setupOrder },
+    { label: "active workspace", activeSession, resumed: true, phase: "active", hidden: true, order: activeOrder },
+    { label: "active busy transition", activeSession, resumed: true, phase: "ending", hidden: true, order: activeOrder },
+    { label: "active error", activeSession, resumed: true, phase: "error", hidden: true, order: activeErrorOrder },
+    { label: "ended stream", activeSession: null, resumed: false, phase: "idle", hidden: false, order: setupOrder },
+    { label: "awaiting resume", activeSession, resumed: false, phase: "ready", hidden: false, order: setupOrder },
+    { label: "resumed again", activeSession, resumed: true, phase: "active", hidden: true, order: activeOrder },
+    { label: "inactive despite stale resumed flag", activeSession: null, resumed: true, phase: "idle", hidden: false, order: setupOrder },
+  ];
+  for (const transition of transitions) {
+    const snapshot = Object.freeze({
+      activeSession: transition.activeSession,
+      resumed: transition.resumed,
+      phase: transition.phase,
+    });
+    context.updateLayoutOrder(snapshot);
+    assert.equal(appHeader.hidden, transition.hidden, transition.label);
+    assert.deepEqual(orders.at(-1), transition.order, `${transition.label}: existing section order is preserved`);
+  }
+
+  const hiddenRule = css.match(/(?:^|\n)\[hidden\]\s*\{([^}]+)\}/)?.[1];
+  assert.ok(hiddenRule);
+  assert.match(hiddenRule, /display:\s*none\s*!important\s*;/);
+  assert.doesNotMatch(hiddenRule, /visibility\s*:\s*hidden/);
+  assert.doesNotMatch(layoutSource, /(?:\.style\.|setAttribute\("style")/);
+});
+
 test("stable stream states hide redundant status copy while active tracking stays compact", () => {
   const taggerDirectory = path.join(extensionDirectory, "tagger");
   const html = fs.readFileSync(
@@ -939,12 +1043,15 @@ test("stable stream states hide redundant status copy while active tracking stay
     renderSource,
     /streamSessionStatus\.hidden =\s*failed \|\| dataState === "inactive" \|\| dataState === "resume";/,
   );
-  assert.match(renderSource, /streamSessionBadge\.textContent = "Active";/);
-  assert.match(renderSource, /streamSessionStatusTitle\.textContent = "Tracker stream active";/);
+  assert.match(renderSource, /streamSessionBadge\.hidden = dataState === "active";/);
+  assert.match(renderSource, /streamSessionStatusMessage\.hidden = dataState === "active";/);
+  assert.match(renderSource, /streamSessionBadge\.textContent = "";/);
   assert.match(
     renderSource,
-    /streamSessionStatusMessage\.textContent =\s*`Started \$\{startedLabel\}\. This local identity will survive panel and browser restarts\.`;/,
+    /streamSessionStatusTitle\.textContent = `Tracker Active \| Started \$\{startedLabel\}`;/,
   );
+  assert.match(renderSource, /streamSessionStatusMessage\.textContent = "";/);
+  assert.doesNotMatch(renderSource, /This local identity will survive panel and browser restarts/);
   assert.match(activeHideRule, /display:\s*none;/);
   assert.match(
     styleSource,
@@ -1782,6 +1889,54 @@ test("grouped inventory card badges retain distinct exact-SKU selections and que
   assert.equal(unrelated.badges.hidden, true, "matching only a size must not produce a badge");
 });
 
+test("inventory cards keep smaller titles at top left and compact stock at bottom right without overlap positioning", () => {
+  const css = fs.readFileSync(path.join(extensionDirectory, "tagger", "sidepanel.css"), "utf8");
+  const block = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
+    assert.ok(match, `${selector} has a style rule`);
+    return match[1];
+  };
+  const card = block(".inventory-card");
+  const heading = block(".card-heading");
+  const title = block(".card-title");
+  const meta = block(".card-meta");
+  const stock = block(".stock-label");
+  const pin = block(".inventory-pin-button");
+  assert.match(card, /display: flex;/);
+  assert.match(card, /flex-direction: column;/);
+  assert.match(card, /align-items: stretch;/);
+  assert.match(card, /padding: 12px 10px 10px 12px;/);
+  assert.match(card, /min-height: 120px;/, "The normal card minimum height stays unchanged");
+  assert.match(css, /@media \(max-width: 360px\)[\s\S]*?\.inventory-card\s*\{\s*min-height: 112px;/);
+  assert.match(title, /font-size: 13px;/, "Item and style inherit the smaller title size");
+  assert.match(title, /overflow-wrap: anywhere;/);
+  assert.match(heading, /flex-shrink: 0;/);
+  assert.match(heading, /padding-right: 30px;/);
+  assert.match(meta, /margin-top: auto;/, "The footer uses remaining height to sit at the bottom");
+  assert.match(meta, /padding-top: 16px;/, "Keep a minimum gap below long titles and stacked badges");
+  assert.match(meta, /flex-wrap: wrap;/, "Stock can wrap below size on narrow cards");
+  assert.match(meta, /flex-shrink: 0;/);
+  assert.match(stock, /font-size: 11px;/);
+  assert.match(stock, /align-self: flex-end;/);
+  assert.match(stock, /margin-left: auto;/);
+  assert.match(stock, /text-align: right;/);
+  assert.match(block(".stock-line"), /overflow-wrap: anywhere;/);
+  assert.match(block(".size-value"), /white-space: normal;/);
+  assert.match(block('.size-value [data-field="size"]'), /min-width: 0;[\s\S]*overflow-wrap: anywhere;/);
+  assert.doesNotMatch(heading + title + meta + stock, /position:\s*(?:absolute|fixed)/,
+    "Long content remains in layout flow instead of overlapping the count");
+  assert.match(pin, /top: 8px;[\s\S]*right: 8px;/);
+  assert.match(pin, /width: 28px;[\s\S]*height: 28px;/);
+  assert.match(block(".inventory-pin-button svg"), /width: 16px;[\s\S]*height: 16px;/);
+  const cardRightPadding = Number(card.match(/padding:\s*\d+px\s+(\d+)px/)[1]);
+  const headingReserve = Number(heading.match(/padding-right:\s*(\d+)px/)[1]);
+  const pinRight = Number(pin.match(/right:\s*(\d+)px/)[1]);
+  const pinWidth = Number(pin.match(/width:\s*(\d+)px/)[1]);
+  assert.ok(cardRightPadding + headingReserve >= pinRight + pinWidth + 4,
+    "Heading reserves room for the pin and a gap");
+});
+
 test("inventory card badges stay compact, clear pins, and match size-picker colors", () => {
   const styleSource = fs.readFileSync(
     path.join(extensionDirectory, "tagger", "sidepanel.css"),
@@ -1808,7 +1963,7 @@ test("inventory card badges stay compact, clear pins, and match size-picker colo
   assert.match(stackStyle, /gap: 3px/);
   assert.match(headingStyle, /display: flex/);
   assert.match(headingStyle, /flex-wrap: wrap/);
-  assert.match(headingStyle, /padding-right: 35px/);
+  assert.match(headingStyle, /padding-right: 30px/);
   assert.match(styleSource, /\[hidden\]\s*\{\s*display: none !important;/);
 
   for (const tone of ["selected", "current", "queued"]) {
@@ -2184,11 +2339,11 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   );
   assert.match(
     styleSource,
-    /\.card-meta\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto[\s\S]*?gap: 8px/,
+    /\.card-meta\s*\{[\s\S]*?display: flex[\s\S]*?flex-wrap: wrap[\s\S]*?gap: 8px/,
   );
   assert.match(
     styleSource,
-    /\.size-value\s*\{[\s\S]*?white-space: nowrap/,
+    /\.size-value\s*\{[\s\S]*?white-space: normal/,
   );
   assert.match(
     styleSource,
@@ -2397,15 +2552,15 @@ test("inventory pin controls are accessible and isolated from mapping actions", 
   );
   assert.match(
     styleSource,
-    /\.inventory-pin-button\s*\{[\s\S]*?position: absolute[\s\S]*?z-index: 2[\s\S]*?width: 32px[\s\S]*?height: 32px[\s\S]*?border-radius: 9px/,
+    /\.inventory-pin-button\s*\{[\s\S]*?position: absolute[\s\S]*?z-index: 2[\s\S]*?width: 28px[\s\S]*?height: 28px[\s\S]*?border-radius: 8px/,
   );
   assert.match(
     styleSource,
-    /\.inventory-pin-button svg\s*\{[\s\S]*?width: 18px[\s\S]*?height: 18px/,
+    /\.inventory-pin-button svg\s*\{[\s\S]*?width: 16px[\s\S]*?height: 16px/,
   );
   assert.match(
     styleSource,
-    /\.card-heading\s*\{[\s\S]*?padding-right: 35px/,
+    /\.card-heading\s*\{[\s\S]*?padding-right: 30px/,
   );
   assert.match(
     styleSource,
@@ -3015,6 +3170,8 @@ test("capture scripts load across the TikTok shop SPA and gate themselves at run
   assert.deepEqual(dashboardScript.js, [
     "shared/sale-parser.js",
     "shared/capture-protocol.js",
+    "shared/capture-health.js",
+    "capture/capture-health-reporter.js",
     "capture/capture-client.js",
     "capture/attributed-gmv-locator.js",
     "capture/bidding-variation-locator.js",

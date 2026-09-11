@@ -70,6 +70,21 @@
   const persistentTaggerControllerModule =
     globalThis.TikTokLiveTrackerPersistentTaggerController;
   const appShell = document.querySelector(".app-shell");
+  const appHeader = document.querySelector(".app-header");
+  const captureHealthBadge = document.querySelector("#capture-health-badge");
+  const captureHealthDescription = document.querySelector("#capture-health-description");
+  const captureHealthView = globalThis.TikTokLiveTrackerCaptureHealthView;
+  const captureHealthBadgeVisibilityController =
+    captureHealthView.createCaptureHealthBadgeVisibilityController({ badge: captureHealthBadge });
+  const captureHealthController = captureHealthView.createCaptureHealthViewController({
+    runtime: chrome.runtime,
+    protocol: globalThis.TikTokLiveTrackerCaptureHealth,
+    onChange: (state) => {
+      captureHealthView.renderBadge(captureHealthBadge, captureHealthDescription, state);
+      captureHealthBadgeVisibilityController.update();
+      setWorkspaceBusy(savedSnapshot?.busy === true);
+    },
+  });
   const appFooter = document.querySelector(".app-footer");
   const savedSessionError = document.querySelector("#saved-session-error");
   const savedSessionErrorTitle = document.querySelector(
@@ -363,7 +378,6 @@
   const liveRemainingInventoryValue = document.querySelector(
     "#live-remaining-inventory-value",
   );
-  const inventoryTitle = document.querySelector("#inventory-title");
   const searchInput = document.querySelector("#inventory-search");
   const clearSearchButton = document.querySelector("#clear-search");
   const inventoryGrid = document.querySelector("#inventory-grid");
@@ -1104,14 +1118,21 @@
 
   function setTrackerWorkspaceVisible(visible) {
     trackerWorkspace.hidden = !visible;
+    syncCaptureInteractionLock();
     updateFooterVisibility();
   }
 
   function updateFooterVisibility() {
     if (appFooter) {
+      const redundantRestoredStatus =
+        streamSnapshot.activeSession !== null &&
+        streamSnapshot.resumed === true &&
+        appFooter.dataset.phase === "ready" &&
+        sessionFooterLabel.textContent === "Live session data restored";
       appFooter.hidden =
         archivedReportsViewOpen ||
-        (trackerWorkspace.hidden && streamReportsPanel.hidden);
+        (trackerWorkspace.hidden && streamReportsPanel.hidden) ||
+        redundantRestoredStatus;
     }
   }
 
@@ -1142,6 +1163,7 @@
   function updateLayoutOrder(snapshot = streamSnapshot) {
     const activeAndResumed =
       snapshot.activeSession !== null && snapshot.resumed === true;
+    appHeader.hidden = activeAndResumed;
     const streamFailed = snapshot.phase === "error";
 
     if (activeAndResumed) {
@@ -1237,6 +1259,82 @@
     scheduleNextItemQueueRefresh();
   }
 
+  function isCaptureInteractionLocked() {
+    const phase = captureHealthBadge.dataset.phase;
+    return (
+      streamSnapshot.activeSession !== null &&
+      streamSnapshot.resumed === true &&
+      !trackerWorkspace.hidden &&
+      !archivedReportsViewOpen &&
+      (phase === "connecting" || phase === "loading")
+    );
+  }
+
+  function isTrackerInteractionTarget(target) {
+    return Boolean(target) && [
+      trackerWorkspace,
+      variationListbox,
+      inventorySizeListbox,
+      retrySavedSessionButton,
+      retryStreamSessionButton,
+    ].some((element) => element.contains(target));
+  }
+
+  function guardCaptureInteraction(event) {
+    if (!isCaptureInteractionLocked()) {
+      return false;
+    }
+
+    // Let native scrolling, focus traversal and browser shortcuts keep working.
+    // Inert content and the editing-event guards prevent those defaults from
+    // editing a locked field. Never intercept wheel, touchmove or scroll events.
+    const nativeKeyboardAction =
+      (event?.type === "keydown" || event?.type === "keyup") &&
+      (event.ctrlKey || event.metaKey || event.altKey || [
+        "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+        "Home", "End", "PageUp", "PageDown", " ", "Spacebar",
+      ].includes(event.key));
+    const nativePointerAction = [
+      "pointerdown", "pointerup", "mousedown", "mouseup",
+    ].includes(event?.type);
+    if (!nativeKeyboardAction && !nativePointerAction) {
+      event?.preventDefault?.();
+    }
+    event?.stopImmediatePropagation?.();
+    return true;
+  }
+
+  function syncCaptureInteractionLock() {
+    const locked = isCaptureInteractionLocked();
+    // Blur before flushing a picker's deferred render, so rendering cannot
+    // restore focus to a newly locked card and move the scroll position.
+    if (locked && isTrackerInteractionTarget(document.activeElement)) {
+      document.activeElement.blur();
+    }
+
+    // Keep capture-only inert separate from the existing workspace safeguards.
+    // The badge remains accessible, and green/red never clear legacy root inert
+    // or disabled attributes. Explicit popover targets cover top-layer menus.
+    for (const child of trackerWorkspace.children) {
+      if (!child.classList.contains("capture-health-row")) {
+        child.toggleAttribute("inert", locked);
+      }
+    }
+    for (const element of [
+      variationListbox, inventorySizeListbox,
+      retrySavedSessionButton, retryStreamSessionButton,
+    ]) {
+      element.toggleAttribute("inert", locked);
+    }
+
+    if (locked && variationSelectorOpen) {
+      releaseVariationSelector({ restoreFocus: false });
+    }
+    if (locked && inventorySizeMenuState !== null) {
+      releaseInventorySizeMenu({ restoreFocus: false });
+    }
+  }
+
   function setWorkspaceBusy(busy) {
     const streamUnavailable =
       !streamSnapshot.resumed || streamSnapshot.activeSession === null;
@@ -1260,6 +1358,7 @@
 
     trackerWorkspace.setAttribute("aria-busy", String(shouldBeBusy));
     trackerWorkspace.toggleAttribute("inert", shouldBeInert);
+    syncCaptureInteractionLock();
   }
 
   function snapshotIsBackgroundRefresh(snapshot) {
@@ -1456,6 +1555,7 @@
     }
 
     appFooter.dataset.phase = phase;
+    updateFooterVisibility();
   }
 
   function formatReportTimestamp(value) {
@@ -2504,7 +2604,7 @@
 
   function formatResultCount(visibleCount, totalCount, hasQuery) {
     if (!hasQuery) {
-      return `${totalCount} inventory ${totalCount === 1 ? "item" : "items"}`;
+      return `${totalCount} ${totalCount === 1 ? "item" : "items"}`;
     }
 
     return `${visibleCount} of ${totalCount} ${visibleCount === 1 ? "match" : "matches"}`;
@@ -2547,6 +2647,7 @@
   }
 
   function toggleInventoryGroupPin(pinButton) {
+    if (isCaptureInteractionLocked()) return;
     const view = getActiveView();
     const groupKey = pinButton.dataset.groupKey;
     const inventoryGroups = viewModel.groupInventoryEntries(
@@ -2935,6 +3036,7 @@
   }
 
   function openInventorySizeMenu(trigger, intent, options = {}) {
+    if (isCaptureInteractionLocked()) return false;
     const view = getActiveView();
     const group = findInventoryGroup(view, trigger.dataset.groupKey);
 
@@ -3173,6 +3275,7 @@
   }
 
   function openVariationSelector(options = {}) {
+    if (isCaptureInteractionLocked()) return;
     const { boundary = null } = options;
 
     if (
@@ -3301,12 +3404,9 @@
 
     if (variations.length > 0) {
       variationContext.textContent = "Live auction variations";
-      inventoryTitle.textContent =
-        `Select Variation #${view.selectedVariationNumber}`;
     } else {
       variationContext.textContent =
         "Waiting for a live auction variation";
-      inventoryTitle.textContent = "Waiting for a live auction variation";
     }
 
     returnToCurrentButton.classList.add("return-to-current-live");
@@ -4065,6 +4165,7 @@
   function renderStreamSnapshot(snapshot) {
     const streamWasActive = streamSnapshot.activeSession !== null;
     streamSnapshot = snapshot;
+    captureHealthController.setSession(snapshot.activeSession?.streamId ?? null);
     updateLayoutOrder(snapshot);
     updateSessionControls();
     inventoryImportController.setActiveStream(snapshot.activeSession !== null);
@@ -4101,6 +4202,8 @@
     streamSessionPanel.dataset.state = dataState;
     streamSessionPanel.setAttribute("aria-busy", String(checking || busy));
     streamSessionBadge.dataset.state = dataState;
+    streamSessionBadge.hidden = dataState === "active";
+    streamSessionStatusMessage.hidden = dataState === "active";
     const badgeContainer = dataState === "active"
       ? streamSessionStatus
       : streamSessionHeading;
@@ -4214,10 +4317,9 @@
       return;
     }
 
-    streamSessionBadge.textContent = "Active";
-    streamSessionStatusTitle.textContent = "Tracker stream active";
-    streamSessionStatusMessage.textContent =
-      `Started ${startedLabel}. This local identity will survive panel and browser restarts.`;
+    streamSessionBadge.textContent = "";
+    streamSessionStatusTitle.textContent = `Tracker Active | Started ${startedLabel}`;
+    streamSessionStatusMessage.textContent = "";
     endStreamButton.hidden = endConfirmationOpen;
     streamSessionEndConfirmation.hidden = !endConfirmationOpen;
     mountPersistentController(activeSession);
@@ -4392,6 +4494,7 @@
   }
 
   function runSavedMutation(action, pendingAction) {
+    if (isCaptureInteractionLocked()) return;
     if (
       !persistentController ||
       !streamSnapshot.resumed ||
@@ -4429,6 +4532,7 @@
   }
 
   function selectVariationFromPicker(selectedVariationNumber) {
+    if (isCaptureInteractionLocked()) return;
     try {
       if (
         !persistentController ||
@@ -4459,6 +4563,7 @@
   }
 
   function commitActiveVariation() {
+    if (isCaptureInteractionLocked()) return;
     const selectedVariationNumber = activeVariationNumber;
 
     if (selectedVariationNumber === null) {
@@ -4469,7 +4574,22 @@
     selectVariationFromPicker(selectedVariationNumber);
   }
 
-  variationSelector.addEventListener("click", () => {
+  // Capture-phase guards also cover stale/programmatic events and popovers
+  // outside the workspace, without intercepting scrolling or End Tracking.
+  for (const eventType of [
+    "click", "dblclick", "auxclick", "contextmenu", "keydown", "keyup",
+    "beforeinput", "input", "change", "submit", "paste", "cut", "drop",
+    "dragstart", "pointerdown", "pointerup", "mousedown", "mouseup",
+  ]) {
+    document.addEventListener(eventType, (event) => {
+      if (isTrackerInteractionTarget(event.target)) {
+        guardCaptureInteraction(event);
+      }
+    }, true);
+  }
+
+  variationSelector.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (variationSelectorOpen) {
       releaseVariationSelector({ restoreFocus: true });
     } else {
@@ -4478,6 +4598,7 @@
   });
 
   function handleVariationSelectorKeydown(event) {
+    if (guardCaptureInteraction(event)) return;
     if (!variationSelectorOpen) {
       const opensPicker =
         event.key === " " ||
@@ -4554,18 +4675,21 @@
   );
 
   variationListbox.addEventListener("pointerdown", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (event.button === 0 && event.target.closest?.('[role="option"]')) {
       event.preventDefault();
     }
   });
 
   variationListbox.addEventListener("pointerup", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (event.button === 0 && variationSelectorOpen) {
       variationSelector.focus({ preventScroll: true });
     }
   });
 
   variationListbox.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const option = event.target.closest?.('[role="option"]');
 
     if (
@@ -4631,7 +4755,8 @@
     true,
   );
 
-  returnToCurrentButton.addEventListener("click", () => {
+  returnToCurrentButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const currentView = getActiveView();
 
     if (!persistentController || !currentView?.isReviewingHistory) {
@@ -4670,6 +4795,7 @@
   });
 
   function saveOrdinaryInventorySelection(button, view) {
+    if (isCaptureInteractionLocked()) return;
     const sku = button.dataset.sku;
     const selected =
       view.inventory.find((entry) => entry.sku === sku)?.selected === true;
@@ -4687,6 +4813,7 @@
   }
 
   async function toggleNextItemQueue(button, view) {
+    if (isCaptureInteractionLocked()) return;
     if (nextItemQueueMutationBusy) {
       mappingAnnouncement.textContent =
         "Wait for the current next-item queue change to finish.";
@@ -4770,6 +4897,7 @@
   }
 
   async function mapCurrentVariationFromHistory(button, view) {
+    if (isCaptureInteractionLocked()) return;
     if (nextItemQueueMutationBusy) {
       mappingAnnouncement.textContent =
         "Wait for the current inventory action to finish.";
@@ -4831,6 +4959,7 @@
   }
 
   function selectInventorySizeFromPicker(sku) {
+    if (isCaptureInteractionLocked()) return;
     const state = inventorySizeMenuState;
     const view = getActiveView();
     const entry = view?.inventory.find((candidate) => candidate.sku === sku);
@@ -4878,6 +5007,7 @@
   }
 
   function commitActiveInventorySize() {
+    if (isCaptureInteractionLocked()) return;
     if (activeInventorySizeSku === null) {
       releaseInventorySizeMenu({ restoreFocus: true });
       return;
@@ -4887,6 +5017,7 @@
   }
 
   function handleInventorySizeMenuKeydown(event) {
+    if (guardCaptureInteraction(event)) return true;
     if (!inventorySizeMenuState) {
       return false;
     }
@@ -4924,6 +5055,7 @@
   }
 
   inventoryGrid.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const pinButton = event.target.closest?.(".inventory-pin-button");
 
     if (!pinButton || !inventoryGrid.contains(pinButton)) {
@@ -4936,6 +5068,7 @@
   });
 
   inventoryGrid.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (event.target.closest?.(".inventory-pin-button")) {
       return;
     }
@@ -4967,6 +5100,7 @@
   });
 
   inventoryGrid.addEventListener("contextmenu", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const button = event.target.closest?.(".inventory-card");
 
     if (!button || !inventoryGrid.contains(button)) {
@@ -5008,6 +5142,7 @@
   });
 
   inventoryGrid.addEventListener("keydown", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const button = event.target.closest?.(".inventory-card");
 
     if (!button || button.disabled || !inventoryGrid.contains(button)) {
@@ -5039,7 +5174,8 @@
     }
   });
 
-  inventoryListToggle.addEventListener("click", () => {
+  inventoryListToggle.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     inventoryListExpanded = !inventoryListExpanded;
     const trimmedPins = inventoryListExpanded
       ? null
@@ -5067,12 +5203,14 @@
   });
 
   inventorySizeListbox.addEventListener("pointerdown", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (event.button === 0 && event.target.closest?.('[role="option"]')) {
       event.preventDefault();
     }
   });
 
   inventorySizeListbox.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const option = event.target.closest?.('[role="option"]');
 
     if (
@@ -5127,22 +5265,28 @@
     }
   });
 
-  searchInput.addEventListener("input", () => renderAll());
+  searchInput.addEventListener("input", (event) => {
+    if (guardCaptureInteraction(event)) return;
+    renderAll();
+  });
 
   searchInput.addEventListener("keydown", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (event.key === "Escape" && searchInput.value) {
       searchInput.value = "";
       renderAll();
     }
   });
 
-  clearSearchButton.addEventListener("click", () => {
+  clearSearchButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     searchInput.value = "";
     searchInput.focus();
     renderAll();
   });
 
-  addActiveStreamSkusButton.addEventListener("click", () => {
+  addActiveStreamSkusButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (activeStreamInventoryUpdateBusy || addActiveStreamSkusButton.hidden) {
       return;
     }
@@ -5162,7 +5306,8 @@
     activeStreamInventorySheetReference.focus();
   });
 
-  cancelActiveStreamInventoryUpdateButton.addEventListener("click", () => {
+  cancelActiveStreamInventoryUpdateButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (activeStreamInventoryUpdateBusy) {
       return;
     }
@@ -5173,12 +5318,14 @@
     });
   });
 
-  activeStreamInventorySheetReference.addEventListener("input", () => {
+  activeStreamInventorySheetReference.addEventListener("input", (event) => {
+    if (guardCaptureInteraction(event)) return;
     clearActiveStreamInventoryUpdateError();
   });
 
   activeStreamInventoryUpdateForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (guardCaptureInteraction(event)) return;
 
     if (activeStreamInventoryUpdateBusy) {
       return;
@@ -5547,7 +5694,8 @@
       });
   });
 
-  retryStreamSessionButton.addEventListener("click", () => {
+  retryStreamSessionButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     const prepareMissingInventory =
       shouldPrepareInventoryForStreamRetry(streamSnapshot);
 
@@ -5820,7 +5968,8 @@
     }
   });
 
-  retrySavedSessionButton.addEventListener("click", () => {
+  retrySavedSessionButton.addEventListener("click", (event) => {
+    if (guardCaptureInteraction(event)) return;
     if (!persistentController) {
       return;
     }
@@ -5841,6 +5990,8 @@
   window.addEventListener(
     "pagehide",
     () => {
+      captureHealthController.dispose();
+      captureHealthBadgeVisibilityController.dispose();
       clearCaptureRefreshTimer();
       resetLiveBidTracking();
       resetConfirmedInventoryPreview();

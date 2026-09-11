@@ -67,15 +67,15 @@ button {
 
 .brand-mark {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
   place-items: center;
   border: 1px solid rgb(72 165 255 / 48%);
-  border-radius: 11px;
+  border-radius: 10px;
   color: #061019;
   background: linear-gradient(145deg, var(--cyan), var(--blue));
   box-shadow: 0 8px 24px rgb(39 211 180 / 18%);
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 850;
   letter-spacing: -0.04em;
 }
@@ -418,6 +418,88 @@ button {
   background: rgb(39 211 180 / 7%);
 }
 
+.capture-health-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.capture-health-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  max-width: 100%;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgb(119 132 151 / 12%);
+  color: #b7c1ce;
+  font-size: 10px;
+  line-height: 18px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.capture-health-badge[data-phase="connecting"] {
+  border-color: rgb(72 165 255 / 45%);
+  background: rgb(72 165 255 / 12%);
+  color: #a9d4ff;
+}
+
+.capture-health-badge[data-phase="active"] {
+  border-color: rgb(39 211 180 / 45%);
+  background: rgb(39 211 180 / 12%);
+  color: #70f4df;
+}
+
+.capture-health-badge[data-phase="loading"] {
+  border-color: rgb(244 189 80 / 45%);
+  background: rgb(244 189 80 / 12%);
+  color: #ffd27c;
+}
+
+.capture-health-badge[data-phase="unavailable"] {
+  border-color: rgb(255 99 118 / 45%);
+  background: rgb(255 99 118 / 12%);
+  color: #ffb2ba;
+}
+
+.capture-health-badge[data-phase="unavailable"][data-auto-hidden="true"] {
+  visibility: hidden;
+}
+
+.capture-health-badge[data-phase="connecting"]::before,
+.capture-health-badge[data-phase="loading"]::before {
+  content: "";
+  display: block;
+  box-sizing: border-box;
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: capture-health-spin 0.8s linear infinite;
+}
+
+@keyframes capture-health-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capture-health-badge[data-phase="connecting"]::before,
+  .capture-health-badge[data-phase="loading"]::before {
+    animation: none;
+  }
+}
+
 .inventory-import-confirmation-summary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -512,7 +594,7 @@ button {
 }
 
 .stream-session-panel[data-state="active"] {
-  padding: 12px;
+  padding: 10px;
 }
 
 .stream-session-panel[data-state="active"] .stream-session-heading {
@@ -602,6 +684,22 @@ button {
 
 .stream-session-panel[data-state="active"] .stream-session-status {
   margin-top: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.stream-session-panel[data-state="active"] .stream-session-status h3 {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.stream-session-panel[data-state="active"] .stream-session-status-dot {
+  margin-top: 0;
+}
+
+.stream-session-panel[data-state="active"] .stream-session-actions {
+  margin-top: 8px;
 }
 
 .stream-session-status-dot {
@@ -1294,8 +1392,11 @@ button {
   flex: none;
 }
 
-.tracker-workspace[aria-busy="true"] {
-  opacity: 0.68;
+/* Follow the validated badge state, not individual save/refresh busy cycles.
+   Dim only content siblings so the health badge and spinner stay fully bright. */
+.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="connecting"]) > :not(.capture-health-row),
+.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="loading"]) > :not(.capture-health-row) {
+  opacity: 0.5;
 }
 
 @keyframes session-pulse {
@@ -1783,9 +1884,12 @@ button {
   outline-offset: 2px;
 }
 
-.inventory-section,
+.inventory-section {
+  padding-top: 14px;
+}
+
 .metrics-section {
-  padding-top: 25px;
+  padding-top: 14px;
 }
 
 .metrics-grid {
@@ -1950,16 +2054,52 @@ button {
   letter-spacing: -0.025em;
 }
 
+.section-heading.metrics-heading {
+  margin-bottom: 8px;
+}
+
+.metrics-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.section-heading.inventory-heading {
+  align-items: center;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.inventory-heading-label {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.inventory-heading-label h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .inventory-heading-actions {
   display: flex;
-  flex: none;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  justify-content: flex-end;
+  align-items: center;
 }
 
 .inventory-heading-actions .text-action {
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .inventory-heading-actions .text-action:disabled {
@@ -1968,11 +2108,10 @@ button {
 }
 
 .result-count {
-  flex: none;
-  padding-bottom: 1px;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 11px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .active-stream-inventory-update-form {
@@ -2073,6 +2212,10 @@ button {
   color: var(--text-subtle);
 }
 
+.inventory-section > .search-field input {
+  height: 42px;
+}
+
 .search-field input:hover {
   border-color: var(--border-strong);
   background: var(--surface-raised);
@@ -2142,7 +2285,7 @@ button {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
-  margin-top: 17px;
+  margin-top: 10px;
 }
 
 .inventory-list-toggle {
@@ -2195,15 +2338,15 @@ button {
 .inventory-pin-button {
   position: absolute;
   z-index: 2;
-  top: 10px;
-  right: 10px;
+  top: 8px;
+  right: 8px;
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   place-items: center;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   color: #8fa5bd;
   background: rgb(7 13 20 / 62%);
   cursor: pointer;
@@ -2214,8 +2357,8 @@ button {
 }
 
 .inventory-pin-button svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -2246,11 +2389,14 @@ button {
 
 .inventory-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 120px;
-  padding: 15px;
+  padding: 12px 10px 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-medium);
   background:
@@ -2289,10 +2435,11 @@ button {
 
 .card-heading {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: wrap;
   gap: 6px 8px;
   align-items: flex-start;
-  padding-right: 35px;
+  padding-right: 30px;
 }
 
 .card-title {
@@ -2301,7 +2448,7 @@ button {
   flex: 1 1 60px;
   flex-direction: column;
   gap: 1px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.35;
   letter-spacing: -0.018em;
@@ -2314,11 +2461,13 @@ button {
 }
 
 .card-meta {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: flex-end;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: auto;
+  padding-top: 16px;
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -2326,6 +2475,7 @@ button {
 .size-label {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
   line-height: 1.25;
@@ -2345,8 +2495,14 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
   max-width: 100%;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.size-value [data-field="size"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .inventory-card[data-multiple-sizes="true"] .size-label {
@@ -2376,11 +2532,14 @@ button {
   display: flex;
   min-width: 0;
   max-width: 100%;
+  flex: 0 1 auto;
   flex-direction: column;
   align-items: flex-end;
-  justify-self: end;
+  align-self: flex-end;
+  margin-left: auto;
   gap: 2px;
   color: #9df0df;
+  font-size: 11px;
   font-weight: 690;
   line-height: 1.25;
   text-align: right;
@@ -2807,10 +2966,6 @@ button {
     align-items: flex-start;
     flex-direction: column;
     gap: 5px;
-  }
-
-  .inventory-heading-actions {
-    align-items: flex-start;
   }
 
   .active-stream-inventory-update-actions {

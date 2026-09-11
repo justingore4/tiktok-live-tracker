@@ -12,7 +12,6 @@
       <header class="app-header">
         <div class="brand-mark" aria-hidden="true">T</div>
         <div class="brand-copy">
-          <p class="eyebrow">Seller tool</p>
           <h1>TikTok Live Tracker</h1>
         </div>
       </header>
@@ -418,6 +417,14 @@
         inert
         hidden
       >
+      <div class="capture-health-row" hidden>
+        <span id="capture-health-badge" class="capture-health-badge"
+          data-phase="not_tracking" role="status" aria-live="polite"
+          aria-atomic="true" aria-describedby="capture-health-description"
+          title="Start stream tracking to check capture health.">Not tracking</span>
+        <span id="capture-health-description" class="visually-hidden">Start stream tracking to check capture health.</span>
+      </div>
+
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="visually-hidden">
@@ -531,13 +538,12 @@
       </section>
 
       <section class="inventory-section" aria-labelledby="inventory-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Inventory</p>
-            <h2 id="inventory-title">Waiting for a live auction variation</h2>
+        <div class="section-heading inventory-heading">
+          <div class="inventory-heading-label">
+            <h2 id="inventory-title">Inventory</h2>
+            <p id="result-count" class="result-count" aria-live="polite">0 items</p>
           </div>
           <div class="inventory-heading-actions">
-            <p id="result-count" class="result-count" aria-live="polite"></p>
             <button
               id="add-active-stream-skus"
               class="text-action"
@@ -546,7 +552,7 @@
               aria-controls="active-stream-inventory-update-form"
               hidden
             >
-              Add new SKUs from Sheet
+              Add new SKUs from updated Sheet
             </button>
           </div>
         </div>
@@ -671,11 +677,8 @@
         class="metrics-section"
         aria-labelledby="metrics-title"
       >
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Performance</p>
-            <h2 id="metrics-title">Metrics</h2>
-          </div>
+        <div class="section-heading metrics-heading">
+          <h2 id="metrics-title">Performance Metrics</h2>
         </div>
 
         <dl class="metrics-grid">
@@ -1122,6 +1125,8 @@
     <script src="../shared/reconciliation.js"></script>
     <script src="../shared/reconciliation-coordinator.js"></script>
     <script src="../shared/stream-session-coordinator.js"></script>
+    <script src="../shared/capture-health.js"></script>
+    <script src="capture-health-view.js"></script>
     <script src="../shared/inventory-import-protocol.js"></script>
     <script src="../shared/stream-report-protocol.js"></script>
     <script src="../shared/live-bid-protocol.js"></script>

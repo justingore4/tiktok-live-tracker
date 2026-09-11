@@ -882,6 +882,145 @@ node --test .\tests\next-item-queue-state.test.cjs
 These tests use fixtures and in-memory storage. They do not require TikTok, Google
 Sheets network access, an OAuth client, or a live stream.
 
+## Capture-health indicator
+
+The visible, resumed variations/inventory tracker workspace contains a fixed-height
+20px badge row, centered directly above Variation with a 6px gap and 10px text.
+The row sits inside `tracker-workspace`, so it is hidden with no reserved space
+on the Resume/End-only screen or when no local session is active. The active
+header stays hidden. Status text and a polite live region supplement color; the
+tooltip/accessible description explains temporary trouble and recovery. A tiny
+decorative spinner inside the badge, left of the label, rotates only for blue
+**Connecting** and yellow **Loading**; green and red remain static. Reduced motion
+disables rotation. The 20px height and 6px gap stay unchanged. There is no blinking,
+pulsing, automatic dashboard refresh, or loading overlay; the spinner does not
+change health logic.
+
+The red badge auto-hides after 13 continuous seconds using a presentation-only
+deadline in `createCaptureHealthBadgeVisibilityController`. It reads the validated
+rendered phase and sets `data-auto-hidden`; CSS uses `visibility: hidden` only for
+red, retaining the badge row's 20px height and 6px gap. Ordinary renders, repeated
+red samples, and red reason changes never restart the deadline or reveal hidden
+red. Any non-red phase cancels it and restores badge visibility (the existing
+not-tracking/workspace hiding rules still apply). Returning to red starts a new
+deadline. Disposing the panel cancels the timer; stale callbacks cannot hide a
+new state. This does not change health detection, polling, tint, or interaction
+locks: hidden red remains unavailable with normal brightness and no capture lock.
+
+Tracker content is noticeably dimmed at a steady 50% opacity only while the same
+validated badge phase is Connecting or Loading; Active/Unavailable restore normal
+opacity. The badge and spinner remain undimmed. This replaces per-refresh
+`aria-busy` opacity changes, not the existing busy/error protections.
+
+Connecting/Loading also locks the active, resumed tracker controls: search,
+variation navigation, item/size selection, right-click mapping/queueing, pinning,
+list expansion, and the add-SKUs form. Native scrolling stays available, as do
+End Stream Tracking and its confirmation/cancel controls under their existing
+session-busy safeguards. The lock uses the same validated badge phase without
+independent detection or timers; blue-to-yellow transitions stay locked. Green
+or red removes only this lock, never overriding another `aria-busy`, inert,
+disabled-control, save, error, or end-confirmation safeguard. A normal data
+refresh finishing, or the background-refresh exception for an open picker,
+cannot unlock blue/yellow controls.
+
+Locking closes open variation/size popovers and preserves their deferred data
+renders without committing a selection. Typed search and Sheet references remain
+intact. Action-entry guards also protect keyboard, stale popover, and applicable
+outside-workspace retry actions. Capture, live rendering, delivery retries, and
+health checks continue; already-started saves/imports finish normally. The lock
+does not apply to setup, Resume/End-only, archived, or post-stream report screens,
+and does not change health logic, timers, storage schemas, or manifest settings.
+
+`shared/capture-health.js` is a separate strict protocol and in-memory worker
+state machine. `capture/capture-health-reporter.js` requests the current local
+stream context, then samples fresh dashboard readability and existing delivery
+state about every five seconds. `tagger/capture-health-view.js` polls the worker
+about every two seconds while a local stream is active. Neither path writes
+heartbeat data to storage or changes business acknowledgments or retries.
+Hiding the workspace does not change health detection, polling, or state.
+
+Readability requires live observation and successful capture scans of the scoped
+Sold Items and Attributed GMV roots, plus a valid bidding card or recognized
+waiting state. Sold Items must have associated recognized payment observations
+(and readable completed-sale prices), or the scoped known empty message
+`Orders placed during your LIVE will show up here`. A bare root, an unrecognized
+payment label, an unreadable price, a heartbeat, or an empty delivery queue does
+not prove healthy capture. The health probe uses existing pure locators and never
+schedules business capture. Actual scan/observer/startup faults stay unhealthy
+until genuine recovery. Pending, in-flight, and retry state aggregates all three
+existing capture paths: Sold Items, Attributed GMV, and current bidding.
+
+State precedence and deadlines are evaluated using wall-clock time:
+
+1. No active local stream: internal `not_tracking` state; no visible badge or
+   reserved row space, and the panel does not poll.
+2. A new stream or restarted worker gets 10 seconds for a dashboard source
+   (blue **Connecting**). A registered source also gets 10 seconds to provide its
+   first health sample. Either missing confirmation becomes red **Capture
+   unavailable** at its deadline. This source/sample deadline (`SOURCE_GRACE_MS`)
+   is separate from the unchanged 20-second initial clean-confirmation warm-up
+   window (`INITIAL_GRACE_MS`). Multiple registered dashboards are ambiguous and
+   never green.
+3. Expired or failed checks override clean queues. A visible dashboard's last
+   sample becomes yellow **Loading** after 20 seconds and red after 60 seconds.
+   Hidden dashboards allow 90 seconds before yellow and 180 seconds before red
+   to tolerate background throttling. These are grace periods, not guaranteed
+   timer schedules. Sources expire after 180 seconds without samples.
+4. Unreadable dashboard checks show yellow immediately, then red after 10 seconds
+   of continuous unreadability, even during a live stream. A readable sample resets
+   that unreadability timer, including when delivery is still pending. Pending/
+   in-flight/retrying deliveries show yellow, then red after the unchanged 60
+   seconds without a clean sample. Readable catch-up can therefore remain yellow
+   and dimmed beyond 10 seconds; there is no blanket 10-second tint timeout.
+   Readability failure takes precedence over retry, and retry over ordinary backlog.
+5. Green **Capture active** requires two consecutive clean samples spanning at
+   least five seconds. A retry, unreadable result, or freshness gap resets that
+   recovery streak. One clean pulse cannot briefly turn the badge green between
+   retries. While awaiting enough clean confirmation, the initial 20-second
+   warm-up window still uses Connecting, then Loading. Quiet streams remain
+   healthy through fresh successful reads.
+
+Red restores normal tracker brightness and removes the capture-loading interaction
+lock, without overriding existing save/error safeguards. It never stops capture,
+delivery retries, or health/recovery checks. These two
+10-second deadlines do not change heartbeat/poll intervals, request timeouts,
+staleness thresholds, or healthy-confirmation requirements. The displayed change
+can lag the deadline until the next panel poll.
+
+Health communication is bounded by short request deadlines; callbacks arriving
+after expiry cannot become fresh confirmations merely because browser timeout
+callbacks were delayed. Panel-to-worker failures show Connecting before first
+confirmation, or Loading after confirmation, then unavailable after 20 seconds of
+continued transport failure. Timers are only wakeups; freshness uses timestamps.
+
+Messages contain only aggregate booleans/counts, timing, local stream ID, sequence,
+and an ephemeral source correlation ID, never OAuth credentials, buyer details,
+raw DOM text, inventory, or report contents. The worker validates the extension
+ID, exact side-panel reader URL or active top-frame supported dashboard sender,
+tab/document, local session, correlation, and increasing sequence. Full navigation
+or closure invalidates the source; a changed stream rejects old pulses. Worker
+restart starts health afresh without modifying saved session/report data. Reopening
+the panel reads current health rather than trusting its previous rendered color.
+
+Focused synthetic tests:
+
+```powershell
+node --test tests/capture-health.test.cjs tests/capture-health-reporter.test.cjs tests/capture-health-view.test.cjs tests/capture-health-badge-visibility.test.cjs tests/capture-health-tint.test.cjs tests/capture-interaction-lock.test.cjs tests/capture-content.test.cjs tests/service-worker.test.cjs tests/extension-sidepanel.test.cjs
+```
+
+Manual validation still matters: inspect narrow/wide panel layouts in Chrome,
+start with a recognized empty dashboard, observe a quiet stream and normal sales,
+switch away from Sold Items, close/reopen or refresh the dashboard, and check
+recovery after background suspension. With synthetic tracker data, verify that
+blue/yellow blocks mouse, keyboard, right-click, and Sheet-form actions while
+scrolling and End/confirmation/cancel remain available. Check focused inputs and
+open popovers at the lock transition, retained typed contents, and green/red
+unlocking without overriding save/error guards. Also verify that 13 continuous
+seconds of red hide only the badge without shifting Variation, and that a new
+blue/yellow/green state reappears immediately. Do not use real reports or inventory for
+destructive tests. A green badge cannot recover rows TikTok never rendered, prove
+the real TikTok room's identity, or independently audit report completeness.
+
 ## Console troubleshooting
 
 - If the active message is missing, confirm the origin and pathname, reload the unpacked
@@ -908,7 +1047,8 @@ The next capture stage should validate and implement:
 
 - a prioritized employee work queue across the now-live-refreshed, persisted bidding and
   Sold Items variations;
-- visible capture connection, retry, and queue-drained state;
+- real-Chrome validation of the implemented capture-health badge across quiet
+  streams, empty dashboards, refresh/navigation, and background suspension;
 - the transition timing and color-independent meaning of processing, fixing, failed,
   unrecognized, and other additional payment labels; the product rule deliberately keeps
   every mapped unresolved order reserved until priced completion or exact `Canceled`;
@@ -963,7 +1103,9 @@ outbound Sheets writes remain intentionally absent.
 - An open multi-size inventory list similarly freezes its visible options during
   canonical or queue refresh and applies the newest deferred inventory render on close;
   underlying capture and persistence are not paused.
-- There is no visible capture connection, retry, or queue-drained indicator yet.
+- The capture-health badge confirms recent supported dashboard readability and
+  delivery state, not complete coverage of every TikTok sale. Its recognized
+  empty/waiting views and timing still need broader real-dashboard validation.
 - Browser or process suspension can delay scans and delivery retries.
 - The retained live-auction display is temporary session state rather than reconciliation
   history. It survives service-worker suspension and side-panel reopening, but is

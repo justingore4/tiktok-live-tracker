@@ -465,11 +465,62 @@ reconciliation conflict, or oversold/recount warning. Those conditions never pre
 employee from ending local tracking, but inventory and profit figures should be reviewed
 before updating the Sheet.
 
+### Capture-health badge
+
+A slim, centered badge sits above the Variation box inside the visible, resumed
+variations/inventory tracker workspace. It is hidden with no reserved row space
+on the Resume/End-only screen or when no local tracker session is active.
+It never hides the tracker or appears in post-stream reports:
+
+- Blue **Connecting**: waiting for fresh dashboard confirmation.
+- Green **Capture active**: recent readable dashboard checks, with no pending
+  capture deliveries or retries.
+- Yellow **Loading**: a temporary reading, delivery, retry, or freshness problem.
+- Red **Capture unavailable**: capture cannot currently be confirmed. This is
+  uncertainty, not proof that sales were lost.
+
+After 13 continuous seconds in red, only the badge becomes invisible; its space
+above Variation remains reserved. Repeated red checks or tooltip changes do not
+restart that countdown. Blue, yellow, or green reappear immediately on the next
+health-state change; returning to red starts a fresh countdown. This is visual
+only: hidden red still means unavailable, and capture/recovery checks continue.
+
+A tiny decorative spinner appears inside the badge, left of **Connecting** and
+**Loading** only. Green and red stay static; reduced motion disables rotation.
+During Connecting/Loading, tracker content stays noticeably dimmed at 50% opacity
+instead of flashing on each refresh. The same validated badge phase also locks
+tracker controls, including search, variation/item selection, pinning, and adding
+SKUs. Scrolling and **End Stream Tracking**, including its confirmation/cancel
+controls, remain available subject to existing session-busy protections. The badge
+and spinner stay undimmed. Active/Unavailable restore normal opacity and remove
+only this capture-loading lock; existing save/error safeguards still apply.
+Switching between Connecting and Loading does not unlock controls. Open variation
+and size menus close, but typed search/Sheet contents are preserved. Incoming
+updates keep rendering, and already-started saves/imports finish normally. This
+lock does not change health timing or apply to setup, Resume/End-only, or report
+screens.
+
+Starting without a dashboard source or its first health sample, or continuously
+unreadable dashboard checks, turns the badge red after about 10 seconds. Readable
+capture that is still delivering or retrying updates can stay yellow and dimmed
+beyond 10 seconds; its existing 60-second failure limit is unchanged. Red restores
+normal brightness but does not stop capture, retries, or health checks.
+
+Hover the badge for a short explanation and recovery action. Keep the supported
+TikTok LIVE product dashboard open with **Sold Items** selected. Quiet streams
+can remain green without new sales; an empty queue or heartbeat alone is not
+enough. Readability includes Sold Items, Attributed GMV, and the bidding/waiting
+view. Only the recognized empty Sold Items view counts as a readable empty state.
+
+Health checks are in-memory only. They do not change capture delivery,
+inventory, reports, permissions, or saved data, and it does not prove every sale
+was rendered or captured. See [capture-health rules and checks](docs/capture-development.md#capture-health-indicator)
+for timing, recovery, and validation details.
+
 ### Not implemented yet
 
 - A richer prioritized employee work queue beyond the current bidding-variation
   auto-follow behavior, which pauses while an employee reviews history.
-- Visible capture connection, retry, and queue-drained status.
 - Verified transition timing for TikTok's nonterminal **Payment processing**, **Payment
   fixing**, **Payment failed**, and unrecognized labels. Product behavior deliberately
   keeps any selected unit reserved until priced completion or exact cancellation.

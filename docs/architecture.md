@@ -873,12 +873,23 @@ variation numbers present when it opened; if one changes before commit, the acti
 rejected and the refreshed card must be reopened. The local ID remains distinct from a
 verified TikTok room ID.
 
+The compact capture-health badge is observational and separate from this durable
+flow. A source-validated in-memory worker store consumes fresh readability samples
+and aggregate pending/in-flight/retry state from all three capture paths. The
+panel polls this health channel independently of reconciliation invalidations.
+Session/document correlation, sequence validation, wall-clock freshness, and
+consecutive-clean-sample recovery prevent stale or isolated heartbeats from
+establishing green status. No health heartbeat writes storage or acknowledges a
+business event. See [capture-health rules](capture-development.md#capture-health-indicator)
+for thresholds and limitations. It does not establish a TikTok room identity or
+guarantee that every sale was rendered and captured.
+
 Next tagger work includes:
 
 - Turn the live-refreshed variation history into a prioritized queue of records needing
   attention.
 - Prioritize completed-but-unmapped sales and capture-generated conflicts as they arrive.
-- Display capture connection/delivery state and extend current-bidding auto-follow into a
+- Extend current-bidding auto-follow into a
   prioritized queue without reading Chat or widening either strict dashboard boundary.
   The isolated aggregate analytics metric remains display-only and never prioritizes or
   identifies a sale.
