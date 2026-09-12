@@ -1,0 +1,891 @@
+TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
+==========================================
+
+Snapshot date: September 12, 2026
+Repository branch at preparation: main
+Verified baseline commit: 93560c721ee1ae7724c7182e0cf4517a8ffd5f5c
+Commit subject: Clean up unused placeholders and support Cancelled payment badges
+Manifest version: 1.0.0
+Latest full synthetic test run: 1,402 passed, 0 failed
+Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
+
+PURPOSE AND HOW TO USE THIS FILE
+-------------------------------
+This is a portable project-context handoff for a new coding assistant/account.
+It records implementation, user decisions, safeguards, commands, and unresolved
+questions. It is not a backup of Chrome data or an export of the original chats.
+Conversation screenshots and their underlying dashboard HTML are not embedded.
+
+Suggested first message to a new assistant:
+  Read docs/LLM_HANDOFF.txt and README.md, inspect the current Git status, and use
+  the current source/tests to verify any relevant details before making changes.
+  Preserve existing work. Do not commit, push, touch real tracker data, or begin
+  unrelated improvements unless I explicitly request them. Then wait for my task.
+
+For the receiving assistant:
+- Follow current higher-priority instructions and the user's latest request.
+- This is a dated snapshot, not authority to change the repository by itself.
+- Current code, tests, manifest, and Git state take precedence if this file drifts.
+- Read any current AGENTS.md or applicable skill instructions. No applicable
+  AGENTS.md was found during preparation; that may change later.
+- Paths below are repository-relative and work on both Mac and Windows.
+- The worktree was clean at the baseline above. This handoff was then added as
+  documentation only. Check git status rather than assuming that remains true.
+
+1. PRODUCT, OWNER, AND SCOPE
+---------------------------
+Owner/maintainer: Justin. Privately distributed Chrome extension for a small group
+of users. Justin handles recipients' initial installation. The product is near
+handoff, with an emphasis on preserving working functionality and small changes.
+
+The extension opens a side panel beside the TikTok LIVE product dashboard. It:
+- Imports a confirmed opening inventory baseline from Google Sheets.
+- Observes rendered auction variations, payment badges, bidding, and Attributed GMV.
+- Lets the operator map exact inventory SKUs to variations and queue one next item.
+- Tracks reservations, completed sales, inventory, costs, and profit.
+- Ends a local session only through the report-producing End flow.
+- Saves, manages, corrects, and exports post-stream reports locally.
+
+This is not a TikTok order API integration, a backend service, or a cross-device
+inventory system. It does not control the broadcast, bidding, buyer payments, or
+TikTok orders. Intended use is one tracker session and one dashboard per computer.
+
+Git/account switching moves source code, NOT the user's Chrome inventory, session,
+reports, OAuth authorization, or open dashboard state. Separate Chrome profiles
+and separate computers have separate tracker data.
+
+2. IMPORTANT USER PREFERENCES AND SAFETY RULES
+--------------------------------------------
+- Keep changes tightly within the request. Do not bundle optional improvements.
+- When asked to explain, investigate, review, or work read-only, do not implement.
+- When asked to confirm understanding before starting, wait for the user's go.
+- When asked for a prompt or commands, provide those; do not execute them by default.
+- Do not commit or push unless explicitly requested. Past "git me commands"
+  requests meant show commands, not run them.
+- Preserve unrelated dirty-worktree changes. Inspect git status/diff first.
+- Preserve manifest version, public key, extension ID, OAuth client, permissions,
+  scopes, dependency pins/licenses, and saved-data contracts unless specifically
+  authorized to change the relevant item.
+- Use synthetic fixtures and fake timers for tests. Do not inspect or mutate real
+  reports, Chrome profiles, live tracker state, Sheet contents, or credentials
+  without separate appropriate authorization.
+- Do not clear storage, uninstall the extension, silently migrate/prune data,
+  generate private keys, or bypass size/validation safeguards as a quick fix.
+- Do not use destructive Git resets or broad recursive cleanup.
+- Preserve tmp/, scratch/, node_modules/, existing ZIPs, and development config.
+  Disposable-looking QA artifacts still belong to the user.
+- Keep interactions accessible and preserve scrolling, focus, narrow-panel layout,
+  reduced-motion behavior, and existing busy/error safeguards.
+- Run node --test after code changes. Add focused regression tests when changing
+  behavior. Distinguish synthetic test evidence from real browser/live evidence.
+- Communicate simply. Explain what is confirmed versus suspected; do not present
+  a guessed TikTok UI change as an established cause.
+
+3. REPOSITORY MAP AND READING ORDER
+---------------------------------
+README.md
+  Concise current setup, usage, data-safety, development, and packaging guide.
+docs/architecture.md
+  Detailed domain rules, persistence contracts, state boundaries, and features.
+docs/capture-development.md
+  Capture sources, debugging, health details, manual validation, and limitations.
+docs/google-sheets-inventory-template.csv
+  Canonical six-column inventory template.
+
+extension/manifest.json
+  MV3 configuration, identity, permissions, script order, entry points, icons.
+extension/service-worker.js
+  Trusted message routing, sender validation, serialized cross-component commands,
+  storage ownership, capture integration, import service, End/report orchestration.
+
+extension/shared/
+  reconciliation.js                  Pure canonical inventory/payment engine.
+  reconciliation-storage.js          Versioned durable state validation/persistence.
+  reconciliation-coordinator.js      Serialized, persisted canonical operations.
+  stream-session*.js                 Local stream identity and Start/Resume/End.
+  stream-report.js                   Report creation, hydration, correction helpers.
+  stream-report-storage.js           Report envelope, tiers, exact byte/slot caps.
+  stream-report-coordinator.js       Serialized report library/correction operations.
+  stream-report-protocol.js          Strict report command/response contracts.
+  inventory-sheet-import.js          Pure six-column inventory validation/parser.
+  google-sheets-inventory-import.js   Worker-owned OAuth and explicit Sheets reads.
+  inventory-import-protocol.js       Strict import message contracts.
+  capture-protocol.js                Sanitized capture event contract.
+  capture-integration.js             Capture events into the active local stream.
+  capture-health.js                  Validated advisory health state and thresholds.
+  sale-parser.js                    Narrow sale/variation/price text parsing.
+  live-bid-*.js                      Transient live bid projection and protocol.
+  next-item-queue-*.js               Single-SKU next-item queue and protocol.
+  tiktok-fee-calculator.js            Presentation-only fee/profit estimates.
+
+extension/capture/
+  content.js                         Dashboard-only probes, lifecycle, delivery queues.
+  sale-candidate-locator.js           Sold Items root/row/badge association.
+  bidding-variation-locator.js        Active auction variation and bid.
+  attributed-gmv-locator.js           Sanitized dashboard GMV display.
+  capture-client.js                  Validated runtime delivery and acknowledgments.
+  capture-scheduler.js               Coalesced mutation-driven scans.
+  capture-event-registry.js          Diagnostic completed-sale logging deduplication.
+  capture-health-reporter.js          Context-bound health samples/heartbeats.
+
+extension/tagger/
+  sidepanel.html / sidepanel.css / sidepanel.js
+    Setup, Resume/End, tracker, library/archive views, event wiring and styling.
+  persistent-tagger-controller.js / reconciliation-client.js
+    Persisted tracker view state and worker interaction.
+  stream-session-controller.js / stream-session-client.js
+    Local session UI/controller and strict client calls.
+  inventory-import-controller.js / inventory-import-client.js
+    Preview/confirmation/import workflow.
+  inventory-view-model.js / live-auction-view-model.js / mapping-workflow.js
+    Derived presentation and mapping rules.
+  variation-selector-view-model.js / variation-selector-lock.js
+    Variation display and picker-safe rendering.
+  capture-health-view.js
+    Health client/presentation, tooltip, red auto-hide, tint-related state.
+  live-bid-client.js / next-item-queue-client.js
+    Transient bid and queue UI clients.
+
+extension/report/
+  report.html / report.css / report-page.js
+    Saved report UI, exports, payment resolution and corrections.
+  stream-report-client.js            Strict worker-backed report access.
+  offline-report-editor-client.js / inline-report-correction.js
+    Report-only correction UI/client behavior, not direct storage access.
+  report-pdf.js / report-downloads.js Local PDF generation and download orchestration.
+
+extension/icons/                     T-logo PNGs: 16, 32, 48, 128 pixels.
+extension/vendor/                    Bundled PDF libraries, fonts, and licenses.
+scripts/package-extension.cjs        Cross-platform test/validate/ZIP workflow.
+scripts/package-validation.cjs       Local resource/path/manifest/secret checks.
+scripts/verify-report-pdfs.mjs        Optional synthetic-only PDF visual QA.
+tests/                              Node built-in tests and synthetic fixtures/helpers.
+
+There is no running backend. Tracked empty backend placeholders were removed.
+config/ and editor examples are not a server implementation; leave them alone.
+
+Documentation drift to watch:
+- Some older architecture/checklist passages still use "Business Records" for the
+  now-visible "STREAM REPORT RECORDS" section or only name "Canceled".
+- Current code also accepts "Cancelled" and "Order processing" variants.
+- One older architecture "commit rule" sentence groups revenue with mapped sales;
+  actual Gross Item Sales/AOV include priced unmapped completions. Mapped cost,
+  stock consumption, and gross profit remain mapping-dependent. See section 5.
+- Do not infer implemented APIs/features solely from future-looking doc sections.
+
+4. EXECUTION, TRUST, AND PERSISTENCE BOUNDARIES
+--------------------------------------------
+This is plain JavaScript/HTML/CSS, not a React app or a transpiled frontend.
+Many modules expose a browser global and CommonJS exports for the Node tests.
+Manifest order, importScripts order, and sidepanel/report script order matter.
+
+Flow:
+  Rendered dashboard DOM
+    -> isolated content script and narrow locators
+    -> sanitized, validated runtime event
+    -> service worker sender validation and FIFO command processing
+    -> canonical coordinator / persistence
+    -> best-effort change notification
+    -> side-panel read model and rendering
+
+The service worker owns storage and authoritative mutations. Clients should use
+existing protocols/coordinators, not read/write Chrome storage directly. Both
+chrome.storage.local and chrome.storage.session are restricted to TRUSTED_CONTEXTS.
+Storage restriction failures fail closed. UI and content senders have different
+allowed commands; do not weaken exact envelope, origin, frame, or sender checks.
+
+Operations are serialized at the worker messageTail and relevant coordinator
+operationTail boundaries. Detached candidate state is validated and saved before
+successful state is published. Notifications are not the source of truth.
+Multiple storage keys are not a single transaction; preserve the explicit repair
+paths for partially completed End/payment-resolution operations.
+
+Durable chrome.storage.local keys at this snapshot:
+- tiktokLiveTracker.reconciliation: envelope schema 1, inner state version 7.
+- tiktokLiveTracker.streamSession: envelope schema 1, inner session version 1.
+- tiktokLiveTracker.streamReports: envelope schema 3, report payload version 2.
+  Report envelope supports existing legacy schema 1/2 handling and payload v1.
+
+Transient chrome.storage.session keys:
+- tiktokLiveTracker.liveBid: envelope schema 2.
+- tiktokLiveTracker.nextItemQueue: envelope schema 1.
+
+These versions differ from protocol versions and manifest version. Never bump one
+just because another changes. Preserve strict hydration and supported migration
+behavior. Invalid saved data must not be treated as a clean empty installation.
+
+Capture health is advisory in-memory state, not canonical order truth or a report
+completeness certificate. Tokens/raw DOM/buyer identity are not report fields.
+
+5. DOMAIN AND ACCOUNTING INVARIANTS
+---------------------------------
+- A local stream ID is local-stream:<UUID>. It is not a verified TikTok room ID.
+- Auction identity is (streamId, variationNumber), never variation number alone.
+- A stream is pinned to an immutable physical-count inventory baseline lineage.
+- Each size has its own exact SKU. UI grouping never merges accounting identities.
+- Money is safe integer cents; do not introduce floating-point accounting formulas.
+- Payment truth and item mapping are independent axes.
+- Canonical paymentStatus is unknown, canceled, or payment_complete.
+- Latest observedPaymentStatus is more detailed and may be processing, fixing,
+  failed, unrecognized, or not_observed while canonical truth remains unknown.
+- Canonical canceled and payment_complete are mutually exclusive terminal results.
+  Later contradictory observations do not reverse either automatically. This is
+  not a refund or post-completion cancellation system.
+- Payment complete requires a successfully parsed positive final sold price before
+  capture can create a completed sale. A live bid is never the sold price.
+- Every priced completed auction contributes to Gross Item Sales and AOV, even
+  unmapped. An unmapped completed sale is an exception, not an absent sale.
+- Mapped completed sales drive inventory consumption, COGS, and mapped gross profit.
+- Mapping any canonical-unknown variation reserves one unit immediately, including
+  bidding, processing, failed/fixing, unrecognized, and price-less completion.
+- Canceled releases reservations without sale, revenue, COGS, or profit. The SKU
+  link may remain for history. Editing a canceled mapping is reference-only.
+- Unmapping a completed sale removes its stock/cost attribution, not its payment
+  truth, price, or contribution to Gross Item Sales.
+- Mapping/capture may arrive in either order. Repeated events must not double-count.
+- Existing completed price conflict handling retains the first accepted price and
+  surfaces a conflict instead of silently rewriting final sale truth.
+- Oversold inventory remains selectable; report shortages instead of refusing a
+  real sale. Displayed stock clamps at zero while oversold counts remain explicit.
+
+Quantities under the pinned baseline:
+  remainingQuantity = opening quantity - completed mapped sales
+  availableToTagQuantity = remainingQuantity - pending reservations
+  displayedAvailableQuantity = max(0, availableToTagQuantity)
+  oversoldQuantity = max(0, -availableToTagQuantity)
+
+Fresh physical recounts create new baselines for future streams; historical sales
+must not be deducted again from a new opening count. Active append-only imports
+derive a new snapshot within the same lineage and preserve already-used rows.
+
+Attributed GMV is the sanitized dashboard display, possibly rounded/compact.
+The 6% fee and after-fee figures are presentation estimates, not settled fees or
+net profit. Estimated after-fee profit uses GMV * 0.94 minus mapped COGS, rounded
+for display. Do not mix these estimates into canonical accounting.
+
+6. EXACT PAYMENT BADGE CAPTURE AND THE RECENT CANCELLATION QUESTION
+----------------------------------------------------------------
+Business capture is gated to:
+  https://shop.tiktok.com/streamer/live/product/dashboard
+Query/hash variants are allowed. Content scripts are injected more broadly under
+shop.tiktok.com, but business capture itself uses the route guard.
+
+Sold Items detection in sale-candidate-locator.js requires:
+- A unique visible root with data-tid="m4b_space".
+- Payment elements with data-tid="m4b_tag".
+- An exact span label matching /^Variation\s*:\s*#\s*(\d+)$/i.
+- A safe row association with exactly one variation label and one payment tag,
+  walking no more than 12 ancestors, without using the broad root as a sale row.
+- Ambiguous roots, rows, duplicate variation candidates, and unsafe associations
+  fail closed. Do not replace this with broad whole-page substring matching.
+
+Accepted whole badge text, ignoring capitalization and normalized whitespace:
+  Payment complete                         -> payment_complete
+  Canceled                                 -> canceled
+  Cancelled                                -> canceled
+  Payment failed                           -> payment_failed
+  Payment fixing                           -> payment_fixing
+  Payment processing                       -> payment_processing
+  Payment processing...                    -> payment_processing
+  Payment processing…                      -> payment_processing
+  Order processing                         -> order_processing
+  Order processing...                      -> order_processing
+  Order processing…                        -> order_processing
+
+The ellipsis variants above include both three ASCII periods and U+2026.
+Outer whitespace is trimmed; whitespace runs collapse. Matching is otherwise exact.
+Examples NOT accepted: "Canceled order", "Cancelled order", "Not cancelled",
+"Cancelled...", and "Cancelled…". Other nonempty associated badges are
+unrecognized; empty badges are skipped. not_observed is a default, not badge text.
+
+The Cancelled alias was added in commit 93560c7. It changes only the allowlist:
+stored canonical spelling remains canceled. It does not loosen row association,
+change payment priority, alter timeouts, or repair existing reports retroactively.
+
+Recent user screenshots establish these VISIBLE labels:
+- Temporary failure: yellow "Payment failed" plus "Transaction will cancel in 04:42".
+- Final cancellation: red "Canceled" plus separate-looking "Payment failed" detail.
+Do not reproduce buyer identities from those screenshots in code/docs/tests.
+
+Intended/current behavior:
+- Temporary Payment failed remains unresolved; the countdown is not parsed as a
+  cancellation. There is no independent five-minute auto-cancel timer.
+- Recognized Canceled/Cancelled is terminal cancellation even when separate plain
+  Payment failed detail exists next to the badge. It needs no SKU mapping.
+- Once cancellation is saved, a later Payment failed observation cannot undo it.
+
+Investigation status - IMPORTANT, DO NOT OVERSTATE:
+The user reported manually canceling orders in a post-stream report even though
+the dashboard displayed them canceled. They had not mapped any items. Synthetic
+checks ruled out absent mappings as the cause; cancellations work unmapped.
+The screenshot-shaped case (Canceled tag plus ordinary Payment failed detail)
+already passes a regression test. Both spelling variants now have coverage.
+
+What remains unknown is the affected row's actual DOM and delivery timing. If the
+website represents both texts as m4b_tag elements, the current one-tag association
+can reject the row. Rows absent from the rendered DOM or a capture/delivery cutoff
+also fit. None of these was proved for the affected session.
+
+The report's manual-resolution list reads current canonical unknown orders whose
+observed status is payment_processing, order_processing, payment_fixing, or
+payment_failed. Already-canonical canceled orders are excluded. A successfully
+saved unrecognized observation also removes an order from that particular list;
+therefore a simple label mismatch delivered as unrecognized does NOT alone explain
+continued manual-cancel prompts. Missing observations retaining the older pending
+status fit better. The alias is defensive compatibility, not a confirmed bug fix.
+
+The user also suggested ending before catch-up or not reloading after code updates.
+That is plausible, NOT confirmed. End uses already-persisted capture and does not
+force a final DOM scan/flush. Capture received after the local session has ended
+cannot normally update that old session. A subsequent page refresh does not
+automatically repair old report payment statuses from TikTok.
+
+If investigating again: obtain a privacy-cropped current screenshot plus the
+relevant row HTML/association, extension build identity, health reason, and timing
+before End. Use synthetic reproductions. Do not invent wider status aliases or
+automatic cancellation timers without a request and actual evidence.
+
+7. CAPTURE DELIVERY AND HEALTH
+------------------------------
+Capture implementation:
+- Scoped MutationObservers handle Sold Items, GMV, and active auction/bid probes.
+- Lifecycle rediscovery runs every 250 ms and on relevant SPA/navigation events.
+  Rediscovery is not a guarantee that virtualized historical rows are rendered.
+- Sold Items/GMV scans use 150 ms quiet delay and 1,000 ms maximum wait.
+- Bidding scans use 75 ms quiet delay and 250 ms maximum wait.
+- Delivery order is variation observations, payment statuses, then completed sales.
+- Failed delivery retries back off 1, 2, 4, then 5 seconds, capped at 5 seconds.
+- Acknowledgment follows persistence. Stale failed retries must not overwrite newer
+  observed statuses. Diagnostic event deduplication is not durable reconciliation.
+- Body/route changes invalidate stale delivery context. Same-body scoped root
+  replacement preserves appropriate delivery state for recovery.
+- GMV uses exact guide-Step-2 and supported legacy guide-step-2 roots; active auction
+  uses a unique visible .auction-pin-card. See locator tests before editing selectors.
+
+Validated health presentation:
+  connecting  Blue    Connecting
+  loading     Yellow  Loading
+  active      Green   Capture active
+  unavailable Red     Capture unavailable
+  not_tracking is internal/hidden; the gray Not tracking bubble was removed.
+
+Thresholds from shared/capture-health.js and tagger/capture-health-view.js:
+- No dashboard source / no first health sample: 10 seconds to unavailable.
+- Continuously unreadable dashboard: 10 seconds to unavailable; readability resets
+  that continuous-unreadability timer.
+- Continuous pending/unhealthy/retrying delivery: 60 seconds to unavailable.
+- Missing heartbeats while visible: stale/loading after 20 s, unavailable after 60 s.
+- Missing heartbeats in background: stale/loading after 90 s, unavailable after 180 s.
+- General warm-up phase boundary INITIAL_GRACE_MS remains 20 seconds. It is not a
+  mandatory wait before green and is distinct from the two 10-second thresholds.
+- Sustained health-service transport failures: 20 seconds from first failed result.
+- Healthy recovery requires at least two consecutive clean samples spanning >=5 s.
+- Reporter schedules next cycle 5 seconds after completion; request timeout 3 s.
+- Received sample/message maximum age: 3 s.
+- Panel poll schedules 2 seconds after completion; request timeout 4 s.
+- Source expiry 180 s; max 32 sources. Ambiguous sources are not treated as healthy.
+
+Only the source/first-sample and continuous-unreadable thresholds were shortened
+from 20 to 10 seconds. Do not accidentally shorten unrelated timers through a
+shared constant. Readable capture catching up can remain loading beyond 10 seconds.
+
+Readability is more than "an order exists": valid probes/observers, successful scan
+state, usable payment data, bidding/GMV conditions, and no retained probe fault all
+matter. Healthy empty Sold Items requires its supported explicit empty-state text.
+Probe faults clear on successful reads/recovery, not merely on a heartbeat.
+Refresh/navigation/session changes require fresh context and confirmation.
+
+Blue/yellow behavior, intentionally implemented together:
+- One validated phase drives badge, spinner, steady gray tint, and interaction lock.
+- No whole-workspace opacity toggling from each aria-busy refresh; that caused flicker.
+- Blue <-> yellow stays continuously tinted/locked, with no intermediate unlock.
+- Badge/spinner stay at full brightness. Spinner honors prefers-reduced-motion.
+- Lock covers search typing/paste/clear, variations, return-to-live, mappings,
+  sizes, context-menu actions, queue, pinning, expansion, SKU import/form actions,
+  and relevant shortcuts/stale UI events. Open pickers/top-layer menus close.
+- Background rendering, capture, retries, health checks, and in-flight saves/imports
+  continue. Preserve typed form/search contents and current selections.
+- Scrolling and End Stream Tracking with its confirmation/cancel controls remain
+  available, subject to their original session-busy safeguards.
+- Green/red remove ONLY the capture-loading lock immediately with the phase update.
+  No extra unlock timer. Other busy, save, error, inert, and confirmation protections
+  remain authoritative; never blindly enable all controls.
+- Picker-friendly background refresh exceptions cannot bypass the health lock.
+
+Red auto-hide, presentation only:
+- After 13 continuous seconds unavailable, hide badge via visibility:hidden while
+  retaining row height, gap, and phase. No layout collapse or fake green state.
+- Repeated red polls/reason changes do not restart the clock or reveal hidden red.
+- A non-red state shows immediately; each later entry into red starts a fresh clock.
+- Stale callbacks cannot hide newer phases; controller disposal cleans timers.
+- Red does not impose gray tint/lock and does not stop capture or recovery.
+
+Badge/tint/lock apply only to active, resumed variations/inventory workspace.
+Setup, Resume/End-only, archived reports, and post-stream reports are excluded.
+Health green means recent validated checks, NOT full historical capture coverage.
+Red hiding is NOT recovery. Normal new variations do not inherently require a
+green -> yellow transition; health samples determine it, not every UI render.
+
+8. INVENTORY / GOOGLE SHEETS CONTRACT
+-----------------------------------
+Sheet tab: Inventory. Exact case-sensitive six headers, each once:
+  sku,item,style,size,quantity_on_hand_at_import,unit_cost
+Import can accept another column order; full report exports use the canonical order.
+Extra, missing, or duplicate headers are invalid. Blank rows are ignored.
+
+Rows:
+- sku: uppercase, unique, regex ^[A-Z0-9][A-Z0-9._-]{0,63}$ after trimming.
+- item: required plain text, <=160 characters.
+- style: optional plain text, <=160 characters; empty is valid.
+- size: required plain text, <=80 characters, own SKU for every size.
+- quantity_on_hand_at_import: nonnegative safe integer, actual opening physical stock.
+- unit_cost: nonnegative plain USD decimal, no symbol, at most 2 decimal places.
+- Zero quantity and zero unit cost are valid. No formulas; userEnteredValue is read
+  so formulas cannot evade validation by presenting evaluated values.
+- Display labels normalize Unicode/whitespace. SKU case/punctuation is not rewritten.
+- Duplicate normalized item/style/size identities are invalid, even with unique SKUs.
+- Validation is atomic; never partially import a sheet with invalid rows.
+
+Pre-stream Connect and preview -> confirm creates a durable immutable baseline.
+Start requires a confirmed baseline; do not reintroduce automatic demo inventory
+for ordinary new streams. Legacy recovery is a separate guarded path.
+
+During active tracking, "Add new SKUs from updated Sheet -> Check and add" explicitly
+reads the same Sheet. Every stored field of every existing SKU must remain unchanged;
+only new rows may be added. It cannot rename, remove, reprice, or restock existing
+stream rows. Existing mappings/counts/baseline lineage must remain consistent.
+
+OAuth/fetch lives in the worker, not content scripts. There is no automatic Sheets
+synchronization or write-back. Preview TTL is 10 minutes; request timeout 20 s.
+The adapter has bounded responses/rows/cells; consult its constants rather than
+loosening them to work around invalid Sheets. One header plus up to 1,000 inventory
+rows is the intended bounded grid use.
+
+After a report, the operator can copy the complete updated inventory or download CSV.
+They back up the Inventory tab, then replace the six-column table starting at A1.
+Paste is positional, not a SKU-aware merge. Avoid overwriting newer stock with an old
+report. Export quantity excludes completed mapped sales, not merely reservations;
+oversold replacement quantity clamps to zero and needs a physical recount.
+
+9. TRACKER CONTROLS AND UI DECISIONS TO PRESERVE
+---------------------------------------------
+- Cards group normalized item+style; sizes select exact SKUs. Single-row groups map
+  directly. Search covers SKU/item/style/size. Filtering, ordering, and counts are
+  existing view-model behavior, not quantities guessed from card labels.
+- Left-click selects/unmaps for the viewed variation.
+- On live: right-click maps if unassigned; if already mapped, toggles next-item queue.
+- In history: right-click targets live/newest without changing history selection or
+  the queue. Preserve the explicit distinct workflow.
+- Queue holds one SKU for the next genuinely newer bidding variation and does not
+  replace existing mapping. It is not a multi-item backlog.
+- Return to live item resumes follow-newest. Pins move cards to front; otherwise
+  preserve original order. Completed sales do not cause reordering.
+- Size/variation pickers use dedicated render locking so updates do not jump under
+  the pointer. Latest queued render applies on release; this is not the health lock.
+
+Current compact visual decisions:
+- Main T logo/title are hidden inside active tracker; variations start near the top
+  with a slim centered health row above. Keep its gap when red hides.
+- Setup/Resume retain T logo and title left, local session badge far right.
+- Removed LOCAL STREAM SESSION / Tracker stream headings in Start/Resume boxes.
+- Pre-stream inventory check is the single compact section heading, with dynamic
+  inventory status badge on the same row. Removed white Google Sheets inventory.
+- App title, Pre-stream inventory check, and STREAM REPORT RECORDS headings use the
+  same existing blue family as View archived reports, not the earlier teal trial.
+- Inventory header is "Inventory N items" (1 item / 0 items appropriately), followed
+  by the search box. Old variation-dependent heading and duplicate count removed.
+- Add new SKUs from updated Sheet stays on the right with existing visibility rules.
+- Performance Metrics is one line matching Inventory heading typography.
+- Inventory cards have compact name/style, smaller pin control, and smaller stock
+  count positioned toward bottom-right; preserve narrow-panel usability.
+- Active session status is "Tracker Active | Started <formatted actual start time>"
+  with a small dot, consistent text styling and natural wrapping. No separate Active
+  pill, identity-survival explanation, or routine LIVE SESSION DATA RESTORED footer.
+  Preserve genuine warnings/errors.
+- The four Start/Resume/End/Connect button typography enlargements were reverted
+  at the user's request. Do not restore the earlier 13px/heavier-bold experiment.
+- Report library header is STREAM REPORT RECORDS + dynamic X/5 saved on one row.
+  Removed white Stream reports title and long explanatory paragraph.
+- Keep semantic headings, accessible labels/status announcements, and wrapping.
+  Do not reintroduce removed instructional text as part of unrelated work.
+
+10. START, RESUME, END, AND REPORT-SAVE SAFETY
+-------------------------------------------
+Local sessions persist across panel/browser restarts. Closing the panel is not End.
+Resume reopens the existing local identity; it does not invent a new stream or clock.
+Start/Resume-only screens differ from the active/resumed tracker workspace.
+
+End confirmation now has only:
+  Keep stream active
+  End and create report
+The Keep button occupies its full row, matching the report-producing button width.
+The development-only "End without report" button AND its backend bypass were removed.
+Do not restore a discard/pending-delete/end-without-report escape hatch casually.
+
+service-worker.js::endStreamWithReport:
+1. Read active session and canonical reconciliation.
+2. prepareReport saves a pending_end report BEFORE ending the local session.
+3. Persist session End.
+4. Clear next-item queue.
+5. finalizeReport finalizes/report-archives as required within limits.
+
+Failure behavior matters:
+- Generation/report-save failure leaves session active.
+- Session-save failure keeps the pending report available for normal retry.
+- Finalization failure after saved End is caught; later appropriate reads/Start
+  repair pending lifecycle state rather than claiming no report was saved.
+- At most one pending_end; hidden from normal lists and cannot be freely renamed,
+  archived, restored, or deleted. Preserve strict lifecycle guards.
+- End does not stop the TikTok broadcast, perform a final dashboard scan, or wait
+  automatically for outstanding capture to catch up.
+
+11. REPORT LIBRARY, CAPACITY, AND CORRECTIONS
+------------------------------------------
+Exact limits in shared/stream-report-storage.js:
+- MAX_ACTIVE_REPORTS = 5 recent finalized records.
+- MAX_ARCHIVED_REPORTS = 25 archived finalized records.
+- MAX_TOTAL_REPORTS = 30, including hidden pending records.
+- MAX_ARCHIVE_BYTES = 4,202,496 bytes.
+  That is 4 MiB + 4 KiB legacy-migration headroom + 4 KiB display-name headroom.
+  Do NOT replace it with a hardcoded bare 4 MiB or total Chrome storage usage.
+- Report envelope schema 3; payload version 2. Display-name maximum 80 characters.
+
+Byte size is UTF-8 JSON for the complete {schemaVersion, records} envelope, including
+current, archived, pending records and overhead. Warning and enforcement share the
+measurement path. Capacity reads are validated/read-only; no client storage access,
+silent migration/repair on capacity read, or serialization on every UI render.
+Relevant symbols: storage.measureRecordsByteLength / requireSafeEnvelopeSize,
+coordinator.getLibraryCapacity, and sidepanel.js::renderReportCapacityWarning.
+
+When a sixth recent report is finalized, the oldest finalized recent record can
+move to archive if room exists. No automatic deletion/pruning. Restore requires
+available recent slots; it does not automatically evict a different recent report.
+
+Capacity warning beside View archived reports, before starting:
+- <=3 total slots remaining: existing red slot warning, singular/plural preserved.
+- >=80% and <90% byte usage: yellow storage warning.
+- >=90% and <100%: red storage warning.
+- Both conditions: combined red slot/storage bubble.
+- Zero slots or reached byte ceiling: "Report library full - delete an archived report"
+  (display typography may use an em dash).
+- Decisions use unrounded ratio; displayed percent floors so it cannot show 100%
+  before the actual ceiling. Missing/invalid/failed capacity is not zero usage.
+- Stale async responses cannot overwrite newer state; refresh through library flows.
+- No new Start-blocking rule from this advisory bubble. Even below 80%, one large
+  report could exceed remaining bytes; the warning is not a next-report guarantee.
+- Tooltip explains downloading wanted reports then deleting unneeded ones;
+  archiving alone does not free bytes or total slots.
+
+Management:
+- Recent report menu: Download PDF, Rename, Archive, Delete.
+- Recent Delete uses the same explicit permanent-delete confirmation as archives;
+  it does not require archiving first. Cancel preserves the record.
+- Archived reports support restore, selection/bulk actions, and permanent deletion.
+- Default report name uses tracking START time. Preserve edited names and tier.
+- No silent data deletion to make space. Library management is hidden while tracking.
+
+Three correction workflows, NOT interchangeable:
+1. Finish unresolved payments
+   - Newest eligible finalized report, no active session, compatible baseline and
+     latest canonical stream. Completion requires seller-verified final price.
+   - Saves canonical payment/inventory change first, then regenerates the report.
+2. Correct Item Mapping
+   - Report-only, completed/canceled saved variations under existing eligibility
+   rules (no active stream, no active-bidding marker at End, and no blocking
+   unresolved/pending conditions).
+   - Changes selected report/export only; canceled mappings remain reference-only.
+3. Correct SKU Unit Cost
+   - Any eligible finalized current/archived report, including unsold SKUs and zero.
+   - Changes that report's costs, metrics, profit and inventory export only.
+   - NOT canonical inventory, other reports, or future streams. "Permanent" means
+     persistent within that report until deliberately corrected again.
+
+Saved-cost preservation FIX ALREADY IMPLEMENTED:
+Previously, completing/canceling an unfinished payment rebuilt from canonical
+inventory and could erase saved report-only cost corrections.
+shared/stream-report-coordinator.js::replaceFinalizedReport now:
+- Reads latest existing report inside the serialized operation.
+- Rebuilds status/revenue/quantities by the existing canonical process.
+- Requires exact matching SKU sets, preserving each saved report unit cost.
+- Uses existing correctReportUnitCost for DIFFERENT costs only, including zero and
+  unsold SKUs. Applies decreases before increases to avoid intermediate overflow.
+- Rehydrates/validates the finished result and verifies costs/identity/baseline.
+- Preserves report name/archive wrapper/start/end identity; updates generatedAt
+  according to existing report-regeneration behavior.
+- Saves once at the end. Failed transforms/validation/writes retain prior report.
+
+Both direct payment resolution and getReportWithPaymentRepair use that shared path.
+If canonical resolution succeeds but the second report save fails, a later eligible
+report read requires a nonzero saved paymentFixingCount that differs from the current
+canonical unresolved count, then rebuilds while preserving corrected costs.
+This is deliberate recovery, not a transaction across both storage keys. Reimport,
+newer stream, incompatible baseline, or pending conditions can disable correction.
+Do not bypass those guards or propagate report-only costs globally.
+
+12. PDF, CSV, AND REPORT EXPORTS
+------------------------------
+Direct PDFs are generated locally, including full report tables and variation rows.
+No CDN/runtime network PDF service or upload of reports. Browser Print / Save as PDF
+remains separate; expanding Show details affects that browser-print path.
+
+Bundled runtime dependencies (retain exact files and licenses):
+- jsPDF 4.2.1, MIT.
+- jsPDF-AutoTable 5.0.8, MIT.
+- DejaVu Sans normal/bold 2.37 and associated font license.
+See extension/vendor/README.md for sources and checksums. Do not delete apparently
+unused fonts: font paths are partly constructed at runtime.
+
+Bulk archive export produces separate PDFs, not a ZIP. Selection is snapshotted,
+sanitized filename collisions are checked case-insensitively before downloading,
+and completion/failure/progress are handled. Keep panel open until finished; it is
+not a resumable service-worker export job. Do not overwrite existing downloads.
+Unsupported glyphs may require browser printing rather than silently corrupting text.
+
+Copy Updated Inventory and Download Updated Inventory CSV hand off the full six
+columns; they are not a full restorable backup of editable tracker state.
+No full-data backup/restore feature exists.
+
+13. EXTENSION IDENTITY, AUTHORIZATION, AND PRIVATE DISTRIBUTION
+------------------------------------------------------------
+Current manifest: MV3, version 1.0.0, minimum Chrome 114.
+Permanent extension ID: lmkljkejmicknleeldfgekbbgpnegcmo
+Permissions: storage, unlimitedStorage, sidePanel, identity, downloads.
+Host permission: https://sheets.googleapis.com/*
+OAuth scope: https://www.googleapis.com/auth/spreadsheets.readonly
+The manifest holds the existing public key and configured OAuth client ID. Preserve
+them verbatim. They are public configuration, NOT a private signing key or token.
+
+The repo describes a Google OAuth External/Testing setup with API enabled and
+authorized test users who also have Sheet access. Reauthorization may be needed.
+If changing/troubleshooting Google policy or configuration, verify current official
+requirements; this file does not certify the live Cloud Console settings.
+Never add private PEMs, downloaded credentials, tokens, or seller data to the repo.
+
+Recipients need only extension/, not Node or the complete repository. Justin handles
+first installation. Updates use the same installed folder path and extension ID:
+- Finish active tracking before updating.
+- Obtain the ZIP from Justin, extract it, replace the existing extension code contents.
+- Avoid accidental extension/extension nesting.
+- Reload the existing extension, then refresh the TikTok dashboard to inject current
+  content scripts. Do not uninstall/reinstall as an update method.
+Ordinary same-identity/profile replacement/reload preserves saved local data.
+The manifest's unlimitedStorage permission does not remove application report caps.
+
+14. DEVELOPMENT COMMANDS, MAC/WINDOWS, AND ZIP PACKAGING
+------------------------------------------------------
+Use Node >=22.2.0 (current verified Windows run: Node 24.19.0).
+There is no frontend build step. The shipped folder is the working extension/ tree.
+
+Windows PowerShell, from repository root:
+  npm.cmd ci
+  node --test
+  npm.cmd run package
+
+macOS terminal, from repository root:
+  npm ci
+  node --test
+  npm run package
+
+npm.cmd avoids PowerShell's blocked npm.ps1 wrapper without changing execution
+policy. Do not tell the user to disable system script security just to run npm.
+npm ci installs the exact lockfile dependency tree and recreates node_modules.
+Use after cloning, missing dependencies, or lockfile changes; it is not required
+before every ZIP. Running it again is allowed but usually unnecessary for packaging.
+
+Package script and dependency:
+- npm run package -> node scripts/package-extension.cjs
+- Only npm development dependency: fflate 0.8.3, exact-pinned with package-lock.json.
+- It is not shipped in extension/. Vendor PDF dependencies are separately bundled.
+
+Release behavior:
+- Read version from extension/manifest.json; do not auto-change it.
+- Run complete node --test and stop on failure.
+- Validate manifest, local runtime resource references, portable paths and secrets.
+- Include all current working-tree extension files recursively, including uncommitted
+  edits, fonts/licenses and future runtime files. No minification or byte rewriting.
+- Exclude OS junk (.DS_Store, AppleDouble ._*, Thumbs.db, Desktop.ini, __MACOSX).
+- Reject symlinks, unsafe/nonportable paths, credential/private-key content, and
+  development/build directories under extension rather than following/packaging them.
+- Snapshot sources and detect changes during test/build/verification; fail safely.
+- Verify ZIP entries, metadata/CRC, duplicate/path safety and extracted exact bytes.
+- Use a temporary archive and publish with atomic no-overwrite behavior on a local
+  filesystem supporting hard links. Only invocation-owned temporary artifacts are
+  cleaned on failure; existing release archives are never deleted by the script.
+- Final output: dist/TikTok-Live-Tracker-<manifest version>.zip
+- ZIP root stays extension/ with extension/manifest.json directly beneath it.
+- Same-version output existing is an intentional error. Ask the user to deliberately
+  move/remove it or choose a new release version; do not silently overwrite it.
+- Print path, version, file count and ZIP byte size. dist/ and *.zip remain ignored.
+- Does not install, auto-update, create CRX/private keys, publish to Chrome Web Store,
+  transfer reports, or access Chrome profiles.
+
+Cross-platform notes:
+- .gitattributes: * text=auto eol=lf. Preserve this and avoid newline-only churn.
+- .gitignore includes .DS_Store, ._*, __MACOSX/, dependencies, releases, scratch/,
+  tmp/, and credential patterns. Ignore rules do not untrack existing tracked files.
+- Mac temp paths may resolve /var/... to /private/var/.... Packaging tests already
+  canonicalize fixture paths; do not regress to comparing unresolved temp strings.
+- Shell commands should be portable Node or appropriate native shell syntax.
+- Before switching computers: review, commit intended changes, push; on the other
+  computer use git pull --ff-only from a suitable clean/safely preserved worktree.
+- --ff-only refuses divergent history instead of creating an accidental merge.
+  Do not reset/restore valuable work to bypass that safeguard.
+- Source sync is independent of extension data/installation location on each machine.
+
+15. TESTS AND VERIFICATION STRATEGY
+---------------------------------
+Baseline full command: node --test
+Fresh run during handoff preparation: 1,402 tests passed, 0 failed, on Windows.
+Previous focused packaging group: 52/52. Current locator group after alias: 36/36.
+Counts are snapshot facts, not fixed requirements for future edits.
+
+Useful targeted groups:
+- Payment capture: sale-candidate-locator, sale-parser, capture-content,
+  capture-client, capture-protocol, capture-integration, service-worker tests.
+- Canonical safety: reconciliation, reconciliation-storage/coordinator,
+  active-stream-integration, inventory-baseline-integration tests.
+- Health/UI lock: capture-health, capture-health-reporter/view/tint,
+  capture-health-badge-visibility, capture-interaction-lock tests.
+- Mapping/reservations/queue: mapping-workflow, live-inventory-tracking,
+  next-item-queue-state, live-bid-state, variation-selector-lock tests.
+- Sheets: inventory-sheet-import, inventory-import-protocol/client/controller,
+  google-sheets-inventory-import and google-sheets-inventory-e2e tests.
+- Reports: stream-report, stream-report-storage/coordinator/protocol,
+  stream-report-archive-acceptance, stream-report-page tests.
+- Cost fix: report-cost-preservation, report-only-unit-cost, report-only-mapping,
+  and service-worker tests. Cover the worker/shared rebuilding path, not just helpers.
+- Capacity: report-capacity-warning, stream-report-capacity-client tests.
+- Recent deletion/End: recent-report-delete-ui, end-stream-report-required-ui tests.
+- Exports: report-pdf, report-downloads, report-download-ui tests.
+- Packaging: package-extension and package-validation tests. Their fixtures avoid
+  recursively launching the real package command/full suite inside itself.
+- Compact UI: inventory-header-ui, inventory-import-heading, active-session-ui,
+  report-records-heading, button-label-typography, extension-sidepanel/icons tests.
+All names above are under tests/ with .test.cjs suffix.
+
+Example isolated target:
+  node --test tests/sale-candidate-locator.test.cjs
+
+Full suites are synthetic/offline; passing does not prove current TikTok DOM matches
+or real Chrome OAuth/download/focus behavior. Use fake timers and isolated synthetic
+browser pages for UI checks; do not seed real extension/profile storage for QA.
+
+Optional scripts/verify-report-pdfs.mjs uses synthetic fixtures and a separately
+installed temporary MuPDF QA dependency under tmp/pdf-qa. It is not a normal runtime
+dependency or part of the shipped extension. Inspect the script before running: it
+writes known synthetic PDF/PNG/text outputs under tmp/pdfs; do not overwrite wanted
+QA artifacts without considering ownership.
+
+Windows execution was freshly verified. The user previously reported Mac testing/
+packaging working after the realpath fix; the preparing assistant did NOT execute
+macOS tests itself. No fresh live dashboard/Chrome UI verification occurred for this
+handoff. Do not claim either platform's browser behavior is fully verified by Node.
+
+16. KNOWN ISSUES, LIMITATIONS, AND UNAPPROVED FUTURE WORK
+------------------------------------------------------
+A. End retry-success UI gap - still present, source-confirmed.
+   Normal successful End in sidepanel.js announces saved success and calls
+   refreshStreamReports({openLatest:true}). The Retry change button's click handler calls
+   streamSessionController.retry(), then focuses Start/Resume, but omits the normal
+   successful-End report-list refresh/open behavior. The prior audit reproduced a
+   saved report not appearing/opening until panel reload after End failed then retry
+   succeeded. No data loss was observed in that synthetic case.
+   Potential scoped future fix: reuse normal End-success UI behavior specifically
+   when a successful retry is for operation "end". Add success-after-retry tests;
+   do not trigger this for every Start/Resume retry. NOT implemented/authorized by
+   the handoff request.
+
+B. Startup-only red health badge - reported, cause unconfirmed, user accepted it.
+   User saw red at the beginning with one auction; another auction was followed by
+   green. Possible retained probe fault needs evidence, not an assumed diagnosis.
+   User chose to leave this alone because tracking still worked. Red auto-hide is
+   presentation only and did not fix/alter the detection mechanism.
+
+C. Canceled orders needing manual resolution - unresolved incident, section 6.
+   Screenshots have supported "Canceled" spelling. No affected row HTML, capture
+   log, or saved report was inspected. Mapping absence was ruled out synthetically;
+   row association/delivery timing/old code remain hypotheses. Do not claim the new
+   "Cancelled" alias fixed that incident or add a five-minute auto-cancel shortcut.
+
+D. Startup dependency hardening - code-order risk, not a verified production outage.
+   sidepanel.js constructs capture-health controllers before its friendly dependency
+   guard; a missing/incomplete health module could throw before recovery instructions.
+   content.js also invokes initial lifecycle reconciliation before reporter setup.
+   If explicitly fixing, preserve guarded initialization and test missing modules;
+   do not conflate this with known live payment behavior.
+
+E. Full report library during active tracking - existing product limitation.
+   End cannot discard or overwrite reports. Library management is hidden while
+   tracking, so Retry alone cannot solve a full byte/slot library. User was advised
+   to free space before starting and keep an eye on warnings. They did not request
+   a new active-stream library manager or lower global count limit. Keep current
+   5+25 and byte limits. A large single report is possible; do not promise 20% headroom
+   always suffices just because unusually large reports may be uncommon.
+
+F. Rendered-DOM capture limitations.
+   No verified TikTok room identity or authoritative reconciliation with all orders.
+   Missing/virtualized historical rows and website DOM changes may limit capture.
+   Health and Attributed GMV are not guarantees of complete order history.
+   There is no production refund/chargeback/post-completion cancellation workflow.
+
+G. Not implemented: application backend, cross-device saved-data sync, automatic
+   Google Sheets write-back, full editable-state backup/restore, multi-SKU queue,
+   automatic extension installation/update, Store publishing, or CRX/key generation.
+
+H. Remaining live/manual QA when relevant to a future change:
+   actual dashboard label/DOM lifecycle, source refresh/reinjection, browser OAuth,
+   Chrome downloads, normal/narrow layouts, popovers/focus/keyboard scrolling,
+   reduced-motion on Mac, and End confirmation under loading/save/error conditions.
+
+None of these notes authorizes changes. Ask for the next requested task and keep
+the distinction between accepted limitation, confirmed code gap, and hypothesis.
+
+17. RECENT HISTORY AND CLEANUP RECORD
+-----------------------------------
+Recent commits at preparation, newest first:
+  93560c7  Clean up unused placeholders and support Cancelled payment badges
+  000108a  Remove end-without-report flow and expand Keep stream active button
+  2ffc66a  Update tracker UI, report management, and cost preservation
+  78bb61a  Fix macOS temporary paths in packaging tests
+  e122a19  Add report storage warnings and release ZIP packaging; update docs
+Use git show/log for actual diff boundaries rather than assuming a feature's exact
+first-introduction commit from this short summary.
+
+Conservative cleanup already completed and committed:
+- Deleted only empty unreferenced .gitkeep files from extension/capture,
+  extension/shared, extension/tagger, backend/logic, backend/report, backend/sheets.
+- Added .DS_Store, ._*, __MACOSX/ to .gitignore.
+- Corrected docs/capture-development.md to say explicit active-stream SKU additions
+  also read Sheets, with no automatic synchronization.
+- Preserved actual runtime resources, manifests, .gitattributes, dependencies,
+  development configuration and all QA data.
+- Before/after cleanup tests: 1,401/1,401. The added alias regression brought 1,402.
+- Cleanup verified 71 remaining extension files byte-for-byte unchanged and an
+  in-memory ZIP without writing/deleting a release. The subsequent alias deliberately
+  changed one runtime allowlist entry plus its tests.
+
+Optional local QA artifacts were inventoried by metadata only and left untouched:
+  scratch/                      Screenshots, about 1.4 MiB at that audit.
+  tmp/capacity-warning/          QA files/dependencies, about 18.7 MiB.
+  tmp/pdf-qa/                    PDF QA dependencies, about 13.7 MiB.
+  tmp/pdfs/                      Synthetic outputs, about 1.8 MiB.
+  tmp/pdf-dependencies/          QA dependencies, about 21.6 MiB.
+  tmp/pdf-metadata-cache/        QA cache, about 4.6 MiB.
+  tmp/npm-cache/                 QA package cache, about 8.5 MiB.
+These sizes may change; none of these paths ships in the extension ZIP. Do not
+delete them automatically or treat them as production dependency requirements.
+
+18. SENSIBLE FIRST STEPS AFTER RECEIVING THIS HANDOFF
+--------------------------------------------------
+1. Read current user request, this file, README, and any applicable instructions.
+2. Check git status and current commit; identify uncommitted user work.
+3. Inspect the affected current modules/tests, not only old line numbers or chat claims.
+4. For a change, reproduce with synthetic fixtures, make the smallest scoped patch,
+   and run the focused group plus full node --test.
+5. Review the diff for accidental schema, identity, permission, formatting, or
+   unrelated UI changes. Validate packaging resources when relevant.
+6. Report exactly what changed, test evidence, and unverified browser/live checks.
+7. Do not commit/push/package a release or mutate real data unless requested.
+
+The immediate task that produced this file was documentation handoff only.
+There is no approved pending functional change to start automatically.
