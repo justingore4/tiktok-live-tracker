@@ -1150,5 +1150,6 @@ outbound Sheets writes remain intentionally absent.
   data, captured sale prices and status aggregates, and profit, but no buyer, Sheet ID/link, token, or raw DOM text.
 - Capture stores no buyer identity and contacts neither TikTok APIs nor Google Sheets.
   Its only analytics-derived value is the sanitized Attributed GMV display.
-  The separate worker-owned importer contacts the Sheets API only before a stream is
-  started or after it has ended.
+  The separate worker-owned importer reads the Sheets API for pre-stream imports and
+  explicit **Add new SKUs from updated Sheet → Check and add** actions during active
+  tracking; it does not automatically sync with Google Sheets.

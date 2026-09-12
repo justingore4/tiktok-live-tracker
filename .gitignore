@@ -34,6 +34,9 @@ build/
 .idea/
 Thumbs.db
 Desktop.ini
+.DS_Store
+._*
+__MACOSX/
 *.swp
 
 # Logs & local scratch

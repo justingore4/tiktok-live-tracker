@@ -316,6 +316,8 @@ test("classifies exact row-local payment tags without exposing their text", () =
   const cases = [
     ["  Payment\n complete ", "payment_complete", 4800],
     ["Canceled", "canceled", null],
+    ["Cancelled", "canceled", null],
+    ["  CANCELLED\n ", "canceled", null],
     ["PAYMENT FAILED", "payment_failed", null],
     ["Payment fixing", "payment_fixing", null],
     ["payment processing", "payment_processing", null],
@@ -329,7 +331,10 @@ test("classifies exact row-local payment tags without exposing their text", () =
     ["Order processing... failed", "unrecognized", null],
     ["Preorder processing...", "unrecognized", null],
     ["Payment processing failed", "unrecognized", null],
-    ["Cancelled", "unrecognized", null],
+    ["Cancelled order", "unrecognized", null],
+    ["Cancelled...", "unrecognized", null],
+    ["Cancelled\u2026", "unrecognized", null],
+    ["Not cancelled", "unrecognized", null],
     ["Canceled order", "unrecognized", null],
     ["Payment complete now", "unrecognized", null],
     ["toString", "unrecognized", null],
@@ -403,6 +408,36 @@ test("classifies a screenshot-shaped Canceled m4b tag despite its Payment failed
       { variationNumber: 43, observedPaymentStatus: "canceled" },
     ],
   );
+});
+
+test("recognizes a Cancelled badge beside Payment failed detail without relaxing tag safeguards", () => {
+  const canceledRow = createStatusRow({
+    variationNumber: 43,
+    badgeText: "Cancelled",
+    nestedBadgeText: true,
+  });
+  const detail = element({
+    name: "payment-failure-detail",
+    ownText: "Payment failed",
+  });
+  canceledRow.row.append(detail);
+  const boundary = element({ name: "boundary" }).append(canceledRow.row);
+
+  assert.deepEqual(
+    locatePaymentStatuses(boundary, parser).map((status) => ({
+      variationNumber: status.variationNumber,
+      observedPaymentStatus: status.observedPaymentStatus,
+      soldPriceCents: status.soldPriceCents,
+    })),
+    [{
+      variationNumber: 43,
+      observedPaymentStatus: "canceled",
+      soldPriceCents: null,
+    }],
+  );
+
+  detail.dataTid = "m4b_tag";
+  assert.deepEqual(locatePaymentStatuses(boundary, parser), []);
 });
 
 test("fails closed when a candidate contains multiple labels or sibling tags", () => {
