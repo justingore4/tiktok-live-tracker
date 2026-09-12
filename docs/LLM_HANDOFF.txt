@@ -285,6 +285,8 @@ Accepted whole badge text, ignoring capitalization and normalized whitespace:
   Cancelled                                -> canceled
   Payment failed                           -> payment_failed
   Payment fixing                           -> payment_fixing
+  Payment fixing...                        -> payment_fixing
+  Payment fixing…                          -> payment_fixing
   Payment processing                       -> payment_processing
   Payment processing...                    -> payment_processing
   Payment processing…                      -> payment_processing
@@ -301,6 +303,8 @@ unrecognized; empty badges are skipped. not_observed is a default, not badge tex
 The Cancelled alias was added in commit 93560c7. It changes only the allowlist:
 stored canonical spelling remains canceled. It does not loosen row association,
 change payment priority, alter timeouts, or repair existing reports retroactively.
+Follow-up after the baseline on September 12: Payment fixing also accepts three
+periods or U+2026, still mapping to payment_fixing with unchanged matching safeguards.
 
 Recent user screenshots establish these VISIBLE labels:
 - Temporary failure: yellow "Payment failed" plus "Transaction will cancel in 04:42".
