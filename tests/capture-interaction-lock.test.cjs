@@ -99,8 +99,9 @@ function fixture() {
   const released = [];
   const context = {
     trackerWorkspace, captureHealthBadge, captureHealthDescription, captureHealthView: healthView,
-    // The separate fake-clock badge-visibility suite covers the display timer.
-    captureHealthBadgeVisibilityController: { update() {} },
+    // The dedicated variation-number search suite exercises its disabled state.
+    updateVariationSearchAvailability() {},
+    updateQueuedItemBadgeAvailability() {},
     variationListbox, inventorySizeListbox, searchInput,
     activeStreamInventorySheetReference,
     retrySavedSessionButton: node(), retryStreamSessionButton: node(),
@@ -134,14 +135,14 @@ function fixture() {
   assert.ok(callback, "The real health subscription must apply the lock after rendering the validated badge");
   const onHealthChange = vm.runInContext(`(${callback[1]})`, context);
   function health(phase) {
-    onHealthChange({ phase, reason: "backlog" });
+    onHealthChange({ phase, reason: "initializing" });
   }
   return { context, health, released, row, sections: [variationSection, inventorySection, metricsSection] };
 }
 
 test("capture-loading locks every content section for blue/yellow without disabling the health badge", () => {
   const f = fixture();
-  for (const phase of ["connecting", "loading", "connecting", "loading", "active", "loading", "unavailable"]) {
+  for (const phase of ["connecting", "loading", "connecting", "loading", "active", "loading", "blank"]) {
     f.health(phase);
     const locked = phase === "connecting" || phase === "loading";
     assert.equal(f.context.isCaptureInteractionLocked(), locked);
@@ -157,7 +158,7 @@ test("capture-loading locks every content section for blue/yellow without disabl
     assert.equal(f.context.trackerWorkspace.scrollTop, 80);
   }
   f.health("invalid phase");
-  assert.equal(f.context.captureHealthBadge.dataset.phase, "unavailable");
+  assert.equal(f.context.captureHealthBadge.dataset.phase, "blank");
   assert.equal(f.context.isCaptureInteractionLocked(), false, "Uses the badge's validated fallback");
 });
 
@@ -175,8 +176,8 @@ test("busy/ready refreshes and picker exemptions cannot unlock Connecting or Loa
   }
 });
 
-test("green/red release capture-only inertness without overriding save/error/end safeguards", () => {
-  for (const phase of ["active", "unavailable"]) {
+test("green/blank release capture-only inertness without overriding save/error/end safeguards", () => {
+  for (const phase of ["active", "blank"]) {
     for (const safeguard of ["save", "error", "end", "session"]) {
       const f = fixture();
       f.health("loading");
@@ -231,7 +232,7 @@ test("resuming the same tracker reapplies its last published health lock when th
 });
 
 test("in-flight SKU refresh exemptions cannot lift capture lock and unlocking preserves individual disabled controls", () => {
-  for (const phase of ["active", "unavailable"]) {
+  for (const phase of ["active", "blank"]) {
     const f = fixture();
     f.context.activeStreamInventoryUpdateBusy = true;
     f.context.savedSnapshot = { phase: "loading", operation: "refresh", busy: true };
@@ -414,8 +415,8 @@ test("search, expansion, return-to-live and SKU form event handlers reject stale
   assert.equal(f.context.activeStreamInventorySheetReference.value, "keep my draft Sheet link");
 });
 
-test("search keyboard editing becomes available again in green/red, without clearing it during blue/yellow", async () => {
-  for (const phase of ["connecting", "loading", "active", "unavailable"]) {
+test("search keyboard editing becomes available again in green/blank, without clearing it during blue/yellow", async () => {
+  for (const phase of ["connecting", "loading", "active", "blank"]) {
     const f = fixture();
     let renders = 0;
     f.context.renderAll = () => { renders++; };
@@ -437,6 +438,7 @@ test("an already-started queue delivery completes and refreshes normally after c
   let requests = 0, renders = 0, refreshes = 0;
   Object.assign(f.context, {
     nextItemQueueMutationBusy: false, mountedStreamId: "synthetic-stream", nextItemQueueMutationGeneration: 0,
+    nextItemQueueRefreshGeneration: 0, queuedNextItemToken: null,
     nextItemQueueClient: { toggleQueue() { requests++; return reply; } },
     getActiveView: () => view, renderInventory() { renders++; }, getFocusedInventorySku: () => null,
     mappingAnnouncement: {}, formatItemName: () => "Synthetic item", scheduleNextItemQueueRefresh() { refreshes++; },

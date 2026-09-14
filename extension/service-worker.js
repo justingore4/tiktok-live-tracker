@@ -226,6 +226,8 @@ const captureHealthStore = captureHealth?.createCaptureHealthStore({
 function invalidateCaptureHealthTab(tabId, closed = false, documentChanged = false) {
   if (!captureHealthStore) return;
   const execution = messageTail.then(() => {
+    // Retire document authority without clearing its completed startup latch.
+    // A newly observed owner document, rather than a tab event, starts a load.
     captureHealthStore.invalidateTab(tabId, { closed, documentChanged });
   });
   messageTail = execution.catch(() => undefined);
@@ -1505,7 +1507,7 @@ function handleCaptureHealthMessage(message, sender, sendResponse) {
           "HEALTH_UNAVAILABLE", "Capture health is unavailable until storage access is restored.",
         );
       }
-      // This uses only the session coordinator's read command; it does not pin,
+      // Startup readiness uses only the session coordinator's read command; it does not pin,
       // repair, migrate, or update reports, inventory, or capture accounting.
       const { state } = await getStreamSessionResponse();
       requireCurrentHealthRequest();

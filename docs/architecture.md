@@ -70,8 +70,8 @@ canonical sale truth:
 | `not_observed` | No row-local payment badge has been captured yet |
 | `payment_processing` | TikTok shows `Payment processing` |
 | `payment_fixing` | TikTok shows `Payment fixing` |
-| `payment_failed` | TikTok shows `Payment failed` during its correction buffer |
-| `canceled` | TikTok shows `Canceled` after the correction window expires |
+| `payment_failed` | Legacy unresolved saved status, or a fresh failure badge explicitly accompanied by a cancellation countdown |
+| `canceled` | Fresh terminal `Payment failed`, `Canceled`, or `Cancelled` |
 | `payment_complete` | TikTok shows `Payment complete` |
 | `unrecognized` | A nonempty tag was present but was not allowlisted; raw text is discarded |
 
@@ -81,7 +81,8 @@ fixing, failed, and unrecognized remain nonterminal observations under canonical
 the bidding/not-yet-observed state, processing, fixing, temporary failure, an
 unrecognized badge, and a price-less completion observation. The reservation resolves
 only at canonical priced completion or exact cancellation.
-Exact `Canceled` promotes the record to canonical `canceled`, preserves its item link for
+Fresh terminal `Payment failed`, `Canceled`, or `Cancelled` promotes it to canonical
+`canceled`, preserves its item link for
 history, and releases its reservation without counting a sale, revenue, cost, or profit.
 Only a `Payment complete` badge with a parsed final price promotes the record to canonical
 `payment_complete` and makes it eligible to drive Gross Item Sales, inventory, and profit.
@@ -116,7 +117,7 @@ Consequences:
 1. Mapping during bidding immediately reserves one unit. The reservation survives
    processing, fixing, temporary failure, unrecognized, not-yet-observed, and
    unpriced-complete observations until canonical payment truth resolves.
-2. Exact `Canceled` releases that reservation automatically while retaining the SKU as
+2. A captured terminal cancellation releases that reservation while retaining the SKU as
    historical attribution. The cancellation itself never contributes a sale or money.
 3. A green-but-unmapped auction still contributes to Gross Item Sales and must be shown as
    an exception until an employee maps it.
@@ -136,8 +137,8 @@ Consequences:
 
 ### Permanent payment failure and re-auction
 
-When TikTok changes the exact row-local badge to `Canceled` after the buyer's payment
-buffer expires:
+When TikTok displays an exact row-local terminal `Payment failed`, `Canceled`, or
+`Cancelled` badge:
 
 1. The record becomes canonically `canceled` without employee action.
 2. Any selected SKU remains linked for history, while its pending reservation is
@@ -148,7 +149,17 @@ buffer expires:
 4. The employee maps that new variation as a separate auction.
 
 The Live tagger does not infer cancellation with a timer and exposes no **Mark unpaid** or
-**Undo unpaid** action. It waits for TikTok's exact `Canceled` badge.
+**Undo unpaid** action. It waits for a valid terminal `Payment failed`, `Canceled`, or
+`Cancelled` badge. Processing, including both ellipsis aliases, remains unresolved.
+
+The updated failure wording is translated only at the capture boundary. Existing
+internal `payment_failed` records and historical reports are not migrated or reclassified.
+A fresh `Payment failed` explicitly accompanied by visible same-order
+`Transaction will cancel in MM:SS` detail retains legacy `payment_failed` instead.
+Recognized truncated countdown text can use its full exact `title`; even `00:00` remains
+a veto until the indicator disappears, not a timer-driven cancellation. The Sold Items
+observer schedules relevant countdown detail changes through the existing rescan timing.
+Ambiguous row/tag associations stay rejected, and completed sales cannot be reversed.
 
 ## 3. Reconciliation engine — implemented
 
@@ -178,7 +189,7 @@ Implemented behavior includes:
 - Persisting processing, fixing, failed, and unrecognized as nonterminal observed statuses
   without changing money; a mapped canonical-unknown auction stays reserved regardless
   of which of those observations is latest.
-- Promoting exact `Canceled` to a canonical terminal allocation result that preserves the
+- Promoting captured terminal cancellation to an allocation result that preserves the
   mapping, releases its reservation, and contributes no sale or money.
 - Treating exact cancellation and priced completion as mutually exclusive terminal
   results; stale contradictory observations are ignored.
@@ -257,12 +268,12 @@ Inventory accounting follows the selected stream's pinned baseline:
   in the requested stream, whether mapped or unmapped.
 - `canceledOrderCount` counts each unique requested-stream variation only when its latest
   canonical outcome is exact terminal `canceled`. Active bidding and `not_observed`,
-  `payment_processing`, `payment_fixing`, temporary `payment_failed`,
+  `payment_processing`, `payment_fixing`, legacy `payment_failed`,
   `payment_complete`, and `unrecognized` observations are excluded. Inventory mapping
   does not affect this count.
 - `paymentFixingCount` counts each unique requested-stream variation whose canonical
   payment status is still `unknown` and whose latest observed status is either
-  `payment_fixing` or temporary `payment_failed` during TikTok's correction buffer.
+  `payment_fixing` or legacy unresolved `payment_failed`.
   `payment_processing`, active bidding/`not_observed`, `unrecognized`, completed, and
   canceled variations are excluded. A priced completion or exact cancellation removes
   the variation from this count automatically. Inventory mapping does not affect it.
@@ -464,13 +475,13 @@ and automatic page-to-session association remain later identity work.
 | One canonical `Bids: $...` value appears in that same uniquely identified card | Replace the single stream-scoped transient bid and targeted-update the live panel | Implemented; sends integer cents paired with the variation; never becomes final price or report data |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
 | Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
-| Exact failed or unrecognized payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
-| Exact `Canceled` badge appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
+| Legacy failed badge with an explicit countdown, or an unrecognized badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
+| Exact terminal `Payment failed`, `Canceled`, or `Cancelled` appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
 | Exact `Attributed GMV` metric appears under the unique analytics boundary | Persist only its sanitized exact/compact USD display under the worker-resolved active stream | Implemented; independent of Sold Items and no aggregate-to-cents conversion |
 | A bidding-identity, Sold Items, or payment update is persisted | Invalidate and refetch the open tagger's canonical view; follow a changed active bidding marker only when the employee was already viewing the current auction, while retaining a historical selection as options update | Implemented; bidding identity is not sale truth |
 | A validated live bid changes | Send a separate data-free notice, read the single transient record, and update only the live panel | Implemented; no reconciliation/report write or full inventory rerender |
-| Exact `Payment failed` changes to `Canceled` or `Payment complete` | Persist and display each distinct state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
+| Processing changes to terminal `Payment failed` or priced `Payment complete` | Persist and display the final state live | Implemented; cancellation releases allocation, while priced completion commits when mapped |
 | Any payment observation follows canonical `Canceled` | Ignore the stale contradiction | Implemented; cancellation is terminal |
 | A fixing/processing badge appears | Display and persist the observation | Implemented; transition order and business meaning still require live validation |
 
@@ -595,8 +606,9 @@ full-table clipboard copy for pasting at A1. There is no handoff-instructions to
 instruction block in the report or its printed output; the README documents the backup
 and full-table replacement workflow. The three screen-only correction sections have
 different authority boundaries.
-**Finish unresolved payments** exposes only canonical-unresolved `payment_fixing` or
-temporary `payment_failed` orders. Cancellation needs no price and releases the
+**Finish unresolved payments** exposes canonical-unresolved `payment_processing`,
+`order_processing`, `payment_fixing`, or legacy `payment_failed` orders. Newly captured
+terminal failures are canceled and excluded. Cancellation needs no price and releases the
 reservation; completion requires a seller-verified positive final price and commits the
 mapped unit. This canonical payment correction remains limited to the newest eligible
 report while no tracker stream is active and its baseline/stream are still current.
@@ -786,10 +798,10 @@ Shared tagger behavior includes:
   or unrecognized observations are excluded. One compact order-status card renders
   `totals.canceledOrderCount` beside **Canceled Orders:** and
   `totals.paymentFixingCount` beside **Payment Errors:**. The canceled count includes a
-  unique current-stream variation only after exact terminal `Canceled`; active bidding,
+  unique current-stream variation only after captured terminal cancellation; active bidding,
   `not_observed`, processing, fixing, temporary failed, completed, and unrecognized
   variations are excluded. The payment-error count includes canonical-unresolved
-  variations whose latest observation is `payment_fixing` or temporary `payment_failed`;
+  variations whose latest observation is `payment_fixing` or legacy `payment_failed`;
   processing, bidding/`not_observed`, unrecognized, completed, and canceled variations are
   excluded. Completion or cancellation clears the payment-error count automatically, and
   neither value depends on inventory mapping. A **Gross Profits** card
@@ -882,16 +894,22 @@ variation numbers present when it opened; if one changes before commit, the acti
 rejected and the refreshed card must be reopened. The local ID remains distinct from a
 verified TikTok room ID.
 
-The compact capture-health badge is observational and separate from this durable
-flow. A source-validated in-memory worker store consumes fresh readability samples
-and aggregate pending/in-flight/retry state from all three capture paths. The
-panel polls this health channel independently of reconciliation invalidations.
-Session/document correlation, sequence validation, wall-clock freshness, and
-consecutive-clean-sample recovery prevent stale or isolated heartbeats from
-establishing green status. No health heartbeat writes storage or acknowledges a
-business event. See [capture-health rules](capture-development.md#capture-health-indicator)
-for thresholds and limitations. It does not establish a TikTok room identity or
-guarantee that every sale was rendered and captured.
+The compact capture-health files now implement startup readiness separately from
+durable session/accounting state. A validated version-2 channel reports initial
+core capture loading/ready/blank, scoped to a stream and browser document. Initial
+Sold Items/bidding work must finish, but GMV is optional. Ready latches indefinitely;
+later metric glitches, delivery activity, missing communication, or disconnections
+do not demote green. A new session or actual new dashboard document resets startup.
+
+Content stops health sampling and duplicate pulses after ready; context checks and
+panel reads remain solely for session/document discovery and startup communication.
+Strict sender, context, sequence, and request-age checks remain. No red badge,
+auto-hide timer, all-path health test, or ongoing degradation threshold remains.
+No readiness message writes business data or acknowledges a capture event. See
+[startup-readiness rules](capture-development.md#capture-health-indicator).
+Green means startup completed, not current connection or complete order capture.
+The internal blank startup state displays a neutral, noninteractive **Reload Site**
+disclaimer in the same badge slot; it does not automatically reload the dashboard.
 
 Next tagger work includes:
 
@@ -1241,7 +1259,7 @@ active-stream SKU additions. The local report may serialize a
 six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
 to a later stage.
 
-Exact pre-completion `Canceled` is authoritative for allocation;
+Captured pre-completion terminal cancellation is authoritative for allocation;
 production refunds or post-completion cancellations still require their own future event
 rather than reversing a `payment_complete` record.
 
@@ -1540,12 +1558,13 @@ One live stream established the current product-dashboard route, exact variation
 and unique visible `[data-tid="m4b_space"]` Sold Items boundary. Later streams must still
 answer these questions; offline fixtures alone cannot complete the validation:
 
-- Do `Payment processing` and `Payment fixing`
-  exactly match production text across accounts/locales, and what transitions are valid?
+- Do processing (including ellipses) and terminal `Payment failed` retain the reported
+  meaning and safe row association across accounts? Does a legacy active countdown
+  remain distinguishable without reading unrelated text?
 - Do production transitions preserve the confirmed allocation rule across accounts: a
-  mapped bidding item stays pending through processing, fixing, temporary failed,
-  unrecognized, and price-less completion observations until exact `Canceled` or priced
-  `Payment complete` resolves it?
+  mapped bidding item stays pending through processing, fixing, legacy failed,
+  unrecognized, and price-less completion observations until a captured terminal
+  cancellation or priced `Payment complete` resolves it?
 - Does the observed `m4b_space` Sold Items identity remain unique across different
   accounts, streams, modes, scrolling states, and TikTok deployments?
 - Do the exact visible `auction-pin-card` boundary, direct-own-text `#N` identity, and

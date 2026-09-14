@@ -438,7 +438,10 @@ button {
 }
 
 .capture-health-row {
-  display: flex;
+  display: grid;
+  /* Keep the search column stable without changing intrinsic pill widths. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 112px) minmax(0, 1fr);
+  column-gap: 6px;
   align-items: center;
   justify-content: center;
   height: 20px;
@@ -446,7 +449,52 @@ button {
   margin-bottom: 6px;
 }
 
+.variation-search-form {
+  grid-column: 1;
+  grid-row: 1;
+  width: 64px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  /* Align over the Variation label; give back the inset on narrow panels. */
+  margin-inline-start: min(28px, max(0px, calc(100% - 64px)));
+}
+
+#variation-search-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 18px;
+}
+
+#variation-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+#variation-search-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+#variation-search-input:disabled {
+  opacity: 0.5;
+}
+
+#variation-search-input[aria-invalid="true"] {
+  border-color: var(--amber);
+}
+
 .capture-health-badge {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -479,16 +527,6 @@ button {
   border-color: rgb(244 189 80 / 45%);
   background: rgb(244 189 80 / 12%);
   color: #ffd27c;
-}
-
-.capture-health-badge[data-phase="unavailable"] {
-  border-color: rgb(255 99 118 / 45%);
-  background: rgb(255 99 118 / 12%);
-  color: #ffb2ba;
-}
-
-.capture-health-badge[data-phase="unavailable"][data-auto-hidden="true"] {
-  visibility: hidden;
 }
 
 .capture-health-badge[data-phase="connecting"]::before,
@@ -2110,11 +2148,97 @@ button {
 }
 
 .section-heading.inventory-heading {
+  position: relative;
   align-items: center;
   flex-direction: row;
   flex-wrap: wrap;
   gap: 6px 12px;
   margin-bottom: 8px;
+}
+
+.queued-item-slot {
+  display: flex;
+  flex: 1 1 32px;
+  min-width: 32px;
+  justify-content: center;
+  align-items: center;
+}
+
+.queued-item-badge {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 6px;
+  border: 1px solid #ff737e;
+  border-radius: 999px;
+  background: #ff737e;
+  color: #21070a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.queued-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clear-queued-item {
+  display: inline-flex;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.clear-queued-item:focus-visible {
+  outline: 2px solid #21070a;
+  outline-offset: 1px;
+}
+
+.clear-queued-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.queued-item-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  padding: 5px 8px;
+  border: 1px solid #ff737e;
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.queued-item-badge:hover .queued-item-tooltip,
+.queued-item-badge:focus-within .queued-item-tooltip {
+  display: block;
 }
 
 .inventory-heading-label {

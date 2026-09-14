@@ -71,15 +71,14 @@
   const appHeader = document.querySelector(".app-header");
   const captureHealthBadge = document.querySelector("#capture-health-badge");
   const captureHealthDescription = document.querySelector("#capture-health-description");
+  const variationSearchForm = document.querySelector("#variation-search-form");
+  const variationSearchInput = document.querySelector("#variation-search-input");
   const captureHealthView = globalThis.TikTokLiveTrackerCaptureHealthView;
-  const captureHealthBadgeVisibilityController =
-    captureHealthView.createCaptureHealthBadgeVisibilityController({ badge: captureHealthBadge });
   const captureHealthController = captureHealthView.createCaptureHealthViewController({
     runtime: chrome.runtime,
     protocol: globalThis.TikTokLiveTrackerCaptureHealth,
     onChange: (state) => {
       captureHealthView.renderBadge(captureHealthBadge, captureHealthDescription, state);
-      captureHealthBadgeVisibilityController.update();
       setWorkspaceBusy(savedSnapshot?.busy === true);
     },
   });
@@ -386,6 +385,11 @@
     "#inventory-selection-note",
   );
   const resultCount = document.querySelector("#result-count");
+  const queuedItemSlot = document.querySelector("#queued-item-slot");
+  const queuedItemBadge = document.querySelector("#queued-item-badge");
+  const queuedItemLabel = document.querySelector("#queued-item-label");
+  const queuedItemTooltip = document.querySelector("#queued-item-tooltip");
+  const clearQueuedItemButton = document.querySelector("#clear-queued-item");
   const addActiveStreamSkusButton = document.querySelector(
     "#add-active-stream-skus",
   );
@@ -582,6 +586,7 @@
   let liveBidRefreshScheduled = false;
   let liveBidRefreshInFlight = false;
   let queuedNextItemSku = null;
+  let queuedNextItemToken = null;
   let inventoryListExpanded = false;
   let inventorySizeMenuState = null;
   let deferredInventoryRender = null;
@@ -1026,11 +1031,125 @@
     renderLiveAuction(null);
   }
 
+  function formatQueuedItemBadge(entry) {
+    const name = [entry.item, entry.style]
+      .map((part) => String(part ?? "").trim().replace(/\s+/g, " "))
+      .filter(Boolean)
+      .join(" ");
+    const rawSize = String(entry.size ?? "").trim();
+    const size = /^(os|n\/a)$/i.test(rawSize) ? "" : rawSize;
+    return {
+      label: `${name}${size ? `-${size}` : ""}`,
+      description: `${name}${size ? `, size ${size}` : ""}`,
+    };
+  }
+
+  function canClearQueuedItem() {
+    return (
+      !isCaptureInteractionLocked() &&
+      persistentController !== null &&
+      streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession?.streamId === mountedStreamId &&
+      mountedStreamId !== null &&
+      !streamSnapshot.busy &&
+      !trackerWorkspace.hidden &&
+      !archivedReportsViewOpen &&
+      !trackerWorkspace.hasAttribute("inert") &&
+      savedSnapshot?.phase === "ready" &&
+      !savedSnapshot.busy &&
+      !endConfirmationOpen &&
+      !nextItemQueueMutationBusy &&
+      !queuedItemSlot.hidden &&
+      typeof queuedNextItemToken === "string" && queuedNextItemToken !== "" &&
+      typeof queuedNextItemSku === "string" &&
+      clearQueuedItemButton.dataset.sku === queuedNextItemSku &&
+      clearQueuedItemButton.dataset.queueToken === queuedNextItemToken &&
+      clearQueuedItemButton.dataset.streamId === mountedStreamId
+    );
+  }
+
+  function updateQueuedItemBadgeAvailability() {
+    clearQueuedItemButton.disabled = !canClearQueuedItem();
+  }
+
+  function renderQueuedItemBadge(view = getActiveView()) {
+    const entry = view?.inventory?.find((item) => item.sku === queuedNextItemSku);
+    const visible = Boolean(entry) &&
+      streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession?.streamId === mountedStreamId &&
+      mountedStreamId !== null &&
+      !trackerWorkspace.hidden && !archivedReportsViewOpen;
+    queuedItemSlot.hidden = !visible;
+
+    if (visible) {
+      const display = formatQueuedItemBadge(entry);
+      if (queuedItemLabel.textContent !== display.label) {
+        queuedItemLabel.textContent = display.label;
+      }
+      queuedItemBadge.title = display.description;
+      queuedItemTooltip.textContent = display.description;
+      clearQueuedItemButton.setAttribute("aria-label", `Clear queued item: ${display.description}`);
+      clearQueuedItemButton.dataset.sku = queuedNextItemSku;
+      clearQueuedItemButton.dataset.queueToken = queuedNextItemToken ?? "";
+      clearQueuedItemButton.dataset.streamId = mountedStreamId;
+    } else {
+      clearQueuedItemButton.dataset.sku = "";
+      clearQueuedItemButton.dataset.queueToken = "";
+      clearQueuedItemButton.dataset.streamId = "";
+    }
+    updateQueuedItemBadgeAvailability();
+  }
+
+  async function clearQueuedItem(event) {
+    if (guardCaptureInteraction(event) || !canClearQueuedItem()) return;
+    const expectedStreamId = mountedStreamId;
+    const expectedQueueToken = queuedNextItemToken;
+    const sku = queuedNextItemSku;
+    const mutationGeneration = ++nextItemQueueMutationGeneration;
+    const refreshGeneration = ++nextItemQueueRefreshGeneration;
+    nextItemQueueMutationBusy = true;
+    updateQueuedItemBadgeAvailability();
+
+    try {
+      await nextItemQueueClient.clearQueue({ expectedStreamId, expectedQueueToken, sku });
+      if (mutationGeneration !== nextItemQueueMutationGeneration || expectedStreamId !== mountedStreamId) return;
+
+      // A newer notification/read can already describe a replacement queue.
+      // Never let this older acknowledgement erase that newer display.
+      if (refreshGeneration === nextItemQueueRefreshGeneration &&
+          queuedNextItemToken === expectedQueueToken && queuedNextItemSku === sku) {
+        queuedNextItemSku = null;
+        queuedNextItemToken = null;
+        renderQueuedItemBadge();
+        const view = getActiveView();
+        if (view) renderInventory(view, getFocusedInventorySku());
+      }
+      mappingAnnouncement.textContent =
+        "The queued next item was cleared. Current and historical item mappings were not changed.";
+      scheduleNextItemQueueRefresh();
+    } catch (error) {
+      if (mutationGeneration === nextItemQueueMutationGeneration && expectedStreamId === mountedStreamId) {
+        if (refreshGeneration === nextItemQueueRefreshGeneration) {
+          queuedNextItemToken = null;
+        }
+        mappingAnnouncement.textContent = error?.message ?? "The queued item could not be cleared.";
+        scheduleNextItemQueueRefresh();
+      }
+    } finally {
+      if (mutationGeneration === nextItemQueueMutationGeneration) {
+        nextItemQueueMutationBusy = false;
+        updateQueuedItemBadgeAvailability();
+      }
+    }
+  }
+
   function resetNextItemQueueDisplay() {
     nextItemQueueRefreshGeneration += 1;
     nextItemQueueMutationGeneration += 1;
     nextItemQueueMutationBusy = false;
     queuedNextItemSku = null;
+    queuedNextItemToken = null;
+    renderQueuedItemBadge();
   }
 
   function scheduleNextItemQueueRefresh() {
@@ -1047,7 +1166,7 @@
     const requestStreamId = mountedStreamId;
 
     Promise.resolve()
-      .then(() => nextItemQueueClient.getQueue())
+      .then(() => nextItemQueueClient.getQueueSnapshot())
       .then((response) => {
         if (
           requestGeneration !== nextItemQueueRefreshGeneration ||
@@ -1057,7 +1176,9 @@
         }
 
         queuedNextItemSku = response.queuedSku;
+        queuedNextItemToken = response.queueToken;
         const view = getActiveView();
+        renderQueuedItemBadge(view);
 
         if (view) {
           renderInventory(view, getFocusedInventorySku());
@@ -1072,6 +1193,10 @@
             "[TikTok Live Tracker] The next-item queue could not be refreshed.",
             error,
           );
+          // Preserve the last known item, but don't allow a clear against a
+          // queue whose current generation could not be confirmed.
+          queuedNextItemToken = null;
+          updateQueuedItemBadgeAvailability();
         }
       });
   }
@@ -1310,7 +1435,7 @@
     }
 
     // Keep capture-only inert separate from the existing workspace safeguards.
-    // The badge remains accessible, and green/red never clear legacy root inert
+    // The badge remains accessible, and green/blank never clear legacy root inert
     // or disabled attributes. Explicit popover targets cover top-layer menus.
     for (const child of trackerWorkspace.children) {
       if (!child.classList.contains("capture-health-row")) {
@@ -1330,6 +1455,8 @@
     if (locked && inventorySizeMenuState !== null) {
       releaseInventorySizeMenu({ restoreFocus: false });
     }
+    updateVariationSearchAvailability();
+    updateQueuedItemBadgeAvailability();
   }
 
   function setWorkspaceBusy(busy) {
@@ -3470,6 +3597,7 @@
   }
 
   function renderInventory(view, focusSku = null) {
+    renderQueuedItemBadge(view);
     if (inventorySizeMenuState) {
       deferredInventoryRender = { view, focusSku };
       return;
@@ -4626,6 +4754,70 @@
     selectVariationFromPicker(selectedVariationNumber);
   }
 
+  function canSubmitVariationSearch() {
+    return (
+      !isCaptureInteractionLocked() &&
+      captureHealthBadge.dataset.phase !== "not_tracking" &&
+      persistentController !== null &&
+      streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession !== null &&
+      !streamSnapshot.busy &&
+      !trackerWorkspace.hidden &&
+      !archivedReportsViewOpen &&
+      !trackerWorkspace.hasAttribute("inert") &&
+      savedSnapshot?.phase === "ready" &&
+      !savedSnapshot.busy &&
+      !endConfirmationOpen &&
+      getRecordedVariations(getActiveView()).length > 0
+    );
+  }
+
+  function updateVariationSearchAvailability() {
+    // This control shares the badge row, which intentionally stays outside the
+    // capture-only inert sections. Compose its own availability with the same
+    // validated health lock and the existing workspace/save safeguards.
+    const unavailable = !canSubmitVariationSearch();
+    variationSearchInput.disabled = unavailable;
+    variationSearchForm.toggleAttribute("inert", unavailable);
+  }
+
+  function submitVariationSearch(event) {
+    event.preventDefault();
+    if (guardCaptureInteraction(event) || !canSubmitVariationSearch()) return;
+
+    const query = variationSearchInput.value.trim();
+    const number = Number(query);
+    const validNumber = /^\d+$/.test(query) && Number.isSafeInteger(number) && number > 0;
+    const option = validNumber ? findVariationOption(getActiveView(), number) : null;
+    const message = !validNumber
+      ? "Enter a whole variation number greater than zero."
+      : !option?.recorded
+        ? `Variation #${number} has not been captured in this tracker stream.`
+        : "";
+
+    variationSearchInput.setCustomValidity(message);
+    if (message) {
+      variationSearchInput.setAttribute("aria-invalid", "true");
+      mappingAnnouncement.textContent = message;
+      variationSearchInput.reportValidity();
+      return;
+    }
+
+    variationSearchInput.removeAttribute("aria-invalid");
+    if (inventorySizeMenuState !== null) {
+      releaseInventorySizeMenu({ restoreFocus: false });
+    }
+    selectVariationFromPicker(number);
+  }
+
+  variationSearchForm.addEventListener("submit", submitVariationSearch);
+  variationSearchInput.addEventListener("input", () => {
+    variationSearchInput.setCustomValidity("");
+    variationSearchInput.removeAttribute("aria-invalid");
+  });
+
+  clearQueuedItemButton.addEventListener("click", clearQueuedItem);
+
   // Capture-phase guards also cover stale/programmatic events and popovers
   // outside the workspace, without intercepting scrolling or End Tracking.
   for (const eventType of [
@@ -4841,6 +5033,9 @@
       return;
     }
 
+    variationSearchInput.value = "";
+    variationSearchInput.setCustomValidity("");
+    variationSearchInput.removeAttribute("aria-invalid");
     variationSelector.focus();
     mappingAnnouncement.textContent =
       `Returned to live ${describeSelectedVariation(view)}. The next live auction will open automatically.`;
@@ -4876,8 +5071,10 @@
     const expectedVariationNumber = view.currentVariationNumber;
     const sku = button.dataset.sku;
     const mutationGeneration = ++nextItemQueueMutationGeneration;
+    const refreshGeneration = ++nextItemQueueRefreshGeneration;
 
     nextItemQueueMutationBusy = true;
+    updateQueuedItemBadgeAvailability();
 
     try {
       const response = await nextItemQueueClient.toggleQueue({
@@ -4897,8 +5094,9 @@
       const stillOnExpectedVariation =
         latestView?.currentVariationNumber === expectedVariationNumber;
 
-      if (stillOnExpectedVariation) {
+      if (stillOnExpectedVariation && refreshGeneration === nextItemQueueRefreshGeneration) {
         queuedNextItemSku = response.queuedSku;
+        queuedNextItemToken = null;
         renderInventory(latestView, getFocusedInventorySku());
       }
 
@@ -4944,6 +5142,7 @@
     } finally {
       if (mutationGeneration === nextItemQueueMutationGeneration) {
         nextItemQueueMutationBusy = false;
+        updateQueuedItemBadgeAvailability();
       }
     }
   }
@@ -4963,6 +5162,7 @@
     const mutationGeneration = ++nextItemQueueMutationGeneration;
 
     nextItemQueueMutationBusy = true;
+    updateQueuedItemBadgeAvailability();
 
     try {
       const response = await nextItemQueueClient.mapCurrent({
@@ -5006,6 +5206,7 @@
     } finally {
       if (mutationGeneration === nextItemQueueMutationGeneration) {
         nextItemQueueMutationBusy = false;
+        updateQueuedItemBadgeAvailability();
       }
     }
   }
@@ -6003,7 +6204,6 @@
       reportLibraryDisposed = true;
       ++streamReportsRefreshGeneration;
       captureHealthController.dispose();
-      captureHealthBadgeVisibilityController.dispose();
       clearCaptureRefreshTimer();
       resetLiveBidTracking();
       resetConfirmedInventoryPreview();

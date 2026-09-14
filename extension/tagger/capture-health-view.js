@@ -5,26 +5,18 @@
 })(typeof globalThis === "undefined" ? this : globalThis, function () {
   "use strict";
 
-  const RED_BADGE_HIDE_MS = 13_000;
-
   const LABELS = Object.freeze({
     not_tracking: "Not tracking", connecting: "Connecting", active: "Capture active",
-    loading: "Loading", unavailable: "Capture unavailable",
+    loading: "Loading", blank: "Reload Site",
   });
   const DESCRIPTIONS = Object.freeze({
-    not_tracking: "Start stream tracking to check capture health.",
-    awaiting_capture: "Waiting for fresh capture confirmation. Open the TikTok LIVE product dashboard and its Sold Items tab.",
-    warming_up: "Confirming consecutive healthy dashboard checks.",
-    healthy: "Recent dashboard checks succeeded and no capture deliveries are waiting. This does not guarantee every TikTok sale was captured.",
-    unreadable: "The dashboard could not be read reliably. Open the TikTok LIVE product dashboard and select Sold Items; refresh it if this continues.",
-    retrying: "Capture delivery is retrying. Keep the dashboard open; refresh it if this continues.",
-    backlog: "Capture updates are waiting for delivery confirmation. Keep the dashboard open while they catch up.",
-    stale: "Waiting for a fresh dashboard check. Bring the TikTok dashboard to the foreground; refresh it if this continues.",
-    no_source: "Capture is not currently confirmed. Open the TikTok LIVE product dashboard and select Sold Items.",
-    source_changed: "The dashboard was closed or navigated away. Open the TikTok LIVE product dashboard and select Sold Items.",
-    ambiguous_sources: "More than one dashboard is reporting capture. Keep only the dashboard for this tracker stream open.",
-    session_mismatch: "Waiting for capture confirmation for the current tracker session.",
-    transport_unavailable: "Capture health could not be confirmed. Reopen the tracker and check the TikTok dashboard if this continues.",
+    not_tracking: "Start stream tracking to initialize dashboard capture.",
+    awaiting_capture: "Waiting for the TikTok LIVE product dashboard to initialize capture.",
+    initializing: "Initializing capture for this dashboard page load.",
+    ready: "Capture setup is ready for this dashboard page load. This startup indicator is not an ongoing capture-health check.",
+    unavailable: "Reload the TikTok LIVE dashboard to initialize capture.",
+    session_mismatch: "Waiting for capture setup for the current tracker session.",
+    transport_unavailable: "Waiting for dashboard capture setup confirmation.",
   });
 
   function exactKeys(value, keys) {
@@ -33,71 +25,18 @@
   }
 
   function renderBadge(badge, description, state) {
-    const phase = Object.hasOwn(LABELS, state.phase) ? state.phase : "unavailable";
+    const phase = Object.hasOwn(LABELS, state.phase) ? state.phase : "blank";
     const row = badge.closest?.(".capture-health-row");
     if (row) row.hidden = phase === "not_tracking";
     const label = LABELS[phase];
-    const detail = Object.hasOwn(DESCRIPTIONS, state.reason)
+    const detail = phase === "blank" ? DESCRIPTIONS.unavailable : Object.hasOwn(DESCRIPTIONS, state.reason)
       ? DESCRIPTIONS[state.reason] : DESCRIPTIONS.transport_unavailable;
     if (badge.textContent !== label) badge.textContent = label;
     if (badge.dataset.phase !== phase) badge.dataset.phase = phase;
     if (badge.title !== detail) badge.title = detail;
     if (description.textContent !== detail) description.textContent = detail;
-  }
-
-  function createCaptureHealthBadgeVisibilityController({
-    badge, now = Date.now, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout,
-  }) {
-    let redDeadline = null;
-    let redHidden = false;
-    let timer = null;
-    let generation = 0;
-    let disposed = false;
-
-    function cancelTimer() {
-      generation++;
-      if (timer !== null) clearTimeoutFn(timer);
-      timer = null;
-    }
-
-    function update() {
-      if (disposed) return;
-      // Consume the renderer's validated phase, never infer capture health.
-      // This presentation flag changes neither phase nor the reserved row.
-      if (badge.dataset.phase !== "unavailable") {
-        cancelTimer();
-        redDeadline = null;
-        redHidden = false;
-        badge.dataset.autoHidden = "false";
-        return;
-      }
-
-      redDeadline ??= now() + RED_BADGE_HIDE_MS;
-      const remaining = Math.max(0, redDeadline - now());
-      redHidden ||= remaining === 0;
-      badge.dataset.autoHidden = String(redHidden);
-      if (redHidden) {
-        cancelTimer();
-        return;
-      }
-      if (timer !== null) return;
-
-      const epoch = ++generation;
-      timer = setTimeoutFn(() => {
-        if (disposed || epoch !== generation) return;
-        timer = null;
-        // Recheck elapsed time after delayed/early callbacks without restarting
-        // the countdown. An old red callback cannot hide a recovered badge.
-        update();
-      }, remaining);
-    }
-
-    function dispose() {
-      disposed = true;
-      cancelTimer();
-    }
-
-    return { update, dispose };
+    badge.setAttribute?.("aria-hidden", "false");
+    badge.removeAttribute?.("tabindex");
   }
 
   function createCaptureHealthViewController({
@@ -112,7 +51,10 @@
     let busy = false;
     let disposed = false;
     let failedSince = null;
-    let confirmed = false;
+    let startupPhase = "connecting";
+    let loadId = null;
+    const retiredLoadIds = new Set();
+    let ready = false;
     let lastPublished = "";
 
     function publish(phase, reason) {
@@ -133,8 +75,8 @@
           settled = true;
           clearTimeoutFn(timeout);
           if (cancelRequest === cancel) cancelRequest = null;
-          // Suspension can delay the timeout callback itself. An old green
-          // response must still expire by wall-clock time when the panel wakes.
+          // Suspension can delay callbacks. A stale response must not declare
+          // a new page load ready; already-latched readiness is independent.
           if (!error && now() >= deadline) error = new Error("Health request timed out");
           if (error) reject(error); else resolve(value);
         }
@@ -165,21 +107,36 @@
         if (disposed || epoch !== generation) return;
         const data = response?.data;
         if (!exactKeys(response, ["ok", "data"]) || response.ok !== true ||
-            !exactKeys(data, ["streamId", "phase", "reason"]) ||
+            !exactKeys(data, ["streamId", "loadId", "phase", "reason"]) ||
             data.streamId !== requestedId || data.phase === "not_tracking" ||
+            !(data.loadId === null || typeof data.loadId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(data.loadId)) ||
+            (data.phase === "active" && (data.loadId === null || data.reason !== "ready")) ||
+            (data.reason === "ready" && data.phase !== "active") ||
             !Object.hasOwn(LABELS, data.phase) || !Object.hasOwn(DESCRIPTIONS, data.reason)) {
           throw new Error("Invalid capture health response");
         }
+        if (data.loadId !== null && retiredLoadIds.has(data.loadId)) return;
         failedSince = null;
-        confirmed = true;
-        publish(data.phase, data.reason);
+        if (data.loadId !== null && data.loadId !== loadId) {
+          if (loadId !== null) retiredLoadIds.add(loadId);
+          loadId = data.loadId;
+          ready = false;
+        }
+        if (data.phase === "active") ready = true;
+        if (!ready) startupPhase = data.phase;
+        publish(ready ? "active" : data.phase, ready ? "ready" : data.reason);
       } catch {
         if (disposed || epoch !== generation) return;
+        if (ready) return;
         failedSince ??= now();
-        publish(now() - failedSince >= failureGraceMs ? "unavailable" : confirmed ? "loading" : "connecting", "transport_unavailable");
+        const phase = startupPhase === "blank" || now() - failedSince >= failureGraceMs
+          ? "blank" : startupPhase === "loading" ? "loading" : "connecting";
+        publish(phase, "transport_unavailable");
       } finally {
         if (epoch === generation) {
           busy = false;
+          // Keep discovering new dashboard documents, not rechecking health
+          // for a document that has already completed its startup handshake.
           if (!disposed && streamId !== null) timer = setTimeoutFn(() => { void refresh(); }, pollMs);
         }
       }
@@ -193,7 +150,10 @@
       timer = null;
       busy = false;
       streamId = nextStreamId;
-      confirmed = false;
+      startupPhase = "connecting";
+      loadId = null;
+      retiredLoadIds.clear();
+      ready = false;
       failedSince = null;
       publish(streamId === null ? "not_tracking" : "connecting", streamId === null ? "not_tracking" : "awaiting_capture");
       if (streamId !== null) void refresh();
@@ -209,7 +169,6 @@
     return { setSession, refresh, dispose };
   }
   return {
-    LABELS, DESCRIPTIONS, RED_BADGE_HIDE_MS, renderBadge,
-    createCaptureHealthBadgeVisibilityController, createCaptureHealthViewController,
+    LABELS, DESCRIPTIONS, renderBadge, createCaptureHealthViewController,
   };
 });

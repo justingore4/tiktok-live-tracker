@@ -948,7 +948,7 @@ function createWorkerHarness(options = {}) {
 
       if (options.nextItemQueueDispatchError === "known") {
         throw new FakeNextItemQueueCoordinatorError(
-          "NEXT_ITEM_QUEUE_FAILED",
+          options.nextItemQueueDispatchErrorCode ?? "NEXT_ITEM_QUEUE_FAILED",
           "Could not update the next-item queue.",
         );
       }
@@ -1333,7 +1333,7 @@ const HEALTH_STREAM_ID = "local-stream:11111111-1111-4111-8111-111111111111";
 const healthMessage = (type, fields = {}) => ({
   channel: captureHealth.CHANNEL, version: captureHealth.VERSION, type, ...fields,
 });
-const cleanHealthSample = Object.freeze({ readable: true, pending: 0, inFlight: false, retrying: false, visible: true });
+const readyHealthSample = Object.freeze({ phase: "ready" });
 
 function createHealthWorkerHarness(options = {}) {
   let at = 0;
@@ -1347,7 +1347,7 @@ function createHealthWorkerHarness(options = {}) {
   return { ...harness, at(value) { at = value; }, now: () => at };
 }
 
-test("health context/pulses/polls read session state only and never dispatch accounting or report mutations", async () => {
+test("readiness context/pulses/polls latch immediately and never dispatch accounting or report mutations", async () => {
   const h = createHealthWorkerHarness();
   const sender = h.createCaptureSender({ documentId: "health-document" });
   const contextResponse = await h.send(healthMessage("context"), sender).response;
@@ -1355,12 +1355,15 @@ test("health context/pulses/polls read session state only and never dispatch acc
   assert.equal(contextResponse.data.streamId, HEALTH_STREAM_ID);
   const context = contextResponse.data;
   const poll = () => h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
-  const pulse = (sequence) => h.send(healthMessage("pulse", { ...context, sequence, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
+  const pulse = (sequence) => h.send(healthMessage("pulse", { ...context, sequence, sampledAt: h.now(), sample: readyHealthSample }), sender).response;
   assert.equal((await poll()).data.phase, "connecting");
   assert.deepEqual(await pulse(0), { ok: true, data: { accepted: true } });
-  h.at(5000);
+  const expectedReady = { streamId: HEALTH_STREAM_ID, loadId: sender.documentId, phase: "active", reason: "ready" };
+  assert.deepEqual((await poll()).data, expectedReady, "The first real ready result requires no heartbeat delay.");
+  h.at(900000);
   assert.deepEqual(await pulse(1), { ok: true, data: { accepted: true } });
-  assert.deepEqual((await poll()).data, { streamId: HEALTH_STREAM_ID, phase: "active", reason: "healthy" });
+  assert.deepEqual((await poll()).data, expectedReady);
+  assert.deepEqual((await poll()).data, expectedReady, "Reopening the panel does not reset readiness.");
   assert.ok(h.streamDispatchCalls.length >= 5);
   assert.ok(h.streamDispatchCalls.every((call) => call.type === h.streamCoordinatorModule.COMMAND_TYPES.GET_STREAM_SESSION));
   assert.deepEqual(h.dispatchCalls, [], "No inventory pin, reconciliation update, or state initialization occurs.");
@@ -1376,7 +1379,7 @@ test("health boundary rejects malformed data and unauthorized frame/document/pan
   const sender = h.createCaptureSender({ documentId: "health-document" });
   const badRequests = [
     [healthMessage("context", { orders: [] }), sender],
-    [healthMessage("context", { version: 2 }), sender],
+    [healthMessage("context", { version: 1 }), sender],
     [healthMessage("context"), { ...sender, frameId: 1 }],
     [healthMessage("context"), { ...sender, documentId: undefined }],
     [healthMessage("context"), { ...sender, documentLifecycle: "cached" }],
@@ -1384,7 +1387,8 @@ test("health boundary rejects malformed data and unauthorized frame/document/pan
     [healthMessage("context"), { ...sender, url: "https://shop.tiktok.com/other" }],
     [healthMessage("get", { streamId: HEALTH_STREAM_ID }), sender],
     [healthMessage("get", { streamId: HEALTH_STREAM_ID }), h.createSender({ url: h.reportPageUrl })],
-    [healthMessage("pulse", { streamId: HEALTH_STREAM_ID, contextId: "x", sequence: 0, sampledAt: 0, sample: { ...cleanHealthSample, rawRows: [] } }), sender],
+    [healthMessage("pulse", { streamId: HEALTH_STREAM_ID, contextId: "x", sequence: 0, sampledAt: 0, sample: { ...readyHealthSample, rawRows: [] } }), sender],
+    [healthMessage("pulse", { streamId: HEALTH_STREAM_ID, contextId: "x", sequence: 0, sampledAt: 0, sample: { readable: true, pending: 0, inFlight: false, retrying: false, visible: true } }), sender],
   ];
   for (const [request, source] of badRequests) {
     const response = await h.send(request, source).response;
@@ -1396,26 +1400,26 @@ test("health boundary rejects malformed data and unauthorized frame/document/pan
   assert.equal(h.captureDispatchCalls.length, 0);
 });
 
-test("tab navigation/closure and newer documents invalidate health independently of capture accounting", async () => {
+test("tab events retire readiness authority without demotion until a new owner document arrives", async () => {
   const h = createHealthWorkerHarness();
   const sender = h.createCaptureSender({ documentId: "old-health-document" });
   const first = (await h.send(healthMessage("context"), sender).response).data;
   const poll = () => h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
-  await h.send(healthMessage("pulse", { ...first, sequence: 0, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
-  h.at(5000);
-  await h.send(healthMessage("pulse", { ...first, sequence: 1, sampledAt: h.now(), sample: cleanHealthSample }), sender).response;
+  await h.send(healthMessage("pulse", { ...first, sequence: 0, sampledAt: h.now(), sample: readyHealthSample }), sender).response;
   assert.equal((await poll()).data.phase, "active");
   h.tabUpdatedListeners[0](9, { status: "loading" });
-  assert.notEqual((await poll()).data.phase, "active");
+  assert.deepEqual((await poll()).data, { streamId: HEALTH_STREAM_ID, loadId: sender.documentId, phase: "active", reason: "ready" });
   assert.equal((await h.send(healthMessage("context"), sender).response).error.code, "STALE_HEALTH_CONTEXT");
-  assert.equal((await h.send(healthMessage("pulse", { ...first, sequence: 2, sampledAt: h.now(), sample: cleanHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  assert.equal((await h.send(healthMessage("pulse", { ...first, sequence: 1, sampledAt: h.now(), sample: readyHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
   const replacementSender = { ...sender, documentId: "new-health-document" };
   const next = (await h.send(healthMessage("context"), replacementSender).response).data;
   assert.notEqual(next.contextId, first.contextId);
+  assert.deepEqual((await poll()).data, { streamId: HEALTH_STREAM_ID, loadId: replacementSender.documentId, phase: "connecting", reason: "awaiting_capture" });
   assert.equal((await h.send(healthMessage("context"), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  await h.send(healthMessage("pulse", { ...next, sequence: 0, sampledAt: h.now(), sample: readyHealthSample }), replacementSender).response;
   h.tabRemovedListeners[0](9);
   assert.equal((await h.send(healthMessage("context"), replacementSender).response).error.code, "STALE_HEALTH_CONTEXT");
-  assert.notEqual((await poll()).data.phase, "active");
+  assert.deepEqual((await poll()).data, { streamId: HEALTH_STREAM_ID, loadId: replacementSender.documentId, phase: "active", reason: "ready" });
   assert.deepEqual(h.captureDispatchCalls, []);
   assert.deepEqual(h.dispatchCalls, []);
 });
@@ -1426,8 +1430,8 @@ test("ending a stream makes health Not tracking and rejects old heartbeat contex
   const context = (await h.send(healthMessage("context"), sender).response).data;
   await h.streamCoordinator.dispatch({ type: h.streamCoordinatorModule.COMMAND_TYPES.END_STREAM });
   const result = await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response;
-  assert.deepEqual(result, { ok: true, data: { streamId: null, phase: "not_tracking", reason: "not_tracking" } });
-  assert.equal((await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt: h.now(), sample: cleanHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
+  assert.deepEqual(result, { ok: true, data: { streamId: null, loadId: null, phase: "not_tracking", reason: "not_tracking" } });
+  assert.equal((await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt: h.now(), sample: readyHealthSample }), sender).response).error.code, "STALE_HEALTH_CONTEXT");
   assert.deepEqual((await h.send(healthMessage("context"), sender).response).data, { streamId: null, contextId: null });
   assert.deepEqual(h.dispatchCalls, []);
 });
@@ -1447,7 +1451,7 @@ test("health requests honor storage access failures and do not expose unexpected
   }
 });
 
-test("health requests queued or awaiting session reads past three seconds cannot refresh capture health", async () => {
+test("readiness requests queued beyond three seconds are rejected without demoting a ready document", async () => {
   const gate = createDeferred();
   const entered = createDeferred();
   let block = false;
@@ -1458,7 +1462,7 @@ test("health requests queued or awaiting session reads past three seconds cannot
   });
   const sender = h.createCaptureSender({ documentId: "delayed-health-document" });
   const context = (await h.send(healthMessage("context"), sender).response).data;
-  const pulse = (sequence, sampledAt = h.now()) => healthMessage("pulse", { ...context, sequence, sampledAt, sample: cleanHealthSample });
+  const pulse = (sequence, sampledAt = h.now()) => healthMessage("pulse", { ...context, sequence, sampledAt, sample: readyHealthSample });
   await h.send(pulse(0), sender).response;
   h.at(5000); await h.send(pulse(1), sender).response;
   block = true;
@@ -1476,9 +1480,9 @@ test("health requests queued or awaiting session reads past three seconds cannot
     assert.equal(response.error.code, "STALE_HEALTH_MESSAGE");
   }
   const healthState = (await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data;
-  assert.deepEqual(healthState, { streamId: HEALTH_STREAM_ID, phase: "loading", reason: "stale" });
-  assert.deepEqual(await h.send(pulse(2), sender).response, { ok: true, data: { accepted: true } }, "expired queued pulse did not consume its sequence or renew freshness");
-  assert.equal((await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data.reason, "warming_up");
+  assert.deepEqual(healthState, { streamId: HEALTH_STREAM_ID, loadId: sender.documentId, phase: "active", reason: "ready" });
+  assert.deepEqual(await h.send(pulse(2), sender).response, { ok: true, data: { accepted: true } }, "expired queued pulse did not consume its sequence");
+  assert.equal((await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data.reason, "ready");
   assert.deepEqual(h.dispatchCalls, []);
   assert.deepEqual(h.captureDispatchCalls, []);
 });
@@ -1489,12 +1493,12 @@ test("heartbeats delayed before worker receipt or dated in the future are reject
   const context = (await h.send(healthMessage("context"), sender).response).data;
   h.at(10000);
   for (const sampledAt of [0, 10001]) {
-    const response = await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt, sample: cleanHealthSample }), sender).response;
+    const response = await h.send(healthMessage("pulse", { ...context, sequence: 0, sampledAt, sample: readyHealthSample }), sender).response;
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "STALE_HEALTH_SAMPLE");
   }
   assert.deepEqual((await h.send(healthMessage("get", { streamId: HEALTH_STREAM_ID })).response).data,
-    { streamId: HEALTH_STREAM_ID, phase: "unavailable", reason: "no_source" },
+    { streamId: HEALTH_STREAM_ID, loadId: sender.documentId, phase: "blank", reason: "unavailable" },
     "Rejected samples do not extend the ten-second first-sample deadline");
 });
 
@@ -2796,6 +2800,150 @@ test("only the exact side panel can read and toggle the next-item queue", async 
     },
   );
   assert.equal(harness.nextItemQueueCalls.length, 1);
+});
+
+test("queue snapshots and explicit clears accept only the exact side-panel sender", async () => {
+  for (const type of ["get_queue_snapshot", "clear_queue"]) {
+    const expected = type === "get_queue_snapshot"
+      ? {
+        queuedSku: "TEST-SKU",
+        queueToken: "11111111-1111-4111-8111-111111111111",
+      }
+      : { status: "cleared", queuedSku: null };
+    const harness = createWorkerHarness({ nextItemQueueDispatchResult: expected });
+    const command = type === "get_queue_snapshot"
+      ? { type }
+      : {
+        type,
+        expectedStreamId: harness.activeStreamId,
+        expectedQueueToken: "11111111-1111-4111-8111-111111111111",
+        sku: "TEST-SKU",
+      };
+    const message = nextItemQueueProtocol.createNextItemQueueMessage(command);
+
+    for (const sender of [
+      harness.createCaptureSender(),
+      harness.createSender({ id: "another-extension" }),
+      harness.createSender({ url: harness.reportPageUrl }),
+      harness.createSender({ url: `${harness.sidePanelUrl}?untrusted` }),
+      harness.createSender({ url: `${harness.sidePanelUrl}#untrusted` }),
+      harness.createSender({ url: `${harness.sidePanelUrl}.untrusted` }),
+    ]) {
+      assert.deepEqual(await harness.send(message, sender).response, {
+        ok: false,
+        error: {
+          code: "UNAUTHORIZED_MESSAGE_SENDER",
+          message: "This extension context cannot issue next-item queue commands.",
+        },
+      }, type);
+    }
+
+    assert.deepEqual(harness.nextItemQueueCalls, []);
+    assert.deepEqual(harness.runtimeSendMessages, []);
+    assert.deepEqual(await harness.send(message).response, {
+      ok: true,
+      data: expected,
+    });
+    assert.deepEqual(harness.nextItemQueueCalls, [{ type: "dispatch", command }]);
+    assert.deepEqual(harness.runtimeSendMessages, type === "get_queue_snapshot"
+      ? []
+      : [nextItemQueueProtocol.createQueueChangedNotification()]);
+    assert.deepEqual(harness.dispatchCalls, []);
+    assert.deepEqual(harness.liveBidSyncCalls, []);
+    assert.deepEqual(harness.captureDispatchCalls, []);
+  }
+});
+
+test("explicit queue clear emits only a lightweight queue invalidation with no mapping work", async () => {
+  const expected = { status: "cleared", queuedSku: null };
+  const harness = createWorkerHarness({
+    nextItemQueueDispatchResult: expected,
+    dispatchError: "known",
+    streamDispatchError: "known",
+  });
+  const command = {
+    type: "clear_queue",
+    expectedStreamId: harness.activeStreamId,
+    expectedQueueToken: "11111111-1111-4111-8111-111111111111",
+    sku: "TEST-SKU",
+  };
+
+  assert.deepEqual(await harness.send(
+    nextItemQueueProtocol.createNextItemQueueMessage(command),
+  ).response, { ok: true, data: expected });
+  assert.deepEqual(harness.nextItemQueueCalls, [{ type: "dispatch", command }]);
+  assert.deepEqual(harness.runtimeSendMessages, [
+    nextItemQueueProtocol.createQueueChangedNotification(),
+  ]);
+  assert.deepEqual(harness.dispatchCalls, []);
+  assert.deepEqual(harness.streamDispatchCalls, []);
+  assert.deepEqual(harness.liveBidSyncCalls, []);
+  assert.deepEqual(harness.captureDispatchCalls, []);
+  assert.equal(harness.reportCalls.length, 2);
+  assert.deepEqual(harness.consoleErrors, []);
+});
+
+test("stale and failed explicit clears never notify or perform mapping work", async () => {
+  for (const options of [
+    {
+      nextItemQueueDispatchError: "known",
+      nextItemQueueDispatchErrorCode: "QUEUE_CHANGED",
+    },
+    { nextItemQueueDispatchError: "known" },
+    { nextItemQueueDispatchError: "unexpected" },
+  ]) {
+    const harness = createWorkerHarness(options);
+    const response = await harness.send(
+      nextItemQueueProtocol.createNextItemQueueMessage({
+        type: "clear_queue",
+        expectedStreamId: harness.activeStreamId,
+        expectedQueueToken: "22222222-2222-4222-8222-222222222222",
+        sku: "TEST-SKU",
+      }),
+    ).response;
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code,
+      options.nextItemQueueDispatchErrorCode ?? (
+        options.nextItemQueueDispatchError === "unexpected"
+          ? "INTERNAL_ERROR"
+          : "NEXT_ITEM_QUEUE_FAILED"
+      ));
+    assert.equal(harness.nextItemQueueCalls.length, 1);
+    assert.deepEqual(harness.runtimeSendMessages, []);
+    assert.deepEqual(harness.dispatchCalls, []);
+    assert.deepEqual(harness.streamDispatchCalls, []);
+    assert.deepEqual(harness.liveBidSyncCalls, []);
+    assert.deepEqual(harness.captureDispatchCalls, []);
+  }
+});
+
+test("explicit clear notification waits until the queue coordinator succeeds", async () => {
+  const expected = { status: "cleared", queuedSku: null };
+  const harness = createWorkerHarness({ nextItemQueueDispatchResult: expected });
+  const dispatchStarted = createDeferred();
+  const releaseDispatch = createDeferred();
+  const originalDispatch = harness.nextItemQueueCoordinator.dispatch;
+  harness.nextItemQueueCoordinator.dispatch = async (command) => {
+    dispatchStarted.resolve();
+    await releaseDispatch.promise;
+    return originalDispatch(command);
+  };
+  const request = harness.send(nextItemQueueProtocol.createNextItemQueueMessage({
+    type: "clear_queue",
+    expectedStreamId: harness.activeStreamId,
+    expectedQueueToken: "11111111-1111-4111-8111-111111111111",
+    sku: "TEST-SKU",
+  }));
+
+  await dispatchStarted.promise;
+  assert.deepEqual(harness.runtimeSendMessages, []);
+  assert.equal(request.getResponseCount(), 0);
+  releaseDispatch.resolve();
+  assert.deepEqual(await request.response, { ok: true, data: expected });
+  assert.deepEqual(harness.runtimeSendMessages, [
+    nextItemQueueProtocol.createQueueChangedNotification(),
+  ]);
 });
 
 test("mapping the current item from the queue boundary refreshes canonical and live-bid views", async () => {

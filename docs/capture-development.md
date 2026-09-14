@@ -22,15 +22,13 @@ Live inspection on August 8, 2026 confirmed:
   Another visible descendant had direct own text in the form `Bids: $28.00`.
 - A payment badge is an exact `[data-tid="m4b_tag"]`; the inspected completed row used
   the whole normalized text `Payment complete` and contained a final dollar price.
-- During TikTok's correction buffer, the exact `m4b_tag` text is `Payment failed` and
-  capture stores the sanitized `payment_failed` status. If the correction window expires,
-  the exact badge changes to `Canceled` and capture stores the distinct `canceled` status.
-  The final row can also retain separate `Payment failed` detail text beside that badge;
-  classification uses the exact `m4b_tag`, so the row still resolves to canonical
-  `canceled`. A fixed payment can instead settle as `Payment complete` before cancellation.
-- The capture allowlist also recognizes the requested whole-label values
-  `Payment processing` and `Payment fixing`. Their exact spelling and
-  transition order still need confirmation during live use.
+- The earlier payment presentation used `Payment failed` during the correction buffer,
+  followed by `Canceled` with separate `Payment failed` detail at final cancellation.
+- New user-provided screenshots show `Payment processing...` during the buffer and
+  `Payment failed` alone for final cancellation. Fresh exact `Payment failed` now maps
+  to `canceled` at the capture boundary, like `Canceled` and `Cancelled`. Processing
+  and fixing retain their existing aliases, including three periods and U+2026.
+  Current row markup and end-to-end transitions still need live verification.
 - The aggregate **Attributed GMV** card is inside the exact visible `#guide-Step-2`
   analytics boundary. Its label is the complete own text `Attributed GMV`, and its
   primary value can be exact (for example `$4,087.01`) or compact (for example `$4.64K`).
@@ -53,14 +51,26 @@ The separate analytics locator is limited to one exact root, label, and primary-
 relationship and releases only a canonical USD display; it never releases surrounding
 card text or DOM.
 
-`Payment processing`, `Payment fixing`, `Payment failed`, and unrecognized labels remain
-nonterminal observations. Mapping the bidding variation immediately creates a pending
+`Payment processing`, `Payment fixing`, legacy internal `payment_failed`, and unrecognized
+labels remain nonterminal observations. Mapping the bidding variation creates a pending
 inventory reservation. That reservation remains through processing, fixing, temporary
 failure, an unrecognized badge, not-yet-observed state, or a price-less completion.
-Exact `Canceled` is a canonical terminal allocation result that releases the reservation,
+Fresh terminal `Payment failed`, `Canceled`, or `Cancelled` releases the reservation,
 keeps any item link as reference history, and counts no sale, revenue, cost, or profit.
 The employee may later map, correct, or clear that reference item without reserving or
 subtracting inventory and without changing any metric.
+
+Compatibility is contextual, not a storage migration. An exact `Payment failed` badge
+with visible, same-order `Transaction will cancel in MM:SS` detail remains internal
+`payment_failed`. Recognized truncated countdown text may use its exact full `title`;
+unrelated product text, neighboring rows, age, and badge color are not evidence. Even
+`00:00` is only a pending indicator, not a local cancellation clock. Removing that
+indicator allows a fresh failure observation to use the canceled pipeline. Sold Items
+also observes scoped countdown title/visibility changes through its existing scheduler; polling,
+debounce, retry, and health intervals are unchanged. Existing saved `payment_failed`
+records and reports stay unchanged without fresh capture or deliberate manual resolution.
+Processing has no independent five-minute timeout.
+
 The implemented dashboard reads outside Sold Items are only the sanitized current
 bidding variation number, its sanitized transient bid-price cents, and the isolated
 aggregate Attributed GMV display.
@@ -140,7 +150,7 @@ the top frame of the exact product-dashboard URL. It resolves the currently acti
 - every observed variation as an unmapped auction;
 - the latest active on-video bidding variation as one nullable stream marker;
 - the latest sanitized observed payment status for each variation;
-- exact `Canceled` as canonical cancellation for inventory allocation;
+- exact terminal `Payment failed`, `Canceled`, or `Cancelled` as canonical cancellation;
 - every exact green completion with a parsed price as authoritative payment truth; and
 - the latest sanitized Attributed GMV display on the worker-resolved active stream.
 
@@ -159,7 +169,7 @@ creates its pending reservation. The first Sold Items payment-status observation
 completion for it clears the active marker without removing the mapping, so the selected
 item carries forward into reconciliation.
 
-Observed processing, fixing, failed, or unrecognized status does not count a sale or
+Observed processing, fixing, legacy failed, or unrecognized status does not count a sale or
 change profit. Every mapped unresolved order remains pending regardless of which of those
 observations is latest. Exact cancellation preserves the item link as reference history,
 releases its pending allocation, and contributes no sales, revenue, cost, or profit.
@@ -210,11 +220,11 @@ completed orders that are still unmapped. The denominator excludes the active bi
 variation and `not_observed`, `payment_processing`, `payment_fixing`, and `unrecognized`
 observations. One compact order-status card displays **Canceled Orders:** and
 **Payment Errors:**. Canceled Orders counts each unique current-stream variation only
-after TikTok reports the exact terminal `Canceled` badge. Active bidding and
-`not_observed`, processing, fixing, temporary `Payment failed`, completed, and
+after a terminal `Payment failed`, `Canceled`, or `Cancelled` is saved. Active bidding and
+`not_observed`, processing, fixing, legacy internal `payment_failed`, completed, and
 unrecognized variations are excluded. Payment Errors counts each unique canonical-
-unresolved variation whose latest observation is `Payment fixing` or temporary
-`Payment failed` during the correction buffer. Processing, active bidding/`not_observed`,
+unresolved variation whose latest observation is `payment_fixing` or legacy
+`payment_failed`. Processing, active bidding/`not_observed`,
 unrecognized, completed, and canceled variations are excluded. Completion or exact
 cancellation clears the variation from Payment Errors automatically; neither status
 count depends on inventory mapping.
@@ -276,8 +286,9 @@ bidding variation, unresolved order, pending reservation, payment-error order, u
 completed sale, conflict, or oversold/recount condition adds a specific attention notice
 but never blocks End. The employee UI does not show Final/Provisional state wording. The
 report does not reopen its ended stream in the tagger. The newest safely eligible report
-can instead resolve canonical-unresolved `Payment fixing` or temporary `Payment failed`
-orders after End. Payment completion requires the seller-verified final sold price;
+can instead resolve canonical-unresolved processing, fixing, or legacy `payment_failed`
+orders after End. Captured terminal failures are excluded. Payment completion requires
+the seller-verified final sold price;
 cancellation releases the reservation. Separately, every finalized current or archived
 report exposes a collapsed unit-cost control listing every SKU saved in that report,
 including unsold ones. It accepts nonnegative integer-cent values and requires
@@ -576,10 +587,14 @@ distribution; reassess Google's requirements before expanding the audience.
    sold price must remain the only final price. Reopen the side panel, then allow the
    service worker to suspend/restart during another auction; verify the stream/variation-
    paired latest display is recovered without leaking another stream's auction data.
-8. Keep a variation selected while its badge changes. Confirm the visible **TikTok
-   payment** value changes live among **Payment processing**, **Payment fixing**,
-   **Payment failed**, **Canceled**, and **Payment complete** without a page refresh or menu
-   click. The selector must stay on that variation for status-only changes.
+8. Keep a variation selected while its badge changes. Confirm processing (including
+   both ellipsis aliases) stays unresolved, and fresh terminal `Payment failed` displays
+   **Canceled** without a page refresh or menu click. Also verify `Canceled`, `Cancelled`,
+   fixing, and complete. The selector must stay on that variation for status-only changes.
+   Verify a legacy failed badge with an explicit countdown stays unresolved, including
+   `00:00`, until a final presentation is captured. Confirm a saved cancellation is absent
+   from **Finish unresolved payments** after End and reopening. Test mapped and unmapped
+   variations; never infer cancellation from age or color.
 9. For `Payment complete`, confirm its final price is visible even before an inventory
    item is selected. Reopen and Resume once to verify the same number, status, and price
    remain durable.
@@ -606,7 +621,7 @@ distribution; reassess Google's requirements before expanding the audience.
    `not_observed`, processing, fixing, and unrecognized observations remain excluded, and
    mapping corrections do not change either count. In the combined order-status card,
    confirm **Canceled Orders:** increases once for each unique current-stream variation
-   only when its row reaches exact terminal `Canceled`. Verify bidding, `not_observed`,
+   only after terminal `Payment failed`, `Canceled`, or `Cancelled`. Verify bidding, `not_observed`,
    processing, fixing, temporary failed, completed, and unrecognized variations remain
    excluded. Confirm **Payment Errors:** includes unique canonical-unresolved variations
    while their latest observation is fixing or temporary failed, but excludes processing,
@@ -624,10 +639,11 @@ distribution; reassess Google's requirements before expanding the audience.
    em dash. End tracking and confirm the report preserves the same result and warning.
 10. Map the current bidding variation and confirm its card immediately reduces the
     displayed available count and reports one pending reservation. It must not count a
-    sale or change profit. When that row moves through processing, fixing, temporary
+    sale or change profit. When that row moves through processing, fixing, legacy
     failed, unrecognized, or price-less completion, confirm the item and pending count
     remain unchanged.
-11. When that row becomes exact `Canceled`, confirm the item link remains visible as
+11. When that row shows terminal `Payment failed`, `Canceled`, or `Cancelled`, confirm
+    the item link remains visible as
     reference history, its reservation is released, availability is restored, and sale
     count, revenue, cost, and profit do not change. Confirm every inventory card remains
     enabled. Map the canceled variation to another item, click that selected item again to
@@ -672,7 +688,8 @@ distribution; reassess Google's requirements before expanding the audience.
     visible but its variation rows are omitted, while the SKU performance table prints
     normally. Open **Show details**, print again, and verify every available
     completed/canceled variation row is included.
-    End a test stream with one mapped `Payment failed` or `Payment fixing` order. In
+    End a synthetic test stream with one mapped processing, fixing, or legacy unresolved
+    `payment_failed` order (not a newly captured terminal failure). In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing
     changes. Then mark it complete with an invalid price and confirm validation fails;
     enter the seller-verified final price, confirm, and verify pending/fixing clears while
@@ -900,142 +917,84 @@ Sheets network access, an OAuth client, or a live stream.
 
 ## Capture-health indicator
 
-The visible, resumed variations/inventory tracker workspace contains a fixed-height
-20px badge row, centered directly above Variation with a 6px gap and 10px text.
-The row sits inside `tracker-workspace`, so it is hidden with no reserved space
-on the Resume/End-only screen or when no local session is active. The active
-header stays hidden. Status text and a polite live region supplement color; the
-tooltip/accessible description explains temporary trouble and recovery. A tiny
-decorative spinner inside the badge, left of the label, rotates only for blue
-**Connecting** and yellow **Loading**; green and red remain static. Reduced motion
-disables rotation. The 20px height and 6px gap stay unchanged. There is no blinking,
-pulsing, automatic dashboard refresh, or loading overlay; the spinner does not
-change health logic.
+The existing capture-health files now implement startup readiness, not continuous
+health monitoring. The active, resumed tracker keeps its centered 20px badge row,
+6px gap, 10px typography, and adjacent Var # search. Setup, Resume/End-only, archived,
+and report screens remain unaffected. Blue Connecting and yellow Loading keep
+their decorative spinner; reduced motion stops its rotation.
 
-The red badge auto-hides after 13 continuous seconds using a presentation-only
-deadline in `createCaptureHealthBadgeVisibilityController`. It reads the validated
-rendered phase and sets `data-auto-hidden`; CSS uses `visibility: hidden` only for
-red, retaining the badge row's 20px height and 6px gap. Ordinary renders, repeated
-red samples, and red reason changes never restart the deadline or reveal hidden
-red. Any non-red phase cancels it and restores badge visibility (the existing
-not-tracking/workspace hiding rules still apply). Returning to red starts a new
-deadline. Disposing the panel cancels the timer; stale callbacks cannot hide a
-new state. This does not change health detection, polling, tint, or interaction
-locks: hidden red remains unavailable with normal brightness and no capture lock.
+### Startup and latch
 
-Tracker content is noticeably dimmed at a steady 50% opacity only while the same
-validated badge phase is Connecting or Loading; Active/Unavailable restore normal
-opacity. The badge and spinner remain undimmed. This replaces per-refresh
-`aria-busy` opacity changes, not the existing busy/error protections.
+- Blue Connecting waits for a current dashboard context/first readiness response.
+  No source or first response after the 10-second startup grace shows Reload Site.
+- Yellow Loading means a core capture source initialized and initial Sold Items/
+  bidding deliveries are still queued, in flight, or retrying. Genuine initial
+  delivery work is not treated as complete merely because a timeout elapsed.
+- Green Capture active means initial core startup finished. It latches for that
+  stream and browser document. Later unreadable rows, missing GMV, delivery work,
+  retries, missing heartbeats, navigation away, or disconnection do not demote it.
+- Internal `blank` displays a small neutral **Reload Site** disclaimer for unavailable
+  startup, with an accessible description. It is not a button and does not reload
+  anything automatically. It keeps the existing badge space. There is no red
+  state, 13-second timer, auto-hide flag, or ongoing degradation threshold.
+- A new tracking session or newly reported dashboard document resets startup.
+  Closing/reopening the panel, rerenders, or missing communication do not restart
+  Loading for an already-ready stream/document.
 
-Connecting/Loading also locks the active, resumed tracker controls: search,
-variation navigation, item/size selection, right-click mapping/queueing, pinning,
-list expansion, and the add-SKUs form. Native scrolling stays available, as do
-End Stream Tracking and its confirmation/cancel controls under their existing
-session-busy safeguards. The lock uses the same validated badge phase without
-independent detection or timers; blue-to-yellow transitions stay locked. Green
-or red removes only this lock, never overriding another `aria-busy`, inert,
-disabled-control, save, error, or end-confirmation safeguard. A normal data
-refresh finishing, or the background-refresh exception for an open picker,
-cannot unlock blue/yellow controls.
+Initial readiness uses current core capture initialization/scan completion and
+drained Sold Items/bidding delivery work. A detected Sold Items variation or its
+supported empty text `Orders placed during your LIVE will show up here` is valid
+evidence; an initialized bidding source can establish readiness independently.
+A bare empty root is not evidence. GMV is optional analytics: absence, `$0`,
+malformed values, and GMV retries do not block startup. No all-row payment/price
+health requirement, two-clean-sample streak, or five-second health warm-up remains.
 
-Locking closes open variation/size popovers and preserves their deferred data
-renders without committing a selection. Typed search and Sheet references remain
-intact. Action-entry guards also protect keyboard, stale popover, and applicable
-outside-workspace retry actions. Capture, live rendering, delivery retries, and
-health checks continue; already-started saves/imports finish normally. The lock
-does not apply to setup, Resume/End-only, archived, or post-stream report screens,
-and does not change health logic, timers, storage schemas, or manifest settings.
+### Communication and safety
 
-`shared/capture-health.js` is a separate strict protocol and in-memory worker
-state machine. `capture/capture-health-reporter.js` requests the current local
-stream context, then samples fresh dashboard readability and existing delivery
-state about every five seconds. `tagger/capture-health-view.js` polls the worker
-about every two seconds while a local stream is active. Neither path writes
-heartbeat data to storage or changes business acknowledgments or retries.
-Hiding the workspace does not change health detection, polling, or state.
+The existing strict channel is version 2. Content reports only
+`{ phase: "loading" | "ready" | "blank" }` with session/context, sequence, and
+timestamp metadata. After readiness, it stops inspecting health and sending
+repeated samples. Five-second context checks remain to discover new sessions or
+worker contexts; a changed context can restore that document's ready latch without
+resampling. The panel's two-second reads discover actual new dashboard documents,
+not health degradation. No readiness state is written to reports or inventory.
 
-Readability requires live observation and successful capture scans of the scoped
-Sold Items and Attributed GMV roots, plus a valid bidding card or recognized
-waiting state. Sold Items must have associated recognized payment observations
-(and readable completed-sale prices), or the scoped known empty message
-`Orders placed during your LIVE will show up here`. A bare root, an unrecognized
-payment label, an unreadable price, a heartbeat, or an empty delivery queue does
-not prove healthy capture. The health probe uses existing pure locators and never
-schedules business capture. Actual scan/observer/startup faults stay unhealthy
-until genuine recovery. Pending, in-flight, and retry state aggregates all three
-existing capture paths: Sold Items, Attributed GMV, and current bidding.
+The worker validates the sender, top frame, dashboard route, tab/document,
+session/context, sequence, and message age. It remembers the primary dashboard
+document and ignores secondary dashboards for presentation. Retired documents
+cannot publish stale startup results. Closing/navigating away invalidates sender
+authority without demoting green; a fresh dashboard document establishes a new
+load identity. Ready is immediate once a valid ready result arrives, without
+waiting for consecutive healthy samples. Reopening the panel reads that latch.
 
-State precedence and deadlines are evaluated using wall-clock time:
+Panel requests have four-second deadlines. Before readiness, sustained transport
+failure shows Reload Site after the existing 20-second grace. After readiness, failed,
+malformed, or delayed requests do not demote green. A valid different document
+identity or explicit session change is needed to start another loading cycle.
+Late responses cannot finish another session/document's startup.
 
-1. No active local stream: internal `not_tracking` state; no visible badge or
-   reserved row space, and the panel does not poll.
-2. A new stream or restarted worker gets 10 seconds for a dashboard source
-   (blue **Connecting**). A registered source also gets 10 seconds to provide its
-   first health sample. Either missing confirmation becomes red **Capture
-   unavailable** at its deadline. This source/sample deadline (`SOURCE_GRACE_MS`)
-   is separate from the unchanged 20-second initial clean-confirmation warm-up
-   window (`INITIAL_GRACE_MS`). Multiple registered dashboards are ambiguous and
-   never green.
-3. Expired or failed checks override clean queues. A visible dashboard's last
-   sample becomes yellow **Loading** after 20 seconds and red after 60 seconds.
-   Hidden dashboards allow 90 seconds before yellow and 180 seconds before red
-   to tolerate background throttling. These are grace periods, not guaranteed
-   timer schedules. Sources expire after 180 seconds without samples.
-4. Unreadable dashboard checks show yellow immediately, then red after 10 seconds
-   of continuous unreadability, even during a live stream. A readable sample resets
-   that unreadability timer, including when delivery is still pending. Pending/
-   in-flight/retrying deliveries show yellow, then red after the unchanged 60
-   seconds without a clean sample. Readable catch-up can therefore remain yellow
-   and dimmed beyond 10 seconds; there is no blanket 10-second tint timeout.
-   Readability failure takes precedence over retry, and retry over ordinary backlog.
-5. Green **Capture active** requires two consecutive clean samples spanning at
-   least five seconds. A retry, unreadable result, or freshness gap resets that
-   recovery streak. One clean pulse cannot briefly turn the badge green between
-   retries. While awaiting enough clean confirmation, the initial 20-second
-   warm-up window still uses Connecting, then Loading. Quiet streams remain
-   healthy through fresh successful reads.
+Connecting/Loading alone apply the steady 50% tint and capture-only interaction
+lock. Search, variations, mappings, queue controls, pins, expansion, and SKU import
+remain locked during startup. Scrolling and End/confirmation/cancel retain their
+existing availability. Open pickers close without choosing an item; typed drafts
+remain. Green/blank remove only this lock, never unrelated busy/save/error/inert
+safeguards. Capture observers, business delivery retries, live updates, and
+already-started operations keep their existing behavior.
 
-Red restores normal tracker brightness and removes the capture-loading interaction
-lock, without overriding existing save/error safeguards. It never stops capture,
-delivery retries, or health/recovery checks. These two
-10-second deadlines do not change heartbeat/poll intervals, request timeouts,
-staleness thresholds, or healthy-confirmation requirements. The displayed change
-can lag the deadline until the next panel poll.
+### Verification
 
-Health communication is bounded by short request deadlines; callbacks arriving
-after expiry cannot become fresh confirmations merely because browser timeout
-callbacks were delayed. Panel-to-worker failures show Connecting before first
-confirmation, or Loading after confirmation, then unavailable after 20 seconds of
-continued transport failure. Timers are only wakeups; freshness uses timestamps.
+Run the full suite with `node --test`. Focused coverage remains in capture-health,
+capture-health-reporter/view/badge-visibility/tint, capture-interaction-lock,
+capture-content, capture-readiness-integration, service-worker, and variation-number-search tests. Fixtures
+exercise real startup work, optional GMV, empty/waiting states, durable-in-document
+latching, document/session changes, stale messages, Reload Site accessibility, and locks.
 
-Messages contain only aggregate booleans/counts, timing, local stream ID, sequence,
-and an ephemeral source correlation ID, never OAuth credentials, buyer details,
-raw DOM text, inventory, or report contents. The worker validates the extension
-ID, exact side-panel reader URL or active top-frame supported dashboard sender,
-tab/document, local session, correlation, and increasing sequence. Full navigation
-or closure invalidates the source; a changed stream rejects old pulses. Worker
-restart starts health afresh without modifying saved session/report data. Reopening
-the panel reads current health rather than trusting its previous rendered color.
-
-Focused synthetic tests:
-
-```powershell
-node --test tests/capture-health.test.cjs tests/capture-health-reporter.test.cjs tests/capture-health-view.test.cjs tests/capture-health-badge-visibility.test.cjs tests/capture-health-tint.test.cjs tests/capture-interaction-lock.test.cjs tests/capture-content.test.cjs tests/service-worker.test.cjs tests/extension-sidepanel.test.cjs
-```
-
-Manual validation still matters: inspect narrow/wide panel layouts in Chrome,
-start with a recognized empty dashboard, observe a quiet stream and normal sales,
-switch away from Sold Items, close/reopen or refresh the dashboard, and check
-recovery after background suspension. With synthetic tracker data, verify that
-blue/yellow blocks mouse, keyboard, right-click, and Sheet-form actions while
-scrolling and End/confirmation/cancel remain available. Check focused inputs and
-open popovers at the lock transition, retained typed contents, and green/red
-unlocking without overriding save/error guards. Also verify that 13 continuous
-seconds of red hide only the badge without shifting Variation, and that a new
-blue/yellow/green state reappears immediately. Do not use real reports or inventory for
-destructive tests. A green badge cannot recover rows TikTok never rendered, prove
-the real TikTok room's identity, or independently audit report completeness.
+Remaining manual checks: normal/narrow Chrome layout; startup with empty Sold
+Items; initial catch-up; dashboard refresh; panel reopening; and green remaining
+unchanged through later metric glitches or disconnection. Verify Var # placement,
+scrolling, End controls, and independent busy safeguards using synthetic data.
+Green is deliberately not proof of a current connection or complete order capture.
+If the active variation stops updating, reload the website or extension.
 
 ## Console troubleshooting
 
@@ -1063,11 +1022,11 @@ The next capture stage should validate and implement:
 
 - a prioritized employee work queue across the now-live-refreshed, persisted bidding and
   Sold Items variations;
-- real-Chrome validation of the implemented capture-health badge across quiet
-  streams, empty dashboards, refresh/navigation, and background suspension;
-- the transition timing and color-independent meaning of processing, fixing, failed,
-  unrecognized, and other additional payment labels; the product rule deliberately keeps
-  every mapped unresolved order reserved until priced completion or exact `Canceled`;
+- real-Chrome validation of startup readiness across empty dashboards, initial
+  catch-up, dashboard refreshes, panel reopening, and later metric glitches;
+- current processing-to-terminal-failure transitions and row association, plus visibility
+  changes and the legacy explicit-countdown exception; mapped unresolved orders stay
+  reserved until a captured terminal cancellation or priced completion;
 - a stable TikTok-provided stream/session identifier across SPA navigation and full
   refresh that differs across two LIVE sessions;
 - automatic protection against assigning stale rendered rows to a new local stream;
@@ -1097,7 +1056,8 @@ outbound Sheets writes remain intentionally absent.
 - Parsing assumes English dashboard text and US-dollar formatting.
 - Exact Sold Items variation labels and sanitized payment statuses are persisted. Only a
   priced `Payment complete` can commit a sale, inventory decrement, revenue, and profit.
-  Exact `Canceled` is authoritative without counting a sale. A selected item is pending
+  Terminal `Payment failed`, `Canceled`, or `Cancelled` is authoritative without a sale.
+  A selected item is pending
   from bidding through processing, fixing, temporary failure, unrecognized, and
   price-less completion observations, and resolves only at cancellation or priced
   completion.
@@ -1119,9 +1079,9 @@ outbound Sheets writes remain intentionally absent.
 - An open multi-size inventory list similarly freezes its visible options during
   canonical or queue refresh and applies the newest deferred inventory render on close;
   underlying capture and persistence are not paused.
-- The capture-health badge confirms recent supported dashboard readability and
-  delivery state, not complete coverage of every TikTok sale. Its recognized
-  empty/waiting views and timing still need broader real-dashboard validation.
+- The startup badge remembers completed initialization, not current connection or
+  complete coverage of every TikTok sale. Initial empty/waiting views and actual
+  document-refresh transitions still need broader real-dashboard validation.
 - Browser or process suspension can delay scans and delivery retries.
 - The retained live-auction display is temporary session state rather than reconciliation
   history. It survives service-worker suspension and side-panel reopening, but is

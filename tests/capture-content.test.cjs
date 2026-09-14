@@ -46,23 +46,29 @@ class FakeText {
 
 class FakeElement {
   constructor({
+    ariaHidden = null,
     className = "",
     dataTid = null,
     height = 20,
+    hidden = false,
     id = null,
     name = "element",
     ownText = "",
     tagName = "DIV",
+    title = null,
     width = 100,
   } = {}) {
     this.nodeType = 1;
+    this.ariaHidden = ariaHidden;
     this.className = className;
     this.dataTid = dataTid;
     this.height = height;
+    this.hidden = hidden;
     this.id = id;
     this.name = name;
     this.ownText = ownText;
     this.tagName = tagName;
+    this.title = title;
     this.width = width;
     this.children = [];
     this.parentElement = null;
@@ -91,7 +97,11 @@ class FakeElement {
     }
 
     if (name === "aria-hidden") {
-      return null;
+      return this.ariaHidden;
+    }
+
+    if (name === "title") {
+      return this.title;
     }
 
     return null;
@@ -581,7 +591,7 @@ function createHarness({
     TikTokLiveTrackerCaptureClient: clientAvailable
       ? captureClientModule
       : undefined,
-    TikTokLiveTrackerCaptureHealth: { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 1 },
+    TikTokLiveTrackerCaptureHealth: { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 2 },
     TikTokLiveTrackerCaptureHealthReporter: healthReporterModule,
     chrome: {
       runtime: {
@@ -874,7 +884,13 @@ test("starts one capture session on the exact dashboard and installs lifecycle s
   assert.equal(captureObserver.observeCalls[0].target, harness.currentRoot());
   assert.deepEqual(
     JSON.parse(JSON.stringify(captureObserver.observeCalls[0].options)),
-    { childList: true, subtree: true, characterData: true },
+    {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["title", "hidden", "aria-hidden", "style", "class"],
+    },
   );
   assert.deepEqual(
     JSON.parse(JSON.stringify(lifecycleObserver.observeCalls[0].options)),
@@ -1091,6 +1107,12 @@ test("captures every sanitized row status before completed payments", async () =
   setPaymentText(processing, "Payment processing...");
   setPaymentText(fixing, "Payment fixing");
   setPaymentText(failed, "Payment failed");
+  failed.row.append(
+    new FakeElement({
+      name: "legacy-payment-retry-countdown",
+      ownText: "Transaction will cancel in 04:42",
+    }),
+  );
   setPaymentText(canceled, "Canceled");
   canceled.row.append(
     new FakeElement({
@@ -1150,11 +1172,11 @@ test("captures every sanitized row status before completed payments", async () =
   );
   assert.doesNotMatch(
     JSON.stringify(harness.captureMessages),
-    /Canceled|Payment failed/,
+    /Canceled|Payment failed|Transaction will cancel|04:42/,
   );
   assert.doesNotMatch(
     JSON.stringify([...harness.infos, ...harness.warnings, ...harness.errors]),
-    /Buyer One|Buyer Two|Buyer Three|Buyer Four|Buyer Five|Buyer Six|Canceled|Payment failed|Private custom badge text/,
+    /Buyer One|Buyer Two|Buyer Three|Buyer Four|Buyer Five|Buyer Six|Canceled|Payment failed|Transaction will cancel|04:42|Private custom badge text/,
   );
 });
 
@@ -1195,6 +1217,69 @@ test("Order processing ellipses share one observation without committing a sale"
     soldPriceCents: 700,
   });
 });
+
+for (const [label, observedPaymentStatus] of [
+  ["Payment processing", "payment_processing"],
+  ["Order processing", "order_processing"],
+]) {
+  test(`${label} ellipses stay provisional until Payment failed emits cancellation without a price`, async () => {
+    const sale = createSaleRow(
+      "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+    );
+    setPaymentText(sale, label);
+    const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+    await flushAsync();
+    const initialEvents = [
+      { type: "observe_variations", variationNumbers: [44] },
+      {
+        type: "observe_payment_statuses",
+        statuses: [{ variationNumber: 44, observedPaymentStatus }],
+      },
+    ];
+    assert.deepEqual(harness.captureMessages.map(({ event }) => event), initialEvents);
+    assert.equal(harness.timeouts.size, 0);
+
+    for (const suffix of ["...", "\u2026"]) {
+      setPaymentText(sale, `${label}${suffix}`);
+      latestCaptureObserver(harness).trigger([
+        { type: "characterData", target: sale.statusText },
+      ]);
+      harness.tickIntervals();
+      harness.tickTimeouts();
+      await flushAsync();
+      assert.deepEqual(harness.captureMessages.map(({ event }) => event), initialEvents);
+      assert.equal(harness.timeouts.size, 0, "processing does not start a cancellation timer");
+    }
+
+    setPaymentText(sale, "Payment failed");
+    latestCaptureObserver(harness).trigger([
+      { type: "characterData", target: sale.statusText },
+    ]);
+    await flushAsync();
+    const canceledEvent = {
+      type: "observe_payment_statuses",
+      statuses: [{ variationNumber: 44, observedPaymentStatus: "canceled" }],
+    };
+    assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+      ...initialEvents,
+      canceledEvent,
+    ]);
+    assert.equal(harness.completedSaleLogs().length, 0);
+    assert.equal(harness.timeouts.size, 0);
+
+    setPaymentText(sale, "Canceled");
+    latestCaptureObserver(harness).trigger([
+      { type: "characterData", target: sale.statusText },
+    ]);
+    await flushAsync();
+    assert.equal(harness.captureMessages.length, 3, "equivalent terminal labels are deduplicated");
+    assert.equal(
+      harness.captureMessages.some(({ event }) => event.type === "payment_complete"),
+      false,
+    );
+  });
+}
 
 test("an unpriced completion remains provisional and can transition", async () => {
   const sale = createSaleRow(
@@ -1295,15 +1380,17 @@ test("streams status transitions once and keeps a completed payment sticky", asy
     soldPriceCents: 700,
   });
 
-  setPaymentText(sale, "Canceled");
-  latestCaptureObserver(harness).trigger([
-    { type: "characterData", target: sale.statusText },
-  ]);
-  await flushAsync();
-  assert.equal(harness.captureMessages.length, 4);
+  for (const label of ["Canceled", "Payment failed"]) {
+    setPaymentText(sale, label);
+    latestCaptureObserver(harness).trigger([
+      { type: "characterData", target: sale.statusText },
+    ]);
+    await flushAsync();
+    assert.equal(harness.captureMessages.length, 4);
+  }
 });
 
-test("streams failed, fixing, canceled, and processing as distinct observations", async () => {
+test("streams legacy retry-window failed, fixing, canceled, and processing as distinct observations", async () => {
   const sale = createSaleRow(
     "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
   );
@@ -1312,6 +1399,10 @@ test("streams failed, fixing, canceled, and processing as distinct observations"
     new FakeElement({
       name: "payment-failure-detail",
       ownText: "Payment failed",
+    }),
+    new FakeElement({
+      name: "legacy-payment-retry-countdown",
+      ownText: "Transaction will cancel in 04:42",
     }),
   );
   const harness = createHarness({ rows: [sale], scanOnRequest: true });
@@ -1362,11 +1453,185 @@ test("streams failed, fixing, canceled, and processing as distinct observations"
   );
 });
 
-test("a stale Payment failed retry never overwrites newer Canceled", async () => {
+test("a failed row becomes canceled when its live retry countdown disappears", async () => {
   const sale = createSaleRow(
     "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
   );
   setPaymentText(sale, "Payment failed");
+  const countdownText = new FakeText("Transaction will cancel in 04:42");
+  const countdown = new FakeElement({ name: "legacy-payment-retry-countdown" }).append(countdownText);
+  sale.row.append(countdown);
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+
+  await flushAsync();
+  assert.equal(
+    harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus,
+    "payment_failed",
+  );
+
+  countdownText.textContent = "Transaction will cancel in 04:41";
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: countdownText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.timeouts.size, 0, "the visible countdown is not an extension timer");
+
+  sale.row.children = sale.row.children.filter((child) => child !== countdown);
+  countdown.parentElement = null;
+  countdown.parentNode = null;
+  latestCaptureObserver(harness).trigger([
+    { type: "childList", target: sale.row, addedNodes: [], removedNodes: [countdown] },
+  ]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [{ variationNumber: 44, observedPaymentStatus: "canceled" }],
+  });
+  assert.equal(harness.captureMessages.length, 3);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("scoped countdown title mutations rescan failure status without watching unrelated attributes", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment failed");
+  const countdown = new FakeElement({
+    name: "truncated-payment-retry-countdown",
+    ownText: "Transactio...",
+    title: "Transaction will cancel in 04:42",
+  });
+  sale.row.append(countdown);
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  const observer = latestCaptureObserver(harness);
+  const [session] = harness.schedulerSessions;
+  await flushAsync();
+  assert.equal(
+    harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus,
+    "payment_failed",
+  );
+
+  const outside = new FakeElement({
+    ownText: "Transactio...",
+    title: "Transaction will cancel in 04:42",
+  });
+  harness.currentBody().append(outside);
+  const beforeQueries = harness.bodyQueryCount;
+  observer.trigger([{ type: "attributes", attributeName: "title", target: outside }]);
+  observer.trigger([{ type: "attributes", attributeName: "data-state", target: countdown }]);
+  assert.equal(session.requestCount, 0);
+  assert.equal(harness.bodyQueryCount, beforeQueries);
+
+  for (const title of ["Transaction will cancel in 04:41", "Transaction will cancel in 00:00"]) {
+    countdown.title = title;
+    observer.trigger([{ type: "attributes", attributeName: "title", target: countdown }]);
+    await flushAsync();
+    assert.equal(harness.captureMessages.length, 2, "countdown text does not infer terminal cancellation");
+    assert.equal(harness.timeouts.size, 0);
+  }
+  assert.equal(session.requestCount, 2);
+
+  countdown.title = null;
+  observer.trigger([{ type: "attributes", attributeName: "title", target: countdown }]);
+  await flushAsync();
+  assert.equal(session.requestCount, 3);
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses",
+    statuses: [{ variationNumber: 44, observedPaymentStatus: "canceled" }],
+  });
+  assert.equal(harness.captureMessages.length, 3);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.timeouts.size, 0);
+  assert.doesNotMatch(
+    JSON.stringify([...harness.captureMessages, ...harness.infos, ...harness.warnings, ...harness.errors]),
+    /Transactio|04:42|04:41|00:00/,
+  );
+});
+
+for (const [attributeName, hideDetail] of [
+  ["hidden", (detail) => { detail.hidden = true; }],
+  ["aria-hidden", (detail) => { detail.ariaHidden = "true"; }],
+  ["style", (detail) => { detail.height = 0; }],
+  ["class", (detail) => { detail.className = "hidden"; detail.height = 0; }],
+]) {
+  test(`countdown visibility changes via ${attributeName} schedule cancellation but unrelated attributes do not`, async () => {
+    const sale = createSaleRow(
+      "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+    );
+    setPaymentText(sale, "Payment failed");
+    const countdown = new FakeElement({
+      ownText: "Transaction will cancel in 04:42",
+    });
+    sale.row.append(countdown);
+    const processing = createSaleRow(
+      "Other Buyer has won: $8.00 Variation: #45 Awaiting payment",
+    );
+    setPaymentText(processing, "Payment processing");
+    const unrelatedDetail = new FakeElement({ ownText: "Unrelated row detail" });
+    processing.row.append(unrelatedDetail);
+    const harness = createHarness({ rows: [sale, processing], scanOnRequest: true });
+    const observer = latestCaptureObserver(harness);
+    const [session] = harness.schedulerSessions;
+    await flushAsync();
+    assert.deepEqual(harness.captureMessages.at(-1).event.statuses, [
+      { variationNumber: 44, observedPaymentStatus: "payment_failed" },
+      { variationNumber: 45, observedPaymentStatus: "payment_processing" },
+    ]);
+
+    const outside = new FakeElement({ ownText: "Unrelated dashboard detail" });
+    harness.currentBody().append(outside);
+    const beforeQueries = harness.bodyQueryCount;
+    hideDetail(outside);
+    observer.trigger([{ type: "attributes", attributeName, target: outside }]);
+    hideDetail(unrelatedDetail);
+    observer.trigger([{ type: "attributes", attributeName, target: unrelatedDetail }]);
+    observer.trigger([{ type: "attributes", attributeName: "data-state", target: countdown }]);
+    assert.equal(session.requestCount, 0);
+    assert.equal(harness.bodyQueryCount, beforeQueries);
+
+    // The fake DOM models class/style layout changes through its bounds.
+    hideDetail(countdown);
+    observer.trigger([{ type: "attributes", attributeName, target: countdown }]);
+    await flushAsync();
+    assert.equal(session.requestCount, 1);
+    assert.deepEqual(harness.captureMessages.at(-1).event, {
+      type: "observe_payment_statuses",
+      statuses: [{ variationNumber: 44, observedPaymentStatus: "canceled" }],
+    });
+    assert.equal(harness.captureMessages.length, 3);
+    assert.equal(harness.completedSaleLogs().length, 0);
+    assert.equal(harness.timeouts.size, 0);
+  });
+}
+
+test("hiding a failed row never manufactures a cancellation from an unreadable countdown", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment failed");
+  sale.row.append(new FakeElement({ ownText: "Transaction will cancel in 04:42" }));
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  await flushAsync();
+  assert.equal(harness.captureMessages.at(-1).event.statuses[0].observedPaymentStatus, "payment_failed");
+
+  sale.row.hidden = true;
+  latestCaptureObserver(harness).trigger([
+    { type: "attributes", attributeName: "hidden", target: sale.row },
+  ]);
+  await flushAsync();
+  assert.equal(harness.schedulerSessions[0].requestCount, 1);
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("a stale processing retry never overwrites a newer Payment failed cancellation", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment processing...");
   let statusAttempts = 0;
   const harness = createHarness({
     rows: [sale],
@@ -1392,7 +1657,7 @@ test("a stale Payment failed retry never overwrites newer Canceled", async () =>
   await flushAsync();
   assert.equal(harness.timeouts.size, 1);
 
-  setPaymentText(sale, "Canceled");
+  setPaymentText(sale, "Payment failed");
   latestCaptureObserver(harness).trigger([
     { type: "characterData", target: sale.statusText },
   ]);
@@ -1406,8 +1671,73 @@ test("a stale Payment failed retry never overwrites newer Canceled", async () =>
     harness.captureMessages
       .filter(({ event }) => event.type === "observe_payment_statuses")
       .map(({ event }) => event.statuses[0].observedPaymentStatus),
-    ["payment_failed", "canceled"],
+    ["payment_processing", "canceled"],
   );
+  assert.equal(harness.timeouts.size, 0);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(
+    harness.captureMessages.some(({ event }) => event.type === "payment_complete"),
+    false,
+  );
+});
+
+test("retries a Payment failed cancellation without a DOM mutation or a completed-sale price", async () => {
+  const sale = createSaleRow(
+    "Example Buyer has won: $7.00 Variation: #44 Awaiting payment",
+  );
+  setPaymentText(sale, "Payment processing\u2026");
+  let cancellationAttempts = 0;
+  const harness = createHarness({
+    rows: [sale],
+    scanOnRequest: true,
+    captureResponseHandler: async (message) => {
+      if (
+        message.event.type === "observe_payment_statuses" &&
+        message.event.statuses[0].observedPaymentStatus === "canceled" &&
+        cancellationAttempts++ === 0
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "NO_ACTIVE_STREAM",
+            message: "No active tracker stream is available.",
+          },
+        };
+      }
+
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 0);
+  setPaymentText(sale, "Payment failed");
+  latestCaptureObserver(harness).trigger([
+    { type: "characterData", target: sale.statusText },
+  ]);
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 1, "the only timeout retries delivery");
+  const beforeRetryQueries = harness.bodyQueryCount;
+
+  harness.tickTimeouts();
+  await flushAsync();
+
+  const canceledEvent = {
+    type: "observe_payment_statuses",
+    statuses: [{ variationNumber: 44, observedPaymentStatus: "canceled" }],
+  };
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+    {
+      type: "observe_payment_statuses",
+      statuses: [{ variationNumber: 44, observedPaymentStatus: "payment_processing" }],
+    },
+    canceledEvent,
+    canceledEvent,
+  ]);
+  assert.equal(cancellationAttempts, 2);
+  assert.equal(harness.bodyQueryCount, beforeRetryQueries, "retry uses the queued sanitized status");
+  assert.equal(harness.completedSaleLogs().length, 0);
   assert.equal(harness.timeouts.size, 0);
 });
 
@@ -2865,13 +3195,18 @@ test("capture remains page-read-only and delegates only extension messages", () 
   );
 });
 
-function createHealthProbeHarness(options = {}) {
+function createHealthProbeHarness({
+  includeGmv = true,
+  gmvDisplay = "$4.64K",
+  streamId = "synthetic-stream-1",
+  ...options
+} = {}) {
   let readHealth;
   let started = 0;
   let disposed = 0;
-  const metric = createAttributedGmvMetric();
+  const metric = createAttributedGmvMetric(gmvDisplay);
   const body = createBody();
-  body.append(metric.root);
+  if (includeGmv) body.append(metric.root);
   const sale = createSaleRow("Buyer has won: $15.00 Variation: #1 Payment complete");
   const harness = createHarness({
     body, rows: [sale], ...options,
@@ -2883,128 +3218,322 @@ function createHealthProbeHarness(options = {}) {
     },
   });
   return {
-    harness, metric, sale, sample: () => JSON.parse(JSON.stringify(readHealth())),
+    harness, metric, sale,
+    sample: (context = { streamId }) => JSON.parse(JSON.stringify(readHealth(context))),
+    setStreamId(nextStreamId) { streamId = nextStreamId; },
     get started() { return started; }, get disposed() { return disposed; },
   };
 }
 
-test("capture health probes a quiet dashboard without queueing observations or scheduling scans", async () => {
+test("startup readiness returns only a phase and does not enqueue observations or schedule scans", async () => {
   const health = createHealthProbeHarness();
+  assert.deepEqual(health.sample({}), { phase: "blank" });
+  assert.deepEqual(health.sample(), { phase: "loading" });
   await flushAsync();
   const beforeMessages = health.harness.captureMessages.length;
   const beforeRequests = health.harness.schedulerSessions.map((entry) => entry.requestCount);
   assert.equal(health.started, 1);
-  assert.deepEqual(health.sample(), { readable: true, pending: 0, inFlight: false, retrying: false, visible: true });
+  assert.deepEqual(health.sample(), { phase: "ready" });
   health.sample(); health.sample();
   assert.equal(health.harness.captureMessages.length, beforeMessages);
   assert.deepEqual(health.harness.schedulerSessions.map((entry) => entry.requestCount), beforeRequests);
-  health.harness.document.visibilityState = "hidden";
-  assert.equal(health.sample().visible, false);
-  health.harness.setPathname(`${DASHBOARD_PATH}/unsupported`);
-  assert.equal(health.sample().readable, false);
   health.harness.dispatchWindow("pagehide");
   assert.equal(health.disposed, 1);
 });
 
-test("capture health accepts scoped known-empty Sold Items but never a bare root or unrelated empty text", async () => {
+for (const [description, options] of [
+  ["missing GMV", { includeGmv: false }],
+  ["zero GMV", { gmvDisplay: "$0" }],
+  ["an unreadable GMV display", { gmvDisplay: "Unavailable" }],
+]) {
+  test(`startup readiness works with ${description}`, async () => {
+    const health = createHealthProbeHarness(options);
+    assert.deepEqual(health.sample(), { phase: "loading" });
+    await flushAsync();
+    assert.deepEqual(health.sample(), { phase: "ready" });
+  });
+}
+
+test("startup readiness accepts scoped known-empty Sold Items but not a bare root or unrelated empty text", async () => {
   const health = createHealthProbeHarness({ rows: [] });
+  const soldScheduler = health.harness.schedulerSessions[0];
   await flushAsync();
-  assert.equal(health.sample().readable, false);
+  assert.deepEqual(health.sample(), { phase: "blank" });
   const empty = new FakeElement({ ownText: "Orders placed during your LIVE will show up here" });
   health.harness.currentBody().append(empty);
-  assert.equal(health.sample().readable, false);
-  health.harness.currentRoot().append(empty);
-  assert.equal(health.sample().readable, true);
+  soldScheduler.options.scan();
+  assert.deepEqual(health.sample(), { phase: "blank" });
   empty.height = 0;
-  assert.equal(health.sample().readable, false);
+  health.harness.currentRoot().append(empty);
+  soldScheduler.options.scan();
+  assert.deepEqual(health.sample(), { phase: "blank" });
+  empty.height = 20;
+  assert.deepEqual(health.sample(), { phase: "blank" }, "new evidence must pass through a capture scan");
+  soldScheduler.options.scan();
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.equal(health.harness.completedSaleLogs().length, 0);
 });
 
-test("capture health freshly validates all three paths including malformed visible auctions and GMV", async () => {
-  const health = createHealthProbeHarness();
-  const auction = createBiddingAuctionCard(2, "Bids: $9.00");
+test("startup readiness can initialize from a visible bidding variation while waiting for its first bid", async () => {
+  const health = createHealthProbeHarness({ rows: [], rootCount: 0, includeGmv: false, autoRun: false });
+  const auction = createBiddingAuctionCard(2);
   health.harness.currentBody().append(auction.root);
-  health.harness.tickIntervals(); await flushAsync();
-  assert.equal(health.sample().readable, true);
-  auction.titleText.textContent = "TikTok changed the variation layout";
-  assert.equal(health.sample().readable, false);
-  auction.titleText.textContent = "#2 Sample auction";
-  auction.bidPriceText.textContent = "Bids: unavailable";
-  assert.equal(health.sample().readable, false);
-  auction.bidPriceText.textContent = "";
-  assert.equal(health.sample().readable, true, "No bid yet is valid waiting");
-  health.metric.value.children[0].textContent = "Changed GMV display";
-  assert.equal(health.sample().readable, false);
-  health.metric.value.children[0].textContent = "$4.64K";
-  assert.equal(health.sample().readable, true);
-  health.sale.variationLabel.ownText = "Changed variation layout";
-  assert.equal(health.sample().readable, false);
+  health.harness.runContent();
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.deepEqual(health.harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_bidding_variation", variationNumber: 2 },
+  ]);
 });
 
-test("capture health includes pending work, in-flight work and retries from every delivery path", async () => {
+test("startup readiness accepts observed Sold Items variations before any completed sale", async () => {
+  const row = new FakeElement().append(
+    new FakeElement({ ownText: "Variation: #44", tagName: "SPAN" }),
+  );
+  const health = createHealthProbeHarness({ rows: [{ row }], includeGmv: false });
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.deepEqual(health.harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+  ]);
+});
+
+test("startup readiness remains blank when neither core source is initialized", async () => {
+  const health = createHealthProbeHarness({ rows: [], rootCount: 0 });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "blank" });
+  assert.deepEqual(health.sample(), { phase: "blank" });
+  assert.ok(health.harness.captureMessages.some(({ event }) => event.type === "observe_attributed_gmv"));
+});
+
+test("a newly added row cannot become ready before its scheduled scan and actual delivery finish", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
   const health = createHealthProbeHarness({
-    captureResponseHandler: async () => ({ ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } }),
+    rows: [],
+    includeGmv: false,
+    captureResponseHandler: async () => {
+      await gate;
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  const soldScheduler = health.harness.schedulerSessions[0];
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "blank" });
+
+  const sale = createSaleRow("Synthetic Buyer has won: $15.00 Variation: #44 Payment complete");
+  health.harness.setRows([sale]);
+  health.harness.captureObservers()[0].trigger([{
+    type: "childList", target: health.harness.currentRoot(), addedNodes: [sale.row], removedNodes: [],
+  }]);
+  assert.equal(soldScheduler.requestCount, 1);
+  assert.deepEqual(health.harness.captureMessages, []);
+  assert.deepEqual(health.sample(), { phase: "blank" }, "a requested but unrun scan has no initial evidence");
+
+  soldScheduler.options.scan();
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  assert.deepEqual(health.harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+  ]);
+  release();
+  await flushAsync();
+  assert.deepEqual(health.harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+    { type: "payment_complete", variationNumber: 44, soldPriceCents: 1500 },
+  ]);
+  assert.deepEqual(health.sample(), { phase: "ready" });
+});
+
+test("startup readiness waits for real in-flight Sold Items delivery to drain", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const health = createHealthProbeHarness({
+    includeGmv: false,
+    captureResponseHandler: async () => {
+      await gate;
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  assert.equal(health.harness.captureMessages.length, 1);
+  release();
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.equal(health.harness.captureMessages.length, 2);
+});
+
+test("startup readiness waits for bidding delivery retries even after Sold Items has drained", async () => {
+  let failBidding = true;
+  const health = createHealthProbeHarness({
+    includeGmv: false,
+    autoRun: false,
+    captureResponseHandler: async (message) => {
+      if (message.event.type === "observe_bidding_variation" && failBidding) {
+        failBidding = false;
+        return { ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } };
+      }
+      return { ok: true, data: { status: "accepted" } };
+    },
   });
   const auction = createBiddingAuctionCard(2, "Bids: $9.00");
   health.harness.currentBody().append(auction.root);
-  health.harness.tickIntervals();
-  assert.equal(health.sample().inFlight, true);
+  health.harness.runContent();
+  assert.deepEqual(health.sample(), { phase: "loading" });
   await flushAsync();
-  const state = health.sample();
-  assert.equal(state.readable, true);
-  assert.equal(state.inFlight, false);
-  assert.equal(state.retrying, true);
-  assert.ok(state.pending >= 3);
-  assert.deepEqual(Object.keys(state).sort(), ["inFlight", "pending", "readable", "retrying", "visible"]);
+  assert.ok(health.harness.captureMessages.some(({ event }) => event.type === "payment_complete"));
+  assert.equal(health.harness.timeouts.size, 1);
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  health.harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(health.harness.timeouts.size, 0);
+  assert.deepEqual(health.sample(), { phase: "ready" });
 });
 
-test("capture health retains scan and scheduling faults until successful capture recovery", async () => {
-  const health = createHealthProbeHarness({ schedulerRequestFailures: 1, scanOnRequest: true });
+test("startup readiness ignores GMV delivery retries and scan faults", async () => {
+  const health = createHealthProbeHarness({
+    captureResponseHandler: async (message) => message.event.type === "observe_attributed_gmv"
+      ? { ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } }
+      : { ok: true, data: { status: "accepted" } },
+  });
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  const gmvScheduler = health.harness.schedulerSessions[1];
+  gmvScheduler.options.onError(new Error("synthetic GMV scan fault"));
+  assert.equal(health.harness.timeouts.size, 1);
+  assert.deepEqual(health.sample(), { phase: "ready" });
+});
+
+test("a GMV observer startup failure does not block a valid bidding source", async () => {
+  const health = createHealthProbeHarness({ rows: [], rootCount: 0, bodyObserveFailures: 1, autoRun: false });
+  health.harness.currentBody().append(createBiddingAuctionCard(2).root);
+  health.harness.runContent();
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.ok(health.harness.errors.some(([message]) => message.includes("Attributed GMV startup failed")));
+  assert.deepEqual(health.sample(), { phase: "ready" });
+});
+
+test("pre-ready scan and scheduling faults remain blank until an actual successful scan", async () => {
+  const health = createHealthProbeHarness({ includeGmv: false, schedulerRequestFailures: 1, scanOnRequest: true });
+  assert.deepEqual(health.sample(), { phase: "loading" });
   await flushAsync();
   const soldScheduler = health.harness.schedulerSessions[0];
-  const soldObserver = health.harness.captureObservers().find((observer) => observer.target === health.harness.currentRoot());
-  assert.equal(health.sample().readable, true);
+  const soldObserver = health.harness.captureObservers()[0];
   soldObserver.trigger();
-  assert.equal(health.sample().readable, false);
-  assert.equal(health.sample().readable, false, "A quiet DOM read must not clear scheduling errors");
+  assert.deepEqual(health.sample(), { phase: "blank" });
+  assert.deepEqual(health.sample(), { phase: "blank" }, "A sample must not clear scheduling errors");
   soldObserver.trigger(); await flushAsync();
-  assert.equal(health.sample().readable, true);
+  assert.deepEqual(health.sample(), { phase: "ready" });
+
+  health.setStreamId("synthetic-stream-2");
   soldScheduler.options.onError(new Error("scan failed"));
-  assert.equal(health.sample().readable, false);
+  assert.deepEqual(health.sample(), { phase: "blank" });
+  assert.deepEqual(health.sample(), { phase: "blank" });
   soldScheduler.options.scan(); await flushAsync();
-  assert.equal(health.sample().readable, true);
+  assert.deepEqual(health.sample(), { phase: "ready" });
 });
 
-test("capture health is unavailable after observer startup failure and recovers with a new ready session", async () => {
-  const health = createHealthProbeHarness({ bodyObserveFailures: 1 });
+test("startup readiness is blank after core observer failure and recovers with a ready session", async () => {
+  const health = createHealthProbeHarness({ includeGmv: false, bodyObserveFailures: 1 });
   await flushAsync();
-  assert.equal(health.sample().readable, false);
+  assert.deepEqual(health.sample(), { phase: "blank" });
   health.harness.tickIntervals(); await flushAsync();
-  assert.equal(health.sample().readable, true);
+  assert.deepEqual(health.sample(), { phase: "ready" });
 });
 
-test("a fresh capture health read exception is contained and does not enqueue or expose raw text", async () => {
-  const health = createHealthProbeHarness();
+test("a pre-ready capture scan exception stays blank until a successful scan without extra delivery", async () => {
+  const health = createHealthProbeHarness({ includeGmv: false, scanOnRequest: true });
+  assert.deepEqual(health.sample(), { phase: "loading" });
   await flushAsync();
   const before = health.harness.captureMessages.length;
   const root = health.harness.currentRoot();
   const previous = root.onQuery;
   root.onQuery = () => { throw new Error("private page text must not be sent"); };
-  assert.equal(health.sample().readable, false);
+  health.harness.captureObservers()[0].trigger();
+  assert.deepEqual(health.sample(), { phase: "blank" });
   assert.equal(health.harness.captureMessages.length, before);
   root.onQuery = previous;
-  assert.equal(health.sample().readable, true);
+  assert.deepEqual(health.sample(), { phase: "blank" }, "restoring DOM reads does not clear a failed scan");
+  health.harness.captureObservers()[0].trigger();
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.equal(health.harness.captureMessages.length, before);
 });
 
-test("unrecognized payment text and unparseable completed prices cannot report readable capture", async () => {
-  const health = createHealthProbeHarness();
+test("ready stays latched through later work, capture faults and route changes without further DOM reads", async () => {
+  let holdDeliveries = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const health = createHealthProbeHarness({
+    includeGmv: false,
+    scanOnRequest: true,
+    captureResponseHandler: async () => {
+      if (holdDeliveries) await gate;
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  assert.deepEqual(health.sample(), { phase: "loading" });
   await flushAsync();
-  const before = health.harness.captureMessages.length;
-  setPaymentText(health.sale, "Unexpected TikTok payment label");
-  assert.equal(health.sample().readable, false);
-  setPaymentText(health.sale, "Payment complete");
-  setSaleSummary(health.sale, "Buyer has won: price unavailable Variation: #1");
-  assert.equal(health.sample().readable, false);
-  setSaleSummary(health.sale, "Buyer has won: $15.00 Variation: #1");
-  assert.equal(health.sample().readable, true);
-  assert.equal(health.harness.captureMessages.length, before);
+  assert.deepEqual(health.sample(), { phase: "ready" });
+
+  holdDeliveries = true;
+  setSaleSummary(health.sale, "Buyer has won: $16.00 Variation: #2");
+  health.harness.captureObservers()[0].trigger([{ type: "characterData", target: health.sale.summaryText }]);
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  health.harness.schedulerSessions[0].options.onError(new Error("late capture fault"));
+  let reads = 0;
+  health.harness.currentBody().onQuery = () => { reads++; throw new Error("late unreadable DOM"); };
+  health.harness.currentRoot().onQuery = () => { reads++; throw new Error("late unreadable rows"); };
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  health.harness.document.visibilityState = "hidden";
+  health.harness.setPathname("/streamer/live/event/list");
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  assert.equal(reads, 0, "a latched ready sample never reads the DOM");
+
+  health.setStreamId("synthetic-stream-2");
+  assert.deepEqual(health.sample(), { phase: "blank" }, "new stream context cannot inherit ready");
+  release();
+  await flushAsync();
+});
+
+test("a new stream may reuse real document initialization but not an old latch after evidence is rescanned away", async () => {
+  const health = createHealthProbeHarness({ includeGmv: false });
+  assert.deepEqual(health.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" });
+  const beforeMessages = health.harness.captureMessages.length;
+
+  health.setStreamId("synthetic-stream-2");
+  assert.deepEqual(health.sample(), { phase: "ready" }, "current real initialization needs no artificial loading cycle");
+  assert.equal(health.harness.captureMessages.length, beforeMessages);
+
+  const root = health.harness.currentRoot();
+  root.children = [];
+  health.sale.row.parentElement = null;
+  health.sale.row.parentNode = null;
+  health.harness.schedulerSessions[0].options.scan();
+  await flushAsync();
+  assert.deepEqual(health.sample(), { phase: "ready" }, "the current stream remains latched");
+  health.setStreamId("synthetic-stream-3");
+  assert.deepEqual(health.sample(), { phase: "blank" }, "a new stream needs evidence from actual capture scans");
+});
+
+test("a fresh document starts loading again for the same synthetic stream", async () => {
+  const first = createHealthProbeHarness({ includeGmv: false });
+  assert.deepEqual(first.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(first.sample(), { phase: "ready" });
+
+  const refreshed = createHealthProbeHarness({ includeGmv: false });
+  assert.deepEqual(refreshed.sample(), { phase: "loading" });
+  await flushAsync();
+  assert.deepEqual(refreshed.sample(), { phase: "ready" });
 });

@@ -9,6 +9,16 @@ const clientModule = require(
 );
 
 const STREAM_ID = "local-stream:11111111-1111-4111-8111-111111111111";
+const QUEUE_TOKEN = "11111111-1111-4111-8111-111111111111";
+
+function clearOptions(overrides = {}) {
+  return {
+    expectedStreamId: STREAM_ID,
+    expectedQueueToken: QUEUE_TOKEN,
+    sku: "TEE-L",
+    ...overrides,
+  };
+}
 
 test("next-item queue protocol keeps GET, map-current, toggle, and notification exact", () => {
   const getMessage = protocol.createNextItemQueueMessage();
@@ -68,6 +78,165 @@ test("next-item queue protocol keeps GET, map-current, toggle, and notification 
     }),
     false,
   );
+});
+
+test("queue protocol adds exact snapshot and explicit-clear commands without changing old contracts", () => {
+  assert.deepEqual(protocol.createNextItemQueueMessage({ type: "get_queue_snapshot" }), {
+    channel: protocol.MESSAGE_CHANNEL,
+    version: 1,
+    command: { type: "get_queue_snapshot" },
+  });
+  const command = { type: "clear_queue", ...clearOptions() };
+  assert.deepEqual(
+    protocol.validateNextItemQueueMessage(protocol.createNextItemQueueMessage(command)),
+    command,
+  );
+  for (const invalid of [
+    { type: "get_queue_snapshot", sku: "TEE-L" },
+    { ...command, expectedVariationNumber: 203 },
+    { ...command, expectedQueueToken: null },
+    { ...command, expectedQueueToken: "" },
+    { ...command, expectedQueueToken: 1 },
+    { ...command, expectedQueueToken: "unverified-queue" },
+    { ...command, expectedQueueToken: `${QUEUE_TOKEN} ` },
+    { ...command, expectedQueueToken: "11111111-1111-1111-8111-111111111111" },
+    { ...command, expectedStreamId: "" },
+    { ...command, sku: " TEE-L" },
+    { ...command, extra: true },
+  ]) {
+    assert.throws(
+      () => protocol.createNextItemQueueMessage(invalid),
+      (error) => error.code === "INVALID_NEXT_ITEM_QUEUE_MESSAGE",
+    );
+  }
+  for (const key of ["expectedStreamId", "expectedQueueToken", "sku"]) {
+    const invalid = { ...command };
+    delete invalid[key];
+    assert.throws(
+      () => protocol.createNextItemQueueMessage(invalid),
+      (error) => error.code === "INVALID_NEXT_ITEM_QUEUE_MESSAGE",
+    );
+  }
+});
+
+test("queue client reads strict generation snapshots and sends a detached explicit clear", async () => {
+  const calls = [];
+  const client = clientModule.createNextItemQueueClient({
+    protocol,
+    runtime: {
+      async sendMessage(message) {
+        calls.push(message);
+        return {
+          ok: true,
+          data: message.command.type === "get_queue_snapshot"
+            ? { queuedSku: "TEE-L", queueToken: QUEUE_TOKEN }
+            : { status: "cleared", queuedSku: null },
+        };
+      },
+    },
+  });
+  assert.deepEqual(await client.getQueueSnapshot(), {
+    queuedSku: "TEE-L", queueToken: QUEUE_TOKEN,
+  });
+  const options = clearOptions();
+  const clear = client.clearQueue(options);
+  options.sku = "OTHER";
+  options.expectedQueueToken = "modified";
+  assert.deepEqual(await clear, { status: "cleared", queuedSku: null });
+  assert.deepEqual(calls, [
+    protocol.createNextItemQueueMessage({ type: "get_queue_snapshot" }),
+    protocol.createNextItemQueueMessage({ type: "clear_queue", ...clearOptions() }),
+  ]);
+});
+
+test("queue client rejects malformed snapshot pairs and malformed clear acknowledgements", async () => {
+  const invalidSnapshots = [
+    {},
+    { queuedSku: "TEE-L" },
+    { queueToken: QUEUE_TOKEN },
+    { queuedSku: null, queueToken: QUEUE_TOKEN },
+    { queuedSku: "TEE-L", queueToken: null },
+    { queuedSku: "TEE-L", queueToken: "" },
+    { queuedSku: "TEE-L", queueToken: 1 },
+    { queuedSku: "TEE-L", queueToken: "old-generation" },
+    { queuedSku: " TEE-L", queueToken: QUEUE_TOKEN },
+    { queuedSku: null, queueToken: null, extra: true },
+    { queuedSku: "TEE-L", queueToken: QUEUE_TOKEN, streamId: STREAM_ID },
+  ];
+  const invalidClearResults = [
+    {},
+    { status: "queued", queuedSku: "TEE-L" },
+    { status: "mapped_current", queuedSku: null },
+    { status: "unchanged", queuedSku: null },
+    { status: "cleared", queuedSku: "TEE-L" },
+    { status: "cleared" },
+    { status: "cleared", queuedSku: null, queueToken: null },
+    { status: "cleared", queuedSku: null, extra: true },
+  ];
+  for (const [method, data] of [
+    ...invalidSnapshots.map((data) => ["getQueueSnapshot", data]),
+    ...invalidClearResults.map((data) => ["clearQueue", data]),
+  ]) {
+    const client = clientModule.createNextItemQueueClient({
+      protocol,
+      runtime: { async sendMessage() { return { ok: true, data }; } },
+    });
+    await assert.rejects(
+      client[method](clearOptions()),
+      (error) => error.code === "INVALID_RESPONSE",
+    );
+  }
+  const emptyClient = clientModule.createNextItemQueueClient({
+    protocol,
+    runtime: { async sendMessage() { return { ok: true, data: { queuedSku: null, queueToken: null } }; } },
+  });
+  assert.deepEqual(await emptyClient.getQueueSnapshot(), { queuedSku: null, queueToken: null });
+});
+
+test("queue client rejects invalid clear options locally and never falls back to toggle or mapping", async () => {
+  const calls = [];
+  const client = clientModule.createNextItemQueueClient({
+    protocol,
+    runtime: { async sendMessage(message) { calls.push(message); } },
+  });
+  for (const invalid of [
+    undefined,
+    null,
+    {},
+    clearOptions({ expectedStreamId: "" }),
+    clearOptions({ sku: " " }),
+    clearOptions({ expectedQueueToken: null }),
+    clearOptions({ expectedQueueToken: "" }),
+    clearOptions({ expectedQueueToken: "fake" }),
+    { ...clearOptions(), expectedVariationNumber: 203 },
+    { ...clearOptions(), extra: true },
+  ]) {
+    await assert.rejects(client.clearQueue(invalid), (error) => error.code === "INVALID_CLIENT_COMMAND");
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("queue client preserves stale-clear errors and does not automatically retry a new generation", async () => {
+  const calls = [];
+  const client = clientModule.createNextItemQueueClient({
+    protocol,
+    runtime: {
+      async sendMessage(message) {
+        calls.push(message.command);
+        if (message.command.type === "clear_queue") {
+          return { ok: false, error: { code: "QUEUE_CHANGED", message: "Review the current queue." } };
+        }
+        return { ok: true, data: { queuedSku: "TEE-M", queueToken: QUEUE_TOKEN } };
+      },
+    },
+  });
+  await assert.rejects(
+    client.clearQueue(clearOptions()),
+    (error) => error.code === "QUEUE_CHANGED" && error.message === "Review the current queue.",
+  );
+  assert.equal(calls.length, 1);
+  assert.deepEqual(await client.getQueueSnapshot(), { queuedSku: "TEE-M", queueToken: QUEUE_TOKEN });
+  assert.deepEqual(calls.map((command) => command.type), ["clear_queue", "get_queue_snapshot"]);
 });
 
 test("next-item queue protocol rejects extra fields and unsafe mutation values", () => {

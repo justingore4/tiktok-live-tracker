@@ -69,6 +69,8 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
 
 ### Inventory controls
 
+- Enter a captured variation number in **Var #** and press Enter to review it.
+  Typing alone does not switch variations.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
 - Left-click selects or unmaps the item for the viewed variation.
@@ -78,6 +80,8 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
   changing the historical selection or the queue.
 - The queue holds one SKU for the next genuinely newer bidding variation and does
   not overwrite an existing mapping.
+- The red inventory-header badge shows that queued item even when search hides
+  its card. Its **×** clears only the queue, not an item mapping.
 - **Return to live item** resumes following the newest variation.
 - Pins move cards to the front. Otherwise cards retain their original order;
   completing a sale does not reorder them.
@@ -85,31 +89,35 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
 A mapped bidding or unresolved variation reserves one unit. A completed, priced sale
 counts toward revenue even if it has no item assigned, but inventory consumption,
 cost of goods, and gross profit require a mapping. A terminal cancellation releases
-the reservation; a temporary payment failure is not treated as a cancellation.
+the reservation. Newly captured **Payment failed**, **Canceled**, or **Cancelled**
+means canceled. **Payment processing** stays unresolved until a final status is
+captured or manually resolved; the tracker has no five-minute cancellation timer.
+Older saved `payment_failed` records, and legacy failure badges accompanied by an
+explicit cancellation countdown, remain unresolved rather than being reclassified.
 
-### Capture-health badge
+### Capture startup badge
 
 | Badge | Meaning |
 | --- | --- |
-| Blue — Connecting | Waiting for a source or enough healthy confirmation. |
-| Yellow — Loading | Capture is catching up, retrying, or temporarily degraded. |
-| Green — Capture active | Recent validated capture-health checks are healthy. |
-| Red — Capture unavailable | A capture-health failure threshold has been reached. |
+| Blue — Connecting | Waiting for initial capture communication. |
+| Yellow — Loading | Core capture is initialized and its initial deliveries are finishing. |
+| Green — Capture active | Startup completed for this tracking session/dashboard page. |
+| Neutral — Reload Site | Startup could not be established; reload the TikTok dashboard. |
 
-Blue and yellow show a spinner, gray out tracker content, and lock tracker actions
-except scrolling and **End Stream Tracking** with its confirmation controls.
-Incoming capture and recovery checks continue. Green and red remove this loading
-lock, while independent save/error safeguards still apply.
+Green stays green after startup, including during missing GMV, website glitches,
+delivery activity, or disconnections. It is a readiness indicator, **not an ongoing
+connection or completeness check**. A new session or newly loaded dashboard document
+starts another cycle; ordinary updates and reopening the panel do not restart yellow.
 
-Red hides after 13 continuous seconds without collapsing its reserved space. It is
-still the actual health state; a different badge appears immediately when health
-changes. Badges are hidden on setup and Resume/End-only screens. Reduced-motion
-settings stop spinner rotation.
+Blue and yellow show a spinner, dim the tracker, and lock editing except scrolling
+and **End Stream Tracking** with its confirmation controls. Capture and retries
+continue. Green/Reload Site remove only this startup lock; other save/error safeguards
+remain. Missing GMV does not block startup. There is no red badge or auto-hide timer.
+Setup and Resume/End-only screens do not show the row. Reduced-motion settings
+stop spinner rotation.
 
-A startup-only red badge that recovers after a later auction has been observed; its
-cause is not confirmed. Hiding red is not evidence of healthy capture. See the
-[capture-health details and troubleshooting](docs/capture-development.md#capture-health-indicator)
-for thresholds, recovery behavior, and diagnostics.
+If the active variation stops updating, reload the website or extension. See
+[startup-readiness details](docs/capture-development.md#capture-health-indicator).
 
 ## Post-stream reports
 
@@ -207,7 +215,7 @@ on that GMV, not actual settled fees or net profit.
   its local storage; see [Chrome's storage documentation](https://developer.chrome.com/docs/extensions/reference/api/storage).
 - Capture reads the supported dashboard's rendered content, not an authoritative
   TikTok order API. Missing/changed/virtualized content can limit what is captured.
-  Capture health is not proof that every sale was captured.
+  Green confirms startup readiness, not ongoing connection or complete capture.
 - There is no verified TikTok room/session identity, automatic Google Sheets
   write-back, multi-item queue, cross-device data sync, or automatic extension update.
 

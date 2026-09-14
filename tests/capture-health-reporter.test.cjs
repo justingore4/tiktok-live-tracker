@@ -2,10 +2,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { createCaptureHealthReporter } = require("../extension/capture/capture-health-reporter.js");
 
-const protocol = { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 1 };
+const protocol = { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 2 };
 const STREAM = "local-stream:11111111-1111-4111-8111-111111111111";
 const NEXT_STREAM = "local-stream:22222222-2222-4222-8222-222222222222";
-const sample = { readable: true, pending: 0, inFlight: false, retrying: false, visible: true };
+const sample = { phase: "ready" };
 const contextResponse = (streamId = STREAM, contextId = "context-one") => ({ ok: true, data: { streamId, contextId } });
 const accepted = { ok: true, data: { accepted: true } };
 
@@ -26,7 +26,7 @@ function harness({ handler, getSample, timeout = 1000 } = {}) {
   const reporter = createCaptureHealthReporter({
     runtime, protocol, intervalMs: 5000, requestTimeoutMs: timeout,
     now: () => now,
-    getSample() { samples++; return getSample ? getSample() : sample; },
+    getSample(context) { samples++; return getSample ? getSample(context) : sample; },
     setTimeoutFn(callback, delay) { const id = ++nextId; timers.set(id, { callback, at: now + delay }); return id; },
     clearTimeoutFn(id) { timers.delete(id); },
   });
@@ -47,15 +47,18 @@ function harness({ handler, getSample, timeout = 1000 } = {}) {
   };
 }
 
-test("health reporter takes a fresh sample after each context and sends only allowed aggregates", async () => {
+test("readiness reporter sends only startup phase and stops sampling or pulsing after ready", async () => {
   const h = harness({ getSample: () => ({ ...sample, buyerName: "private", rawText: "do not send" }) });
   h.reporter.start(); h.reporter.start();
   await h.advance(0);
   assert.deepEqual(h.messages.map((message) => message.type), ["context", "pulse"]);
-  assert.deepEqual(h.messages[1], { channel: protocol.CHANNEL, version: 1, type: "pulse", streamId: STREAM, contextId: "context-one", sequence: 1, sampledAt: 0, sample });
+  assert.deepEqual(h.messages[1], { channel: protocol.CHANNEL, version: 2, type: "pulse", streamId: STREAM, contextId: "context-one", sequence: 1, sampledAt: 0, sample });
   await h.advance(4999); assert.equal(h.samples, 1);
-  await h.advance(1); assert.equal(h.samples, 2); assert.equal(h.messages[3].sequence, 2);
-  assert.equal(h.messages[3].sampledAt, 5000);
+  await h.advance(1); assert.equal(h.samples, 1);
+  assert.deepEqual(h.messages.map(message => message.type), ["context", "pulse", "context"]);
+  await h.advance(120000);
+  assert.equal(h.samples, 1, "Later checks discover sessions; they do not measure ongoing health");
+  assert.equal(h.messages.filter(message => message.type === "pulse").length, 1);
   h.reporter.dispose(); assert.equal(h.timers.size, 0);
 });
 
@@ -66,6 +69,54 @@ test("no active stream skips the probe and later context changes use the new cor
   assert.equal(h.samples, 0); assert.equal(h.messages.length, 1);
   active = true; await h.advance(5000);
   assert.equal(h.messages[2].streamId, NEXT_STREAM); assert.equal(h.messages[2].contextId, "context-two");
+});
+
+test("initial loading is sampled until ready and only phase changes are published", async () => {
+  let phase = "loading";
+  const h = harness({ getSample(context) {
+    assert.equal(context.streamId, STREAM);
+    return { phase };
+  } });
+  h.reporter.start(); await h.advance(0);
+  assert.equal(h.messages.at(-1).sample.phase, "loading");
+  await h.advance(5000);
+  assert.equal(h.samples, 2);
+  assert.equal(h.messages.filter(message => message.type === "pulse").length, 1);
+  phase = "ready"; await h.advance(5000);
+  assert.equal(h.messages.at(-1).sample.phase, "ready");
+  phase = "blank"; await h.advance(15000);
+  assert.equal(h.samples, 3, "Ready permanently stops this document's initialization checks");
+  assert.equal(h.messages.filter(message => message.type === "pulse").length, 2);
+  h.reporter.dispose();
+});
+
+test("a renewed worker context restores ready without resampling, but a new stream starts fresh", async () => {
+  let streamId = STREAM;
+  let contextId = "first-worker";
+  const h = harness({
+    handler: message => Promise.resolve(message.type === "context" ? contextResponse(streamId, contextId) : accepted),
+    getSample: context => ({ phase: context.streamId === STREAM ? "ready" : "loading" }),
+  });
+  h.reporter.start(); await h.advance(0);
+  contextId = "restarted-worker"; await h.advance(5000);
+  assert.equal(h.samples, 1);
+  assert.equal(h.messages.at(-1).sample.phase, "ready");
+  assert.equal(h.messages.at(-1).contextId, contextId);
+  streamId = NEXT_STREAM; contextId = "new-stream"; await h.advance(5000);
+  assert.equal(h.samples, 2);
+  assert.equal(h.messages.at(-1).sample.phase, "loading");
+  assert.equal(h.messages.at(-1).streamId, NEXT_STREAM);
+  h.reporter.dispose();
+});
+
+test("a new reporter for a refreshed document does not inherit ready from the old page", async () => {
+  const oldPage = harness();
+  oldPage.reporter.start(); await oldPage.advance(0); oldPage.reporter.dispose();
+  const newPage = harness({ getSample: () => ({ phase: "loading" }) });
+  newPage.reporter.start(); await newPage.advance(0);
+  assert.equal(newPage.samples, 1);
+  assert.equal(newPage.messages.at(-1).sample.phase, "loading");
+  newPage.reporter.dispose();
 });
 
 test("late timed-out context callbacks cannot sample or send an old stream pulse", async () => {
@@ -108,7 +159,7 @@ test("malformed context and sample responses never become successful pulses", as
     const h = harness({ handler: () => Promise.resolve(response) });
     h.reporter.start(); await h.advance(0); assert.equal(h.samples, 0); assert.equal(h.messages.length, 1); h.reporter.dispose();
   }
-  for (const invalidSample of [{ ...sample, pending: -1 }, { ...sample, pending: 100001 }, { ...sample, readable: "yes" }]) {
+  for (const invalidSample of [null, {}, { phase: "active" }, { phase: "unavailable" }, { readable: true }]) {
     const h = harness({ getSample: () => invalidSample });
     h.reporter.start(); await h.advance(0); assert.equal(h.messages.length, 1); h.reporter.dispose();
   }
@@ -118,11 +169,11 @@ test("sample failures and rejected pulses are advisory and the next fresh cycle 
   let fail = true;
   let rejectPulse = true;
   const h = harness({
-    getSample() { if (fail) throw new Error("DOM read failed"); return { ...sample, readable: false }; },
+    getSample() { if (fail) throw new Error("DOM read failed"); return { phase: "blank" }; },
     handler: (message) => Promise.resolve(message.type === "context" ? contextResponse() : rejectPulse ? { ok: true, data: { accepted: false } } : accepted),
   });
   h.reporter.start(); await h.advance(0); assert.equal(h.messages.length, 1);
-  fail = false; await h.advance(5000); assert.equal(h.messages.at(-1).sample.readable, false);
+  fail = false; await h.advance(5000); assert.equal(h.messages.at(-1).sample.phase, "blank");
   rejectPulse = false; await h.advance(5000); assert.equal(h.messages.at(-1).sequence, 2);
 });
 

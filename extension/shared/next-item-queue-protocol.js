@@ -13,8 +13,12 @@
 
     const MESSAGE_CHANNEL = "tiktok-live-tracker.next-item-queue";
     const MESSAGE_VERSION = 1;
+    const QUEUE_TOKEN_PATTERN =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const COMMAND_TYPES = Object.freeze({
       GET_QUEUE: "get_queue",
+      GET_QUEUE_SNAPSHOT: "get_queue_snapshot",
+      CLEAR_QUEUE: "clear_queue",
       MAP_CURRENT: "map_current",
       TOGGLE_QUEUE: "toggle_queue",
     });
@@ -23,6 +27,13 @@
     });
     const COMMAND_KEYS = Object.freeze({
       [COMMAND_TYPES.GET_QUEUE]: ["type"],
+      [COMMAND_TYPES.GET_QUEUE_SNAPSHOT]: ["type"],
+      [COMMAND_TYPES.CLEAR_QUEUE]: [
+        "expectedQueueToken",
+        "expectedStreamId",
+        "sku",
+        "type",
+      ],
       [COMMAND_TYPES.MAP_CURRENT]: [
         "expectedStreamId",
         "expectedVariationNumber",
@@ -113,11 +124,17 @@
 
       if (
         command.type === COMMAND_TYPES.MAP_CURRENT ||
-        command.type === COMMAND_TYPES.TOGGLE_QUEUE
+        command.type === COMMAND_TYPES.TOGGLE_QUEUE ||
+        command.type === COMMAND_TYPES.CLEAR_QUEUE
       ) {
         requireTrimmedString(command.expectedStreamId, "expectedStreamId");
         requireTrimmedString(command.sku, "sku");
+      }
 
+      if (
+        command.type === COMMAND_TYPES.MAP_CURRENT ||
+        command.type === COMMAND_TYPES.TOGGLE_QUEUE
+      ) {
         if (
           !Number.isSafeInteger(command.expectedVariationNumber) ||
           command.expectedVariationNumber < 1
@@ -127,6 +144,19 @@
             "expectedVariationNumber must be a positive safe integer.",
           );
         }
+      }
+
+      if (
+        command.type === COMMAND_TYPES.CLEAR_QUEUE &&
+        (
+          typeof command.expectedQueueToken !== "string" ||
+          !QUEUE_TOKEN_PATTERN.test(command.expectedQueueToken)
+        )
+      ) {
+        fail(
+          "INVALID_NEXT_ITEM_QUEUE_MESSAGE",
+          "expectedQueueToken must identify the displayed queue generation.",
+        );
       }
 
       return command;
@@ -207,6 +237,7 @@
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,
       NOTIFICATION_TYPES,
+      QUEUE_TOKEN_PATTERN,
       NextItemQueueProtocolError,
       createNextItemQueueMessage,
       createQueueChangedNotification,

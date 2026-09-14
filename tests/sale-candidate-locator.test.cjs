@@ -37,6 +37,9 @@ class FakeElement {
     ownText = "",
     name = "element",
     tagName = "DIV",
+    title = null,
+    hidden = false,
+    ariaHidden = null,
     width = 100,
   } = {}) {
     this.nodeType = 1;
@@ -45,6 +48,9 @@ class FakeElement {
     this.ownText = ownText;
     this.name = name;
     this.tagName = tagName;
+    this.title = title;
+    this.hidden = hidden;
+    this.ariaHidden = ariaHidden;
     this.width = width;
     this.children = [];
     this.parentElement = null;
@@ -102,6 +108,11 @@ class FakeElement {
 
   getBoundingClientRect() {
     return { height: this.height, width: this.width };
+  }
+
+  getAttribute(name) {
+    if (name === "aria-hidden") return this.ariaHidden;
+    return name === "title" ? this.title : null;
   }
 
   contains(candidate) {
@@ -318,7 +329,9 @@ test("classifies exact row-local payment tags without exposing their text", () =
     ["Canceled", "canceled", null],
     ["Cancelled", "canceled", null],
     ["  CANCELLED\n ", "canceled", null],
-    ["PAYMENT FAILED", "payment_failed", null],
+    ["PAYMENT FAILED", "canceled", null],
+    ["Payment failed...", "unrecognized", null],
+    ["Payment failed later", "unrecognized", null],
     ["Payment fixing", "payment_fixing", null],
     ["Payment fixing...", "payment_fixing", null],
     ["Payment fixing\u2026", "payment_fixing", null],
@@ -382,6 +395,194 @@ test("classifies exact row-local payment tags without exposing their text", () =
     OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED,
     "not_observed",
   );
+});
+
+test("plain Payment failed uses the existing cancellation status without parsing price or age", () => {
+  for (const badgeText of ["Payment failed", "  PAYMENT\nFAILED "]) {
+    const fixture = createStatusRow({ badgeText, soldPrice: "unknown" });
+    const { boundary } = withinBoundary(fixture.row);
+    const [result] = locatePaymentStatuses(boundary, {
+      parseSoldItemText() { assert.fail("A failure badge must not parse a sale price"); },
+    });
+    assert.equal(result.observedPaymentStatus, "canceled");
+    assert.equal(result.soldPriceCents, null);
+    assert.equal(result.row, fixture.row);
+    assert.equal(OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED, "payment_failed",
+      "The legacy internal status remains supported");
+  }
+});
+
+test("same-row legacy failure countdown vetoes cancellation, including zero until the indicator disappears", () => {
+  for (const countdown of ["Transaction will cancel in 04:42", " transaction  WILL cancel in 00:01 ", "Transaction will cancel in 00:00"]) {
+    const fixture = createStatusRow({ badgeText: "Payment failed" });
+    const detail = element({ ownText: countdown });
+    fixture.row.append(detail);
+    const { boundary } = withinBoundary(fixture.row);
+    assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "payment_failed");
+    fixture.row.children = fixture.row.children.filter((child) => child !== detail);
+    assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "canceled");
+  }
+});
+
+test("hiding an entire legacy failure row never manufactures terminal cancellation", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  const detail = element({ ownText: "Transaction will cancel in 04:42" });
+  fixture.row.append(detail);
+  const { boundary } = withinBoundary(fixture.row);
+  assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "payment_failed");
+
+  for (const node of [fixture.row, fixture.badge, fixture.variationLabel, detail]) {
+    node.width = 0;
+  }
+  assert.deepEqual(locatePaymentStatuses(boundary, parser), []);
+});
+
+test("fresh failed badges require an observable badge and exact variation association", () => {
+  const hide = [
+    (node) => { node.width = 0; },
+    (node) => { node.hidden = true; },
+    (node) => { node.ariaHidden = "true"; },
+    (node) => { node.getBoundingClientRect = undefined; },
+    (node) => { node.getBoundingClientRect = () => { throw new Error("unreadable layout"); }; },
+  ];
+  for (const target of ["badge", "row", "variationLabel"]) {
+    for (const makeUnobservable of hide) {
+      const fixture = createStatusRow({ badgeText: "Payment failed" });
+      makeUnobservable(fixture[target]);
+      assert.deepEqual(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser), [], target);
+    }
+  }
+});
+
+test("a hidden wider association cannot provide or erase legacy failed-row evidence", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  const wider = element({ hidden: true }).append(
+    fixture.row,
+    element({ ownText: "Transaction will cancel in 02:34", hidden: true }),
+  );
+  assert.deepEqual(locatePaymentStatuses(withinBoundary(wider).boundary, parser), []);
+});
+
+test("a hidden status strip cannot supply a failed badge through a visible row association", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  fixture.row.children = [fixture.summary];
+  fixture.row.append(element({ ariaHidden: "true" }).append(fixture.badge));
+  assert.deepEqual(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser), []);
+});
+
+test("failed-row visibility safety does not alter unrelated badge classifications", () => {
+  for (const [badgeText, expected] of [
+    ["Canceled", "canceled"],
+    ["Payment processing...", "payment_processing"],
+    ["Payment fixing", "payment_fixing"],
+    ["Payment complete", "payment_complete"],
+  ]) {
+    const fixture = createStatusRow({ badgeText });
+    for (const node of [fixture.row, fixture.badge, fixture.variationLabel]) node.width = 0;
+    assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, expected);
+  }
+});
+
+test("a truncated visible countdown with an exact full title retains legacy pending failure", () => {
+  for (const ownText of ["Transactio...", "Transaction\u2026", "Transaction will cancel in..."]) {
+    const fixture = createStatusRow({ badgeText: "Payment failed" });
+    const detail = element({ ownText, title: "Transaction will cancel in 01:08" });
+    fixture.row.append(element().append(detail));
+    const { boundary } = withinBoundary(fixture.row);
+    assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "payment_failed");
+    detail.title = "Transaction will cancel in 00:00";
+    assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "payment_failed");
+  }
+});
+
+test("countdown lookup reaches a same-row status strip and wider uniquely associated detail", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  const strip = element().append(fixture.badge, element({ ownText: "Transaction will cancel in 03:12" }));
+  fixture.row.children = [fixture.summary];
+  fixture.row.append(strip);
+  let { boundary } = withinBoundary(fixture.row);
+  assert.equal(locatePaymentStatuses(boundary, parser)[0].observedPaymentStatus, "payment_failed");
+
+  const narrow = createStatusRow({ badgeText: "Payment failed", variationNumber: 11 });
+  const wider = element().append(narrow.row, element({ ownText: "Transaction will cancel in 02:34" }));
+  boundary = withinBoundary(wider).boundary;
+  const [result] = locatePaymentStatuses(boundary, parser);
+  assert.equal(result.row, narrow.row, "Keep the original exact association for duplicate detection");
+  assert.equal(result.observedPaymentStatus, "payment_failed");
+});
+
+test("neighboring-row and outside-boundary countdowns do not change a terminal failed badge", () => {
+  const failed = createStatusRow({ badgeText: "Payment failed", variationNumber: 11 });
+  const processing = createStatusRow({ badgeText: "Payment processing...", variationNumber: 12 });
+  processing.row.append(element({ ownText: "Transaction will cancel in 04:42" }));
+  const boundary = element().append(failed.row, processing.row);
+  element().append(boundary, element({ ownText: "Transaction will cancel in 04:42" }));
+  assert.deepEqual(locatePaymentStatuses(boundary, parser).map(({ observedPaymentStatus }) => observedPaymentStatus),
+    ["canceled", "payment_processing"]);
+});
+
+test("product/summary text, arbitrary titles and invisible details are not countdown evidence", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  fixture.summary.append(element({ ownText: "Transaction will cancel in 04:42" }));
+  fixture.row.append(
+    element({ ownText: "Product details", title: "Transaction will cancel in 04:42" }),
+    element({ ownText: "Transaction will cancel in 04:42", width: 0 }),
+    element({ ownText: "Transaction will cancel in 04:42", height: 0 }),
+    element({ ownText: "Transaction will cancel in 04:42", hidden: true }),
+  );
+  assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, "canceled");
+});
+
+test("retained visible wrappers cannot make hidden countdown text observable", () => {
+  for (const detail of [
+    element({ ownText: "Transaction will cancel in 04:42", width: 0 }),
+    element({ ownText: "Transaction will cancel in 04:42", hidden: true }),
+    element({ ownText: "Transaction will cancel in 04:42", ariaHidden: "true" }),
+    element({ ownText: "Transactio...", title: "Transaction will cancel in 04:42", hidden: true }),
+  ]) {
+    const fixture = createStatusRow({ badgeText: "Payment failed" });
+    fixture.row.append(element().append(element().append(detail)));
+    assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, "canceled");
+  }
+
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  fixture.row.append(element({ title: "Transaction will cancel in 04:42" }).append(
+    element({ ownText: "Transactio...", hidden: true }),
+  ));
+  assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, "canceled");
+});
+
+test("visible countdown text can still span transparent nested elements", () => {
+  const fixture = createStatusRow({ badgeText: "Payment failed" });
+  fixture.row.append(element().append(
+    element({ ownText: "Transaction will cancel in " }),
+    element().append(text("04:42")),
+  ));
+  assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, "payment_failed");
+});
+
+test("near-match countdown details do not broaden the exact legacy exception", () => {
+  for (const ownText of ["Transaction will cancel soon", "Will cancel in 04:42", "Transaction will cancel in 1:99", "Item: Transaction will cancel in 04:42", "Transactio...", "4m", "5m", "21m"]) {
+    const fixture = createStatusRow({ badgeText: "Payment failed" });
+    fixture.row.append(element({ ownText }));
+    assert.equal(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser)[0].observedPaymentStatus, "canceled", ownText);
+  }
+});
+
+test("failed terminal badges still reject ambiguous tags, variations, and duplicate rows", () => {
+  for (const extra of [
+    element({ dataTid: "m4b_tag", ownText: "Payment processing" }),
+    element({ tagName: "SPAN", ownText: "Variation: #251" }),
+  ]) {
+    const fixture = createStatusRow({ badgeText: "Payment failed" });
+    fixture.row.append(extra);
+    assert.deepEqual(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser), []);
+  }
+  const boundary = element().append(
+    createStatusRow({ badgeText: "Payment failed" }).row,
+    createStatusRow({ badgeText: "Payment failed" }).row,
+  );
+  assert.deepEqual(locatePaymentStatuses(boundary, parser), []);
 });
 
 test("classifies a screenshot-shaped Canceled m4b tag despite its Payment failed detail", () => {

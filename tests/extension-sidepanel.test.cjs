@@ -1606,7 +1606,7 @@ test("inventory right click maps the current variation from history without chan
     panelSource,
     /Variation \$\{view\.selectedVariationNumber\} will remain open/,
   );
-  assert.match(panelSource, /nextItemQueueClient\.getQueue\(\)/);
+  assert.match(panelSource, /nextItemQueueClient\.getQueueSnapshot\(\)/);
   assert.match(
     panelSource,
     /nextItemQueueProtocol\.isQueueChangedNotification\(message\)[\s\S]+scheduleNextItemQueueRefresh\(\)/,

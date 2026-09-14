@@ -99,6 +99,9 @@
       if (
         !protocol?.COMMAND_TYPES ||
         protocol.COMMAND_TYPES.GET_QUEUE !== "get_queue" ||
+        protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT !== "get_queue_snapshot" ||
+        protocol.COMMAND_TYPES.CLEAR_QUEUE !== "clear_queue" ||
+        !(protocol.QUEUE_TOKEN_PATTERN instanceof RegExp) ||
         protocol.COMMAND_TYPES.MAP_CURRENT !== "map_current" ||
         protocol.COMMAND_TYPES.TOGGLE_QUEUE !== "toggle_queue" ||
         typeof protocol.createNextItemQueueMessage !== "function"
@@ -174,6 +177,51 @@
         }
 
         return { queuedSku: requireQueuedSku(response.data.queuedSku) };
+      }
+
+      if (commandType === protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT) {
+        if (!hasExactKeys(response.data, ["queuedSku", "queueToken"])) {
+          fail(
+            "INVALID_RESPONSE",
+            "The next-item queue service returned an invalid snapshot.",
+          );
+        }
+
+        const queuedSku = requireQueuedSku(response.data.queuedSku);
+        const queueToken = response.data.queueToken;
+
+        if (
+          (queuedSku === null && queueToken !== null) ||
+          (
+            queuedSku !== null &&
+            (
+              typeof queueToken !== "string" ||
+              !protocol.QUEUE_TOKEN_PATTERN.test(queueToken)
+            )
+          )
+        ) {
+          fail(
+            "INVALID_RESPONSE",
+            "The next-item queue service returned an invalid snapshot.",
+          );
+        }
+
+        return { queuedSku, queueToken };
+      }
+
+      if (commandType === protocol.COMMAND_TYPES.CLEAR_QUEUE) {
+        if (
+          !hasExactKeys(response.data, ["queuedSku", "status"]) ||
+          response.data.status !== "cleared" ||
+          response.data.queuedSku !== null
+        ) {
+          fail(
+            "INVALID_RESPONSE",
+            "The next-item queue service returned an invalid clear result.",
+          );
+        }
+
+        return { status: "cleared", queuedSku: null };
       }
 
       if (commandType === protocol.COMMAND_TYPES.MAP_CURRENT) {
@@ -266,6 +314,41 @@
         }));
       }
 
+      function getQueueSnapshot() {
+        return enqueueCommand(() => ({
+          type: protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT,
+        }));
+      }
+
+      function clearQueue(optionsValue) {
+        return enqueueCommand(() => {
+          if (
+            !hasExactKeys(optionsValue, [
+              "expectedStreamId",
+              "expectedQueueToken",
+              "sku",
+            ]) ||
+            typeof optionsValue.expectedQueueToken !== "string" ||
+            !protocol.QUEUE_TOKEN_PATTERN.test(optionsValue.expectedQueueToken)
+          ) {
+            fail(
+              "INVALID_CLIENT_COMMAND",
+              "Clear options must identify exactly the displayed stream, queue token, and SKU.",
+            );
+          }
+
+          return {
+            type: protocol.COMMAND_TYPES.CLEAR_QUEUE,
+            expectedStreamId: requireTrimmedString(
+              optionsValue.expectedStreamId,
+              "expectedStreamId",
+            ),
+            expectedQueueToken: optionsValue.expectedQueueToken,
+            sku: requireTrimmedString(optionsValue.sku, "sku"),
+          };
+        });
+      }
+
       function toggleQueue(optionsValue) {
         return enqueueCommand(() => {
           if (
@@ -340,7 +423,13 @@
         });
       }
 
-      return Object.freeze({ getQueue, mapCurrent, toggleQueue });
+      return Object.freeze({
+        clearQueue,
+        getQueue,
+        getQueueSnapshot,
+        mapCurrent,
+        toggleQueue,
+      });
     }
 
     return Object.freeze({

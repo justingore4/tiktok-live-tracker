@@ -191,6 +191,9 @@ function createCoordinatorHarness(options = {}) {
     stateCoordinator,
     streamSession,
     streamSessionCoordinator,
+    ...(options.createQueueToken === undefined
+      ? {}
+      : { createQueueToken: options.createQueueToken }),
   });
 
   return {
@@ -226,6 +229,20 @@ function mapCurrentCommand(overrides = {}) {
     expectedStreamId: STREAM_ONE,
     expectedVariationNumber: 203,
     sku: "TEE-L",
+    ...overrides,
+  };
+}
+
+function snapshotQueue(harness) {
+  return harness.coordinator.dispatch({ type: protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT });
+}
+
+function clearCommand(snapshot, overrides = {}) {
+  return {
+    type: protocol.COMMAND_TYPES.CLEAR_QUEUE,
+    expectedStreamId: STREAM_ONE,
+    expectedQueueToken: snapshot.queueToken,
+    sku: snapshot.queuedSku,
     ...overrides,
   };
 }
@@ -799,4 +816,287 @@ test("clearForStream is scoped and never turns cleanup storage failure into an e
     status: "cleared",
   });
   assert.equal(await harness.queueStore.loadQueue(), null);
+});
+
+test("queue snapshots expose a stable ephemeral token without changing saved schema 1", async () => {
+  const harness = createCoordinatorHarness();
+  assert.deepEqual(await snapshotQueue(harness), { queuedSku: null, queueToken: null });
+  await harness.coordinator.dispatch(toggleCommand());
+  const persistedBefore = clone(harness.memory.values);
+  const writesBefore = harness.memory.calls.set.length;
+  const first = await snapshotQueue(harness);
+  assert.equal(first.queuedSku, "TEE-L");
+  assert.match(first.queueToken, protocol.QUEUE_TOKEN_PATTERN);
+  assert.deepEqual(await snapshotQueue(harness), first);
+  assert.deepEqual(await harness.coordinator.dispatch({ type: "get_queue" }), {
+    queuedSku: "TEE-L",
+  });
+  assert.deepEqual(await snapshotQueue(harness), first);
+  assert.deepEqual(harness.memory.values, persistedBefore);
+  assert.equal(harness.memory.calls.set.length, writesBefore);
+  assert.equal(harness.memory.values[storageModule.STORAGE_KEY].schemaVersion, 1);
+  assert.deepEqual(Object.keys(harness.memory.values[storageModule.STORAGE_KEY].queue).sort(), [
+    "armedAfterVariationNumber", "sku", "streamId",
+  ]);
+  first.queueToken = "changed-locally";
+  assert.notEqual((await snapshotQueue(harness)).queueToken, first.queueToken);
+});
+
+test("explicit clear removes only the queued item even when the live auction becomes unmapped or advances", async () => {
+  for (const advance of [false, true]) {
+    const harness = createCoordinatorHarness();
+    await harness.coordinator.dispatch(toggleCommand());
+    const snapshot = await snapshotQueue(harness);
+    const state = harness.getState();
+    if (advance) {
+      addBiddingVariation(state, 204);
+    } else {
+      reconciliation.unmapVariation(state, { streamId: STREAM_ONE, variationNumber: 203 });
+    }
+    harness.setState(state);
+    const callsBefore = clone(harness.stateCalls);
+    const writesBefore = harness.memory.calls.set.length;
+    assert.deepEqual(await harness.coordinator.dispatch(clearCommand(snapshot)), {
+      status: "cleared", queuedSku: null,
+    });
+    assert.equal(await harness.queueStore.loadQueue(), null);
+    assert.deepEqual(harness.getState(), state);
+    assert.deepEqual(harness.stateCalls, callsBefore);
+    assert.equal(harness.memory.calls.set.length, writesBefore);
+    assert.deepEqual(await snapshotQueue(harness), { queuedSku: null, queueToken: null });
+  }
+});
+
+test("duplicate explicit clears are serialized and never toggle or recreate the queue", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const snapshot = await snapshotQueue(harness);
+  const before = harness.memory.calls.remove.length;
+  const results = await Promise.allSettled([
+    harness.coordinator.dispatch(clearCommand(snapshot)),
+    harness.coordinator.dispatch(clearCommand(snapshot)),
+  ]);
+  assert.deepEqual(results[0], { status: "fulfilled", value: { status: "cleared", queuedSku: null } });
+  assert.equal(results[1].status, "rejected");
+  assert.equal(results[1].reason.code, "QUEUE_CHANGED");
+  assert.equal(harness.memory.calls.remove.length, before + 1);
+  assert.equal(await harness.queueStore.loadQueue(), null);
+  assert.equal(harness.memory.calls.set.length, 1);
+});
+
+test("replacement and ABA replacement cannot be cleared by an older badge token", async () => {
+  for (const restoreOriginalSku of [false, true]) {
+    const harness = createCoordinatorHarness();
+    await harness.coordinator.dispatch(toggleCommand());
+    const displayed = await snapshotQueue(harness);
+    await harness.coordinator.dispatch(toggleCommand({ sku: "TEE-M" }));
+    if (restoreOriginalSku) await harness.coordinator.dispatch(toggleCommand());
+    const before = clone(harness.memory.values);
+    const removesBefore = harness.memory.calls.remove.length;
+    // No intermediate snapshot is needed for replacement to revoke the token.
+    await assert.rejects(
+      harness.coordinator.dispatch(clearCommand(displayed)),
+      (error) => error.code === "QUEUE_CHANGED",
+    );
+    assert.deepEqual(harness.memory.values, before);
+    assert.equal(harness.memory.calls.remove.length, removesBefore);
+    const current = await snapshotQueue(harness);
+    assert.notEqual(current.queueToken, displayed.queueToken);
+    assert.equal(current.queuedSku, restoreOriginalSku ? "TEE-L" : "TEE-M");
+    await assert.rejects(
+      harness.coordinator.dispatch(clearCommand(displayed)),
+      (error) => error.code === "QUEUE_CHANGED",
+    );
+    await harness.coordinator.dispatch(clearCommand(current));
+    assert.equal(await harness.queueStore.loadQueue(), null);
+  }
+});
+
+test("a replacement queued ahead of an explicit clear wins the coordinator FIFO", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(harness);
+  const replace = harness.coordinator.dispatch(toggleCommand({ sku: "TEE-M" }));
+  const clear = harness.coordinator.dispatch(clearCommand(displayed));
+  assert.deepEqual(await replace, { status: "queued", queuedSku: "TEE-M" });
+  await assert.rejects(clear, (error) => error.code === "QUEUE_CHANGED");
+  assert.equal((await harness.queueStore.loadQueue()).sku, "TEE-M");
+});
+
+test("clear and requeue of the same SKU at the same variation revokes the original token", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(harness);
+  await harness.coordinator.dispatch(toggleCommand());
+  await harness.coordinator.dispatch(toggleCommand());
+  const before = clone(harness.memory.values);
+  await assert.rejects(
+    harness.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "QUEUE_CHANGED",
+  );
+  assert.deepEqual(harness.memory.values, before);
+  assert.notEqual((await snapshotQueue(harness)).queueToken, displayed.queueToken);
+});
+
+test("consumed queues and same-SKU queues rearmed at a newer variation reject stale clears", async () => {
+  for (const targetSku of [null, "TEE-L", "TEE-M"]) {
+    const harness = createCoordinatorHarness();
+    await harness.coordinator.dispatch(toggleCommand());
+    const displayed = await snapshotQueue(harness);
+    harness.setState(addBiddingVariation(harness.getState(), 204, targetSku));
+    const consumed = harness.coordinator.applyToObservedBiddingVariation({
+      streamId: STREAM_ONE, variationNumber: 204, state: harness.getState(),
+    });
+    const staleClear = harness.coordinator.dispatch(clearCommand(displayed));
+    await consumed;
+    await assert.rejects(staleClear, (error) => error.code === "QUEUE_CHANGED");
+    assert.equal(await harness.queueStore.loadQueue(), null);
+    await harness.coordinator.dispatch(toggleCommand({ expectedVariationNumber: 204 }));
+    const before = clone(harness.memory.values);
+    await assert.rejects(
+      harness.coordinator.dispatch(clearCommand(displayed)),
+      (error) => error.code === "QUEUE_CHANGED",
+    );
+    assert.deepEqual(harness.memory.values, before);
+    assert.equal((await harness.queueStore.loadQueue()).armedAfterVariationNumber, 204);
+    assert.notEqual((await snapshotQueue(harness)).queueToken, displayed.queueToken);
+  }
+});
+
+test("worker/coordinator restart invalidates displayed tokens without losing the saved queue", async () => {
+  const original = createCoordinatorHarness();
+  await original.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(original);
+  const before = clone(original.memory.values);
+  const restarted = createCoordinatorHarness({ memory: original.memory, state: original.getState() });
+  await assert.rejects(
+    restarted.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "QUEUE_CHANGED",
+  );
+  assert.deepEqual(restarted.memory.values, before);
+  const fresh = await snapshotQueue(restarted);
+  assert.notEqual(fresh.queueToken, displayed.queueToken);
+  await assert.rejects(
+    restarted.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "QUEUE_CHANGED",
+  );
+  await restarted.coordinator.dispatch(clearCommand(fresh));
+  assert.equal(await restarted.queueStore.loadQueue(), null);
+});
+
+test("clear validates active stream, queued SKU, and snapshot token before deleting anything", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(harness);
+  const before = clone(harness.memory.values);
+  const attempts = [
+    [clearCommand(displayed, { expectedStreamId: STREAM_TWO }), "ACTIVE_STREAM_MISMATCH"],
+    [clearCommand(displayed, { sku: "TEE-M" }), "QUEUE_CHANGED"],
+    [clearCommand(displayed, { expectedQueueToken: "11111111-1111-4111-8111-111111111111" }), "QUEUE_CHANGED"],
+  ];
+  for (const [command, code] of attempts) {
+    await assert.rejects(harness.coordinator.dispatch(command), (error) => error.code === code);
+    assert.deepEqual(harness.memory.values, before);
+  }
+  harness.setActiveStreamId(null);
+  await assert.rejects(
+    harness.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "NO_ACTIVE_STREAM",
+  );
+  assert.deepEqual(harness.memory.values, before);
+  assert.equal(harness.memory.calls.remove.length, 0);
+});
+
+test("failed queue clears and saves conservatively revoke old tokens without changing canonical state", async () => {
+  for (const operation of ["clear", "save"]) {
+    const harness = createCoordinatorHarness();
+    await harness.coordinator.dispatch(toggleCommand());
+    const displayed = await snapshotQueue(harness);
+    const before = clone(harness.memory.values);
+    const stateBefore = harness.getState();
+    if (operation === "clear") harness.memory.failNextRemove();
+    else harness.memory.failNextSet();
+    await assert.rejects(
+      harness.coordinator.dispatch(operation === "clear"
+        ? clearCommand(displayed)
+        : toggleCommand({ sku: "TEE-M" })),
+      (error) => error.code === "NEXT_ITEM_QUEUE_STORAGE_WRITE_FAILED",
+    );
+    assert.deepEqual(harness.memory.values, before);
+    assert.deepEqual(harness.getState(), stateBefore);
+    await assert.rejects(
+      harness.coordinator.dispatch(clearCommand(displayed)),
+      (error) => error.code === "QUEUE_CHANGED",
+    );
+    const current = await snapshotQueue(harness);
+    assert.notEqual(current.queueToken, displayed.queueToken);
+    await harness.coordinator.dispatch(clearCommand(current));
+    assert.equal(await harness.queueStore.loadQueue(), null);
+  }
+});
+
+test("ambiguous write failures cannot authorize a stale clear of a persisted replacement", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(harness);
+  const originalSet = harness.memory.storageArea.set;
+  harness.memory.storageArea.set = async (entries) => {
+    await originalSet(entries);
+    throw new Error("reply lost after persistence");
+  };
+  await assert.rejects(
+    harness.coordinator.dispatch(toggleCommand({ sku: "TEE-M" })),
+    (error) => error.code === "NEXT_ITEM_QUEUE_STORAGE_WRITE_FAILED",
+  );
+  harness.memory.storageArea.set = originalSet;
+  await harness.coordinator.dispatch(toggleCommand());
+  const before = clone(harness.memory.values);
+  await assert.rejects(
+    harness.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "QUEUE_CHANGED",
+  );
+  assert.deepEqual(harness.memory.values, before);
+});
+
+test("stream cleanup and stale-queue cleanup revoke tokens before the same queue is rearmed", async () => {
+  for (const cleanup of ["clearForStream", "staleGet"]) {
+    const harness = createCoordinatorHarness();
+    await harness.coordinator.dispatch(toggleCommand());
+    const displayed = await snapshotQueue(harness);
+    if (cleanup === "clearForStream") {
+      await harness.coordinator.clearForStream(STREAM_ONE);
+    } else {
+      harness.setActiveStreamId(null);
+      await harness.coordinator.dispatch({ type: "get_queue" });
+      harness.setActiveStreamId(STREAM_ONE);
+    }
+    await harness.coordinator.dispatch(toggleCommand());
+    await assert.rejects(
+      harness.coordinator.dispatch(clearCommand(displayed)),
+      (error) => error.code === "QUEUE_CHANGED",
+    );
+    assert.equal((await harness.queueStore.loadQueue()).sku, "TEE-L");
+    assert.notEqual((await snapshotQueue(harness)).queueToken, displayed.queueToken);
+  }
+});
+
+test("snapshot generation and storage read failures are typed and cannot clear a queue", async () => {
+  for (const createQueueToken of [() => "invalid", () => { throw new Error("unavailable"); }]) {
+    const harness = createCoordinatorHarness({ createQueueToken });
+    await harness.coordinator.dispatch(toggleCommand());
+    const before = clone(harness.memory.values);
+    await assert.rejects(snapshotQueue(harness), (error) => error.code === "QUEUE_SNAPSHOT_UNAVAILABLE");
+    assert.deepEqual(harness.memory.values, before);
+    assert.equal(harness.memory.calls.remove.length, 0);
+  }
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const displayed = await snapshotQueue(harness);
+  harness.memory.failNextGet();
+  await assert.rejects(
+    harness.coordinator.dispatch(clearCommand(displayed)),
+    (error) => error.code === "NEXT_ITEM_QUEUE_STORAGE_READ_FAILED",
+  );
+  assert.equal((await harness.queueStore.loadQueue()).sku, "TEE-L");
+  assert.equal(harness.memory.calls.remove.length, 0);
 });

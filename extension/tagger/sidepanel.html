@@ -404,11 +404,18 @@
         hidden
       >
       <div class="capture-health-row" hidden>
+        <form id="variation-search-form" class="variation-search-form" novalidate inert>
+          <input id="variation-search-input" type="text" inputmode="numeric"
+            placeholder="Var #" autocomplete="off" spellcheck="false"
+            aria-label="Find variation by number" aria-describedby="variation-search-help"
+            title="Enter a captured variation number and press Enter." disabled>
+          <span id="variation-search-help" class="visually-hidden">Enter a captured variation number and press Enter.</span>
+        </form>
         <span id="capture-health-badge" class="capture-health-badge"
           data-phase="not_tracking" role="status" aria-live="polite"
           aria-atomic="true" aria-describedby="capture-health-description"
-          title="Start stream tracking to check capture health.">Not tracking</span>
-        <span id="capture-health-description" class="visually-hidden">Start stream tracking to check capture health.</span>
+          title="Start stream tracking to initialize dashboard capture.">Not tracking</span>
+        <span id="capture-health-description" class="visually-hidden">Start stream tracking to initialize dashboard capture.</span>
       </div>
 
       <section class="current-auction" aria-labelledby="current-auction-title">
@@ -528,6 +535,16 @@
           <div class="inventory-heading-label">
             <h2 id="inventory-title">Inventory</h2>
             <p id="result-count" class="result-count" aria-live="polite">0 items</p>
+          </div>
+          <div id="queued-item-slot" class="queued-item-slot" hidden>
+            <span id="queued-item-badge" class="queued-item-badge">
+              <span id="queued-item-label" class="queued-item-label"></span>
+              <button id="clear-queued-item" class="clear-queued-item" type="button"
+                aria-label="Clear queued item" aria-describedby="queued-item-tooltip" disabled>
+                <span aria-hidden="true">&times;</span>
+              </button>
+              <span id="queued-item-tooltip" class="queued-item-tooltip" role="tooltip"></span>
+            </span>
           </div>
           <div class="inventory-heading-actions">
             <button

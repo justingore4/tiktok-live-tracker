@@ -65,6 +65,7 @@ function createRenderHarness() {
     createInventoryCard(group) { return { group }; },
     restoreCardFocus() {},
     restoreInventoryPinFocus() {},
+    renderQueuedItemBadge() {},
     inventoryGrid: element(),
     inventorySelectionNote: element(),
     inventoryListToggle: element(),
@@ -92,7 +93,7 @@ test("inventory header has one static title and inline polite count before its e
   assert.match(header, /class="section-heading inventory-heading"/);
   assert.match(
     header,
-    /class="inventory-heading-label">\s*<h2 id="inventory-title">Inventory<\/h2>\s*<p id="result-count" class="result-count" aria-live="polite">0 items<\/p>\s*<\/div>\s*<div class="inventory-heading-actions">/,
+    /class="inventory-heading-label">\s*<h2 id="inventory-title">Inventory<\/h2>\s*<p id="result-count" class="result-count" aria-live="polite">0 items<\/p>\s*<\/div>\s*<div id="queued-item-slot"[\s\S]*?<div class="inventory-heading-actions">/,
   );
   assert.equal((html.match(/id="inventory-title"/g) ?? []).length, 1);
   assert.equal((html.match(/id="result-count"/g) ?? []).length, 1);

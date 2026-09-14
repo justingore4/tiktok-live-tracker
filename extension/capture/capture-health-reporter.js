@@ -5,7 +5,8 @@
 })(typeof globalThis === "undefined" ? this : globalThis, function createModule() {
   "use strict";
 
-  const INTERVAL_MS = 5_000;
+  // Check for a new tracking session/worker context, not ongoing capture health.
+  const CONTEXT_CHECK_MS = 5_000;
   const REQUEST_TIMEOUT_MS = 3_000;
 
   function hasExactKeys(value, keys) {
@@ -27,27 +28,22 @@
   }
 
   function readSample(value) {
-    if (!value || typeof value !== "object" ||
-      !["readable", "inFlight", "retrying", "visible"].every((key) => typeof value[key] === "boolean") ||
-      !Number.isSafeInteger(value.pending) || value.pending < 0 || value.pending > 100_000) {
-      throw new Error("Invalid capture health sample.");
+    if (!value || typeof value !== "object" || !["loading", "ready", "blank"].includes(value.phase)) {
+      throw new Error("Invalid capture readiness sample.");
     }
-    // Only aggregates cross the boundary. Never spread a probe result that
+    // Only the startup phase crosses the boundary. Never spread a result that
     // might contain DOM nodes, raw TikTok text, or buyer/item details.
-    return {
-      readable: value.readable, pending: value.pending, inFlight: value.inFlight,
-      retrying: value.retrying, visible: value.visible,
-    };
+    return { phase: value.phase };
   }
 
   function createCaptureHealthReporter({
     runtime, protocol, getSample,
     setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout,
     now = () => Date.now(),
-    intervalMs = INTERVAL_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS,
+    intervalMs = CONTEXT_CHECK_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS,
   } = {}) {
     if (typeof runtime?.sendMessage !== "function" || typeof getSample !== "function" ||
-      protocol?.CHANNEL !== "tiktok-live-tracker.capture-health" || protocol?.VERSION !== 1 ||
+      protocol?.CHANNEL !== "tiktok-live-tracker.capture-health" || protocol?.VERSION !== 2 ||
       typeof setTimeoutFn !== "function" || typeof clearTimeoutFn !== "function" || typeof now !== "function" ||
       !Number.isFinite(intervalMs) || intervalMs < 1 ||
       !Number.isFinite(requestTimeoutMs) || requestTimeoutMs < 1) {
@@ -59,6 +55,8 @@
     let timer = null;
     let cancelRequest = null;
     let sequence = 0;
+    let readyStreamId = null;
+    let lastSent = null;
 
     function request(message) {
       return new Promise((resolve, reject) => {
@@ -102,12 +100,17 @@
           channel: protocol.CHANNEL, version: protocol.VERSION, type: "context",
         }));
         if (disposed || !context?.streamId) return;
-        // Sampling is deliberately after the fresh context response. An old
-        // timed-out callback cannot reuse a sample in a later stream.
+        // Only initialization needs a fresh capture read. Once ready, a context
+        // check can restore the same document's latch after a worker restart
+        // without re-reading GMV, rows, delivery activity, or heartbeats.
         const sampledAt = now();
-        const sample = readSample(getSample());
+        const sample = readyStreamId === context.streamId
+          ? { phase: "ready" } : readSample(getSample(context));
         if (!Number.isSafeInteger(sampledAt) || sampledAt < 0 || now() - sampledAt > REQUEST_TIMEOUT_MS) return;
         if (disposed) return;
+        if (sample.phase === "ready") readyStreamId = context.streamId;
+        const key = `${context.streamId}:${context.contextId}:${sample.phase}`;
+        if (key === lastSent) return;
         const response = await request({
           channel: protocol.CHANNEL, version: protocol.VERSION, type: "pulse",
           streamId: context.streamId, contextId: context.contextId, sequence: ++sequence, sampledAt, sample,
@@ -116,8 +119,9 @@
           !hasExactKeys(response.data, ["accepted"]) || response.data.accepted !== true) {
           return;
         }
+        lastSent = key;
       } catch {
-        // Health reporting is advisory. Capture delivery and its retries are
+        // Readiness reporting is advisory. Capture delivery and its retries are
         // independent and must continue even if this channel is unavailable.
       } finally {
         running = false;
@@ -141,5 +145,5 @@
     return Object.freeze({ start, dispose });
   }
 
-  return Object.freeze({ INTERVAL_MS, REQUEST_TIMEOUT_MS, createCaptureHealthReporter });
+  return Object.freeze({ CONTEXT_CHECK_MS, REQUEST_TIMEOUT_MS, createCaptureHealthReporter });
 });

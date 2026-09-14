@@ -4,399 +4,133 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 const view = require("../extension/tagger/capture-health-view.js");
-
-const taggerDirectory = path.join(__dirname, "..", "extension", "tagger");
-const panelSource = fs.readFileSync(path.join(taggerDirectory, "sidepanel.js"), "utf8");
-const css = fs.readFileSync(path.join(taggerDirectory, "sidepanel.css"), "utf8");
+const tagger = path.join(__dirname, "..", "extension", "tagger");
+const panelSource = fs.readFileSync(path.join(tagger, "sidepanel.js"), "utf8");
+const css = fs.readFileSync(path.join(tagger, "sidepanel.css"), "utf8");
+const source = fs.readFileSync(path.join(tagger, "capture-health-view.js"), "utf8");
+const html = fs.readFileSync(path.join(tagger, "sidepanel.html"), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function fakeClock(start = 0) {
-  let time = start;
-  let nextId = 0;
-  const pending = new Map();
-  const history = new Map();
-  const now = () => time;
-  function setTimeoutFn(callback, delay) {
-    assert.ok(Number.isFinite(delay) && delay >= 0, "Timers use a finite, nonnegative remaining delay");
-    const id = ++nextId;
-    const timer = { callback, delay, at: time + delay };
-    pending.set(id, timer);
-    history.set(id, timer);
-    return id;
-  }
-  function clearTimeoutFn(id) { pending.delete(id); }
-  function nextDue(target) {
-    const entry = [...pending.entries()].sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
-    return entry && entry[1].at <= target ? entry : null;
-  }
-  function fire(id) {
-    const timer = history.get(id);
-    assert.ok(timer, `Unknown fake timer ${id}`);
-    pending.delete(id);
-    timer.callback(); // Deliberately permits delivery of a callback already canceled by the app.
-  }
-  function advance(ms) {
-    const target = time + ms;
-    let entry;
-    while ((entry = nextDue(target))) {
-      time = Math.max(time, entry[1].at);
-      fire(entry[0]);
-    }
-    time = target;
-  }
-  async function advanceAsync(ms) {
-    const target = time + ms;
-    let entry;
-    while ((entry = nextDue(target))) {
-      time = Math.max(time, entry[1].at);
-      fire(entry[0]);
-      await flush();
-    }
-    time = target;
-    await flush();
-  }
-  return {
-    now, setTimeoutFn, clearTimeoutFn, pending, history, fire, advance, advanceAsync,
-    jump(ms) { time += ms; },
-  };
-}
-
-function fixture(start = 0) {
-  const clock = fakeClock(start);
-  const workspace = { hidden: false, inert: false, scrollTop: 87, dataset: { busy: "true" } };
-  const row = { hidden: true, parentElement: workspace };
-  const badge = {
-    dataset: {}, textContent: "Not tracking", hidden: false, parentElement: row,
-    closest(selector) { assert.equal(selector, ".capture-health-row"); return row; },
-  };
+function fixture() {
+  const workspace = { hidden: false, inert: true, scrollTop: 87 };
+  const row = { hidden: true, parentElement: workspace }, attributes = new Map();
+  const badge = { dataset: {}, textContent: "", closest: () => row,
+    setAttribute: (name, value) => attributes.set(name, value), removeAttribute: (name) => attributes.delete(name) };
   const description = {};
-  const controller = view.createCaptureHealthBadgeVisibilityController({ badge, ...clock });
-  function render(phase, reason = "no_source") {
-    view.renderBadge(badge, description, { phase, reason });
-    controller.update();
-  }
-  function contentSnapshot() {
-    return {
-      phase: badge.dataset.phase, text: badge.textContent, title: badge.title,
-      detail: description.textContent, badgeHidden: badge.hidden, rowHidden: row.hidden,
-      workspace: structuredClone(workspace),
-    };
-  }
-  return { clock, workspace, row, badge, description, controller, render, contentSnapshot };
+  return { workspace, row, badge, description, attributes,
+    render(phase, reason = "unavailable") { view.renderBadge(badge, description, { phase, reason }); } };
 }
 
-function onlyTimer(clock) {
-  assert.equal(clock.pending.size, 1);
-  return [...clock.pending.keys()][0];
-}
-
-test("red badge stays visible through 12,999 ms and hides at 13,000 ms without changing health or layout state", () => {
-  assert.equal(view.RED_BADGE_HIDE_MS, 13000);
-  const f = fixture(42000);
-  f.render("unavailable");
-  const content = f.contentSnapshot();
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.equal(f.row.hidden, false);
-  f.clock.advance(12999);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.deepEqual(f.contentSnapshot(), content);
-  f.clock.advance(1);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.deepEqual(f.contentSnapshot(), content, "Only the presentation flag changes");
-  assert.equal(f.clock.pending.size, 0);
-  f.clock.advance(60000);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.deepEqual(f.contentSnapshot(), content);
+test("unavailable startup shows an accessible static Reload Site hint with the existing neutral badge style", () => {
+  assert.deepEqual(view.LABELS, {
+    not_tracking: "Not tracking", connecting: "Connecting", active: "Capture active", loading: "Loading", blank: "Reload Site",
+  });
+  const reloadDescription = "Reload the TikTok LIVE dashboard to initialize capture.";
+  assert.equal(view.DESCRIPTIONS.unavailable, reloadDescription);
+  const f = fixture(), before = structuredClone(f.workspace); f.attributes.set("tabindex", "0");
+  f.render("active", "ready"); f.render("blank");
+  assert.equal(f.badge.textContent, "Reload Site");
+  assert.equal(f.badge.title, reloadDescription);
+  assert.equal(f.description.textContent, reloadDescription);
+  assert.equal(f.badge.dataset.phase, "blank"); assert.equal(f.attributes.get("aria-hidden"), "false");
+  assert.equal(f.attributes.has("tabindex"), false); assert.equal(f.row.hidden, false); assert.deepEqual(f.workspace, before);
+  assert.doesNotMatch(css, /\.capture-health-badge\[data-phase="blank"\]/);
+  const rule = css.match(/\.capture-health-badge\s*\{([^}]+)\}/)?.[1];
+  assert.match(rule, /background:\s*rgb\(119 132 151 \/ 12%\);/);
+  assert.match(rule, /color:\s*#b7c1ce;/);
+  assert.doesNotMatch(rule, /animation:|cursor:\s*pointer|visibility:\s*hidden/);
+  assert.doesNotMatch(html.match(/<span id="capture-health-badge"[\s\S]*?<\/span>/)[0], /tabindex|<button|<a\s/);
+  assert.doesNotMatch(source, /(?:location|tabs)\.reload\s*\(/);
+  assert.doesNotMatch(panelSource, /captureHealthBadge\.addEventListener\(\s*["']click/);
+  f.render("<script>", "<img>"); assert.equal(f.badge.dataset.phase, "blank");
+  assert.equal(f.badge.textContent, "Reload Site");
+  assert.equal(f.badge.title, reloadDescription);
+  assert.equal(f.description.textContent, reloadDescription);
 });
 
-test("repeated unavailable renders and reason changes never restart or resurrect the red badge", () => {
-  const f = fixture();
-  f.render("unavailable", "no_source");
-  for (const [at, reason] of [[2000, "no_source"], [6000, "unreadable"], [12000, "stale"], [12999, "transport_unavailable"]]) {
-    f.clock.advance(at - f.clock.now());
-    f.render("unavailable", reason);
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    assert.equal(f.clock.pending.get(onlyTimer(f.clock)).at, 13000);
-    assert.equal(f.badge.title, view.DESCRIPTIONS[reason]);
-  }
-  f.clock.advance(1);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  for (const reason of ["transport_unavailable", "unreadable", "no_source"]) {
-    f.clock.advance(2000);
-    f.render("unavailable", reason);
-    assert.equal(f.badge.dataset.autoHidden, "true");
-    assert.equal(f.badge.dataset.phase, "unavailable");
-    assert.equal(f.badge.title, view.DESCRIPTIONS[reason]);
-    assert.equal(f.row.hidden, false);
-    assert.equal(f.clock.pending.size, 0);
+test("not tracking hides the whole row; startup phases restore only the row, never a hidden workspace", () => {
+  const f = fixture(); f.workspace.hidden = true;
+  for (const phase of ["connecting", "loading", "active", "blank"]) {
+    f.render("not_tracking", "not_tracking"); assert.equal(f.row.hidden, true);
+    f.render(phase, "initializing"); assert.equal(f.row.hidden, false); assert.equal(f.workspace.hidden, true);
+    assert.equal(f.attributes.get("aria-hidden"), "false");
+    assert.equal(f.badge.textContent, view.LABELS[phase]);
+    if (phase === "blank") {
+      assert.equal(f.description.textContent, view.DESCRIPTIONS.unavailable);
+      assert.equal(f.badge.title, view.DESCRIPTIONS.unavailable);
+    }
   }
 });
 
-test("a wall-clock rollback cannot reveal a red badge already hidden for its continuous red period", () => {
-  const f = fixture();
-  f.render("unavailable");
-  f.clock.advance(13000);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  f.clock.jump(-60000);
-  f.render("unavailable", "unreadable");
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.equal(f.clock.pending.size, 0);
-  f.render("loading");
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  f.render("unavailable");
-  f.clock.advance(12999);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  f.clock.advance(1);
-  assert.equal(f.badge.dataset.autoHidden, "true");
+test("no red presentation timer or auto-hide controller remains", () => {
+  assert.equal(view.createCaptureHealthBadgeVisibilityController, undefined); assert.equal(view.RED_BADGE_HIDE_MS, undefined);
+  assert.doesNotMatch(source + panelSource + css, /autoHidden|auto-hidden|RED_BADGE_HIDE_MS|redDeadline|captureHealthBadgeVisibilityController/);
+  assert.doesNotMatch(css, /capture-health-badge\[data-phase="unavailable"\]/);
 });
 
-for (const phase of ["connecting", "loading", "active"]) {
-  for (const elapsed of [5000, 13000]) {
-    test(`${phase} restores immediately ${elapsed < 13000 ? "before" : "after"} red auto-hide and starts a fresh red countdown`, () => {
-      const f = fixture();
-      f.render("unavailable");
-      f.clock.advance(elapsed);
-      f.render(phase);
-      assert.equal(f.badge.dataset.autoHidden, "false");
-      assert.equal(f.badge.dataset.phase, phase);
-      assert.equal(f.badge.textContent, view.LABELS[phase]);
-      assert.equal(f.row.hidden, false);
-      assert.equal(f.clock.pending.size, 0);
-      f.clock.advance(40000);
-      assert.equal(f.badge.dataset.autoHidden, "false", "Blue, yellow and green have no auto-hide timer");
-      f.render("unavailable");
-      assert.equal(f.badge.dataset.autoHidden, "false");
-      f.clock.advance(12999);
-      assert.equal(f.badge.dataset.autoHidden, "false");
-      f.clock.advance(1);
-      assert.equal(f.badge.dataset.autoHidden, "true");
+test("fixed reserved center width keeps the existing Var search position stable in blank and visible phases", () => {
+  const row = css.match(/\.capture-health-row\s*\{([^}]+)\}/)[1];
+  const badge = css.match(/\.capture-health-badge\s*\{([^}]+)\}/)[1];
+  const form = css.match(/\.variation-search-form\s*\{([^}]+)\}/)[1];
+  assert.match(row, /grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 112px\) minmax\(0, 1fr\);/);
+  assert.match(row, /height:\s*20px;/); assert.match(row, /margin-bottom:\s*6px;/);
+  assert.match(badge, /grid-column:\s*2;/); assert.match(badge, /justify-self:\s*center;/);
+  assert.doesNotMatch(badge, /(?:^|;)\s*width:/, "Visible pills retain their intrinsic width and existing padding");
+  assert.match(form, /grid-column:\s*1;/); assert.match(form, /width:\s*64px;/);
+  assert.match(form, /margin-inline-start:\s*min\(28px, max\(0px, calc\(100% - 64px\)\)\);/);
+  // Numeric grid-track checks are synthetic layout checks, not browser pixels.
+  for (const available of [100, 160, 220, 320, 500]) {
+    const positions = ["connecting", "loading", "active", "blank"].map(() => {
+      const centerTrack = Math.min(112, Math.max(0, available - 12));
+      const leftTrack = Math.max(0, (available - centerTrack - 12) / 2);
+      return Math.min(28, Math.max(0, leftTrack - 64));
     });
+    assert.equal(new Set(positions).size, 1);
   }
-}
-
-test("a canceled callback cannot hide a recovered badge or shorten a later red period", () => {
-  const f = fixture();
-  f.render("unavailable");
-  const oldTimer = onlyTimer(f.clock);
-  f.clock.advance(3000);
-  f.render("loading");
-  const recovered = f.contentSnapshot();
-  f.clock.fire(oldTimer);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.deepEqual(f.contentSnapshot(), recovered);
-  assert.equal(f.clock.pending.size, 0);
-  f.clock.advance(2000);
-  f.render("unavailable", "unreadable");
-  const freshTimer = onlyTimer(f.clock);
-  f.clock.advance(8000); // The first red period's original deadline.
-  f.clock.fire(oldTimer);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.equal(onlyTimer(f.clock), freshTimer, "Stale callback cannot replace or clear the fresh timer");
-  f.clock.advance(4999);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  f.clock.advance(1);
-  assert.equal(f.badge.dataset.autoHidden, "true");
+  assert.doesNotMatch(css, /capture-health-badge\[data-phase="[^\"]+"\]\s*\{[^}]*\bwidth:/);
 });
 
-test("early timer callbacks reschedule only the remaining elapsed-time deadline", () => {
-  const f = fixture();
-  f.render("unavailable");
-  const original = onlyTimer(f.clock);
-  f.clock.jump(7000);
-  f.clock.fire(original);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  const next = onlyTimer(f.clock);
-  assert.equal(f.clock.pending.get(next).delay, 6000);
-  assert.equal(f.clock.pending.get(next).at, 13000);
-  f.clock.jump(5999);
-  f.clock.fire(next);
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.equal(f.clock.pending.get(onlyTimer(f.clock)).delay, 1);
-  f.clock.fire(original);
-  assert.equal(f.clock.pending.size, 1, "Superseded early callback cannot create an extra timer");
-  f.clock.advance(1);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.equal(f.clock.pending.size, 0);
+test("slot remains tracker-only and blue/yellow keep their reduced-motion-safe decorative spinner", () => {
+  assert.match(html, /id="tracker-workspace"[^>]*hidden\s*>\s*<div class="capture-health-row" hidden>/);
+  assert.match(html, /<div class="capture-health-row" hidden>[\s\S]*?<\/div>\s*<section class="current-auction"/);
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;/);
+  assert.match(panelSource, /captureHealthController\.setSession\(snapshot\.activeSession\?\.streamId \?\? null\)/);
+  assert.match(panelSource, /"pagehide",[\s\S]*?captureHealthController\.dispose\(\)/);
+  assert.doesNotMatch(fs.readFileSync(path.join(tagger, "..", "report", "report.html"), "utf8"), /capture-health/);
+  assert.match(css, /\.capture-health-badge\[data-phase="connecting"\]::before,\s*\.capture-health-badge\[data-phase="loading"\]::before\s*\{[^}]*animation:\s*capture-health-spin 0\.8s linear infinite;/);
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.capture-health-badge\[data-phase="connecting"\]::before,\s*\.capture-health-badge\[data-phase="loading"\]::before\s*\{\s*animation:\s*none;/);
+  assert.doesNotMatch(css, /\.capture-health-badge\[data-phase="(?:active|blank|not_tracking)"\]::before/);
 });
 
-test("a late callback hides immediately using elapsed time after suspension", () => {
-  const f = fixture();
-  f.render("unavailable");
-  const timer = onlyTimer(f.clock);
-  f.clock.jump(60000); // Browser callbacks do not run while the synthetic panel is suspended.
-  f.clock.fire(timer);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.equal(f.clock.pending.size, 0);
-});
-
-for (const elapsed of [13000, 45000]) {
-  test(`a repeated render at ${elapsed} ms honors the deadline even before a delayed timer is delivered`, () => {
-    const f = fixture();
-    f.render("unavailable");
-    const timer = onlyTimer(f.clock);
-    f.clock.jump(elapsed);
-    f.render("unavailable", "unreadable");
-    assert.equal(f.badge.dataset.autoHidden, "true");
-    assert.equal(f.clock.pending.size, 0);
-    f.clock.fire(timer);
-    assert.equal(f.badge.dataset.autoHidden, "true");
-    assert.equal(f.clock.pending.size, 0);
-  });
-}
-
-for (const elapsed of [5000, 13000]) {
-  test(`dispose ${elapsed < 13000 ? "before" : "after"} auto-hide clears timers and makes updates and stale callbacks inert`, () => {
-    const f = fixture();
-    f.render("unavailable");
-    const timer = onlyTimer(f.clock);
-    f.clock.advance(elapsed);
-    f.controller.dispose();
-    f.controller.dispose();
-    assert.equal(f.clock.pending.size, 0);
-    f.clock.jump(60000);
-    const hidden = f.badge.dataset.autoHidden;
-    const content = f.contentSnapshot();
-    f.clock.fire(timer);
-    f.controller.update();
-    assert.equal(f.badge.dataset.autoHidden, hidden);
-    assert.deepEqual(f.contentSnapshot(), content);
-    view.renderBadge(f.badge, f.description, { phase: "active", reason: "healthy" });
-    f.controller.update();
-    assert.equal(f.badge.dataset.autoHidden, hidden, "Disposed visibility controller performs no further writes");
-    view.renderBadge(f.badge, f.description, { phase: "unavailable", reason: "no_source" });
-    f.controller.update();
-    assert.equal(f.clock.pending.size, 0, "Disposed controller never starts another countdown");
-  });
-}
-
-test("not_tracking keeps its entire row hidden and cancels red timers without revealing the workspace", () => {
-  for (const elapsed of [5000, 13000]) {
-    const f = fixture();
-    f.workspace.hidden = true;
-    f.workspace.inert = true;
-    const workspace = structuredClone(f.workspace);
-    f.render("not_tracking", "not_tracking");
-    assert.equal(f.row.hidden, true);
-    assert.equal(f.clock.pending.size, 0);
-    f.clock.advance(20000);
-    f.render("unavailable");
-    const timer = onlyTimer(f.clock);
-    f.clock.advance(elapsed);
-    f.render("not_tracking", "not_tracking");
-    assert.equal(f.row.hidden, true);
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    assert.equal(f.badge.textContent, "Not tracking");
-    assert.equal(f.clock.pending.size, 0);
-    f.clock.jump(60000);
-    f.clock.fire(timer);
-    assert.equal(f.row.hidden, true);
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    assert.deepEqual(f.workspace, workspace);
-  }
-});
-
-test("renderer validation supplies the fallback red phase without changing accessible content at auto-hide", () => {
-  const f = fixture();
-  f.render("unknown-phase", "unknown-reason");
-  assert.equal(f.badge.dataset.phase, "unavailable");
-  assert.equal(f.badge.textContent, "Capture unavailable");
-  assert.equal(f.badge.title, view.DESCRIPTIONS.transport_unavailable);
-  const content = f.contentSnapshot();
-  f.clock.advance(13000);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.deepEqual(f.contentSnapshot(), content);
-});
-
-test("auto-hide uses a visibility-only red selector and preserves the reserved badge row", () => {
-  const rule = css.match(/\.capture-health-badge\[data-phase="unavailable"\]\[data-auto-hidden="true"\]\s*\{([^}]+)\}/);
-  assert.ok(rule, "The hidden flag applies only to the unavailable badge");
-  assert.match(rule[1], /^\s*visibility:\s*hidden;\s*$/);
-  assert.equal((css.match(/data-auto-hidden/g) ?? []).length, 1, "No workspace/row selectors depend on presentation hiding");
-  assert.match(css, /\.capture-health-row\s*\{[^}]*height:\s*20px;[^}]*margin-bottom:\s*6px;/);
-  assert.match(css, /\.capture-health-badge\s*\{[^}]*height:\s*20px;/);
-  assert.match(panelSource, /"pagehide",[\s\S]*?captureHealthBadgeVisibilityController\.dispose\(\)/);
-});
-
-test("hidden red retains its phase so tint and the actual capture interaction guard remain unchanged", () => {
-  const f = fixture();
-  const start = panelSource.indexOf("  function isCaptureInteractionLocked()");
-  const end = panelSource.indexOf("\n  }", start);
-  assert.ok(start >= 0 && end > start);
-  const isLocked = vm.runInNewContext(`${panelSource.slice(start, end + 4)}\nisCaptureInteractionLocked;`, {
-    captureHealthBadge: f.badge, trackerWorkspace: f.workspace,
-    streamSnapshot: { resumed: true, activeSession: { streamId: "synthetic-stream" } },
-    archivedReportsViewOpen: false,
-  });
-  const tintRule = css.match(/(\.tracker-workspace:has\([^{}]+)\{([^{}]+)\}/);
-  assert.ok(tintRule);
-  const tintPhases = [...tintRule[1].matchAll(/data-phase="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(tintPhases, ["connecting", "loading"]);
-  for (const phase of ["connecting", "loading", "active", "unavailable"]) {
-    f.render(phase);
-    assert.equal(isLocked(), phase === "connecting" || phase === "loading");
-  }
-  f.clock.advance(13000);
-  assert.equal(f.badge.dataset.autoHidden, "true");
-  assert.equal(f.badge.dataset.phase, "unavailable");
-  assert.equal(isLocked(), false);
-  assert.equal(tintPhases.includes(f.badge.dataset.phase), false);
-  f.render("loading");
-  assert.equal(f.badge.dataset.autoHidden, "false");
-  assert.equal(isLocked(), true);
-  assert.equal(tintPhases.includes(f.badge.dataset.phase), true);
-});
-
-test("the actual health subscription keeps polling after red auto-hide and renders recovery immediately", async () => {
-  const f = fixture();
-  let phase = "unavailable";
-  let reason = "no_source";
-  const messages = [];
-  const callback = panelSource.match(/onChange:\s*(\(state\) => \{[\s\S]*?\n    \})/);
-  assert.ok(callback);
-  const onChange = vm.runInNewContext(`(${callback[1]})`, {
+test("actual subscription keeps green for later errors and only resets for a different document", async () => {
+  const f = fixture(); let nextId = 0; const timers = new Map();
+  let response = { ok: true, data: { streamId: "synthetic-stream", loadId: "document-a", phase: "active", reason: "ready" } };
+  let failed = false, requests = 0;
+  const callback = panelSource.match(/onChange:\s*(\(state\) => \{[\s\S]*?\n    \})/)[1];
+  const onChange = vm.runInNewContext(`(${callback})`, {
     captureHealthView: view, captureHealthBadge: f.badge, captureHealthDescription: f.description,
-    captureHealthBadgeVisibilityController: f.controller, savedSnapshot: { busy: false },
-    setWorkspaceBusy(busy) { assert.equal(busy, false); },
+    savedSnapshot: { busy: true }, setWorkspaceBusy(busy) { assert.equal(busy, true); },
   });
   const controller = view.createCaptureHealthViewController({
-    ...f.clock,
-    protocol: { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 1 },
-    runtime: { async sendMessage(message) {
-      messages.push(message);
-      return { ok: true, data: { streamId: message.streamId, phase, reason } };
-    } },
-    onChange,
+    runtime: { async sendMessage() { requests++; if (failed) throw new Error("offline"); return response; } },
+    protocol: { CHANNEL: "tiktok-live-tracker.capture-health", VERSION: 2 }, onChange,
+    setTimeoutFn(fn) { timers.set(++nextId, fn); return nextId; }, clearTimeoutFn(id) { timers.delete(id); },
   });
-  try {
-    controller.setSession("synthetic-stream");
-    assert.equal(f.badge.dataset.phase, "connecting");
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    await flush();
-    assert.equal(f.badge.dataset.phase, "unavailable");
-    await f.clock.advanceAsync(12999);
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    await f.clock.advanceAsync(1);
-    assert.equal(f.badge.dataset.autoHidden, "true");
-    const countAtHide = messages.length;
-    await f.clock.advanceAsync(7000);
-    assert.ok(messages.length > countAtHide, "Presentation hiding does not stop health requests");
-    assert.equal(f.badge.dataset.autoHidden, "true");
-    reason = "unreadable";
-    await f.clock.advanceAsync(2000);
-    assert.equal(f.badge.title, view.DESCRIPTIONS.unreadable);
-    assert.equal(f.badge.dataset.autoHidden, "true", "A newly published red reason stays hidden");
-    phase = "active"; reason = "healthy";
-    await f.clock.advanceAsync(2000);
-    assert.equal(f.badge.dataset.phase, "active");
-    assert.equal(f.badge.dataset.autoHidden, "false");
-    controller.setSession(null);
-    assert.equal(f.row.hidden, true);
-    assert.equal(f.clock.pending.size, 0);
-    const countAtEnd = messages.length;
-    await f.clock.advanceAsync(30000);
-    assert.equal(messages.length, countAtEnd);
-  } finally {
-    controller.dispose();
-    f.controller.dispose();
-  }
+  controller.setSession("synthetic-stream"); await flush(); assert.equal(f.badge.dataset.phase, "active");
+  failed = true; await controller.refresh(); assert.equal(f.badge.dataset.phase, "active");
+  assert.equal(f.badge.textContent, "Capture active");
+  assert.equal(f.description.textContent, view.DESCRIPTIONS.ready);
+  failed = false; response = { ok: true, data: { streamId: "synthetic-stream", loadId: null, phase: "blank", reason: "unavailable" } };
+  await controller.refresh(); assert.equal(f.badge.dataset.phase, "active");
+  assert.equal(f.badge.textContent, "Capture active", "later unavailable results cannot replace latched green with the reload hint");
+  response.data = { ...response.data, loadId: "document-b", phase: "loading", reason: "initializing" };
+  await controller.refresh(); assert.equal(f.badge.dataset.phase, "loading");
+  response.data = { ...response.data, phase: "blank", reason: "unavailable" };
+  await controller.refresh(); assert.equal(f.badge.textContent, "Reload Site");
+  assert.equal(f.badge.title, view.DESCRIPTIONS.unavailable);
+  assert.equal(f.description.textContent, view.DESCRIPTIONS.unavailable);
+  assert.equal(f.attributes.get("aria-hidden"), "false");
+  assert.equal(f.attributes.has("tabindex"), false);
+  assert.equal(f.row.hidden, false); assert.equal(f.workspace.inert, true);
+  assert.equal(requests, 5); controller.dispose(); assert.equal(timers.size, 0);
 });

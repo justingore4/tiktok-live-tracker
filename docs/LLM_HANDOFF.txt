@@ -112,7 +112,7 @@ extension/shared/
   inventory-import-protocol.js       Strict import message contracts.
   capture-protocol.js                Sanitized capture event contract.
   capture-integration.js             Capture events into the active local stream.
-  capture-health.js                  Validated advisory health state and thresholds.
+  capture-health.js                  Validated, document-scoped startup readiness.
   sale-parser.js                    Narrow sale/variation/price text parsing.
   live-bid-*.js                      Transient live bid projection and protocol.
   next-item-queue-*.js               Single-SKU next-item queue and protocol.
@@ -126,7 +126,7 @@ extension/capture/
   capture-client.js                  Validated runtime delivery and acknowledgments.
   capture-scheduler.js               Coalesced mutation-driven scans.
   capture-event-registry.js          Diagnostic completed-sale logging deduplication.
-  capture-health-reporter.js          Context-bound health samples/heartbeats.
+  capture-health-reporter.js          Context-bound startup phases/readiness latch.
 
 extension/tagger/
   sidepanel.html / sidepanel.css / sidepanel.js
@@ -142,7 +142,7 @@ extension/tagger/
   variation-selector-view-model.js / variation-selector-lock.js
     Variation display and picker-safe rendering.
   capture-health-view.js
-    Health client/presentation, tooltip, red auto-hide, tint-related state.
+    Startup client/presentation, readiness latch, Reload Site fallback, tint-related state.
   live-bid-client.js / next-item-queue-client.js
     Transient bid and queue UI clients.
 
@@ -214,7 +214,7 @@ These versions differ from protocol versions and manifest version. Never bump on
 just because another changes. Preserve strict hydration and supported migration
 behavior. Invalid saved data must not be treated as a clean empty installation.
 
-Capture health is advisory in-memory state, not canonical order truth or a report
+Capture readiness is advisory in-memory state, not canonical order truth or a report
 completeness certificate. Tokens/raw DOM/buyer identity are not report fields.
 
 5. DOMAIN AND ACCOUNTING INVARIANTS
@@ -283,7 +283,7 @@ Accepted whole badge text, ignoring capitalization and normalized whitespace:
   Payment complete                         -> payment_complete
   Canceled                                 -> canceled
   Cancelled                                -> canceled
-  Payment failed                           -> payment_failed
+  Payment failed                           -> canceled (legacy countdown exception below)
   Payment fixing                           -> payment_fixing
   Payment fixing...                        -> payment_fixing
   Payment fixing…                          -> payment_fixing
@@ -306,22 +306,37 @@ change payment priority, alter timeouts, or repair existing reports retroactivel
 Follow-up after the baseline on September 12: Payment fixing also accepts three
 periods or U+2026, still mapping to payment_fixing with unchanged matching safeguards.
 
-Recent user screenshots establish these VISIBLE labels:
-- Temporary failure: yellow "Payment failed" plus "Transaction will cancel in 04:42".
-- Final cancellation: red "Canceled" plus separate-looking "Payment failed" detail.
+Earlier screenshots showed "Payment failed" plus "Transaction will cancel in 04:42"
+during the buffer and "Canceled" plus separate "Payment failed" detail at cancellation.
+New user-provided screenshots show updated VISIBLE labels:
+- Buffer: "Payment processing..." plus a transaction-cancellation countdown.
+- Final cancellation: "Payment failed" alone.
 Do not reproduce buyer identities from those screenshots in code/docs/tests.
 
 Intended/current behavior:
-- Temporary Payment failed remains unresolved; the countdown is not parsed as a
-  cancellation. There is no independent five-minute auto-cancel timer.
+- Fresh terminal Payment failed maps to canceled only at the capture boundary and
+  reuses existing canonical cancellation, allocation release, and report logic.
+- Payment processing and its ellipsis aliases stay unresolved. There is no
+  independent five-minute auto-cancel timer, age rule, or badge-color rule.
+- A failure badge with explicit visible same-order "Transaction will cancel in MM:SS"
+  detail remains internal payment_failed. Recognized truncated detail can use its exact
+  full title. Even 00:00 stays unresolved until the indicator disappears. Other rows,
+  unrelated titles, and product text are not countdown evidence. Relevant detail changes
+  in Sold Items use its existing scheduler; health/retry/poll timing is unchanged.
+- The internal payment_failed enum is deliberately preserved for legacy saved records.
+  No migration or automatic report repair occurs. A fresh valid capture may cancel an
+  older unresolved active variation; reopening old data alone must not reclassify it.
 - Recognized Canceled/Cancelled is terminal cancellation even when separate plain
   Payment failed detail exists next to the badge. It needs no SKU mapping.
-- Once cancellation is saved, a later Payment failed observation cannot undo it.
+- Once cancellation is saved, later contradictory pending/completed observations
+  cannot undo it. A priced completed sale likewise cannot be canceled by this path.
 
 Investigation status - IMPORTANT, DO NOT OVERSTATE:
-The user reported manually canceling orders in a post-stream report even though
-the dashboard displayed them canceled. They had not mapped any items. Synthetic
-checks ruled out absent mappings as the cause; cancellations work unmapped.
+The user reported manually canceling orders in a post-stream report, then identified
+the changed dashboard wording above. The former mapping classified plain Payment failed
+as unresolved, explaining how that presentation could produce manual prompts. No
+affected real report was inspected, so do not claim historical data was repaired.
+Synthetic checks rule out absent mappings as the cause; cancellations work unmapped.
 The screenshot-shaped case (Canceled tag plus ordinary Payment failed detail)
 already passes a regression test. Both spelling variants now have coverage.
 
@@ -332,11 +347,18 @@ also fit. None of these was proved for the affected session.
 
 The report's manual-resolution list reads current canonical unknown orders whose
 observed status is payment_processing, order_processing, payment_fixing, or
-payment_failed. Already-canonical canceled orders are excluded. A successfully
+legacy payment_failed. Already-canonical canceled orders are excluded. A successfully
 saved unrecognized observation also removes an order from that particular list;
 therefore a simple label mismatch delivered as unrecognized does NOT alone explain
-continued manual-cancel prompts. Missing observations retaining the older pending
-status fit better. The alias is defensive compatibility, not a confirmed bug fix.
+continued manual-cancel prompts. The old plain-failure mapping or missing observations
+retaining an older pending status can do so. The Cancelled spelling alias alone did not
+address the newly reported terminal Payment failed wording.
+
+Regression coverage includes the real locator/content delivery and synthetic canonical
+storage/report paths: processing -> failure, mapped/unmapped reservation release,
+idempotency, unchanged completed accounting, legacy records/countdowns, terminal guards,
+and report reopening with canceled orders excluded from unfinished-payment prompts.
+The updated live DOM and transition sequence still need verification on a future stream.
 
 The user also suggested ending before catch-up or not reloading after code updates.
 That is plausible, NOT confirmed. End uses already-persisted capture and does not
@@ -366,69 +388,56 @@ Capture implementation:
 - GMV uses exact guide-Step-2 and supported legacy guide-step-2 roots; active auction
   uses a unique visible .auction-pin-card. See locator tests before editing selectors.
 
-Validated health presentation:
+Startup-readiness presentation (existing capture-health filenames, protocol v2):
   connecting  Blue    Connecting
   loading     Yellow  Loading
   active      Green   Capture active
-  unavailable Red     Capture unavailable
-  not_tracking is internal/hidden; the gray Not tracking bubble was removed.
+  blank       Neutral Reload Site; accessible static disclaimer, no focus target
+  not_tracking is internal/hidden with no reserved row.
 
-Thresholds from shared/capture-health.js and tagger/capture-health-view.js:
-- No dashboard source / no first health sample: 10 seconds to unavailable.
-- Continuously unreadable dashboard: 10 seconds to unavailable; readability resets
-  that continuous-unreadability timer.
-- Continuous pending/unhealthy/retrying delivery: 60 seconds to unavailable.
-- Missing heartbeats while visible: stale/loading after 20 s, unavailable after 60 s.
-- Missing heartbeats in background: stale/loading after 90 s, unavailable after 180 s.
-- General warm-up phase boundary INITIAL_GRACE_MS remains 20 seconds. It is not a
-  mandatory wait before green and is distinct from the two 10-second thresholds.
-- Sustained health-service transport failures: 20 seconds from first failed result.
-- Healthy recovery requires at least two consecutive clean samples spanning >=5 s.
-- Reporter schedules next cycle 5 seconds after completion; request timeout 3 s.
-- Received sample/message maximum age: 3 s.
-- Panel poll schedules 2 seconds after completion; request timeout 4 s.
-- Source expiry 180 s; max 32 sources. Ambiguous sources are not treated as healthy.
+Green now means startup completed, NOT ongoing healthy capture. The user explicitly
+requested it stay green through later missing GMV, unreadable rows, busy delivery,
+retries, heartbeat gaps, and disconnections. Do not restore continuous health
+demotion or a disconnection-based hiding rule without a new request.
 
-Only the source/first-sample and continuous-unreadable thresholds were shortened
-from 20 to 10 seconds. Do not accidentally shorten unrelated timers through a
-shared constant. Readable capture catching up can remain loading beyond 10 seconds.
+Initial readiness:
+- Current core observer/scan initialization plus current Sold Items variation or
+  known empty message, OR an initialized current bidding source.
+- Initial Sold Items/bidding queues, in-flight deliveries, and retries must finish.
+- GMV is optional and never gates readiness, including missing or bare $0 displays.
+- No old all-path readability rule, two-clean-sample streak, five-second warm-up,
+  staleness/backlog demotion, red badge, or 13-second auto-hide implementation.
+- A new stream or actual new browser dashboard document starts another cycle.
+  Rerenders and reopening the panel do not restart yellow for a ready document.
+- Unavailable before readiness uses internal blank with visible Reload Site text.
+  It is a static disclaimer, not a reload button. No source/first response gets a 10-second
+  Connecting grace; initial panel transport errors get a 20-second grace.
+- Real pending startup work can remain Loading; a timer never manufactures ready.
 
-Readability is more than "an order exists": valid probes/observers, successful scan
-state, usable payment data, bidding/GMV conditions, and no retained probe fault all
-matter. Healthy empty Sold Items requires its supported explicit empty-state text.
-Probe faults clear on successful reads/recovery, not merely on a heartbeat.
-Refresh/navigation/session changes require fresh context and confirmation.
+The strict existing channel now reports only a startup phase (loading/ready/blank)
+plus session/context, sequence, and timestamp metadata. The worker returns
+streamId/loadId/phase/reason; loadId is the browser document identity. Ready latches
+in the content script, worker, and panel. Retired document messages stay rejected.
+A secondary dashboard cannot reset the primary document's badge. Navigation/closure
+alone does not demote green; a newly established dashboard document resets startup.
 
-Blue/yellow behavior, intentionally implemented together:
-- One validated phase drives badge, spinner, steady gray tint, and interaction lock.
-- No whole-workspace opacity toggling from each aria-busy refresh; that caused flicker.
-- Blue <-> yellow stays continuously tinted/locked, with no intermediate unlock.
-- Badge/spinner stay at full brightness. Spinner honors prefers-reduced-motion.
-- Lock covers search typing/paste/clear, variations, return-to-live, mappings,
-  sizes, context-menu actions, queue, pinning, expansion, SKU import/form actions,
-  and relevant shortcuts/stale UI events. Open pickers/top-layer menus close.
-- Background rendering, capture, retries, health checks, and in-flight saves/imports
-  continue. Preserve typed form/search contents and current selections.
-- Scrolling and End Stream Tracking with its confirmation/cancel controls remain
-  available, subject to their original session-busy safeguards.
-- Green/red remove ONLY the capture-loading lock immediately with the phase update.
-  No extra unlock timer. Other busy, save, error, inert, and confirmation protections
-  remain authoritative; never blindly enable all controls.
-- Picker-friendly background refresh exceptions cannot bypass the health lock.
+After ready, the reporter stops DOM health sampling and duplicate pulses. It keeps
+5-second context checks to discover new sessions/worker contexts, and can republish
+the same page's readiness after worker restart. Panel reads every 2 seconds discover
+new dashboard documents, not health loss. Request deadlines and stale-message
+validation remain. No report/canonical/storage schema or saved-data change.
 
-Red auto-hide, presentation only:
-- After 13 continuous seconds unavailable, hide badge via visibility:hidden while
-  retaining row height, gap, and phase. No layout collapse or fake green state.
-- Repeated red polls/reason changes do not restart the clock or reveal hidden red.
-- A non-red state shows immediately; each later entry into red starts a fresh clock.
-- Stale callbacks cannot hide newer phases; controller disposal cleans timers.
-- Red does not impose gray tint/lock and does not stop capture or recovery.
+Blue/yellow together drive the spinner, steady 50% tint, and capture-only lock.
+Preserve reduced motion, typed drafts, picker-close behavior, native scrolling,
+and End/confirmation/cancel availability. Green/blank remove ONLY that initial
+lock, never independent busy/save/error/inert/confirmation safeguards. Background
+capture, business retries, and in-flight saves/imports keep running unchanged.
+Later glitches cannot reapply loading tint or the capture-loading lock.
 
-Badge/tint/lock apply only to active, resumed variations/inventory workspace.
-Setup, Resume/End-only, archived reports, and post-stream reports are excluded.
-Health green means recent validated checks, NOT full historical capture coverage.
-Red hiding is NOT recovery. Normal new variations do not inherently require a
-green -> yellow transition; health samples determine it, not every UI render.
+The badge/lock apply only to the active resumed tracker. Other screens are unchanged.
+Users should watch the active variation and reload website/extension if it stops
+updating; green deliberately does not guarantee connection or capture completeness.
+See capture-development.md for synthetic tests and remaining live/manual checks.
 
 8. INVENTORY / GOOGLE SHEETS CONTRACT
 -----------------------------------
@@ -482,6 +491,12 @@ oversold replacement quantity clamps to zero and needs a physical recount.
   the queue. Preserve the explicit distinct workflow.
 - Queue holds one SKU for the next genuinely newer bidding variation and does not
   replace existing mapping. It is not a multi-item backlog.
+- The red inventory-header badge shows the queued item/style and size (OS/n/a
+  omitted). Its X uses clearQueue, never toggleQueue or mapping commands.
+- getQueueSnapshot returns an ephemeral queueToken alongside queuedSku. Clear
+  checks that token, stream, and SKU inside the serialized coordinator; stale
+  requests are rejected. Tokens rotate on queue writes and worker restarts and
+  are not persisted. Queue storage remains schema 1.
 - Return to live item resumes follow-newest. Pins move cards to front; otherwise
   preserve original order. Completed sales do not cause reordering.
 - Size/variation pickers use dedicated render locking so updates do not jump under
@@ -489,7 +504,7 @@ oversold replacement quantity clamps to zero and needs a physical recount.
 
 Current compact visual decisions:
 - Main T logo/title are hidden inside active tracker; variations start near the top
-  with a slim centered health row above. Keep its gap when red hides.
+  with a slim centered startup row above. Keep its gap and Var # placement for all labels.
 - Setup/Resume retain T logo and title left, local session badge far right.
 - Removed LOCAL STREAM SESSION / Tracker stream headings in Start/Resume boxes.
 - Pre-stream inventory check is the single compact section heading, with dynamic
@@ -799,17 +814,19 @@ A. End retry-success UI gap - still present, source-confirmed.
    do not trigger this for every Start/Resume retry. NOT implemented/authorized by
    the handoff request.
 
-B. Startup-only red health badge - reported, cause unconfirmed, user accepted it.
-   User saw red at the beginning with one auction; another auction was followed by
-   green. Possible retained probe fault needs evidence, not an assumed diagnosis.
-   User chose to leave this alone because tracking still worked. Red auto-hide is
-   presentation only and did not fix/alter the detection mechanism.
+B. Strict health badge superseded by startup readiness (section 7).
+   The earlier startup-only red incident was not conclusively diagnosed. Later,
+   a screenshot's bare $0 GMV reproduced an all-path health failure despite bids
+   capturing. User requested removal of red and ongoing health demotion entirely.
+   GMV now does not gate startup and green latches. This does not change GMV parsing,
+   repair old data, or prove ongoing connection/completeness.
 
-C. Canceled orders needing manual resolution - unresolved incident, section 6.
-   Screenshots have supported "Canceled" spelling. No affected row HTML, capture
-   log, or saved report was inspected. Mapping absence was ruled out synthetically;
-   row association/delivery timing/old code remain hypotheses. Do not claim the new
-   "Cancelled" alias fixed that incident or add a five-minute auto-cancel shortcut.
+C. Canceled orders needing manual resolution - wording update implemented, section 6.
+   User identified terminal "Payment failed" replacing "Canceled" and processing
+   replacing the earlier temporary-failure label. Capture now handles that distinction
+   without migrating legacy data. Synthetic end-to-end tests pass; the affected real
+   report was not inspected and current live DOM/delivery still need verification.
+   Do not claim historical reports were repaired or add a five-minute cancel timer.
 
 D. Startup dependency hardening - code-order risk, not a verified production outage.
    sidepanel.js constructs capture-health controllers before its friendly dependency

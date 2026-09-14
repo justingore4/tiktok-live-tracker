@@ -4,7 +4,6 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 const healthView = require("../extension/tagger/capture-health-view.js");
-const health = require("../extension/shared/capture-health.js");
 
 const tagger = path.join(__dirname, "..", "extension", "tagger");
 const css = fs.readFileSync(path.join(tagger, "sidepanel.css"), "utf8");
@@ -45,7 +44,7 @@ function createFixture() {
   );
   return {
     workspace, row, badge, attributes, context, setBusy,
-    render(phase, reason = "backlog") { healthView.renderBadge(badge, description, { phase, reason }); },
+    render(phase, reason = "initializing") { healthView.renderBadge(badge, description, { phase, reason }); },
   };
 }
 
@@ -63,7 +62,7 @@ test("workspace tint targets only Connecting/Loading content, never the badge or
     "No ancestor opacity or filter can also dim the health badge/spinner");
 });
 
-test("badge state transitions retain the same tint across Connecting/Loading and clear it for green/red", () => {
+test("badge state transitions retain the same tint across Connecting/Loading and clear it for green/blank", () => {
   const f = createFixture();
   const tintPhases = [...tintRule[1].matchAll(/data-phase="([^"]+)"/g)].map((match) => match[1]);
   const tintOpacity = Number(tintRule[2].match(/opacity:\s*([\d.]+)/)[1]);
@@ -71,7 +70,7 @@ test("badge state transitions retain the same tint across Connecting/Loading and
   // Pixel rendering is a separate browser check, not simulated here.
   const sequence = [
     ["connecting", 0.5], ["loading", 0.5], ["connecting", 0.5], ["loading", 0.5],
-    ["active", 1], ["loading", 0.5], ["unavailable", 1], ["connecting", 0.5],
+    ["active", 1], ["loading", 0.5], ["blank", 1], ["connecting", 0.5],
     ["active", 1], ["not_tracking", 1],
   ];
   for (const [phase, expected] of sequence) {
@@ -87,16 +86,18 @@ test("badge state transitions retain the same tint across Connecting/Loading and
   }
   assert.equal(f.row.hidden, true);
   f.render("unexpected-phase", "unexpected-reason");
-  assert.equal(f.badge.dataset.phase, "unavailable");
+  assert.equal(f.badge.dataset.phase, "blank");
+  assert.equal(f.badge.textContent, "Reload Site");
+  assert.equal(f.badge.title, healthView.DESCRIPTIONS.unavailable);
   assert.equal(tintPhases.includes(f.badge.dataset.phase), false,
-    "Invalid states use the existing red fallback without stale dimming");
+    "Invalid states use the reload hint without stale dimming");
 });
 
 test("health rendering preserves workspace visibility, errors, busy state and interaction safeguards", () => {
   const f = createFixture();
   f.workspace.hidden = true; // Resume/End-only view.
   f.context.streamSnapshot.resumed = false;
-  for (const phase of ["connecting", "loading", "active", "unavailable"]) {
+  for (const phase of ["connecting", "loading", "active", "blank"]) {
     f.setBusy(false);
     const before = [...f.attributes];
     f.render(phase);
@@ -120,41 +121,17 @@ test("health rendering preserves workspace visibility, errors, busy state and in
   assert.equal(f.attributes.get("aria-busy"), "false");
 });
 
-for (const failure of ["no_source", "no_first_sample", "unreadable"]) {
-  test(`${failure} timeout clears existing tint at ten seconds; pending updates and recovery still drive it`, () => {
-    const f = createFixture();
-    const streamId = "local-stream:11111111-1111-4111-8111-111111111111";
-    const source = { tabId: 9, documentId: "synthetic-dashboard" };
-    const clean = { readable: true, pending: 0, inFlight: false, retrying: false, visible: true };
-    let now = 0, sequence = 0;
-    const store = health.createCaptureHealthStore({ now: () => now, createContextId: () => "synthetic-context" });
-    store.setSession(streamId);
-    let context = failure === "no_source" ? null : store.context(source);
-    function pulse(sample) {
-      assert.deepEqual(store.pulse(source, { type: "pulse", ...context, sequence: sequence++, sampledAt: now, sample }), { accepted: true });
-    }
-    function expectTint(phase, dimmed) {
-      const state = store.get(streamId);
-      f.render(state.phase, state.reason);
-      assert.equal(f.badge.dataset.phase, phase);
-      assert.equal(f.badge.textContent, healthView.LABELS[phase]);
-      const selectors = [...tintRule[1].matchAll(/data-phase="([^"]+)"/g)].map((match) => match[1]);
-      assert.equal(selectors.includes(f.badge.dataset.phase), dimmed,
-        "The actual timeout state feeds the existing CSS selector, not a separate dimming timer");
-    }
-    if (failure === "unreadable") pulse({ ...clean, readable: false });
-    const initialPhase = failure === "unreadable" ? "loading" : "connecting";
-    expectTint(initialPhase, true);
-    now = 9999; expectTint(initialPhase, true);
-    now = 10000; expectTint("unavailable", false);
-    context ??= store.context(source);
-    pulse({ ...clean, pending: 1 }); expectTint("loading", true);
-    now = 25000;
-    pulse({ ...clean, pending: 1 }); expectTint("loading", true);
-    now = 30000; pulse(clean); expectTint("loading", true);
-    now = 35000; pulse(clean); expectTint("active", false);
-  });
-}
+test("the Reload Site hint removes only startup tint and preserves a concurrent saving lock", () => {
+  const f = createFixture();
+  f.render("loading"); f.setBusy(true);
+  assert.equal(f.attributes.has("inert"), true);
+  f.render("blank", "unavailable");
+  assert.equal(f.badge.textContent, "Reload Site");
+  assert.equal(f.badge.title, healthView.DESCRIPTIONS.unavailable);
+  assert.equal(f.attributes.has("inert"), true);
+  assert.equal(f.attributes.get("aria-busy"), "true");
+  assert.doesNotMatch(tintRule[1], /blank|active/);
+});
 
 test("tint remains scoped to the tracker with its hidden badge row and unchanged spinner behavior", () => {
   assert.match(html, /id="tracker-workspace"[^>]*\bhidden\s*>\s*<div class="capture-health-row" hidden>/);

@@ -11,6 +11,9 @@
   const BIDDING_MAX_SCAN_WAIT_MS = 250;
   const DELIVERY_RETRY_DELAY_MS = 1000;
   const MAX_DELIVERY_RETRY_DELAY_MS = 5000;
+  const SOLD_PAYMENT_ATTRIBUTE_NAMES = Object.freeze([
+    "title", "hidden", "aria-hidden", "style", "class",
+  ]);
   const EXPECTED_CAPTURE_RETRY_CODES = new Set([
     "CAPTURE_TRANSPORT_ERROR",
     "NO_ACTIVE_STREAM",
@@ -115,18 +118,19 @@
   let observedDocumentElement = null;
   let lastRootDiscoveryStatus = null;
   let captureHealthReporter = null;
-  const captureHealthFaults = { sold: false, gmv: false, bidding: false, lifecycle: false };
+  const captureStartupFaults = { sold: false, bidding: false, lifecycle: false };
+  let readinessStreamId = null;
+  let startupReady = false;
 
   globalThis[SINGLETON_KEY] = singletonToken;
 
   function reportError(message, error) {
-    // Health is observational only. A probe fault is retained until an actual
-    // successful capture scan/recovery; a heartbeat cannot erase that fault.
+    // These faults guard initial readiness only. They never demote a page that
+    // has completed startup, and never affect business capture or its retries.
     if (!/delivery/i.test(message)) {
-      if (/^Capture (?:scan|scheduling|startup|observer|scheduler)/.test(message)) captureHealthFaults.sold = true;
-      if (/^Attributed GMV (?:scan|scheduling|startup|observer|scheduler)/.test(message)) captureHealthFaults.gmv = true;
-      if (/^Bidding variation (?:scan|scheduling|startup|observer|scheduler)/.test(message)) captureHealthFaults.bidding = true;
-      if (/^Lifecycle/.test(message)) captureHealthFaults.lifecycle = true;
+      if (/^Capture (?:scan|scheduling|startup|observer|scheduler)/.test(message)) captureStartupFaults.sold = true;
+      if (/^Bidding variation (?:scan|scheduling|startup|observer|scheduler)/.test(message)) captureStartupFaults.bidding = true;
+      if (/^Lifecycle/.test(message)) captureStartupFaults.lifecycle = true;
     }
     try {
       console.error(`${LOG_PREFIX} ${message}`, error);
@@ -149,16 +153,8 @@
       Number.isFinite(rect?.height) && rect.height > 0;
   }
 
-  function hasReadableSoldItems(root) {
-    const variations = candidateLocator.locateObservedVariations(root);
-    const payments = candidateLocator.locatePaymentStatuses(root, parser);
-    if (payments.some((payment) => payment.observedPaymentStatus === "unrecognized" ||
-      (payment.observedPaymentStatus === "payment_complete" && payment.soldPriceCents === null))) return false;
-    if (variations.length > 0 && payments.length > 0) {
-      const associated = new Set(payments.map((payment) => payment.variationNumber));
-      return variations.every((variation) => associated.has(variation.variationNumber));
-    }
-    if (variations.length > 0 || payments.length > 0) return false;
+  function hasInitialSoldItemsEvidence(root, variations) {
+    if (variations.length > 0) return true;
     // This empty-state phrase is known from the supported dashboard. Match it
     // only in the scoped Sold Items root, never unrelated chat or page text.
     const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
@@ -170,62 +166,58 @@
       ));
   }
 
-  function isBiddingHealthReadable(body) {
-    if (captureHealthFaults.bidding) return false;
+  function isBiddingStartupReady(body) {
+    if (captureStartupFaults.bidding) return false;
     const located = biddingVariationLocator.locateUniqueVisibleBiddingAuction(body);
-    if (located.status === "not_found" && !located.root) {
-      return ![...body.querySelectorAll(biddingVariationLocator.AUCTION_CARD_SELECTOR)]
-        .some((node) => body.contains(node) && isHealthVisible(node));
-    }
-    if (located.status !== "found" || !isCurrentBiddingVariationSession(biddingVariationSession) ||
-      biddingVariationSession.root !== located.root || !biddingVariationSession.healthObserverReady ||
-      !biddingVariationSession.healthScanReady || captureHealthFaults.bidding) return false;
-    if (located.bidPriceStatus === "found") return true;
-    if (located.bidPriceStatus !== "not_found") return false;
-    // A newly opened auction can genuinely have no bid yet. A visible "Bids:"
-    // value that failed parsing is different and must not look healthy.
-    return ![located.root, ...located.root.querySelectorAll("*")].some((node) =>
-      isHealthVisible(node) && /^Bids\s*:/i.test(biddingVariationLocator.normalizeOwnText(node)));
+    return located.status === "found" && isCurrentBiddingVariationSession(biddingVariationSession) &&
+      biddingVariationSession.root === located.root && biddingVariationSession.startupObserverReady &&
+      biddingVariationSession.startupScanReady;
   }
 
-  function sampleCaptureHealth() {
-    const deliveries = [captureDelivery, attributedGmvDelivery, biddingVariationDelivery].filter(Boolean);
-    const pending = (captureDelivery?.queuedVariations.size ?? 0) +
-      (captureDelivery?.queuedPaymentStatuses.size ?? 0) + (captureDelivery?.queuedPayments.size ?? 0) +
-      (attributedGmvDelivery?.queuedDisplay != null ? 1 : 0) +
-      (biddingVariationDelivery?.queuedVariationNumber != null ? 1 : 0) +
-      (biddingVariationDelivery?.queuedBid != null ? 1 : 0);
-    const sample = {
-      readable: false, pending: Math.min(pending, 100_000),
-      inFlight: deliveries.some((delivery) => delivery.deliveryRunning),
-      retrying: deliveries.some((delivery) => delivery.deliveryRetryTimerId !== null),
-      visible: document.visibilityState !== "hidden",
-    };
+  function sampleCaptureReadiness(context) {
+    if (!context?.streamId) return { phase: "blank" };
+    if (context.streamId !== readinessStreamId) {
+      readinessStreamId = context.streamId;
+      startupReady = false;
+    }
+    // The content script belongs to one browser document. Only a new stream or
+    // a new document starts another readiness cycle; later glitches do not.
+    if (startupReady) return { phase: "ready" };
     try {
       const body = document.body;
       if (!isCaptureRoute() || !body || !lifecycleObserver ||
-        observedDocumentElement !== document.documentElement || captureHealthFaults.lifecycle) return sample;
+        observedDocumentElement !== document.documentElement || captureStartupFaults.lifecycle) {
+        return { phase: "blank" };
+      }
       const sold = candidateLocator.locateUniqueVisibleSoldItemsRoot(body);
-      const gmv = attributedGmvLocator.locateUniqueVisibleAttributedGmv(body);
-      sample.readable = sold.status === "found" && gmv.status === "found" &&
+      const soldReady = sold.status === "found" &&
         isCurrentSession(captureSession) && captureSession.root === sold.root &&
-        captureSession.healthObserverReady && captureSession.healthScanReady && !captureHealthFaults.sold &&
-        isCurrentAttributedGmvSession(attributedGmvSession) && attributedGmvSession.root === gmv.root &&
-        attributedGmvSession.healthObserverReady && attributedGmvSession.healthScanReady && !captureHealthFaults.gmv &&
-        hasReadableSoldItems(sold.root) && isBiddingHealthReadable(body);
+        captureSession.startupObserverReady && captureSession.startupScanReady && !captureStartupFaults.sold &&
+        captureSession.startupEvidenceReady;
+      if (!soldReady && !isBiddingStartupReady(body)) return { phase: "blank" };
+      // Only core capture's initial delivery matters. GMV is optional analytics
+      // and can be absent, malformed, or retrying without holding startup open.
+      const deliveries = [captureDelivery, biddingVariationDelivery].filter(Boolean);
+      const pending = (captureDelivery?.queuedVariations.size ?? 0) +
+        (captureDelivery?.queuedPaymentStatuses.size ?? 0) + (captureDelivery?.queuedPayments.size ?? 0) +
+        (biddingVariationDelivery?.queuedVariationNumber != null ? 1 : 0) +
+        (biddingVariationDelivery?.queuedBid != null ? 1 : 0);
+      if (pending > 0 || deliveries.some((delivery) =>
+        delivery.deliveryRunning || delivery.deliveryRetryTimerId !== null)) {
+        return { phase: "loading" };
+      }
+      startupReady = true;
+      return { phase: "ready" };
     } catch {
-      // A fresh read failure makes this sample unavailable without calling a
-      // capture scan, modifying a delivery queue, or retaining any page text.
-      sample.readable = false;
+      return { phase: "blank" };
     }
-    return sample;
   }
 
-  function observeCaptureHealthErrors(kind, callback) {
+  function observeCaptureStartupErrors(kind, callback) {
     return (...args) => {
       try { return callback(...args); }
       catch (error) {
-        captureHealthFaults[kind] = true;
+        captureStartupFaults[kind] = true;
         throw error;
       }
     };
@@ -1338,8 +1330,6 @@
     }
 
     queueAttributedGmv(session, located.attributedGmvDisplay);
-    session.healthScanReady = true;
-    captureHealthFaults.gmv = false;
   }
 
   function reconcileBiddingVariationCapture() {
@@ -1396,8 +1386,8 @@
       located.variationNumber,
       located.bidPriceStatus === "found" ? located.bidPriceCents : null,
     );
-    session.healthScanReady = true;
-    captureHealthFaults.bidding = false;
+    session.startupScanReady = true;
+    captureStartupFaults.bidding = false;
   }
 
   function reconcileCapture() {
@@ -1512,11 +1502,41 @@
       paymentStatuses,
       completedSales,
     );
-    session.healthScanReady = true;
-    captureHealthFaults.sold = false;
+    // Evidence belongs to this completed scan, not a new DOM row that has not
+    // yet passed through the normal capture scheduler and delivery queues.
+    session.startupEvidenceReady = hasInitialSoldItemsEvidence(session.root, observedVariations);
+    session.startupScanReady = true;
+    captureStartupFaults.sold = false;
   }
 
-  function hasScopedCaptureMutation(records, root) {
+  function isFailedPaymentAttributeContext(target, root) {
+    let candidate = target;
+    const visited = new Set();
+
+    while (candidate && visited.size < candidateLocator.MAX_ROW_ANCESTORS) {
+      if (visited.has(candidate) || (candidate === root && candidate !== target)) {
+        return false;
+      }
+      visited.add(candidate);
+      const tags = candidate.matches?.(candidateLocator.PAYMENT_TAG_SELECTOR)
+        ? [candidate]
+        : [...(candidate.querySelectorAll?.(candidateLocator.PAYMENT_TAG_SELECTOR) ?? [])];
+      if (tags.length > 0) {
+        // A changed container can affect its own failed rows. A detail node
+        // must reach one failed badge before crossing into neighboring rows.
+        return (candidate === target || tags.length === 1) && tags.some((tag) =>
+          String(tag.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase() === "payment failed");
+      }
+      if (candidate === root) {
+        return false;
+      }
+      candidate = candidate.parentElement;
+    }
+
+    return false;
+  }
+
+  function hasScopedCaptureMutation(records, root, includePaymentAttributes = false) {
     try {
       if (!records || typeof records[Symbol.iterator] !== "function") {
         return true;
@@ -1525,7 +1545,9 @@
       for (const record of records) {
         if (
           !record ||
-          (record.type !== "childList" && record.type !== "characterData")
+          (record.type !== "childList" && record.type !== "characterData" &&
+            !(includePaymentAttributes && record.type === "attributes" &&
+              SOLD_PAYMENT_ATTRIBUTE_NAMES.includes(record.attributeName)))
         ) {
           continue;
         }
@@ -1535,7 +1557,9 @@
         }
 
         if (record.target === root || root.contains(record.target)) {
-          return true;
+          if (record.type !== "attributes" || isFailedPaymentAttributeContext(record.target, root)) {
+            return true;
+          }
         }
       }
 
@@ -1582,7 +1606,7 @@
         maxWaitMs: MAX_SCAN_WAIT_MS,
       });
 
-      observer = new MutationObserver(observeCaptureHealthErrors("sold", (records) => {
+      observer = new MutationObserver(observeCaptureStartupErrors("sold", (records) => {
         if (
           captureSession !== session ||
           !isCaptureRoute() ||
@@ -1593,7 +1617,7 @@
           return;
         }
 
-        if (!hasScopedCaptureMutation(records, root)) {
+        if (!hasScopedCaptureMutation(records, root, true)) {
           return;
         }
 
@@ -1610,8 +1634,9 @@
         observer,
         root,
         scheduler,
-        healthObserverReady: false,
-        healthScanReady: false,
+        startupObserverReady: false,
+        startupScanReady: false,
+        startupEvidenceReady: false,
       };
       captureDelivery = delivery;
       captureSession = session;
@@ -1620,8 +1645,10 @@
         childList: true,
         subtree: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: [...SOLD_PAYMENT_ATTRIBUTE_NAMES],
       });
-      session.healthObserverReady = true;
+      session.startupObserverReady = true;
 
       scheduler.runNow();
 
@@ -1698,7 +1725,7 @@
         maxWaitMs: MAX_SCAN_WAIT_MS,
       });
 
-      observer = new MutationObserver(observeCaptureHealthErrors("gmv", (records) => {
+      observer = new MutationObserver((records) => {
         if (
           attributedGmvSession !== session ||
           !isCaptureRoute() ||
@@ -1718,17 +1745,9 @@
         } catch (error) {
           reportError("Attributed GMV scheduling failed.", error);
         }
-      }));
+      });
 
-      session = {
-        body,
-        delivery,
-        observer,
-        root,
-        scheduler,
-        healthObserverReady: false,
-        healthScanReady: false,
-      };
+      session = { body, delivery, observer, root, scheduler };
       attributedGmvDelivery = delivery;
       attributedGmvSession = session;
 
@@ -1737,8 +1756,6 @@
         subtree: true,
         characterData: true,
       });
-      session.healthObserverReady = true;
-
       scheduler.runNow();
 
       console.info(`${LOG_PREFIX} Attributed GMV probe active.`);
@@ -1820,7 +1837,7 @@
         maxWaitMs: BIDDING_MAX_SCAN_WAIT_MS,
       });
 
-      observer = new MutationObserver(observeCaptureHealthErrors("bidding", (records) => {
+      observer = new MutationObserver(observeCaptureStartupErrors("bidding", (records) => {
         if (
           biddingVariationSession !== session ||
           !isCaptureRoute() ||
@@ -1848,8 +1865,8 @@
         observer,
         root,
         scheduler,
-        healthObserverReady: false,
-        healthScanReady: false,
+        startupObserverReady: false,
+        startupScanReady: false,
       };
       biddingVariationDelivery = delivery;
       biddingVariationSession = session;
@@ -1859,7 +1876,7 @@
         subtree: true,
         characterData: true,
       });
-      session.healthObserverReady = true;
+      session.startupObserverReady = true;
 
       scheduler.runNow();
 
@@ -1957,9 +1974,9 @@
       reconcileCapture();
       reconcileAttributedGmvCapture();
       reconcileBiddingVariationCapture();
-      if (observing) captureHealthFaults.lifecycle = false;
+      if (observing) captureStartupFaults.lifecycle = false;
     } catch (error) {
-      captureHealthFaults.lifecycle = true;
+      captureStartupFaults.lifecycle = true;
       throw error;
     }
   }
@@ -1996,7 +2013,7 @@
       captureHealthReporter = captureHealthReporterModule.createCaptureHealthReporter({
         runtime: globalThis.chrome?.runtime,
         protocol: captureHealthProtocol,
-        getSample: sampleCaptureHealth,
+        getSample: sampleCaptureReadiness,
         setTimeoutFn: window.setTimeout.bind(window),
         clearTimeoutFn: window.clearTimeout.bind(window),
       });

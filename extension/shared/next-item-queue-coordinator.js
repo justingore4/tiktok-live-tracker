@@ -107,6 +107,12 @@
         streamSession,
         streamSessionCoordinator,
       } = options;
+      const createQueueToken = options.createQueueToken ??
+        (() => globalThis.crypto.randomUUID());
+
+      if (typeof createQueueToken !== "function") {
+        throw new TypeError("createQueueToken must be a function.");
+      }
 
       if (
         !activeStreamCoordinator ||
@@ -118,6 +124,9 @@
       if (
         !protocol?.COMMAND_TYPES ||
         protocol.COMMAND_TYPES.GET_QUEUE !== "get_queue" ||
+        protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT !== "get_queue_snapshot" ||
+        protocol.COMMAND_TYPES.CLEAR_QUEUE !== "clear_queue" ||
+        !(protocol.QUEUE_TOKEN_PATTERN instanceof RegExp) ||
         protocol.COMMAND_TYPES.MAP_CURRENT !== "map_current" ||
         protocol.COMMAND_TYPES.TOGGLE_QUEUE !== "toggle_queue" ||
         typeof protocol.validateCommand !== "function"
@@ -175,6 +184,7 @@
 
       return {
         activeStreamCoordinator,
+        createQueueToken,
         protocol,
         queueStore,
         reconciliation,
@@ -188,12 +198,49 @@
     function createNextItemQueueCoordinator(options) {
       const dependencies = validateDependencies(options);
       let operationTail = Promise.resolve();
+      let observedQueueKey = null;
+      let queueToken = null;
 
       function enqueue(operation) {
         const execution = operationTail.then(operation);
 
         operationTail = execution.catch(() => undefined);
         return execution;
+      }
+
+      function invalidateQueueSnapshot() {
+        observedQueueKey = null;
+        queueToken = null;
+      }
+
+      async function loadQueue() {
+        const queue = await dependencies.queueStore.loadQueue();
+        const key = queue === null
+          ? null
+          : JSON.stringify([
+              queue.streamId,
+              queue.sku,
+              queue.armedAfterVariationNumber,
+            ]);
+
+        if (key !== observedQueueKey) {
+          observedQueueKey = key;
+          queueToken = null;
+        }
+
+        return queue;
+      }
+
+      async function clearPersistedQueue() {
+        // Invalidate before persistence: even an uncertain failed write must
+        // never leave an old badge authorized to remove a newer generation.
+        invalidateQueueSnapshot();
+        await dependencies.queueStore.clearQueue();
+      }
+
+      async function savePersistedQueue(queue) {
+        invalidateQueueSnapshot();
+        return dependencies.queueStore.saveQueue(queue);
       }
 
       function hydrateReconciliationState(value) {
@@ -272,14 +319,14 @@
 
       async function clearLoadedQueue(queue) {
         if (queue !== null) {
-          await dependencies.queueStore.clearQueue();
+          await clearPersistedQueue();
         }
       }
 
       async function getQueue() {
         const [activeStreamId, queue] = await Promise.all([
           resolveActiveStreamId(),
-          dependencies.queueStore.loadQueue(),
+          loadQueue(),
         ]);
 
         if (activeStreamId === null || queue?.streamId !== activeStreamId) {
@@ -288,6 +335,79 @@
         }
 
         return { queuedSku: queue.sku };
+      }
+
+      async function getQueueSnapshot() {
+        const { queuedSku } = await getQueue();
+
+        if (queuedSku === null) {
+          return { queuedSku: null, queueToken: null };
+        }
+
+        if (queueToken === null) {
+          let candidate;
+
+          try {
+            candidate = dependencies.createQueueToken();
+          } catch (error) {
+            fail(
+              "QUEUE_SNAPSHOT_UNAVAILABLE",
+              "The queued item could not be verified.",
+              error,
+            );
+          }
+
+          if (
+            typeof candidate !== "string" ||
+            !dependencies.protocol.QUEUE_TOKEN_PATTERN.test(candidate)
+          ) {
+            fail(
+              "QUEUE_SNAPSHOT_UNAVAILABLE",
+              "The queued item could not be verified.",
+            );
+          }
+
+          // This identifier is deliberately ephemeral, never session storage.
+          queueToken = candidate;
+        }
+
+        return { queuedSku, queueToken };
+      }
+
+      async function clearQueue(command) {
+        const activeStreamId = await resolveActiveStreamId();
+
+        if (activeStreamId === null) {
+          fail(
+            "NO_ACTIVE_STREAM",
+            "There is no active tracker stream to clear a queued item from.",
+          );
+        }
+
+        if (command.expectedStreamId !== activeStreamId) {
+          fail(
+            "ACTIVE_STREAM_MISMATCH",
+            "The displayed queue no longer belongs to the active tracker stream.",
+          );
+        }
+
+        const queue = await loadQueue();
+
+        if (
+          queue === null ||
+          queue.streamId !== activeStreamId ||
+          queue.sku !== command.sku ||
+          queueToken === null ||
+          queueToken !== command.expectedQueueToken
+        ) {
+          fail(
+            "QUEUE_CHANGED",
+            "The queued item changed before it could be cleared. Review the current queue and try again.",
+          );
+        }
+
+        await clearPersistedQueue();
+        return { status: "cleared", queuedSku: null };
       }
 
       async function toggleQueue(command) {
@@ -345,7 +465,7 @@
           );
         }
 
-        const queue = await dependencies.queueStore.loadQueue();
+        const queue = await loadQueue();
         const currentAuction = findAuction(stream, currentVariationNumber);
 
         if (typeof currentAuction?.sku !== "string") {
@@ -378,11 +498,11 @@
         }
 
         if (queue?.streamId === activeStreamId && queue.sku === command.sku) {
-          await dependencies.queueStore.clearQueue();
+          await clearPersistedQueue();
           return { status: "cleared", queuedSku: null };
         }
 
-        await dependencies.queueStore.saveQueue({
+        await savePersistedQueue({
           streamId: activeStreamId,
           sku: command.sku,
           armedAfterVariationNumber: currentVariationNumber,
@@ -506,6 +626,16 @@
           return getQueue();
         }
 
+        if (
+          commandType === dependencies.protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT
+        ) {
+          return getQueueSnapshot();
+        }
+
+        if (commandType === dependencies.protocol.COMMAND_TYPES.CLEAR_QUEUE) {
+          return clearQueue(command);
+        }
+
         if (commandType === dependencies.protocol.COMMAND_TYPES.MAP_CURRENT) {
           return mapCurrent(command);
         }
@@ -558,14 +688,14 @@
 
       async function applyQueue(input) {
         const normalized = validateApplicationInput(input);
-        const queue = await dependencies.queueStore.loadQueue();
+        const queue = await loadQueue();
 
         if (queue === null) {
           return { status: "no_queue", state: normalized.state };
         }
 
         if (queue.streamId !== normalized.streamId) {
-          await dependencies.queueStore.clearQueue();
+          await clearPersistedQueue();
           return { status: "stale_queue_cleared", state: normalized.state };
         }
 
@@ -585,7 +715,7 @@
           baseline === null ||
           !baseline.inventory.some((entry) => entry.sku === queue.sku)
         ) {
-          await dependencies.queueStore.clearQueue();
+          await clearPersistedQueue();
           return { status: "invalid_sku_cleared", state: normalized.state };
         }
 
@@ -596,7 +726,7 @@
         }
 
         if (typeof auction.sku === "string") {
-          await dependencies.queueStore.clearQueue();
+          await clearPersistedQueue();
           return {
             status:
               auction.sku === queue.sku
@@ -627,7 +757,7 @@
           );
         }
 
-        await dependencies.queueStore.clearQueue();
+        await clearPersistedQueue();
         return { status: "mapped", state: resultingState };
       }
 
@@ -665,13 +795,13 @@
 
         return enqueue(async () => {
           try {
-            const queue = await dependencies.queueStore.loadQueue();
+            const queue = await loadQueue();
 
             if (queue?.streamId !== streamId) {
               return { status: "unchanged" };
             }
 
-            await dependencies.queueStore.clearQueue();
+            await clearPersistedQueue();
             return { status: "cleared" };
           } catch (_error) {
             return { status: "unavailable" };

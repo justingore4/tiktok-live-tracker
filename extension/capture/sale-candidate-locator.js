@@ -31,7 +31,7 @@
       ["payment complete", OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE],
       ["canceled", OBSERVED_PAYMENT_STATUSES.CANCELED],
       ["cancelled", OBSERVED_PAYMENT_STATUSES.CANCELED],
-      ["payment failed", OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED],
+      ["payment failed", OBSERVED_PAYMENT_STATUSES.CANCELED],
       ["payment fixing", OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING],
       ["payment fixing...", OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING],
       ["payment fixing\u2026", OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING],
@@ -43,6 +43,10 @@
       ["order processing\u2026", OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING],
     ]);
     const MAX_ROW_ANCESTORS = 12;
+    const CANCELLATION_COUNTDOWN_PATTERN =
+      /^Transaction will cancel in \d{1,2}:[0-5]\d$/i;
+    const TRUNCATED_COUNTDOWN_PATTERN =
+      /^Transactio(?:n(?: will(?: cancel(?: in)?)?)?)?(?:\.{3}|\u2026)$/i;
 
     function normalizeText(value) {
       return String(value ?? "")
@@ -286,6 +290,77 @@
       return results;
     }
 
+    function isObservableFailureElement(node) {
+      try {
+        return isVisibleElement(node) && node.hidden !== true &&
+          node.getAttribute?.("aria-hidden") !== "true";
+      } catch {
+        return false;
+      }
+    }
+
+    function hasObservableCountdownText(node, visited = new Set(), depth = 0) {
+      if (!node || visited.has(node) || depth >= MAX_ROW_ANCESTORS ||
+          !isObservableFailureElement(node)) {
+        return false;
+      }
+      visited.add(node);
+      // textContent includes hidden descendants. Text nodes inherit their
+      // parent's visibility; every element supplying countdown text must be
+      // observable before a retained wrapper can count as a live indicator.
+      for (const child of node.children ?? []) {
+        if (child.nodeType === 1 && normalizeText(child.textContent) !== "" &&
+            !hasObservableCountdownText(child, visited, depth + 1)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function isCancellationCountdownDetail(node, visited = new Set()) {
+      if (!node || visited.has(node) || visited.size >= MAX_ROW_ANCESTORS ||
+          !isObservableFailureElement(node)) {
+        return false;
+      }
+      visited.add(node);
+      const text = normalizeText(node.textContent);
+      // A countdown is only a veto against terminal failure, never a local
+      // cancellation clock. Even 00:00 waits for the dashboard to remove it.
+      if (CANCELLATION_COUNTDOWN_PATTERN.test(text) &&
+          hasObservableCountdownText(node)) return true;
+      if (TRUNCATED_COUNTDOWN_PATTERN.test(text) &&
+          CANCELLATION_COUNTDOWN_PATTERN.test(normalizeText(node.getAttribute?.("title"))) &&
+          hasObservableCountdownText(node)) {
+        return true;
+      }
+      // Permit transparent status-detail wrappers, not arbitrary descendant
+      // product/buyer text or title attributes elsewhere in the order.
+      return [...(node.children ?? [])].some((child) =>
+        normalizeText(child.textContent) === text &&
+        isCancellationCountdownDetail(child, visited));
+    }
+
+    function hasLegacyCancellationCountdown(tag, row, variationLabel) {
+      let branch = tag;
+      const visited = new Set();
+      while (branch && branch !== row && visited.size < MAX_ROW_ANCESTORS) {
+        if (visited.has(branch)) return false;
+        visited.add(branch);
+        const parent = branch.parentElement;
+        if (!parent || !isInsideBoundary(parent, row)) return false;
+        for (const detail of parent.children ?? []) {
+          if (detail !== branch &&
+              typeof detail.contains === "function" &&
+              !isInsideBoundary(variationLabel, detail) &&
+              isCancellationCountdownDetail(detail)) {
+            return true;
+          }
+        }
+        branch = parent;
+      }
+      return false;
+    }
+
     function locatePaymentStatuses(boundary, parser) {
       requireBoundary(boundary);
       requireParser(parser);
@@ -304,11 +379,16 @@
           continue;
         }
 
-        const observedPaymentStatus =
+        let observedPaymentStatus =
           PAYMENT_STATUS_BY_TEXT.get(normalizedText.toLowerCase()) ??
           OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED;
+        const isFailedBadge = normalizedText.toLowerCase() === "payment failed";
+        if (isFailedBadge && !isObservableFailureElement(tag)) {
+          continue;
+        }
         let candidate = tag.parentElement;
         let locatedAssociation = null;
+        let associatedLabel = null;
         let soldPriceCents = null;
         const visited = new Set();
 
@@ -331,8 +411,19 @@
             paymentTags.length === 1 &&
             paymentTags[0] === tag;
 
+          if (isFailedBadge &&
+              (!isObservableFailureElement(candidate) ||
+                (isExactAssociation &&
+                  !isObservableFailureElement(variationLabels[0].label)))) {
+            // A hidden/unreadable legacy row is missing evidence, not a
+            // terminal failure merely because its countdown is not visible.
+            locatedAssociation = null;
+            break;
+          }
+
           if (!locatedAssociation && isExactAssociation) {
             const variationNumber = variationLabels[0].variationNumber;
+            associatedLabel = variationLabels[0].label;
 
             locatedAssociation = Object.freeze({
               row: candidate,
@@ -341,7 +432,7 @@
 
             if (
               observedPaymentStatus !==
-              OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
+              OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE && !isFailedBadge
             ) {
               break;
             }
@@ -353,11 +444,16 @@
           ) {
             // Do not cross into a parent containing another sale row. A
             // completed badge may need a wider ancestor for the winner price,
-            // but that ancestor must still identify the same single row.
+            // or a failed badge for its legacy countdown. That ancestor must
+            // still identify the same single row.
             break;
           }
 
           if (locatedAssociation) {
+            if (isFailedBadge && hasLegacyCancellationCountdown(tag, candidate, associatedLabel)) {
+              observedPaymentStatus = OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED;
+              break;
+            }
             if (
               observedPaymentStatus ===
               OBSERVED_PAYMENT_STATUSES.PAYMENT_COMPLETE
