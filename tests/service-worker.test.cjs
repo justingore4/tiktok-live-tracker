@@ -13,6 +13,7 @@ const liveBidProtocol = require("../extension/shared/live-bid-protocol.js");
 const nextItemQueueProtocol = require(
   "../extension/shared/next-item-queue-protocol.js",
 );
+const variationPresetsProtocol = require("../extension/shared/variation-presets-protocol.js");
 const streamReportProtocol = require(
   "../extension/shared/stream-report-protocol.js"
 );
@@ -1109,6 +1110,21 @@ function createWorkerHarness(options = {}) {
     TikTokLiveTrackerNextItemQueueStorage: nextItemQueueStorageModule,
     TikTokLiveTrackerNextItemQueueCoordinator:
       nextItemQueueCoordinatorModule,
+    // These legacy boundary tests isolate other coordinators. The new real
+    // preset/capture/storage boundary is exercised by its integration suite.
+    TikTokLiveTrackerVariationPresetsProtocol: variationPresetsProtocol,
+    TikTokLiveTrackerVariationPresetsStorage: {
+      VariationPresetsStorageError: class extends Error {},
+      createVariationPresetsStore: () => ({}),
+    },
+    TikTokLiveTrackerVariationPresetsCoordinator: {
+      VariationPresetsCoordinatorError: class extends Error {},
+      createVariationPresetsCoordinator: () => ({
+        dispatch: async () => ({ streamId: null, baselineId: null, revision: null, total: null, assignments: [] }),
+        synchronize: async ({ state }) => ({ state, changed: false }),
+        clearForStream: async () => ({ status: "unchanged" }),
+      }),
+    },
     TikTokLiveTrackerInventorySheetImport: {},
     TikTokLiveTrackerInventoryImportProtocol: inventoryImportProtocol,
     TikTokLiveTrackerGoogleSheetsInventoryImport:
@@ -1522,6 +1538,9 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/next-item-queue-protocol.js",
     "shared/next-item-queue-storage.js",
     "shared/next-item-queue-coordinator.js",
+    "shared/variation-presets-protocol.js",
+    "shared/variation-presets-storage.js",
+    "shared/variation-presets-coordinator.js",
     "shared/capture-protocol.js",
     "shared/capture-health.js",
     "shared/capture-integration.js",

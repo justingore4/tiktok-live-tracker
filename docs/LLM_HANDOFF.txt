@@ -1,12 +1,13 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 12, 2026
-Repository branch at preparation: main
-Verified baseline commit: 93560c721ee1ae7724c7182e0cf4517a8ffd5f5c
-Commit subject: Clean up unused placeholders and support Cancelled payment badges
+Snapshot date: September 14, 2026
+Repository branch at latest update: feature/preset-vars
+Base commit before preset work: 814ad5c959617db941e37cdcde8446b27bf31ba4
+Commit subject: Update tracker controls and capture status behavior
+Preset implementation is uncommitted at this update; inspect git status.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,402 passed, 0 failed
+Latest full synthetic test run: 1,669 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -29,8 +30,8 @@ For the receiving assistant:
 - Read any current AGENTS.md or applicable skill instructions. No applicable
   AGENTS.md was found during preparation; that may change later.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean at the baseline above. This handoff was then added as
-  documentation only. Check git status rather than assuming that remains true.
+- The worktree was clean before preset implementation. The feature and this
+  updated handoff are pending changes; no commit or push was performed.
 
 1. PRODUCT, OWNER, AND SCOPE
 ---------------------------
@@ -116,6 +117,7 @@ extension/shared/
   sale-parser.js                    Narrow sale/variation/price text parsing.
   live-bid-*.js                      Transient live bid projection and protocol.
   next-item-queue-*.js               Single-SKU next-item queue and protocol.
+  variation-presets-*.js            Separate future plans, protocol, storage, repair.
   tiktok-fee-calculator.js            Presentation-only fee/profit estimates.
 
 extension/capture/
@@ -205,6 +207,8 @@ Durable chrome.storage.local keys at this snapshot:
 - tiktokLiveTracker.streamSession: envelope schema 1, inner session version 1.
 - tiktokLiveTracker.streamReports: envelope schema 3, report payload version 2.
   Report envelope supports existing legacy schema 1/2 handling and payload v1.
+- tiktokLiveTracker.variationPresets.v1: envelope schema 1, separate per-stream /
+  pinned-baseline planning state. No existing storage schema was changed.
 
 Transient chrome.storage.session keys:
 - tiktokLiveTracker.liveBid: envelope schema 2.
@@ -503,6 +507,76 @@ oversold replacement quantity clamps to zero and needs a physical recount.
   the pointer. Latest queued render applies on release; this is not the health lock.
 
 Current compact visual decisions:
+- Preset items occupies the right slot of the existing startup badge row. Enter
+  a total 1–1000 (#1–#N, not N additional), then Reset presets replaces the field.
+  Totals below the highest actual capture are rejected; real capture is not capped.
+  Clicking outside an unsaved total field discards its draft and restores the
+  bubble without saving or moving focus. Inside clicks keep editing; an accepted
+  in-flight save retains its context. Enter saves and Escape still cancels.
+  Var # also finds preset placeholders. Future selection is display-only history
+  browsing; left-click plans/unplans an SKU. Right-click fills an empty current
+  future preset and stays, or saves the next higher empty uncaptured preset and
+  opens it. Skip assigned/captured entries; never wrap or replace an assignment.
+  Exhaustion announces "No more future variations." without changing anything.
+  Live and captured historical right-clicks keep their existing behavior.
+  Untracked plans do not reserve stock or affect reports/metrics/exports.
+- Pre-stream planning: after confirmed inventory and local Start/Resume, presets
+  work with zero captured variations once existing Connecting/Loading ends. The
+  internal blank/Reload Site state permits planning, without changing badge logic.
+  START and GET_STREAM_SESSION already pin the prepared baseline before capture;
+  no new baseline or fake auction is required. Side-panel preset reads now follow
+  successful canonical workspace load/initialization/retry instead of racing mount,
+  so availability does not depend on a later live capture notification. Existing
+  refresh reads, stale-result guards, and save/session/error locks remain intact.
+  Empty future selections support Var #, ordinary and sequential exact-SKU planning,
+  reset, and reopening; real capture alone activates reservations/accounting.
+- Future assignments persist in the separate preset record, guarded by expected
+  stream/baseline/revision. Reset saves a disabled revision tombstone and removes
+  only uncaptured plans, returns to live, and restores Preset items. Captured
+  variations always survive reset, including out-of-order capture. New stream or
+  baseline cannot inherit plans. Successful End cleanup is best-effort; failed
+  End preserves the current plans. No direct side-panel storage access.
+- When actual live bidding exceeds the preset total (100 -> live #101), the bubble
+  becomes Preset items and accepts a larger total through create_presets, preserving
+  skipped uncaptured assignments and current selection. At exactly #100 it still
+  offers Reset presets. Within-range edits still require manual reset first.
+  The existing v1 preset snapshot optionally stores extensionAvailable: true, latched
+  only by canonical activeBiddingVariationNumber > total, never selected/fallback
+  highest historical numbers. Payment clears that canonical marker, so the durable
+  latch preserves extension availability through payment and worker/panel reopening.
+  Old records without the optional field remain valid without migration. Latching
+  alone retains revision; extension rotates revision, keeps assignments, clears the
+  latch, and revalidates the highest captured number and unchanged 1,000 limit.
+  Reset/new stream/baseline cannot retain old eligibility. No automatic destructive
+  reset or capture cap. Typed drafts stay scoped to their originating configuration;
+  stale submit/read/response guards prevent acting against a replaced preset range.
+  preserveExtensionAvailability(streamId) is a serialized latch-only pre-capture
+  barrier. It retries pending readiness persistence before payment can clear the
+  only canonical live proof; it performs no queue clearing or preset promotion.
+  Failures flow through existing capture errors/retries, without changing timing.
+- Sequential future assignment uses assign_next_preset_item with the existing
+  expected stream/baseline/revision, source variationNumber, and non-null exact SKU.
+  Worker FIFO picks and saves the target, returning {presets, assignedVariationNumber}.
+  Duplicate/stale requests cannot advance twice. UI waits for success and guards
+  navigation and future-origin card/size-menu context against capture/reset races.
+  Rapid submissions are ignored while busy, never buffered. Failed saves do not
+  advance; if only queue clearing failed, keep the saved plan and repair normally.
+  This adds no storage schema, canonical order, accounting path, or polling.
+- Preset promotion happens only after real capture persistence via ordinary
+  MAP_VARIATION, before generic queue consumption. Existing real mappings win.
+  Confirmed mapping precedes plan cleanup; read/manual-map/End barriers repair
+  interrupted promotion so resets cannot lose captured assignments or resurrect
+  consumed mappings. Keep this idempotent across the separate storage keys.
+- A next-variation preset disables only queuing, not right-click live mapping,
+  and clears a conflicting queue. Pre-bidding repair defers next-item blocking
+  until the current queue has applied (queue for #2 still maps #2 if preset #3).
+  Captured-target queue clearing compares armedAfterVariationNumber; historical
+  backfill must not erase a queue intended for a newer live variation. Read-time
+  repair also preserves an already-due queue after a mapping failure until its
+  ordinary capture retry applies it. A dirty live-projection marker refreshes
+  retained bid identity/cost after interrupted preset promotion, within the worker
+  FIFO, so subsequent prices are not rejected against an old cached variation.
+  No polling is added.
 - Main T logo/title are hidden inside active tracker; variations start near the top
   with a slim centered startup row above. Keep its gap and Var # placement for all labels.
 - Setup/Resume retain T logo and title left, local session badge far right.
@@ -754,7 +828,15 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Fresh run during handoff preparation: 1,402 tests passed, 0 failed, on Windows.
+Latest preset implementation run: 1,669 tests passed, 0 failed, on Windows.
+This includes 181 preset tests (61 core, 51 real-worker integration, 69 UI).
+Sequential right-click assignment adds 41 tests over the preceding 1,565-test run.
+Automatic range extension adds 43 tests over the preceding 1,606-test run, including
+recovery when readiness persistence fails before payment clears the live marker.
+Pre-stream planning readiness adds 14 tests over the preceding 1,649-test run,
+including real Start/Resume before first capture and preset reads after ready load.
+The isolated Chrome QA launch failed before rendering (GPU process unavailable),
+so preset-row normal/narrow visual dimensions remain a manual check.
 Previous focused packaging group: 52/52. Current locator group after alias: 36/36.
 Counts are snapshot facts, not fixed requirements for future edits.
 

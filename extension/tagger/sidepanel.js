@@ -48,6 +48,8 @@
     globalThis.TikTokLiveTrackerLiveBidProtocol;
   const nextItemQueueProtocol =
     globalThis.TikTokLiveTrackerNextItemQueueProtocol;
+  const variationPresetsProtocol = globalThis.TikTokLiveTrackerVariationPresetsProtocol;
+  const variationPresetsView = globalThis.TikTokLiveTrackerVariationPresetsView;
   const MAX_DASHBOARD_REPORTS =
     streamReportProtocol?.MAX_ACTIVE_REPORTS ?? 5;
   const MAX_REPORT_DISPLAY_NAME_LENGTH =
@@ -73,6 +75,9 @@
   const captureHealthDescription = document.querySelector("#capture-health-description");
   const variationSearchForm = document.querySelector("#variation-search-form");
   const variationSearchInput = document.querySelector("#variation-search-input");
+  const variationPresetsForm = document.querySelector("#variation-presets-form");
+  const variationPresetsButton = document.querySelector("#variation-presets-button");
+  const variationPresetsInput = document.querySelector("#variation-presets-input");
   const captureHealthView = globalThis.TikTokLiveTrackerCaptureHealthView;
   const captureHealthController = captureHealthView.createCaptureHealthViewController({
     runtime: chrome.runtime,
@@ -548,6 +553,10 @@
       runtime: chrome.runtime,
       protocol: nextItemQueueProtocol,
     });
+  const variationPresetsClient =
+    globalThis.TikTokLiveTrackerVariationPresetsClient.createVariationPresetsClient({
+      runtime: chrome.runtime, protocol: variationPresetsProtocol,
+    });
   const variationSelectorLock =
     variationSelectorLockModule.createVariationSelectorLock({
       apply: renderVariationSelectorOptions,
@@ -594,6 +603,15 @@
   let nextItemQueueRefreshGeneration = 0;
   let nextItemQueueMutationGeneration = 0;
   let nextItemQueueMutationBusy = false;
+  let variationPresetsSnapshot = null;
+  let variationPresetsReady = false;
+  let variationPresetsEditing = false;
+  let variationPresetsEntryContext = null;
+  let variationPresetsBusy = false;
+  let variationPresetsGeneration = 0;
+  let variationPresetsReadGeneration = 0;
+  let selectedPresetVariationNumber = null;
+  let variationNavigationGeneration = 0;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
@@ -676,6 +694,15 @@
 
   function hasSelectedRecordedVariation(view) {
     return getRecordedVariations(view).some((variation) => variation.selected);
+  }
+
+  function getSelectableVariations(view) {
+    return view?.variations?.filter((variation) => variation.recorded || variation.preset) ?? [];
+  }
+
+  function hasSelectedEditableVariation(view) {
+    return hasSelectedRecordedVariation(view) ||
+      (view?.isReviewingPreset === true && canChangeVariationPresets());
   }
 
   function createSavedVariationSignatures(view) {
@@ -1059,6 +1086,7 @@
       !savedSnapshot.busy &&
       !endConfirmationOpen &&
       !nextItemQueueMutationBusy &&
+      !variationPresetsBusy &&
       !queuedItemSlot.hidden &&
       typeof queuedNextItemToken === "string" && queuedNextItemToken !== "" &&
       typeof queuedNextItemSku === "string" &&
@@ -1070,6 +1098,7 @@
 
   function updateQueuedItemBadgeAvailability() {
     clearQueuedItemButton.disabled = !canClearQueuedItem();
+    updateVariationPresetsAvailability();
   }
 
   function renderQueuedItemBadge(view = getActiveView()) {
@@ -1202,12 +1231,20 @@
   }
 
   function handleCaptureStateChanged(message, sender) {
+    if (variationPresetsProtocol.isPresetsChangedNotification(message) &&
+        sender?.id === chrome.runtime.id && sender.tab === undefined) {
+      scheduleVariationPresetsRefresh();
+      scheduleNextItemQueueRefresh();
+      scheduleCaptureRefresh();
+      return false;
+    }
     if (
       nextItemQueueProtocol.isQueueChangedNotification(message) &&
       sender?.id === chrome.runtime.id &&
       sender.tab === undefined
     ) {
       scheduleNextItemQueueRefresh();
+      scheduleVariationPresetsRefresh();
       return false;
     }
 
@@ -1221,11 +1258,282 @@
     }
 
     scheduleCaptureRefresh();
+    scheduleVariationPresetsRefresh();
     return false;
   }
 
   function getActiveView() {
-    return savedSnapshot?.view ?? null;
+    return variationPresetsView.project(savedSnapshot?.view ?? null,
+      variationPresetsSnapshot, selectedPresetVariationNumber);
+  }
+
+  function canChangeVariationPresets() {
+    return !isCaptureInteractionLocked() && persistentController !== null &&
+      mountedStreamId !== null && streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession?.streamId === mountedStreamId &&
+      !streamSnapshot.busy && savedSnapshot?.phase === "ready" &&
+      !savedSnapshot.busy && !pendingSavedAction && !endConfirmationOpen &&
+      !nextItemQueueMutationBusy && !variationPresetsBusy &&
+      !activeStreamInventoryUpdateBusy && !trackerWorkspace.hidden &&
+      !archivedReportsViewOpen && !trackerWorkspace.hasAttribute("inert") &&
+      variationPresetsReady && variationPresetsSnapshot?.streamId === mountedStreamId;
+  }
+
+  function updateVariationPresetsAvailability() {
+    const visible = mountedStreamId !== null && streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession?.streamId === mountedStreamId &&
+      !trackerWorkspace.hidden && !archivedReportsViewOpen;
+    variationPresetsForm.hidden = !visible;
+    const disabled = !canChangeVariationPresets();
+    variationPresetsForm.toggleAttribute("inert", disabled);
+    variationPresetsButton.disabled = disabled;
+    variationPresetsInput.disabled = disabled;
+    variationPresetsButton.hidden = variationPresetsEditing;
+    variationPresetsInput.hidden = !variationPresetsEditing;
+    variationPresetsButton.textContent = variationPresetsSnapshot?.total != null &&
+      !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot)
+      ? "Reset presets" : "Preset items";
+  }
+
+  function resetVariationPresetsDisplay() {
+    variationNavigationGeneration += 1;
+    variationPresetsGeneration += 1;
+    variationPresetsReadGeneration += 1;
+    variationPresetsSnapshot = null;
+    variationPresetsReady = false;
+    variationPresetsEditing = false;
+    variationPresetsEntryContext = null;
+    variationPresetsBusy = false;
+    selectedPresetVariationNumber = null;
+    variationPresetsInput.value = "";
+    variationPresetsInput.setCustomValidity("");
+    variationPresetsInput.removeAttribute("aria-invalid");
+  }
+
+  function scheduleVariationPresetsRefresh() {
+    if (!persistentController || !mountedStreamId || !streamSnapshot.resumed) return;
+    const streamId = mountedStreamId;
+    const generation = ++variationPresetsReadGeneration;
+    Promise.resolve().then(() => variationPresetsClient.getPresets()).then((snapshot) => {
+      if (streamId !== mountedStreamId || generation !== variationPresetsReadGeneration) return;
+      if (snapshot.streamId !== streamId) throw new Error("The preset stream changed. Reload the tracker panel.");
+      snapshot = variationPresetsView.preserveExtensionAvailability(snapshot, variationPresetsSnapshot);
+      variationPresetsSnapshot = snapshot;
+      variationPresetsReady = true;
+      if (snapshot.total === null) {
+        selectedPresetVariationNumber = null;
+      }
+      // Capture/preset notifications must not discard an in-progress total.
+      // A different stream, baseline, or range invalidates that editor; same-
+      // range revision changes retain its text but are checked on submission.
+      if (variationPresetsEditing && variationPresetsEntryContext &&
+          (variationPresetsEntryContext.streamId !== snapshot.streamId ||
+            variationPresetsEntryContext.baselineId !== snapshot.baselineId ||
+            variationPresetsEntryContext.total !== snapshot.total)) {
+        variationPresetsEditing = false;
+        variationPresetsEntryContext = null;
+      }
+      updateVariationPresetsAvailability();
+      updateVariationSearchAvailability();
+      renderAll();
+    }).catch((error) => {
+      if (streamId !== mountedStreamId || generation !== variationPresetsReadGeneration) return;
+      variationPresetsReady = false;
+      updateVariationPresetsAvailability();
+      mappingAnnouncement.textContent = error?.message ?? "Presets could not be loaded. Reopen the tracker panel to retry.";
+    });
+  }
+
+  function nextVariationHasPreset(view) {
+    return variationPresetsView.nextHasAssignment(view, variationPresetsSnapshot);
+  }
+
+  function getFuturePresetContext(view) {
+    if (view?.isReviewingPreset !== true) return null;
+    return {
+      streamId: mountedStreamId,
+      baselineId: variationPresetsSnapshot?.baselineId,
+      revision: variationPresetsSnapshot?.revision,
+      variationNumber: view.selectedVariationNumber,
+      navigationGeneration: variationNavigationGeneration,
+    };
+  }
+
+  function isFuturePresetContextCurrent(context) {
+    const view = getActiveView();
+    return context !== null && context !== undefined &&
+      context.streamId === mountedStreamId &&
+      context.baselineId === variationPresetsSnapshot?.baselineId &&
+      context.revision === variationPresetsSnapshot?.revision &&
+      context.navigationGeneration === variationNavigationGeneration &&
+      view?.isReviewingPreset === true &&
+      context.variationNumber === view.selectedVariationNumber;
+  }
+
+  function assignNextFuturePreset(button, context) {
+    if (!canChangeVariationPresets() || !isFuturePresetContextCurrent(context)) return;
+    const entry = getActiveView()?.inventory.find((candidate) => candidate.sku === button.dataset.sku);
+    if (!entry?.selectionAllowed) return;
+    return mutateVariationPresets("assignNextPresetItem", {
+      variationNumber: context.variationNumber, sku: entry.sku,
+    }, context);
+  }
+
+  async function mutateVariationPresets(kind, values = {}, navigationContext = null) {
+    if (!canChangeVariationPresets()) return false;
+    const entryContext = kind === "createPresets" ? variationPresetsEntryContext : null;
+    const previousTotal = variationPresetsSnapshot.total;
+    const expected = {
+      expectedStreamId: mountedStreamId,
+      expectedBaselineId: variationPresetsSnapshot.baselineId,
+      expectedRevision: entryContext?.revision ?? variationPresetsSnapshot.revision,
+    };
+    const generation = ++variationPresetsGeneration;
+    const readGeneration = ++variationPresetsReadGeneration;
+    variationPresetsBusy = true;
+    setWorkspaceBusy(savedSnapshot?.busy === true);
+    updateVariationPresetsAvailability();
+    updateVariationSearchAvailability();
+    updateQueuedItemBadgeAvailability();
+    try {
+      const response = await variationPresetsClient[kind]({ ...expected, ...values });
+      const sequential = kind === "assignNextPresetItem";
+      const snapshot = variationPresetsView.preserveExtensionAvailability(
+        sequential ? response.presets : response, variationPresetsSnapshot);
+      if (generation !== variationPresetsGeneration || expected.expectedStreamId !== mountedStreamId) return false;
+      const acknowledgementIsCurrent = readGeneration === variationPresetsReadGeneration ||
+        (((snapshot.revision === variationPresetsSnapshot?.revision &&
+            snapshot.total === variationPresetsSnapshot?.total) ||
+          (expected.expectedRevision === variationPresetsSnapshot?.revision &&
+            previousTotal === variationPresetsSnapshot?.total)) &&
+          snapshot.baselineId === variationPresetsSnapshot?.baselineId);
+      // Invalidate any pre-acknowledgement refresh; it may describe the old
+      // configuration even when its transport response arrives later.
+      if (readGeneration === variationPresetsReadGeneration ||
+          ((sequential || kind === "createPresets") && acknowledgementIsCurrent)) {
+        variationPresetsSnapshot = snapshot;
+        variationPresetsReady = snapshot.streamId === mountedStreamId;
+      }
+      variationPresetsReadGeneration += 1;
+      // A notification for our own successful create can close the editor
+      // before its acknowledgement arrives. Recognize only that exact saved
+      // result, never a replacement editor or a newer preset configuration.
+      const entryCompletedByRefresh = entryContext !== null && variationPresetsEntryContext === null &&
+        snapshot.streamId === variationPresetsSnapshot?.streamId &&
+        snapshot.baselineId === variationPresetsSnapshot?.baselineId &&
+        snapshot.revision === variationPresetsSnapshot?.revision &&
+        snapshot.total === variationPresetsSnapshot?.total;
+      if (((kind === "createPresets" || kind === "resetPresets") && !acknowledgementIsCurrent) ||
+          (kind === "createPresets" && entryContext !== variationPresetsEntryContext && !entryCompletedByRefresh)) {
+        scheduleVariationPresetsRefresh();
+        return false;
+      }
+      if (kind === "createPresets" || kind === "resetPresets") {
+        variationPresetsEditing = false;
+        variationPresetsEntryContext = null;
+      }
+      if (kind === "resetPresets") {
+        variationNavigationGeneration += 1;
+        selectedPresetVariationNumber = null;
+        const actualView = savedSnapshot?.view;
+        const hasLiveVariation = actualView?.variations.some((entry) => entry.recorded &&
+          entry.variationNumber === actualView.currentVariationNumber);
+        if (hasLiveVariation) {
+          persistentController.selectVariation(actualView.currentVariationNumber);
+        }
+        variationSearchInput.value = "";
+        variationSearchInput.setCustomValidity("");
+        variationSearchInput.removeAttribute("aria-invalid");
+        mappingAnnouncement.textContent = hasLiveVariation
+          ? "Future presets were reset. Captured variations were preserved. Returned to the live item."
+          : "Future presets were reset. Waiting for a live auction variation.";
+      } else if (sequential) {
+        const view = getActiveView();
+        const target = findVariationOption(view, response.assignedVariationNumber);
+        if (acknowledgementIsCurrent && navigationContext &&
+            navigationContext.navigationGeneration === variationNavigationGeneration &&
+            navigationContext.baselineId === variationPresetsSnapshot?.baselineId &&
+            view?.isReviewingPreset === true &&
+            view.selectedVariationNumber === navigationContext.variationNumber &&
+            target?.preset === true) {
+          selectedPresetVariationNumber = response.assignedVariationNumber;
+          variationNavigationGeneration += 1;
+          mappingAnnouncement.textContent =
+            `Variation #${response.assignedVariationNumber} preset saved. Inventory changes only when captured.`;
+        }
+      } else {
+        mappingAnnouncement.textContent = kind === "createPresets"
+          ? `Preset variations #1–#${snapshot.total} are ready. No inventory has been reserved.`
+          : `Variation #${values.variationNumber} preset ${values.sku === null ? "cleared" : "saved"}. Inventory changes only when captured.`;
+      }
+      renderAll();
+      scheduleNextItemQueueRefresh();
+      scheduleVariationPresetsRefresh();
+      return true;
+    } catch (error) {
+      if (generation !== variationPresetsGeneration || expected.expectedStreamId !== mountedStreamId) return false;
+      mappingAnnouncement.textContent = error?.message ?? "The preset change could not be saved.";
+      scheduleVariationPresetsRefresh();
+      scheduleCaptureRefresh();
+      return false;
+    } finally {
+      if (generation === variationPresetsGeneration) {
+        variationPresetsBusy = false;
+        setWorkspaceBusy(savedSnapshot?.busy === true);
+        updateVariationPresetsAvailability();
+        updateVariationSearchAvailability();
+        updateQueuedItemBadgeAvailability();
+        renderAll();
+      }
+    }
+  }
+
+  function dismissVariationPresetsEntry(event) {
+    // Dismiss only an unsaved draft; an accepted save keeps its original context.
+    if (!variationPresetsEditing || variationPresetsBusy ||
+        variationPresetsForm.contains(event.target)) return;
+    variationPresetsEditing = false;
+    variationPresetsEntryContext = null;
+    variationPresetsInput.value = "";
+    variationPresetsInput.setCustomValidity("");
+    variationPresetsInput.removeAttribute("aria-invalid");
+    updateVariationPresetsAvailability();
+  }
+
+  async function submitVariationPresets(event) {
+    event.preventDefault();
+    if (guardCaptureInteraction(event) || !canChangeVariationPresets() ||
+        !variationPresetsEditing || !variationPresetsEntryContext ||
+        (variationPresetsSnapshot.total !== null &&
+          !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot))) return;
+    const query = variationPresetsInput.value.trim();
+    const total = Number(query);
+    const highest = Math.max(0, ...getRecordedVariations(savedSnapshot.view).map((entry) => entry.variationNumber));
+    const entryContext = variationPresetsEntryContext;
+    const message = entryContext.streamId !== mountedStreamId ||
+      entryContext.baselineId !== variationPresetsSnapshot.baselineId ||
+      entryContext.total !== variationPresetsSnapshot.total ||
+      entryContext.revision !== variationPresetsSnapshot.revision
+      ? "The preset plan changed while you were entering a total. Reopen Preset items and try again."
+      : highest > variationPresetsProtocol.MAX_PRESET_VARIATIONS
+      ? `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-variation preset limit. Normal tracking continues; another preset range cannot be created.`
+      : !/^\d+$/.test(query) || !Number.isSafeInteger(total) || total < 1 ||
+      total > variationPresetsProtocol.MAX_PRESET_VARIATIONS
+      ? `Enter a whole number from 1 to ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}.`
+      : total < highest ? `Enter at least ${highest}, the highest captured variation.`
+      : variationPresetsSnapshot.total !== null && total <= variationPresetsSnapshot.total
+      ? `Enter a total greater than ${variationPresetsSnapshot.total}.` : "";
+    variationPresetsInput.setCustomValidity(message);
+    if (message) {
+      variationPresetsInput.setAttribute("aria-invalid", "true");
+      mappingAnnouncement.textContent = message;
+      variationPresetsInput.reportValidity();
+      return;
+    }
+    variationPresetsInput.removeAttribute("aria-invalid");
+    const navigationGeneration = variationNavigationGeneration;
+    if (await mutateVariationPresets("createPresets", { total }) &&
+        navigationGeneration === variationNavigationGeneration) variationPresetsButton.focus();
   }
 
   function createEmptySavedSnapshot() {
@@ -1325,6 +1633,7 @@
     clearCaptureRefreshTimer();
     resetLiveBidTracking();
     resetNextItemQueueDisplay();
+    resetVariationPresetsDisplay();
     resetInventorySizeMenu();
     resetVariationSelector();
     inventoryGroupOrderController.reset();
@@ -1457,6 +1766,7 @@
     }
     updateVariationSearchAvailability();
     updateQueuedItemBadgeAvailability();
+    updateVariationPresetsAvailability();
   }
 
   function setWorkspaceBusy(busy) {
@@ -1467,6 +1777,7 @@
       snapshotIsBackgroundRefresh(savedSnapshot);
     const shouldBeBusy =
       (Boolean(busy) && !activeInventoryUpdateRefresh) ||
+      variationPresetsBusy ||
       streamSnapshot.busy ||
       streamUnavailable;
     const keepOpenPickerInteractive =
@@ -1474,6 +1785,7 @@
       snapshotIsBackgroundRefresh(savedSnapshot) &&
       !streamSnapshot.busy &&
       !streamUnavailable &&
+      !variationPresetsBusy &&
       !endConfirmationOpen;
     const shouldBeInert =
       (shouldBeBusy && !keepOpenPickerInteractive) ||
@@ -2569,6 +2881,10 @@
     const wrapper = cardTemplate.content.firstElementChild.cloneNode(true);
     const pinButton = wrapper.querySelector(".inventory-pin-button");
     const button = wrapper.querySelector(".inventory-card");
+    // Keep the origin of a rendered future-card action even if capture or a
+    // deferred size-picker render changes the currently projected view.
+    button.futurePresetContext = view.isReviewingPreset === true
+      ? getFuturePresetContext(view) : null;
     const badges = wrapper.querySelector(".inventory-card-badges");
     const selectedLabel = wrapper.querySelector('[data-field="selected"]');
     const currentLabel = wrapper.querySelector('[data-field="current-mapped"]');
@@ -2587,7 +2903,7 @@
     const selectionAllowed = group.entries.some(
       (entry) => entry.selectionAllowed,
     );
-    const canTagSelectedVariation = hasSelectedRecordedVariation(view);
+    const canTagSelectedVariation = hasSelectedEditableVariation(view);
     const canUseCurrentContextAction =
       canTagSelectedVariation &&
       selectionAllowed &&
@@ -2710,7 +3026,12 @@
       );
     }
 
-    if (reviewingHistory && canUseCurrentContextAction) {
+    if (view.isReviewingPreset === true && canTagSelectedVariation && selectionAllowed) {
+      button.setAttribute(
+        "aria-label",
+        `${button.getAttribute("aria-label")} Right-click to fill this future preset if empty, otherwise fill and open the next empty future preset. No inventory is reserved.`,
+      );
+    } else if (reviewingHistory && canUseCurrentContextAction) {
       const currentMappingDescription = mappedToCurrent
         ? ` This item is also selected for current variation ${view.currentVariationNumber}. Right-click to unmap it from current variation ${view.currentVariationNumber}.`
         : currentVariationMapped
@@ -2896,6 +3217,10 @@
       return entry.selected
         ? `Unmap this size from variation ${view.selectedVariationNumber}`
         : `Map variation ${view.selectedVariationNumber} to this size`;
+    }
+
+    if (intent === "preset_context") {
+      return "Assign this size to the current future preset if empty, otherwise assign and open the next empty future preset; no inventory is reserved";
     }
 
     const reviewingHistory =
@@ -3220,6 +3545,15 @@
   function openInventorySizeMenu(trigger, intent, options = {}) {
     if (isCaptureInteractionLocked()) return false;
     const view = getActiveView();
+    const presetContext = trigger.futurePresetContext ?? getFuturePresetContext(view);
+    if (intent === "context" && presetContext) intent = "preset_context";
+    if (intent === "preset_context" &&
+        (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext))) return false;
+    if (intent === "context" && !view?.isReviewingHistory &&
+        isCurrentVariationMapped(view) && nextVariationHasPreset(view)) {
+      mappingAnnouncement.textContent = "The next variation already has a preset item. Next-item queuing is disabled.";
+      return false;
+    }
     const group = findInventoryGroup(view, trigger.dataset.groupKey);
 
     if (!view || !group || group.entries.length < 2 || trigger.disabled) {
@@ -3249,6 +3583,7 @@
       streamId: mountedStreamId,
       selectedVariationNumber: view.selectedVariationNumber,
       currentVariationNumber: view.currentVariationNumber,
+      presetContext: intent === "preset_context" ? presetContext : null,
     };
     renderInventorySizeOptions(group, view, intent);
     trigger.setAttribute("aria-expanded", "true");
@@ -3260,7 +3595,7 @@
     const selectedSku = group.entries.find((entry) => entry.selected)?.sku;
     const currentMappedSku = getCurrentVariationMappedSku(view);
     const preferredSku =
-      intent === "ordinary"
+      intent === "ordinary" || intent === "preset_context"
         ? selectedSku
         : reviewingHistory
           ? currentMappedSku
@@ -3533,7 +3868,7 @@
 
   function renderVariationSelectorOptions(view) {
     const fragment = document.createDocumentFragment();
-    const variations = getRecordedVariations(view);
+    const variations = getSelectableVariations(view);
 
     if (variations.length === 0) {
       variationSelectorValue.textContent =
@@ -3560,15 +3895,17 @@
 
       const selectedVariation = variations.find(
         (variation) => variation.selected,
-      ) ?? variations[0];
-      const selectedDisplay = getVariationOptionDisplay(selectedVariation);
-
-      variationSelectorValue.replaceChildren(
-        createVariationOptionContent(selectedDisplay),
       );
-      variationSelector.dataset.variationNumber = String(
-        selectedVariation.variationNumber,
-      );
+      if (selectedVariation) {
+        const selectedDisplay = getVariationOptionDisplay(selectedVariation);
+        variationSelectorValue.replaceChildren(
+          createVariationOptionContent(selectedDisplay),
+        );
+        variationSelector.dataset.variationNumber = String(selectedVariation.variationNumber);
+      } else {
+        variationSelectorValue.textContent = "Waiting for live auction variations";
+        variationSelector.removeAttribute("data-variation-number");
+      }
       variationSelector.setAttribute("aria-disabled", "false");
       variationSelector.tabIndex = 0;
     }
@@ -3577,7 +3914,7 @@
   }
 
   function renderVariationNavigation(view) {
-    const variations = getRecordedVariations(view);
+    const variations = getSelectableVariations(view);
 
     variationSelectorLock.requestRender(view);
 
@@ -4524,6 +4861,18 @@
     }
   }
 
+  function preserveCapturedPresetSelection(snapshot) {
+    if (snapshot.phase !== "ready" || selectedPresetVariationNumber === null ||
+        !snapshot.view?.variations.some((entry) => entry.recorded &&
+          entry.variationNumber === selectedPresetVariationNumber)) return false;
+    const capturedSelection = selectedPresetVariationNumber;
+    selectedPresetVariationNumber = null;
+    // The placeholder has become real. Keep the user's chosen variation
+    // open, but from now on use the ordinary captured-history workflow.
+    persistentController.selectVariation(capturedSelection, { holdSelection: true });
+    return true;
+  }
+
   function renderSavedSnapshot(snapshot) {
     const priorPhase = savedSnapshot?.phase ?? previousSavedPhase;
     const priorVariations = lastRenderedSavedVariations;
@@ -4531,6 +4880,7 @@
       savedSnapshot?.view?.selectedVariationNumber ?? null;
 
     savedSnapshot = snapshot;
+    if (preserveCapturedPresetSelection(snapshot)) return;
     updateSessionControls();
 
     if (
@@ -4628,6 +4978,13 @@
       }
 
       const view = renderAll(focusOptions);
+      // Read preset prerequisites after the canonical workspace has loaded its
+      // confirmed baseline. A parallel mount-time read can fail before that
+      // context is available and otherwise remain disabled until first capture.
+      // Include Retry loading, but do not turn ordinary ready renders into reads.
+      const initialLoadCompleted = priorPhase !== "ready" &&
+        (snapshot.operation === "load" || snapshot.operation === "initialize");
+      if (refreshCompleted || initialLoadCompleted) scheduleVariationPresetsRefresh();
       const liveRefreshAnnouncement = refreshCompleted || completedAction
         ? describeLiveRefresh(priorVariations, view, refreshCompleted)
         : "";
@@ -4685,7 +5042,7 @@
       return;
     }
 
-    if (pendingSavedAction || savedSnapshot?.busy) {
+    if (pendingSavedAction || savedSnapshot?.busy || variationPresetsBusy) {
       mappingAnnouncement.textContent =
         "Wait for the current saved-session change to finish.";
       return;
@@ -4726,6 +5083,19 @@
 
       searchInput.value = "";
 
+      const selectedOption = findVariationOption(getActiveView(), selectedVariationNumber);
+      if (selectedOption?.preset === true) {
+        if (!canChangeVariationPresets()) return;
+        variationNavigationGeneration += 1;
+        selectedPresetVariationNumber = selectedVariationNumber;
+        renderAll();
+        mappingAnnouncement.textContent =
+          `Planning untracked variation #${selectedVariationNumber}. Select an item as a placeholder; stock is unchanged until capture. Live auctions continue updating.`;
+        return;
+      }
+
+      variationNavigationGeneration += 1;
+      selectedPresetVariationNumber = null;
       const snapshot = persistentController.selectVariation(
         selectedVariationNumber,
       );
@@ -4768,7 +5138,8 @@
       savedSnapshot?.phase === "ready" &&
       !savedSnapshot.busy &&
       !endConfirmationOpen &&
-      getRecordedVariations(getActiveView()).length > 0
+      !variationPresetsBusy &&
+      getSelectableVariations(getActiveView()).length > 0
     );
   }
 
@@ -4791,8 +5162,8 @@
     const option = validNumber ? findVariationOption(getActiveView(), number) : null;
     const message = !validNumber
       ? "Enter a whole variation number greater than zero."
-      : !option?.recorded
-        ? `Variation #${number} has not been captured in this tracker stream.`
+      : !option?.recorded && !option?.preset
+        ? `Variation #${number} has not been captured or preset in this tracker stream.`
         : "";
 
     variationSearchInput.setCustomValidity(message);
@@ -4817,6 +5188,46 @@
   });
 
   clearQueuedItemButton.addEventListener("click", clearQueuedItem);
+
+  document.addEventListener("pointerdown", dismissVariationPresetsEntry, true);
+  variationPresetsForm.addEventListener("submit", submitVariationPresets);
+  variationPresetsButton.addEventListener("click", async (event) => {
+    if (guardCaptureInteraction(event) || !canChangeVariationPresets()) return;
+    if (variationPresetsSnapshot.total !== null &&
+        !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot)) {
+      if (await mutateVariationPresets("resetPresets")) variationPresetsButton.focus();
+      return;
+    }
+    variationPresetsEditing = true;
+    variationPresetsEntryContext = {
+      streamId: mountedStreamId, baselineId: variationPresetsSnapshot.baselineId,
+      revision: variationPresetsSnapshot.revision, total: variationPresetsSnapshot.total,
+    };
+    variationPresetsInput.value = "";
+    variationPresetsInput.setCustomValidity("");
+    variationPresetsInput.removeAttribute("aria-invalid");
+    updateVariationPresetsAvailability();
+    variationPresetsInput.focus();
+    if (getRecordedVariations(savedSnapshot.view).some((entry) =>
+        entry.variationNumber > variationPresetsProtocol.MAX_PRESET_VARIATIONS)) {
+      mappingAnnouncement.textContent =
+        `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-variation preset limit. Normal tracking continues; another preset range cannot be created.`;
+    }
+  });
+  variationPresetsInput.addEventListener("input", () => {
+    variationPresetsInput.setCustomValidity("");
+    variationPresetsInput.removeAttribute("aria-invalid");
+  });
+  variationPresetsInput.addEventListener("keydown", (event) => {
+    if (guardCaptureInteraction(event) || !canChangeVariationPresets()) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      variationPresetsEditing = false;
+      variationPresetsEntryContext = null;
+      updateVariationPresetsAvailability();
+      variationPresetsButton.focus();
+    }
+  });
 
   // Capture-phase guards also cover stale/programmatic events and popovers
   // outside the workspace, without intercepting scrolling or End Tracking.
@@ -5001,6 +5412,8 @@
 
   returnToCurrentButton.addEventListener("click", (event) => {
     if (guardCaptureInteraction(event)) return;
+    if (variationPresetsBusy || nextItemQueueMutationBusy || savedSnapshot?.busy ||
+        streamSnapshot.busy || endConfirmationOpen || trackerWorkspace.hasAttribute("inert")) return;
     const currentView = getActiveView();
 
     if (!persistentController || !currentView?.isReviewingHistory) {
@@ -5019,6 +5432,9 @@
     }
 
     searchInput.value = "";
+    variationNavigationGeneration += 1;
+    const previousPresetSelection = selectedPresetVariationNumber;
+    selectedPresetVariationNumber = null;
     const snapshot = persistentController.selectVariation(
       currentView.currentVariationNumber,
     );
@@ -5028,6 +5444,7 @@
       !view ||
       view.selectedVariationNumber !== currentView.currentVariationNumber
     ) {
+      selectedPresetVariationNumber = previousPresetSelection;
       mappingAnnouncement.textContent =
         "The latest live item could not be selected.";
       return;
@@ -5047,6 +5464,16 @@
     const selected =
       view.inventory.find((entry) => entry.sku === sku)?.selected === true;
 
+    if (view.isReviewingPreset === true) {
+      if (!canChangeVariationPresets() ||
+          getActiveView()?.selectedVariationNumber !== view.selectedVariationNumber ||
+          getActiveView()?.isReviewingPreset !== true) return;
+      void mutateVariationPresets("setPresetItem", {
+        variationNumber: view.selectedVariationNumber, sku: selected ? null : sku,
+      });
+      return;
+    }
+
     runSavedMutation(
       () => selected
         ? persistentController.unmapSelectedVariation()
@@ -5061,6 +5488,11 @@
 
   async function toggleNextItemQueue(button, view) {
     if (isCaptureInteractionLocked()) return;
+    if (variationPresetsBusy || (isCurrentVariationMapped(view) &&
+        (!variationPresetsReady || nextVariationHasPreset(view)))) {
+      mappingAnnouncement.textContent = "The next variation has a preset, or presets are still loading. Next-item queuing is unavailable.";
+      return;
+    }
     if (nextItemQueueMutationBusy) {
       mappingAnnouncement.textContent =
         "Wait for the current next-item queue change to finish.";
@@ -5149,6 +5581,8 @@
 
   async function mapCurrentVariationFromHistory(button, view) {
     if (isCaptureInteractionLocked()) return;
+    if (variationPresetsBusy || !hasSelectedRecordedVariation(savedSnapshot.view) &&
+        !findVariationOption(savedSnapshot.view, view.currentVariationNumber)?.recorded) return;
     if (nextItemQueueMutationBusy) {
       mappingAnnouncement.textContent =
         "Wait for the current inventory action to finish.";
@@ -5217,6 +5651,12 @@
     const view = getActiveView();
     const entry = view?.inventory.find((candidate) => candidate.sku === sku);
 
+    if (state?.intent === "preset_context" &&
+        (!canChangeVariationPresets() || !isFuturePresetContextCurrent(state.presetContext))) {
+      releaseInventorySizeMenu();
+      return;
+    }
+
     if (
       state &&
       (
@@ -5245,6 +5685,11 @@
 
     if (intent === "ordinary") {
       saveOrdinaryInventorySelection(actionTarget, view);
+      return;
+    }
+
+    if (intent === "preset_context") {
+      void assignNextFuturePreset(actionTarget, state.presetContext);
       return;
     }
 
@@ -5334,7 +5779,7 @@
 
     const view = getActiveView();
 
-    if (!hasSelectedRecordedVariation(view)) {
+    if (!hasSelectedEditableVariation(view)) {
       mappingAnnouncement.textContent =
         "Wait for a captured live auction variation before selecting inventory.";
       return;
@@ -5367,10 +5812,27 @@
     }
 
     const view = getActiveView();
+    const presetContext = button.futurePresetContext ?? getFuturePresetContext(view);
 
-    if (!hasSelectedRecordedVariation(view)) {
+    if (presetContext) {
+      if (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext)) return;
+      if (button.dataset.multipleSizes === "true") {
+        openInventorySizeMenu(button, "preset_context");
+      } else {
+        if (inventorySizeMenuState) releaseInventorySizeMenu();
+        void assignNextFuturePreset(button, presetContext);
+      }
+      return;
+    }
+
+    if (!hasSelectedEditableVariation(view)) {
       mappingAnnouncement.textContent =
         "Wait for a captured live auction variation before selecting inventory.";
+      return;
+    }
+
+    if (!view.isReviewingHistory && isCurrentVariationMapped(view) && nextVariationHasPreset(view)) {
+      mappingAnnouncement.textContent = "The next variation already has a preset item. Next-item queuing is disabled.";
       return;
     }
 

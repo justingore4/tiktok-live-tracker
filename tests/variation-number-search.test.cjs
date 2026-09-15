@@ -79,6 +79,11 @@ function fixture() {
     isReviewingHistory: false,
   };
   const context = {
+    variationPresetsView: require("../extension/tagger/variation-presets-view.js"),
+    variationPresetsSnapshot: null, selectedPresetVariationNumber: null,
+    variationNavigationGeneration: 0,
+    variationPresetsBusy: false, nextItemQueueMutationBusy: false,
+    updateVariationPresetsAvailability() {},
     variationSearchForm: element(), variationSearchInput: element(),
     trackerWorkspace: element(), captureHealthBadge: element(),
     mappingAnnouncement: element(), searchInput: element(), variationSelector: element(),
@@ -110,7 +115,7 @@ function fixture() {
   context.searchInput.value = "existing inventory filter";
   vm.createContext(context);
   vm.runInContext([
-    "getActiveView", "getRecordedVariations", "findVariationOption",
+    "getActiveView", "getRecordedVariations", "getSelectableVariations", "findVariationOption",
     "isCaptureInteractionLocked", "isTrackerInteractionTarget", "guardCaptureInteraction", "isSavedWorkspaceUnavailable",
     "syncCaptureInteractionLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch",

@@ -17,6 +17,9 @@ importScripts(
   "shared/next-item-queue-protocol.js",
   "shared/next-item-queue-storage.js",
   "shared/next-item-queue-coordinator.js",
+  "shared/variation-presets-protocol.js",
+  "shared/variation-presets-storage.js",
+  "shared/variation-presets-coordinator.js",
   "shared/capture-protocol.js",
   "shared/capture-health.js",
   "shared/capture-integration.js",
@@ -52,6 +55,9 @@ const nextItemQueueStorage =
   globalThis.TikTokLiveTrackerNextItemQueueStorage;
 const nextItemQueueCoordinatorModule =
   globalThis.TikTokLiveTrackerNextItemQueueCoordinator;
+const variationPresetsProtocol = globalThis.TikTokLiveTrackerVariationPresetsProtocol;
+const variationPresetsStorage = globalThis.TikTokLiveTrackerVariationPresetsStorage;
+const variationPresetsCoordinatorModule = globalThis.TikTokLiveTrackerVariationPresetsCoordinator;
 const captureProtocol = globalThis.TikTokLiveTrackerCaptureProtocol;
 const captureHealth = globalThis.TikTokLiveTrackerCaptureHealth;
 const captureIntegration = globalThis.TikTokLiveTrackerCaptureIntegration;
@@ -135,12 +141,38 @@ const nextItemQueueCoordinator =
     streamSession,
     streamSessionCoordinator,
   });
+let presetLiveProjectionDirty = false;
+const variationPresetsStore = variationPresetsStorage.createVariationPresetsStore({
+  storageArea: chrome.storage.local,
+  protocol: variationPresetsProtocol,
+});
+const variationPresetsCoordinator =
+  variationPresetsCoordinatorModule.createVariationPresetsCoordinator({
+    activeStreamCoordinator,
+    streamSession,
+    streamSessionCoordinator,
+    stateCoordinator,
+    reconciliation,
+    reconciliationCoordinator,
+    protocol: variationPresetsProtocol,
+    presetStore: variationPresetsStore,
+    clearConflictingQueue: async (streamId, context) => {
+      const outcome = await nextItemQueueCoordinator.clearForPresets({ streamId, ...context });
+      if (outcome?.status === "cleared") notifyNextItemQueueChanged();
+    },
+    onChange: ({ canonicalChanged = false } = {}) => {
+      if (canonicalChanged) presetLiveProjectionDirty = true;
+      notifyPresetsChanged();
+      if (canonicalChanged) notifyCaptureStateChanged();
+    },
+  });
 const captureEventIntegration =
   captureIntegration.createCaptureIntegration({
     activeStreamCoordinator,
     captureProtocol,
     liveBidCoordinator,
     nextItemQueueCoordinator,
+    variationPresetsCoordinator,
     reconciliationCoordinator,
     stateCoordinator,
     streamSession,
@@ -268,6 +300,8 @@ function failBoundary(protocol, code, message) {
   } else if (protocol === nextItemQueueProtocol) {
     BoundaryError =
       nextItemQueueCoordinatorModule.NextItemQueueCoordinatorError;
+  } else if (protocol === variationPresetsProtocol) {
+    BoundaryError = variationPresetsCoordinatorModule.VariationPresetsCoordinatorError;
   }
 
   throw new BoundaryError(code, message);
@@ -350,6 +384,15 @@ function getMessageBoundary(message) {
     };
   }
 
+  if (message.channel === variationPresetsProtocol.MESSAGE_CHANNEL) {
+    if (variationPresetsProtocol.isPresetsChangedNotification(message)) return null;
+    return {
+      coordinator: variationPresetsCoordinator,
+      label: "variation-presets",
+      protocol: variationPresetsProtocol,
+    };
+  }
+
   return null;
 }
 
@@ -366,6 +409,10 @@ function validateMessage(message, boundary) {
 
   if (protocol === nextItemQueueProtocol) {
     return nextItemQueueProtocol.validateNextItemQueueMessage(message);
+  }
+
+  if (protocol === variationPresetsProtocol) {
+    return variationPresetsProtocol.validateMessage(message);
   }
 
   if (protocol === inventoryImportProtocol) {
@@ -799,6 +846,39 @@ async function clearNextItemQueueForEndedStream(streamId) {
   }
 }
 
+async function clearPresetsForEndedStream(streamId) {
+  // End is already durable here. Stale scoped planning data must never turn
+  // successful report/session persistence into an apparent failure.
+  try {
+    await variationPresetsCoordinator.clearForStream(streamId);
+  } catch (_error) {
+    // The next stream has a different identity and cannot use these presets.
+  }
+}
+
+async function repairCapturedPresetAssignments() {
+  // Called inside messageTail, before another command can edit real mappings,
+  // reset plans, or build a report from a partially completed capture delivery.
+  return variationPresetsCoordinator.dispatch({ type: variationPresetsProtocol.COMMAND_TYPES.GET_PRESETS });
+}
+
+async function synchronizeRepairedPresetLiveProjection() {
+  if (!presetLiveProjectionDirty) return;
+  try {
+    const { state: sessionState } = await getStreamSessionResponse();
+    const streamId = sessionState.activeSession?.streamId;
+    if (streamId) {
+      const response = await stateCoordinator.dispatch({ type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE });
+      const outcome = await liveBidCoordinator.synchronize({ streamId, state: response?.state ?? null });
+      if (outcome?.status === "accepted") notifyLiveBidChanged();
+    }
+    presetLiveProjectionDirty = false;
+  } catch (_error) {
+    // Canonical promotion is durable. Retry this transient projection on the
+    // next trusted command, without failing an otherwise successful mutation.
+  }
+}
+
 async function endStreamWithReport(command) {
   const { state: sessionState } = await getStreamSessionResponse();
   const activeSession = sessionState.activeSession;
@@ -811,6 +891,7 @@ async function endStreamWithReport(command) {
     const response = await activeStreamCoordinator.dispatch(command);
 
     await clearNextItemQueueForEndedStream(command.streamId);
+    await clearPresetsForEndedStream(command.streamId);
     return createEndResponse(
       response,
       existing.reportId === null ? null : existing,
@@ -820,6 +901,8 @@ async function endStreamWithReport(command) {
   if (activeSession.streamId !== command.streamId) {
     return activeStreamCoordinator.dispatch(command);
   }
+
+  await repairCapturedPresetAssignments();
 
   const reconciliationResponse = await stateCoordinator.dispatch({
     type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
@@ -832,6 +915,7 @@ async function endStreamWithReport(command) {
   const response = await activeStreamCoordinator.dispatch(command);
 
   await clearNextItemQueueForEndedStream(command.streamId);
+  await clearPresetsForEndedStream(command.streamId);
   let finalizedReport = preparedReport;
 
   try {
@@ -1000,6 +1084,11 @@ async function dispatchReconciliationCommand(command) {
     await pinStreamToPreparedInventory(state.activeSession.streamId);
   }
 
+  if (mutatesEmployeeStream(command) ||
+      command.type === reconciliationCoordinator.COMMAND_TYPES.GET_STATE) {
+    await repairCapturedPresetAssignments();
+  }
+
   const response = await stateCoordinator.dispatch(command);
 
   if (mutatesEmployeeStream(command)) {
@@ -1022,6 +1111,25 @@ async function dispatchReconciliationCommand(command) {
 }
 
 async function dispatchNextItemQueueCommand(command) {
+  const presets = await repairCapturedPresetAssignments();
+  if (command.type === nextItemQueueProtocol.COMMAND_TYPES.TOGGLE_QUEUE &&
+      presets.streamId === command.expectedStreamId && presets.assignments.length > 0) {
+    const stateResponse = await stateCoordinator.dispatch({
+      type: reconciliationCoordinator.COMMAND_TYPES.GET_STATE,
+    });
+    const canonical = hydrateReconciliationResponse(stateResponse);
+    const stream = canonical.streams.find((entry) => entry.streamId === command.expectedStreamId);
+    const current = stream?.activeBiddingVariationNumber ??
+      Math.max(0, ...(stream?.variations ?? []).map((entry) => entry.variationNumber));
+    const auction = stream?.variations.find((entry) => entry.variationNumber === current);
+    // toggle_queue also maps an unassigned live variation. Preserve that path
+    // and the independent map_current action while suppressing only queuing.
+    if (current === command.expectedVariationNumber && typeof auction?.sku === "string" &&
+        presets.assignments.some((entry) => entry.variationNumber === current + 1)) {
+      failBoundary(nextItemQueueProtocol, "NEXT_VARIATION_PRESET",
+        "The next variation already has a preset item. Queuing is disabled for that variation.");
+    }
+  }
   const response = await nextItemQueueCoordinator.dispatch(command);
 
   if (["mapped_current", "unmapped_current"].includes(response?.status)) {
@@ -1424,6 +1532,9 @@ function serializeError(error, boundary) {
     error instanceof nextItemQueueStorage.NextItemQueueStorageError ||
     error instanceof
       nextItemQueueCoordinatorModule.NextItemQueueCoordinatorError ||
+    error instanceof variationPresetsProtocol.VariationPresetsProtocolError ||
+    error instanceof variationPresetsStorage.VariationPresetsStorageError ||
+    error instanceof variationPresetsCoordinatorModule.VariationPresetsCoordinatorError ||
     error instanceof inventoryImportProtocol.InventoryImportProtocolError ||
     error instanceof
       googleSheetsInventoryImport.GoogleSheetsInventoryImportError;
@@ -1441,6 +1552,17 @@ function serializeError(error, boundary) {
     code: "INTERNAL_ERROR",
     message: `The ${boundary.label} command could not be completed.`,
   };
+}
+
+function notifyPresetsChanged() {
+  try {
+    const delivery = chrome.runtime.sendMessage(
+      variationPresetsProtocol.createPresetsChangedNotification(),
+    );
+    if (delivery && typeof delivery.catch === "function") delivery.catch(() => undefined);
+  } catch {
+    // Durable changes are authoritative; notifications remain best-effort.
+  }
 }
 
 function notifyCaptureStateChanged() {
@@ -1555,7 +1677,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   const execution = messageTail
     .then(() => storageAccessReady)
-    .then(() => {
+    .then(async () => {
       if (storageAccessError) {
         failBoundary(
           boundary.protocol,
@@ -1567,7 +1689,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const command = validateMessage(message, boundary);
 
       validateSender(sender, command, boundary);
-      return dispatchBoundaryCommand(boundary, command);
+      await synchronizeRepairedPresetLiveProjection();
+      try {
+        return await dispatchBoundaryCommand(boundary, command);
+      } finally {
+        // Promotion can persist before its independent cleanup fails. Repair
+        // the live cache inside the same worker FIFO even on that error path,
+        // so later price events cannot be rejected against an old variation.
+        await synchronizeRepairedPresetLiveProjection();
+      }
     });
 
   messageTail = execution.catch(() => undefined);

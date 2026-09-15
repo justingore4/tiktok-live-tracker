@@ -47,6 +47,7 @@
         captureProtocol,
         liveBidCoordinator,
         nextItemQueueCoordinator,
+        variationPresetsCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -82,6 +83,13 @@
         )
       ) {
         throw new TypeError("A valid next-item queue coordinator is required.");
+      }
+
+      if (
+        variationPresetsCoordinator !== undefined &&
+        (!variationPresetsCoordinator || typeof variationPresetsCoordinator.synchronize !== "function")
+      ) {
+        throw new TypeError("A valid variation-presets coordinator is required.");
       }
 
       if (
@@ -136,6 +144,7 @@
         captureProtocol,
         liveBidCoordinator: liveBidCoordinator ?? null,
         nextItemQueueCoordinator: nextItemQueueCoordinator ?? null,
+        variationPresetsCoordinator: variationPresetsCoordinator ?? null,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -149,6 +158,7 @@
         captureProtocol,
         liveBidCoordinator,
         nextItemQueueCoordinator,
+        variationPresetsCoordinator,
         reconciliationCoordinator,
         stateCoordinator,
         streamSession,
@@ -291,8 +301,29 @@
             );
         }
 
+        // Payment can clear the active bidding marker. If persisting preset
+        // extension readiness failed on the preceding live capture, retain that
+        // proof before another canonical update can remove it. This is only a
+        // readiness barrier, not preset promotion or next-item queue consumption.
+        if (typeof variationPresetsCoordinator?.preserveExtensionAvailability === "function") {
+          await variationPresetsCoordinator.preserveExtensionAvailability(streamId);
+        }
+
         const response = await stateCoordinator.dispatch(command);
         let canonicalState = response?.state ?? null;
+
+        // A preset is planning data until real capture has durably created the
+        // variation. Promote through ordinary mapping before the generic queue
+        // can consume this same target. A failure remains retryable, including
+        // when the capture write succeeded but preset promotion/cleanup did not.
+        if (variationPresetsCoordinator !== null) {
+          const presetOutcome = await variationPresetsCoordinator.synchronize({
+            streamId,
+            state: canonicalState,
+            deferNextQueueClear: event.type === captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION,
+          });
+          canonicalState = presetOutcome.state;
+        }
 
         if (
           event.type ===
@@ -314,6 +345,14 @@
             "already_mapped",
             "skipped_existing_mapping",
           ].includes(queueOutcome?.status);
+        }
+
+        if (variationPresetsCoordinator !== null &&
+            event.type === captureProtocol.EVENT_TYPES.OBSERVE_BIDDING_VARIATION) {
+          // A queue due for this live variation must be applied before a preset
+          // on the following variation disables/clears future queuing.
+          const presetOutcome = await variationPresetsCoordinator.synchronize({ streamId, state: canonicalState });
+          canonicalState = presetOutcome.state;
         }
 
         const liveAuctionOutcome = await synchronizeLiveAuction(

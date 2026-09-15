@@ -102,6 +102,10 @@ function fixture() {
     // The dedicated variation-number search suite exercises its disabled state.
     updateVariationSearchAvailability() {},
     updateQueuedItemBadgeAvailability() {},
+    updateVariationPresetsAvailability() {},
+    variationPresetsBusy: false, variationPresetsReady: true,
+    isCurrentVariationMapped: () => true,
+    nextVariationHasPreset: () => false,
     variationListbox, inventorySizeListbox, searchInput,
     activeStreamInventorySheetReference,
     retrySavedSessionButton: node(), retryStreamSessionButton: node(),

@@ -1263,6 +1263,118 @@ Captured pre-completion terminal cancellation is authoritative for allocation;
 production refunds or post-completion cancellations still require their own future event
 rather than reversing a `payment_complete` record.
 
+### Future variation presets
+
+`variation-presets-protocol.js`, `variation-presets-storage.js`, and
+`variation-presets-coordinator.js` provide a separate, worker-owned planning domain.
+The local key `tiktokLiveTracker.variationPresets.v1` contains
+`{schemaVersion: 1, presets: {streamId, baselineId, revision, total, assignments}}`.
+Assignments are ordered exact `{variationNumber, sku}` pairs; no canonical orders
+or payment statuses are fabricated. The preset-only total is 1–1,000. Create rejects
+totals below the highest captured number; real capture has no preset-based ceiling.
+
+Planning is available before the first actual auction in a started/resumed local
+session with confirmed inventory. Existing worker START and GET_STREAM_SESSION
+paths already pin the prepared baseline without creating any captured variations;
+no new baseline or synthetic payment/live marker is needed. The panel requests the
+preset snapshot after its canonical workspace has successfully loaded (including
+load retry), rather than racing that initial load. Existing capture-refresh reads
+remain. Thus preset availability does not depend on a later capture notification
+recovering an unsuccessful early preset read.
+
+Only the existing Connecting/Loading interaction lock blocks planning for capture
+readiness. Green and the internal blank/Reload Site state both permit it when the
+other session, inventory, save, error, and inert safeguards are satisfied. Badge
+production, rendering, scheduling, and health thresholds are unchanged. Setup and
+Resume-only screens still do not expose planning. Empty-view placeholders remain
+outside canonical history and first actual capture uses normal preset promotion.
+
+The side-panel-only protocol supports get/create/set-item/assign-next-item/reset. Mutations compare
+stream, pinned baseline, and a durable UUID revision inside the coordinator FIFO
+and the existing worker message FIFO. Reset saves a disabled revision tombstone so
+late edits/resets cannot resurrect old plans or erase a new configuration. Missing
+data means no presets; malformed stored data fails closed. Existing reconciliation,
+session, report, and queue schemas remain unchanged.
+
+An enabled preset snapshot can additionally contain `extensionAvailable: true`.
+This optional, true-only field is stored in the same v1 preset envelope; old records
+without it remain valid and require no migration. The coordinator latches it only
+when the canonical `activeBiddingVariationNumber` exceeds the saved total. Highest
+captured fallback values, historical backfill, and panel selection never establish
+eligibility. The small durable latch is necessary because payment observations clear
+the live bidding marker; extension must remain available after that and worker restart.
+Metadata-only latching keeps the revision, range, and assignments unchanged.
+The capture path also calls a serialized, latch-only readiness barrier before
+canonical updates: if the first latch write failed, payment cannot erase the last
+durable live marker before the existing retry can retain that proof. This barrier
+does not promote presets or consume/clear a queue. Storage failures use the existing
+capture error/retry path; classification, scheduling, and retry timing are unchanged.
+
+With that latch, `create_presets` may extend an existing range. The worker requires
+a strictly larger total at least as high as every captured variation, within the
+unchanged 1,000 preset-only limit. It preserves remaining uncaptured assignments,
+rotates the revision, and removes the old latch. A later actual live capture beyond
+the new total can latch it again. Manual reset also removes the latch. Existing
+stream/baseline scoping prevents it leaking to another tracker session. No canonical
+schema, report content, accounting, or ordinary queue operation changes merely from
+enabling or saving an extension.
+
+The panel uses the durable latch or the same-stream actual live bidding marker for
+the button label, never its selected variation or historical fallback. An open total
+draft survives ordinary refreshes and is scoped to its originating configuration;
+stale submissions are rejected rather than silently retried against a new range.
+Delayed snapshots cannot undo a latched flag for the same revision. Successful
+extension does not force a selection or label: latest authoritative capture may
+already have overtaken the newly saved range.
+
+`assign_next_preset_item` receives the displayed future source number, exact SKU,
+and expected stream/baseline/revision. Inside the same FIFO it validates that the
+source remains uncaptured, then chooses the source if empty or the first higher
+empty uncaptured preset. It never wraps, expands the range, or overwrites a plan.
+It reuses ordinary preset persistence and next-item queue-conflict handling, returning
+`{presets, assignedVariationNumber}` only on success. Exhaustion raises
+`NO_MORE_FUTURE_VARIATIONS` with no assignment write. Every successful assignment
+rotates the existing revision, so duplicate or delayed requests cannot advance twice.
+The dedicated client validates the returned target, assignment, identity, and revision.
+
+Only future-preset right-clicks use this command; live/captured-history behavior
+and future left-click toggle behavior are unchanged. Future-origin card and size-menu
+context stays scoped to its original source/configuration, preventing a stale action
+from falling through to live mapping after capture. The panel blocks overlapping
+submissions and navigates only after a confirmed save if the originating view is
+still current. Failure refreshes authoritative state without advancing or retrying
+the old click. If plan persistence succeeds but queue clearing fails, the saved plan
+remains repairable under the existing rules; an error never triggers a second assignment.
+
+Capture first persists the real observation, then promotes any matching assignment
+through the existing canonical mapping command without overwriting an actual
+mapping. Only confirmed mapping persistence allows plan cleanup. A later read,
+manual mapping operation, or End repairs an interrupted promotion before proceeding.
+These are separate storage writes, not a cross-key transaction; repair is idempotent.
+Uncaptured plans never enter reports, reservations, metrics, or inventory exports.
+
+Specific presets win over the generic next-item queue. Before bidding queue
+consumption, preset repair handles the captured target but defers the next-variation
+queue restriction until the current queue has been consumed. Thus queue-for-#2 still
+maps #2 before preset-#3 blocks future queuing. Queue conflict clearing uses the
+ordinary coordinator/token invalidation and compares captured targets with the
+queue's armed-after number, so older Sold Items backfill cannot erase a newer queue.
+An already-due queue survives read repair if its current mapping save failed; the
+ordinary bidding-capture retry can still apply it before future queuing is blocked.
+Successful preset promotion marks the retained live projection dirty. The worker
+refreshes it within its command FIFO, even when subsequent plan cleanup fails, so
+new price events cannot be rejected against stale cached live identity or cost.
+Right-click live mapping remains available. Data-free preset notifications reuse
+existing refreshes; no new polling or capture timing is introduced.
+
+The tagger's pure `variation-presets-view.js` projects untracked dropdown entries and
+future selection without passing placeholders into canonical controllers. Preset
+assignments use the dedicated client. Reset discards uncaptured plans based on actual
+capture state, returns to live, and restores the creation control. Presets survive
+same-stream reloads and never apply to another baseline/session. Successful End
+cleans up best-effort; failed End retains plans, and old scoped data cannot leak into
+the next stream if cleanup fails.
+
 ### Google Sheets
 
 Google Sheets is implemented as the inventory import source. The employee
