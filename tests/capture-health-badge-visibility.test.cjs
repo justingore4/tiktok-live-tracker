@@ -48,6 +48,52 @@ test("unavailable startup shows an accessible static Reload Site hint with the e
   assert.equal(f.description.textContent, reloadDescription);
 });
 
+test("only the active tooltip is centered, constrained and outside layout flow while its description stays accessible", () => {
+  const row = css.match(/\.capture-health-row\s*\{([^}]+)\}/)[1];
+  const hiddenDescription = css.match(/\.capture-health-description\s*\{([^}]+)\}/)[1];
+  const tooltip = css.match(/\.capture-health-badge\[data-phase="active"\]:hover \+ \.capture-health-description\s*\{([^}]+)\}/)[1];
+  assert.match(row, /position:\s*relative;/);
+  assert.match(row, /height:\s*20px;/);
+  assert.match(hiddenDescription, /position:\s*absolute;/);
+  assert.match(hiddenDescription, /clip:\s*rect\(0, 0, 0, 0\);/);
+  assert.doesNotMatch(hiddenDescription, /display:\s*none|visibility:\s*hidden/);
+  assert.match(tooltip, /position:\s*absolute;/);
+  assert.match(tooltip, /left:\s*50%;/);
+  assert.match(tooltip, /transform:\s*translateX\(-50%\);/);
+  assert.match(tooltip, /width:\s*max-content;/);
+  assert.match(tooltip, /max-width:\s*100%;/);
+  assert.match(tooltip, /box-sizing:\s*border-box;/);
+  assert.match(tooltip, /clip:\s*auto;/);
+  assert.match(tooltip, /white-space:\s*normal;/);
+  assert.match(tooltip, /overflow-wrap:\s*anywhere;/);
+  assert.match(tooltip, /pointer-events:\s*none;/);
+  const descriptionTag = html.match(/<span id="capture-health-description"[^>]*>/)[0];
+  assert.match(descriptionTag, /class="capture-health-description"/);
+  assert.doesNotMatch(descriptionTag, /visually-hidden|aria-hidden|tabindex/);
+  assert.match(html, /aria-describedby="capture-health-description"/);
+  // These verify the declared geometry, not browser-rendered pixels.
+  for (const rowWidth of [220, 320, 500, 700]) {
+    const tooltipWidth = Math.min(370, rowWidth);
+    const left = rowWidth / 2 - tooltipWidth / 2;
+    assert.equal(left + tooltipWidth / 2, rowWidth / 2);
+    assert.ok(left >= 0 && left + tooltipWidth <= rowWidth);
+  }
+});
+
+test("active tooltip transitions suppress only its native title without changing badge or workspace state", () => {
+  const f = fixture(), before = structuredClone(f.workspace);
+  for (const [phase, reason] of [["connecting", "awaiting_capture"], ["loading", "initializing"],
+    ["active", "ready"], ["blank", "unavailable"], ["active", "ready"]]) {
+    f.render(phase, reason);
+    assert.equal(f.badge.title, phase === "active" ? "" : view.DESCRIPTIONS[reason]);
+    assert.equal(f.description.textContent, view.DESCRIPTIONS[reason]);
+    assert.equal(f.badge.dataset.phase, phase);
+    assert.equal(f.badge.textContent, view.LABELS[phase]);
+    assert.equal(f.attributes.has("tabindex"), false);
+    assert.deepEqual(f.workspace, before);
+  }
+});
+
 test("not tracking hides the whole row; startup phases restore only the row, never a hidden workspace", () => {
   const f = fixture(); f.workspace.hidden = true;
   for (const phase of ["connecting", "loading", "active", "blank"]) {

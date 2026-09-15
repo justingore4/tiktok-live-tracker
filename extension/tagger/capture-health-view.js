@@ -13,7 +13,7 @@
     not_tracking: "Start stream tracking to initialize dashboard capture.",
     awaiting_capture: "Waiting for the TikTok LIVE product dashboard to initialize capture.",
     initializing: "Initializing capture for this dashboard page load.",
-    ready: "Capture setup is ready for this dashboard page load. This startup indicator is not an ongoing capture-health check.",
+    ready: "Capture setup is ready for this dashboard page load.",
     unavailable: "Reload the TikTok LIVE dashboard to initialize capture.",
     session_mismatch: "Waiting for capture setup for the current tracker session.",
     transport_unavailable: "Waiting for dashboard capture setup confirmation.",
@@ -33,7 +33,9 @@
       ? DESCRIPTIONS[state.reason] : DESCRIPTIONS.transport_unavailable;
     if (badge.textContent !== label) badge.textContent = label;
     if (badge.dataset.phase !== phase) badge.dataset.phase = phase;
-    if (badge.title !== detail) badge.title = detail;
+    // Ready uses the centered description tooltip instead of a cursor-positioned native title.
+    const title = phase === "active" ? "" : detail;
+    if (badge.title !== title) badge.title = title;
     if (description.textContent !== detail) description.textContent = detail;
     badge.setAttribute?.("aria-hidden", "false");
     badge.removeAttribute?.("tabindex");

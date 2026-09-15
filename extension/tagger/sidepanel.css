@@ -438,6 +438,7 @@ button {
 }
 
 .capture-health-row {
+  position: relative;
   display: grid;
   /* Keep the search column stable without changing intrinsic pill widths. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 112px) minmax(0, 1fr);
@@ -570,6 +571,45 @@ button {
   border-color: rgb(39 211 180 / 45%);
   background: rgb(39 211 180 / 12%);
   color: #70f4df;
+}
+
+.capture-health-description {
+  /* Keep the description accessible while its visual tooltip is not shown. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.capture-health-badge[data-phase="active"]:hover + .capture-health-description {
+  /* The row and badge share a center; keep the tooltip outside layout flow. */
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 4px 8px;
+  clip: auto;
+  overflow: visible;
+  border: 1px solid #b7c1ce;
+  background: #202020;
+  color: #eeeeee;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 400;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .capture-health-badge[data-phase="loading"] {

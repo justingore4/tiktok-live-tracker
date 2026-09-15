@@ -27,6 +27,16 @@ function fixture(send = async (message) => good(message.streamId)) {
   return { controller, states, messages, timers, runtime, advance, jump: (ms) => { clock += ms; } };
 }
 
+test("active badge tooltip and accessible description contain only the startup-ready sentence", () => {
+  const badge = { textContent: "", dataset: {}, title: "" };
+  const description = { textContent: "" };
+  view.renderBadge(badge, description, { phase: "active", reason: "ready" });
+  assert.equal(badge.textContent, "Capture active");
+  assert.equal(badge.dataset.phase, "active");
+  assert.equal(badge.title, "", "Do not show a second cursor-positioned native tooltip");
+  assert.equal(description.textContent, "Capture setup is ready for this dashboard page load.");
+});
+
 test("inactive readiness never queries the worker", async () => {
   const f = fixture(); f.controller.setSession(null); await f.advance(20000);
   assert.deepEqual(f.states, [{ phase: "not_tracking", reason: "not_tracking" }]);
