@@ -3,13 +3,13 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 15, 2026
 Repository branch at this update: main
-Base commit before these local updates: c666fba49764c6e21a1707a0ef52996ffb1a8ac7
-Commit subject: fix top scrolling
-Preset work, documentation, variation arrows, startup planning, and shared tracker-entry
-scrolling are committed. The future-preset mouse-button swap, offline Resume's
+Latest implementation commit at this snapshot: b7b818926edb9259e7e822cb4680373180a8a569
+Commit subject: Refine preset planning, navigation, and startup locks
+Preset work, documentation, variation arrows, startup planning, shared tracker-entry
+scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
-unlock, and strict yellow editing lock are subsequent local work;
-inspect git status before staging anything.
+unlock, and strict yellow editing lock are committed. This refresh changes only
+documentation; inspect current git status before staging anything.
 Manifest version: 1.0.0
 Latest full synthetic test run: 1,777 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
@@ -34,7 +34,7 @@ For the receiving assistant:
 - Read any current AGENTS.md or applicable skill instructions. No applicable
   AGENTS.md was found during preparation; that may change later.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before this future-preset mouse-button swap.
+- The worktree was clean on main before this documentation cleanup.
   Existing committed work is preserved. No commit or push was performed for this update.
 
 1. PRODUCT, OWNER, AND SCOPE
@@ -177,7 +177,8 @@ Documentation conventions:
 - The payment tables include "Cancelled" and "Order processing" variants.
 - Gross Item Sales/AOV include priced unmapped completions. Mapped cost, stock
   consumption, and gross profit remain mapping-dependent. See section 5.
-- Do not infer implemented APIs/features solely from future-looking doc sections.
+- Documentation describes current behavior, limitations, and verification guidance;
+  it is not a feature backlog or authorization to add functionality.
 
 4. EXECUTION, TRUST, AND PERSISTENCE BOUNDARIES
 --------------------------------------------
@@ -1028,8 +1029,8 @@ execution or proof of every later preset/UI change. No fresh macOS execution or 
 dashboard/Chrome UI verification occurred for this documentation refresh. Do not claim
 either platform's browser behavior is fully verified by Node.
 
-16. KNOWN ISSUES, LIMITATIONS, AND UNAPPROVED FUTURE WORK
-------------------------------------------------------
+16. KNOWN ISSUES, LIMITATIONS, AND VERIFICATION
+---------------------------------------------
 A. End retry-success UI gap - still present, source-confirmed.
    Normal successful End in sidepanel.js announces saved success and calls
    refreshStreamReports({openLatest:true}). The Retry change button's click handler calls
@@ -1037,10 +1038,6 @@ A. End retry-success UI gap - still present, source-confirmed.
    successful-End report-list refresh/open behavior. The prior audit reproduced a
    saved report not appearing/opening until panel reload after End failed then retry
    succeeded. No data loss was observed in that synthetic case.
-   Potential scoped future fix: reuse normal End-success UI behavior specifically
-   when a successful retry is for operation "end". Add success-after-retry tests;
-   do not trigger this for every Start/Resume retry. NOT implemented/authorized by
-   the handoff request.
 
 B. Strict health badge superseded by startup readiness (section 7).
    The earlier startup-only red incident was not conclusively diagnosed. Later,
@@ -1060,15 +1057,13 @@ D. Startup dependency hardening - code-order risk, not a verified production out
    sidepanel.js constructs capture-health controllers before its friendly dependency
    guard; a missing/incomplete health module could throw before recovery instructions.
    content.js also invokes initial lifecycle reconciliation before reporter setup.
-   If explicitly fixing, preserve guarded initialization and test missing modules;
-   do not conflate this with known live payment behavior.
+   This risk is distinct from known live payment behavior.
 
 E. Full report library during active tracking - existing product limitation.
    End cannot discard or overwrite reports. Library management is hidden while
    tracking, so Retry alone cannot solve a full byte/slot library. User was advised
-   to free space before starting and keep an eye on warnings. They did not request
-   a new active-stream library manager or lower global count limit. Keep current
-   5+25 and byte limits. A large single report is possible; do not promise 20% headroom
+   to free space before starting and keep an eye on warnings. Current limits remain
+   5+25 plus the byte limit. A large single report is possible; do not promise 20% headroom
    always suffices just because unusually large reports may be uncommon.
 
 F. Rendered-DOM capture limitations.
@@ -1081,7 +1076,7 @@ G. Not implemented: application backend, cross-device saved-data sync, automatic
    Google Sheets write-back, full editable-state backup/restore, multi-SKU queue,
    automatic extension installation/update, Store publishing, or CRX/key generation.
 
-H. Remaining live/manual QA when relevant to a future change:
+H. Remaining live/manual QA:
    actual dashboard label/DOM lifecycle, source refresh/reinjection, browser OAuth,
    Chrome downloads, normal/narrow layouts, popovers/focus/keyboard scrolling,
    reduced-motion on Mac, and End confirmation under loading/save/error conditions.
@@ -1092,6 +1087,9 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  b7b8189  Refine preset planning, navigation, and startup locks
+  c666fba  fix top scrolling
+  81fffda  Improve preset startup planning and tracker navigation
   4501afc  Improve pre-stream preset planning and compact report deletion dialog
   77b1f2c  capture active badge ui updates
   9cfcea4  Merge pull request #10 from justingore4/feature/preset-vars
@@ -1144,6 +1142,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed work is preserved. The future-preset mouse-button swap is
-local; no commit or push was performed for this update.
+Previously committed implementation is preserved. This update is documentation-only;
+no commit or push was performed for this update.
 There is no approved pending functional change to start automatically.

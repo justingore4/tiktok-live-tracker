@@ -300,9 +300,8 @@ it cannot change historical inventory or profit. A report-only unit-cost correct
 not enter reconciliation state. A stream also cannot map a SKU that exists only in a
 newer baseline.
 
-The current state stores the latest mapping and status. A full event-by-event employee
-audit log can be added as a separate persistent event-log feature if the client requires
-one.
+The current state stores the latest mapping and status, not a full event-by-event
+employee audit log.
 
 ## 4. Dashboard capture
 
@@ -466,12 +465,12 @@ dashboard, verify that Sold Items no longer shows the prior stream's rows, and o
 start the next local tracker stream. Reusing rendered old rows under a new local stream
 can otherwise assign them to the wrong session.
 
-`capture/capture-event-registry.js` still provides page-load and future verified-stream
-scopes for console diagnostics and conflict warnings. It is not the persistence
+`capture/capture-event-registry.js` provides page-load and verified-stream scope interfaces
+for console diagnostics and conflict warnings. It is not the persistence
 authority. Canonical deduplication occurs in reconciliation storage under
 `(streamId, variationNumber)`, so a full refresh can safely backfill visible rows while
-the same local tracker stream remains active. A stable TikTok-provided stream identity
-and automatic page-to-session association remain later identity work.
+the same local tracker stream remains active. Capture does not supply a verified
+TikTok-provided stream identity or automatically associate the page with a local session.
 
 ### Capture events and remaining live signals
 
@@ -956,20 +955,9 @@ The active badge's accessible description appears as a centered hover tooltip be
 badge instead of a cursor-positioned native title. Other phases retain their native
 titles. The tooltip adds no layout height, focus target, or capture/interaction behavior.
 
-Next tagger work includes:
-
-- Turn the live-refreshed variation history into a prioritized queue of records needing
-  attention.
-- Prioritize completed-but-unmapped sales and capture-generated conflicts as they arrive.
-- Extend current-bidding auto-follow into a
-  prioritized queue without reading Chat or widening either strict dashboard boundary.
-  The isolated aggregate analytics metric remains display-only and never prioritizes or
-  identifies a sale.
-
-The production tagger is planned as a queue rather than a blocking modal so an employee
-can catch up when multiple variations need attention. The current combobox updates from
-durable capture state and proves multi-variation navigation and correction, but it is not
-yet a prioritized work queue.
+The combobox updates from durable capture state and supports multi-variation navigation
+and correction. It does not prioritize records needing attention. The isolated aggregate
+analytics metric remains display-only and never prioritizes or identifies a sale.
 
 ## 6. Storage and sync — tagger and capture persistence integrated
 
@@ -1303,12 +1291,12 @@ display, never mappings, stream
 lifecycle commands, raw badge or analytics text, or arbitrary state. The Sheets reader
 is a separate worker-owned boundary used for pre-stream confirmation and explicit
 active-stream SKU additions. The local report may serialize a
-six-column clipboard/CSV replacement table, but outbound Google Sheets API writes belong
-to a later stage.
+six-column clipboard/CSV replacement table; outbound Google Sheets API writes are not
+supported.
 
 Captured pre-completion terminal cancellation is authoritative for allocation;
-production refunds or post-completion cancellations still require their own future event
-rather than reversing a `payment_complete` record.
+production refunds and post-completion cancellations are not supported and do not reverse
+a `payment_complete` record.
 
 ### Future variation presets
 
@@ -1517,9 +1505,6 @@ requests. An employee may explicitly re-read the same full `Inventory` tab durin
 active stream to append new SKU rows under the strict rules below. At End, the tracker
 saves its report locally first and can copy or download a
 Google Sheets-ready six-column replacement table. It does not call the Sheets write API.
-A future automatic-sync stage must keep the local report as its durable source, then
-batch and retry writes so a temporary connection problem cannot interrupt tagging or
-erase the report.
 
 The novice handoff is position-based, not a SKU lookup or merge: duplicate the current
 `Inventory` tab as a backup, use **Copy Updated Inventory**, click the original tab's A1
@@ -1717,25 +1702,8 @@ tokens, and raw DOM text. Native Print / Save as PDF and CSV download create fil
 employee's computer. Removing the extension or clearing its storage deletes the bounded
 in-extension archive, so required reports must be saved externally before either action.
 
-### `Sales` tab
-
-| Column | Source or meaning |
-| --- | --- |
-| `stream_id` | Verified TikTok session identifier; export remains blocked while it is unknown |
-| `variation_no` | TikTok's `Variation: #N` value |
-| `sold_price` | Final price from a payment-complete row |
-| `payment_status` | Canonical `unknown`, `canceled`, or `payment_complete` sale truth |
-| `observed_payment_status` | Latest sanitized Sold Items status: not observed, processing, fixing, failed, canceled, complete, or unrecognized |
-| `mapping_status` | Current saved state uses `unmapped` or `mapped`; legacy v1-v6 `marked_unpaid` is normalized during migration |
-| `status` | Derived engine status such as `mapped`, `pending`, `canceled`, `unmapped_completed`, or `committed` |
-| `sku` | Employee-selected inventory key; blank while unmapped |
-| `unit_cost` | Cost snapshot used for the current mapping |
-| `gross_profit` | Final completed sale price minus unit cost |
-| `observed_at` | When the extension observed the event; not guaranteed to be TikTok's exact sale time |
-| `conflict` | Optional warning requiring review |
-
-Buyer fields are not part of the current capture event. They can be added later only if
-the client needs them and the privacy/retention requirements are defined.
+The tracker does not export a `Sales` tab. Its Google Sheets handoff contains only the
+six-column inventory replacement table. Buyer fields are not part of the capture event.
 
 Gross profit is the mapped completed sale price minus its pinned Google Sheets unit-cost
 snapshot. It excludes platform fees, refunds, shipping, discounts, taxes, and other
@@ -1777,8 +1745,8 @@ state.
 
 A service-account private key must never be placed in the extension because the installed
 bundle is readable on disk. `config/.env.example` is not consumed by the extension and
-intentionally contains no service-account placeholders. A future backend could own a
-service account only as a separately secured and documented architecture.
+intentionally contains no service-account placeholders. The current architecture has no
+backend or service account.
 
 Google documents [OAuth verification exceptions](https://support.google.com/cloud/answer/13464323?hl=en)
 for qualifying personal-use and development/testing apps. The current private/testing
@@ -1812,19 +1780,15 @@ answer these questions; offline fixtures alone cannot complete the validation:
 - Is the Sold Items list virtualized or replaced as it grows, and can every earlier row
   be recovered by the initial/backfill scan?
 - Does any relevant content live inside an iframe or shadow root?
-- What stable TikTok-provided value identifies one stream, survives route re-entry and a
-  full refresh, and differs across two streams?
 - Does the implemented route/body/root recovery remain reliable under TikTok's live
   rendering?
-- Can a verified TikTok ID safely automate the local-session boundary across a full
-  refresh and a second stream?
 - Do auctions with no bids appear in any trackable list?
 - Does rendered-history backfill capture every completed sale before the local End
   snapshot, especially when Sold Items is virtualized?
 
-Browser support beyond Chrome is a later decision.
+The supported browser is desktop Chrome.
 
-## 10. Development sequence
+## 10. Implementation record
 
 1. **Completed:** sale parser and read-only capture probe.
 2. **Completed:** reconciliation engine and automated tests.
@@ -1835,8 +1799,8 @@ Browser support beyond Chrome is a later decision.
 5. **Capture hardening completed:** bounded scheduling, SPA lifecycle recovery, exact
    variation and badge targeting, unique visible Sold Items root narrowing, the isolated
    strict Attributed GMV locator, the unique visible on-video bidding-card locator, and
-   scoped capture tests. Verified TikTok identity remains open.
-6. Capture-to-engine-to-tagger integration in three stages:
+   scoped capture tests. Capture uses local tracker identity, not verified TikTok identity.
+6. Capture-to-engine-to-tagger integration completed in three stages:
    1. **Completed:** persistent local active-stream sessions and Start/Resume/End UI;
    2. **Completed:** persist the on-video active bidding marker, Sold Items
       variation/payment facts, and the sanitized Attributed GMV display under the
@@ -1847,9 +1811,8 @@ Browser support beyond Chrome is a later decision.
       newer options update, provide a mutation-free **Return to live item** action that
       falls back to the newest captured variation when no bid is active, and visibly
       update sanitized payment status and the Metrics section. Startup-readiness display
-      is also implemented; a prioritized work queue, verified TikTok identity,
-      and broader live validation remain next.
-7. Connect Google Sheets inventory in three stages:
+      is also implemented. Broader live validation remains required.
+7. Google Sheets inventory connected in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening
       baseline contract;
    2. **Completed:** immutable versioned inventory baselines, physical-count-lineage
@@ -1861,5 +1824,6 @@ Browser support beyond Chrome is a later decision.
    two-tier local recent-report/archive library, printable/Save-as-PDF business page,
    exact SKU and combined
    product analytics, and six-column clipboard/CSV inventory handoff.
-9. Optional automatic Google Sheets writes, broader real-stream report validation, and
-   release hardening.
+
+Broader real-stream report validation remains required, including the rendered-history
+backfill check in the live-validation questions above.

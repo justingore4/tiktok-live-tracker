@@ -789,7 +789,6 @@ has been captured, then appears when reviewing history or a future preset. It
 targets the active bidding variation when available and otherwise the newest captured
 variation; selecting it resumes automatic follow without a mapping, inventory, payment,
 or persistence mutation.
-A richer prioritized queue across the persisted auction history remains future work.
 
 ### Read-only root diagnostic
 
@@ -821,7 +820,7 @@ tests provide synthetic DOM coverage.
 ## Local stream and page boundary
 
 The worker-generated local stream ID is durable but is not a verified TikTok room ID.
-Until a later identity stage finds such an ID, follow these rules:
+With the current tracker-owned stream identity, follow these rules:
 
 - Use one local tracker stream for one real TikTok LIVE.
 - Start preflights reconciliation state and requires a nonempty active baseline created
@@ -837,7 +836,7 @@ Until a later identity stage finds such an ID, follow these rules:
   new baseline and a future stream.
 - A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
   canonical duplicates are ignored.
-- There is no visible queue-drained indicator yet. When practical, keep the local tracker
+- There is no visible queue-drained indicator. When practical, keep the local tracker
   stream active until expected payment transitions appear and capture delivery has had
   time to finish or retry. If a tracker delivery error appears, leaving the session active
   through at least the capped retry interval helps preserve the late record, but this is
@@ -849,7 +848,7 @@ Until a later identity stage finds such an ID, follow these rules:
 - Normal End freezes and saves the local report before it clears the active stream.
   A report/storage failure leaves the stream active so the error can be resolved and
   report-saving End retried. **Keep stream active** cancels the confirmation without
-  ending the local session. Neither action ends TikTok LIVE. Ended streams cannot yet be reopened in the
+  ending the local session. Neither action ends TikTok LIVE. Ended streams cannot be reopened in the
   tagger, so employees should make corrections before End when practical even though the
   UI does not enforce that workflow.
 - Before the next TikTok LIVE, reload the dashboard, confirm Sold Items belongs to the
@@ -857,8 +856,8 @@ Until a later identity stage finds such an ID, follow these rules:
   tracker stream.
 
 Starting a new local tracker stream while the old stream's Sold Items DOM is still
-rendered can backfill those old rows under the new ID. Automatic prevention requires a
-verified TikTok identity and belongs to a later stage.
+rendered can backfill those old rows under the new ID. The tracker has no verified
+TikTok stream identity to distinguish those rows automatically.
 
 ## SPA lifecycle manual check
 
@@ -1190,20 +1189,17 @@ a future size menu is open must invalidate its old action, never reinterpret it 
 live mapping. A late successful response must not pull the view back after navigation
 or a new session. Existing accessible announcements must not add layout height.
 
-## Next live-validation checklist
+## Live-validation checklist
 
-The next capture stage should validate and implement:
+Validate the existing implementation and its capture boundaries:
 
-- a prioritized employee work queue across the now-live-refreshed, persisted bidding and
-  Sold Items variations;
 - real-Chrome validation of startup readiness across empty dashboards, initial
   catch-up, dashboard refreshes, panel reopening, and later metric glitches;
 - current processing-to-terminal-failure transitions and row association, plus visibility
   changes and the legacy explicit-countdown exception; mapped unresolved orders stay
   reserved until a captured terminal cancellation or priced completion;
-- a stable TikTok-provided stream/session identifier across SPA navigation and full
-  refresh that differs across two LIVE sessions;
-- automatic protection against assigning stale rendered rows to a new local stream;
+- the documented new-stream workflow: reload the dashboard and confirm Sold Items
+  belongs to the new stream before starting a new local session;
 - whether `m4b_space` stays unique across accounts, modes, streams, scrolling, and TikTok
   releases;
 - whether the exact visible `guide-Step-2` analytics identity, label/value relationship,
