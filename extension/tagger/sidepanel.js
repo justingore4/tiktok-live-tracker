@@ -329,9 +329,6 @@
   const reportActionConfirmationTitle = document.querySelector(
     "#report-action-confirmation-title",
   );
-  const reportActionConfirmationMessage = document.querySelector(
-    "#report-action-confirmation-message",
-  );
   const cancelReportActionButton = document.querySelector(
     "#cancel-report-action",
   );
@@ -612,6 +609,7 @@
   let variationPresetsReadGeneration = 0;
   let selectedPresetVariationNumber = null;
   let variationNavigationGeneration = 0;
+  let captureStateNotificationGeneration = 0;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
@@ -1257,6 +1255,8 @@
       return false;
     }
 
+    // Capture can be persisted before its debounced view refresh reaches the panel.
+    captureStateNotificationGeneration += 1;
     scheduleCaptureRefresh();
     scheduleVariationPresetsRefresh();
     return false;
@@ -1469,7 +1469,7 @@
       renderAll();
       scheduleNextItemQueueRefresh();
       scheduleVariationPresetsRefresh();
-      return true;
+      return kind === "createPresets" ? snapshot : true;
     } catch (error) {
       if (generation !== variationPresetsGeneration || expected.expectedStreamId !== mountedStreamId) return false;
       mappingAnnouncement.textContent = error?.message ?? "The preset change could not be saved.";
@@ -1532,8 +1532,47 @@
     }
     variationPresetsInput.removeAttribute("aria-invalid");
     const navigationGeneration = variationNavigationGeneration;
-    if (await mutateVariationPresets("createPresets", { total }) &&
-        navigationGeneration === variationNavigationGeneration) variationPresetsButton.focus();
+    const captureGeneration = captureStateNotificationGeneration;
+    const creatingBeforeCapture = entryContext.total === null && highest === 0;
+    const controller = persistentController;
+    const created = await mutateVariationPresets("createPresets", { total });
+    const isCurrentCreate = () => created && navigationGeneration === variationNavigationGeneration &&
+      controller === persistentController && entryContext.streamId === mountedStreamId &&
+      created.streamId === variationPresetsSnapshot?.streamId &&
+      created.baselineId === variationPresetsSnapshot?.baselineId &&
+      created.revision === variationPresetsSnapshot?.revision &&
+      created.total === variationPresetsSnapshot?.total;
+    if (!isCurrentCreate()) return;
+
+    let confirmedBeforeCapture = false;
+    if (creatingBeforeCapture && captureGeneration === captureStateNotificationGeneration &&
+        !isCaptureInteractionLocked() &&
+        (canChangeVariationPresets() || snapshotIsBackgroundRefresh(savedSnapshot))) {
+      // One canonical read also waits behind an in-flight refresh from our own
+      // save notification. Never use the stale pre-save view to force planning.
+      try {
+        const refreshed = await controller.refresh();
+        confirmedBeforeCapture = refreshed?.phase === "ready" &&
+          refreshed.view?.streamId === entryContext.streamId &&
+          getRecordedVariations(refreshed.view).length === 0;
+      } catch (error) {
+        console.error("[TikTok Live Tracker] Initial preset view could not be verified.", error);
+      }
+    }
+    if (!isCurrentCreate()) return;
+
+    // Only this successful initial create may enter planning automatically.
+    // Reopening/refreshing a saved plan and extending it never choose a view.
+    if (confirmedBeforeCapture && captureGeneration === captureStateNotificationGeneration &&
+        canChangeVariationPresets() && getRecordedVariations(savedSnapshot.view).length === 0 &&
+        findVariationOption(getActiveView(), 1)?.preset === true) {
+      selectedPresetVariationNumber = 1;
+      variationNavigationGeneration += 1;
+      renderAll();
+      mappingAnnouncement.textContent =
+        `Preset variations #1–#${created.total} are ready. Planning untracked variation #1. No inventory has been reserved.`;
+    }
+    variationPresetsButton.focus();
   }
 
   function createEmptySavedSnapshot() {
@@ -2791,10 +2830,6 @@
       ids.length === 1
         ? "Delete report forever?"
         : `Delete ${ids.length} reports forever?`;
-    reportActionConfirmationMessage.textContent =
-      ids.length === 1
-        ? "This permanently deletes the saved report from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed."
-        : `This permanently deletes ${ids.length} saved reports from this Chrome profile and cannot be undone. TikTok LIVE and Google Sheets will not be changed.`;
     confirmReportActionButton.textContent = "Delete forever";
     reportActionConfirmation.showModal();
   }
@@ -3824,8 +3859,16 @@
       const selectedVariationNumber = Number(
         variationSelector.dataset.variationNumber,
       );
+      const view = getActiveView();
+      // With no captures or chosen preset yet, open at #1 without selecting it
+      // or changing the descending order used during normal tracking.
+      const startAtFirstPreset = !rows.some((row) =>
+        Number(row.dataset.variationNumber) === selectedVariationNumber) &&
+        getRecordedVariations(view).length === 0 &&
+        getSelectableVariations(view).some((variation) =>
+          variation.preset === true && variation.variationNumber === 1);
 
-      setActiveVariation(selectedVariationNumber);
+      setActiveVariation(startAtFirstPreset ? 1 : selectedVariationNumber);
     }
 
     return true;
@@ -3919,7 +3962,7 @@
     variationSelectorLock.requestRender(view);
 
     const reviewingRecordedHistory =
-      variations.length > 0 && view.isReviewingHistory;
+      variations.some((variation) => variation.recorded) && view.isReviewingHistory;
 
     if (variations.length > 0) {
       variationContext.textContent = "Live auction variations";

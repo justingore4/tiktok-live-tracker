@@ -1146,7 +1146,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   );
   assert.match(
     panelSource,
-    /const reviewingRecordedHistory =[\s\S]+variations\.length > 0 && view\.isReviewingHistory/,
+    /const reviewingRecordedHistory =[\s\S]+variations\.some\(\(variation\) => variation\.recorded\) && view\.isReviewingHistory/,
   );
   assert.match(
     panelSource,
@@ -2961,7 +2961,7 @@ test("Business Records exposes a dedicated accessible archived-report dashboard"
   assert.match(html, /id="delete-selected-reports"[\s\S]*?>\s*Delete selected\s*</);
   assert.match(
     html,
-    /id="report-action-confirmation"[\s\S]+aria-labelledby="report-action-confirmation-title"[\s\S]+aria-describedby="report-action-confirmation-message"/,
+    /id="report-action-confirmation"[\s\S]+aria-labelledby="report-action-confirmation-title"/,
   );
   assert.match(
     html,
@@ -2975,9 +2975,9 @@ test("Business Records exposes a dedicated accessible archived-report dashboard"
   assert.match(html, /id="cancel-report-rename"[\s\S]*?>\s*Cancel\s*</);
   assert.match(html, /id="reset-report-name"[\s\S]*?>\s*Use default\s*</);
   assert.match(html, /id="save-report-name"[\s\S]*?>\s*Save name\s*</);
-  assert.match(
+  assert.doesNotMatch(
     html,
-    /permanently deletes the saved report from this Chrome profile[\s\S]+cannot be undone[\s\S]+TikTok LIVE and Google Sheets will not be changed/i,
+    /report-action-confirmation-message|This permanently deletes the saved report/,
   );
 
   assert.match(

@@ -7,7 +7,7 @@ Base commit before preset work: 814ad5c959617db941e37cdcde8446b27bf31ba4
 Commit subject: Update tracker controls and capture status behavior
 Preset implementation is uncommitted at this update; inspect git status.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,669 passed, 0 failed
+Latest full synthetic test run: 1,691 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -514,7 +514,18 @@ Current compact visual decisions:
   bubble without saving or moving focus. Inside clicks keep editing; an accepted
   in-flight save retains its context. Enter saves and Escape still cancels.
   Var # also finds preset placeholders. Future selection is display-only history
-  browsing; left-click plans/unplans an SKU. Right-click fills an empty current
+  browsing. With no captured variations or selected preset, opening the dropdown
+  highlights/scrolls #1 without committing it. Existing selections and explicit
+  Home/End boundaries retain priority; the descending option order stays unchanged.
+  A successful initial create before capture also directly selects future #1.
+  This is a one-shot submit action, never a refresh/reopen or range-extension rule.
+  One canonical verification read waits behind any own-notification refresh; stale
+  captures, navigation, controller/session or preset identity changes suppress the
+  automatic selection. A validated capture-notification generation also protects
+  against captures whose debounced panel refresh has not arrived yet. No canonical
+  order or reservation is created by selecting #1. Return to live stays hidden until
+  there is an actual captured variation, then uses normal future/history visibility.
+  Left-click plans/unplans an SKU. Right-click fills an empty current
   future preset and stays, or saves the next higher empty uncaptured preset and
   opens it. Skip assigned/captured entries; never wrap or replace an assignment.
   Exhaustion announces "No more future variations." without changing anything.
@@ -828,8 +839,8 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest preset implementation run: 1,669 tests passed, 0 failed, on Windows.
-This includes 181 preset tests (61 core, 51 real-worker integration, 69 UI).
+Latest preset implementation run: 1,691 tests passed, 0 failed, on Windows.
+This includes 200 preset tests (61 core, 51 real-worker integration, 88 UI).
 Sequential right-click assignment adds 41 tests over the preceding 1,565-test run.
 Automatic range extension adds 43 tests over the preceding 1,606-test run, including
 recovery when readiness persistence fails before payment clears the live marker.

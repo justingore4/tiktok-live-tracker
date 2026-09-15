@@ -77,6 +77,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     variationPresetsEntryContext: null,
     variationPresetsGeneration: 0, variationPresetsReadGeneration: 0,
     selectedPresetVariationNumber: null, variationNavigationGeneration: 0,
+    captureStateNotificationGeneration: 0,
     document: element(),
     variationPresetsForm: element(), variationPresetsButton: element(), variationPresetsInput: element(),
     variationSearchForm: element(), variationSearchInput: element(),
@@ -141,7 +142,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
   vm.runInContext([
     "getActiveView", "getRecordedVariations", "getSelectableVariations", "hasSelectedRecordedVariation", "hasSelectedEditableVariation",
     "findVariationOption", "isCaptureInteractionLocked", "guardCaptureInteraction", "isCurrentVariationMapped", "getCurrentVariationMappedSku",
-    "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection",
+    "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "snapshotIsBackgroundRefresh", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection",
     "getFuturePresetContext", "isFuturePresetContextCurrent", "assignNextFuturePreset",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch", "selectVariationFromPicker", "nextVariationHasPreset",
     "saveOrdinaryInventorySelection", "toggleNextItemQueue", "mapCurrentVariationFromHistory", "selectInventorySizeFromPicker",
@@ -155,7 +156,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
   return { context, rawView, calls, selections, renders };
 }
 
-async function emptyStreamFixture(options = {}) {
+async function emptyStreamFixture({ beforeStateRead, ...options } = {}) {
   const reconciliation = require("../extension/shared/reconciliation.js");
   const mappingWorkflow = require("../extension/tagger/mapping-workflow.js");
   const controllerModule = require("../extension/tagger/persistent-tagger-controller.js");
@@ -167,7 +168,7 @@ async function emptyStreamFixture(options = {}) {
     reconciliation, mappingWorkflow, streamId: "synthetic-stream",
     currentVariationNumber: 203, variationNumbers: [203, 202, 201, 200],
     client: {
-      async getState() { return { state: clone(state), result: null }; },
+      async getState() { await beforeStateRead?.(); return { state: clone(state), result: null }; },
       async initializeState() { assert.fail("Planning must not invent an inventory baseline"); },
       async mapVariation() { assert.fail("Planning must not map a canonical variation"); },
       async unmapVariation() { assert.fail("Planning must not unmap a canonical variation"); },
@@ -181,6 +182,477 @@ async function emptyStreamFixture(options = {}) {
   f.state = state;
   return f;
 }
+
+function installVariationPicker(f) {
+  const c = f.context, scrolled = [];
+  function node(fragment = false) {
+    const result = element();
+    result.children = [];
+    result.fragment = fragment;
+    result.append = (...children) => result.children.push(...children);
+    result.replaceChildren = (...children) => {
+      result.children = children.flatMap(child => child.fragment ? child.children : [child]);
+    };
+    result.scrollIntoView = (options) => {
+      assert.equal(c.variationListbox.hidden, false, "Scroll only after the popup is shown");
+      scrolled.push({ number: Number(result.dataset.variationNumber), block: options.block });
+    };
+    return result;
+  }
+  c.document.createElement = () => node();
+  c.document.createDocumentFragment = () => node(true);
+  c.variationListbox = node();
+  c.variationListbox.querySelectorAll = () => c.variationListbox.children;
+  c.variationSelectorValue = node();
+  c.variationSelectShell = element();
+  c.variationSelectorOpen = false;
+  c.activeVariationNumber = null;
+  c.variationSelectorLock = { lock() { c.pickerLocked = true; } };
+  c.showVariationListbox = () => { c.variationListbox.hidden = false; };
+  c.releaseVariationSelector = () => {
+    c.variationSelectorOpen = false;
+    c.pickerLocked = false;
+    c.variationListbox.hidden = true;
+  };
+  const removeAttribute = c.variationSelector.removeAttribute;
+  c.variationSelector.removeAttribute = (key) => {
+    removeAttribute(key);
+    if (key === "data-variation-number") delete c.variationSelector.dataset.variationNumber;
+  };
+  c.getVariationOptionDisplay = entry => selector.createOptionDisplay(entry, { formatItemName: c.formatItemName });
+  c.createVariationOptionContent = display => ({ textContent: display.fullLabel });
+  vm.runInContext([
+    "renderVariationSelectorOptions", "getVariationOptionRows", "setActiveVariation",
+    "openVariationSelector", "moveActiveVariation", "moveActiveVariationToBoundary",
+    "handleVariationSelectorKeydown", "commitActiveVariation",
+  ].map(declaration).join("\n"), c);
+  vm.runInContext(registrations("variationSelector"), c);
+  const render = () => c.renderVariationSelectorOptions(c.getActiveView());
+  render();
+  return { scrolled, render };
+}
+
+function installPresetNavigation(f) {
+  installVariationPicker(f);
+  const c = f.context;
+  c.variationContext = element();
+  c.returnToCurrentButton.classList = { add() {} };
+  c.variationSelectorLock.requestRender = view => c.renderVariationSelectorOptions(view);
+  vm.runInContext(declaration("renderVariationNavigation"), c);
+  c.renderAll = () => {
+    const view = c.getActiveView();
+    if (view) c.renderVariationNavigation(view);
+    f.renders.push(view);
+  };
+  c.renderAll();
+}
+
+function installCaptureNotifications(c) {
+  Object.assign(c, {
+    CAPTURE_STATE_NOTIFICATION_CHANNEL: "tiktok-live-tracker.capture-state",
+    CAPTURE_STATE_NOTIFICATION_VERSION: 1, CAPTURE_STATE_NOTIFICATION_TYPE: "capture_state_changed",
+    chrome: { runtime: { id: "synthetic-extension" } },
+    liveBidProtocol: require("../extension/shared/live-bid-protocol.js"),
+    nextItemQueueProtocol: require("../extension/shared/next-item-queue-protocol.js"),
+    scheduleLiveBidRefresh() {},
+  });
+  vm.runInContext(["isRecord", "hasExactKeys", "isCaptureStateChangedNotification",
+    "isLiveBidChangedNotification", "handleCaptureStateChanged"].map(declaration).join("\n"), c);
+  return {
+    capture: { channel: c.CAPTURE_STATE_NOTIFICATION_CHANNEL, version: 1, event: { type: c.CAPTURE_STATE_NOTIFICATION_TYPE } },
+    sender: { id: c.chrome.runtime.id },
+  };
+}
+
+async function beginInitialPresetSave(f, total = 200) {
+  const c = f.context;
+  await c.variationPresetsButton.dispatch("click");
+  c.variationPresetsInput.value = String(total);
+  return c.variationPresetsForm.dispatch("submit");
+}
+
+test("successful initial pre-stream create immediately displays #1 and hides Return without a dropdown click", async () => {
+  for (const phase of ["blank", "active"]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPresetNavigation(f);
+    c.captureHealthBadge.dataset.phase = phase;
+    const before = JSON.stringify(f.state);
+    await beginInitialPresetSave(f);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.variationSelector.dataset.variationNumber, "1");
+    assert.equal(c.getActiveView().isReviewingPreset, true);
+    assert.equal(c.getActiveView().auction, null);
+    assert.equal(c.returnToCurrentButton.hidden, true);
+    assert.equal(c.variationPresetsButton.textContent, "Reset presets");
+    assert.equal(c.variationPresetsButton.focused, true);
+    assert.match(c.mappingAnnouncement.textContent, /Planning untracked variation #1/);
+    assert.equal(c.variationNavigationGeneration, 1);
+    assert.equal(JSON.stringify(f.state), before);
+    assert.equal(c.getActiveView().inventory[0].reservedQuantity, 0);
+    await rightClick(f);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    await rightClick(f);
+    assert.equal(c.selectedPresetVariationNumber, 2);
+    assert.equal(c.returnToCurrentButton.hidden, true);
+    assert.equal(JSON.stringify(f.state), before);
+  }
+});
+
+test("reopening or refreshing existing presets never auto-selects #1 or replaces intentional planning", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installPresetNavigation(f);
+  vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+  c.variationPresetsClient.getPresets = async () => clone(c.variationPresetsSnapshot);
+  c.scheduleVariationPresetsRefresh(); await settle();
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction variations");
+  assert.equal(c.returnToCurrentButton.hidden, true);
+  c.selectVariationFromPicker(80);
+  c.scheduleVariationPresetsRefresh(); await settle();
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.equal(c.returnToCurrentButton.hidden, true);
+  assert.equal(f.calls.length, 0);
+});
+
+test("initial create during real tracking and exhausted-range extension never select #1", async () => {
+  for (const total of [null, 100]) {
+    const f = fixture({ total }), c = f.context;
+    if (total !== null) advanceLive(f, 101);
+    c.selectVariationFromPicker(29);
+    installPresetNavigation(f);
+    await beginInitialPresetSave(f);
+    assert.equal(c.getActiveView().selectedVariationNumber, 29);
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.returnToCurrentButton.hidden, false);
+  }
+});
+
+test("own successful-create notification before acknowledgement still selects #1 once", async () => {
+  const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+  installPresetNavigation(f);
+  const { sender } = installCaptureNotifications(c);
+  const completed = { ...presetSnapshot(200), revision: "saved-initial", assignments: [] };
+  c.variationPresetsClient.createPresets = () => reply.promise;
+  const pending = beginInitialPresetSave(f); await settle();
+  vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+  c.variationPresetsClient.getPresets = async () => completed;
+  c.handleCaptureStateChanged(protocol.createPresetsChangedNotification(), sender);
+  await settle();
+  assert.equal(c.variationPresetsEditing, false);
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.captureStateNotificationGeneration, 0);
+  reply.resolve(completed); await pending;
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.variationNavigationGeneration, 1);
+  c.scheduleVariationPresetsRefresh(); await settle();
+  assert.equal(c.variationNavigationGeneration, 1);
+  assert.equal(c.returnToCurrentButton.hidden, true);
+});
+
+test("an in-flight canonical refresh from the create notification finishes before initial #1 selection", async () => {
+  let reads = 0;
+  const read = deferred(), reply = deferred();
+  const f = await emptyStreamFixture({ beforeStateRead: async () => { if (++reads === 2) await read.promise; } });
+  const c = f.context;
+  installPresetNavigation(f);
+  const { sender } = installCaptureNotifications(c);
+  c.persistentController.subscribe(snapshot => {
+    c.savedSnapshot = snapshot;
+    c.updateVariationPresetsAvailability();
+    c.renderAll();
+  });
+  const completed = { ...presetSnapshot(200), revision: "created", assignments: [] };
+  c.variationPresetsClient.createPresets = () => reply.promise;
+  const pending = beginInitialPresetSave(f); await settle();
+  vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+  c.variationPresetsClient.getPresets = async () => completed;
+  let background;
+  c.scheduleCaptureRefresh = () => { background = c.persistentController.refresh(); };
+  c.handleCaptureStateChanged(protocol.createPresetsChangedNotification(), sender); await settle();
+  assert.equal(c.savedSnapshot.phase, "loading");
+  reply.resolve(completed); await settle();
+  assert.equal(c.selectedPresetVariationNumber, null);
+  read.resolve(); await background; await pending;
+  assert.equal(reads, 3, "The initial create adds one verification read behind the existing refresh");
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.returnToCurrentButton.hidden, true);
+  assert.equal(c.variationPresetsButton.disabled, false);
+});
+
+test("the post-create canonical read catches an already-persisted first capture absent from the panel snapshot", async () => {
+  const f = await emptyStreamFixture(), c = f.context;
+  require("../extension/shared/reconciliation.js").observeBiddingVariation(f.state, {
+    streamId: c.mountedStreamId, variationNumber: 5,
+  });
+  assert.equal(c.getRecordedVariations(c.savedSnapshot.view).length, 0);
+  await beginInitialPresetSave(f);
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.variationPresetsSnapshot.total, 200);
+  assert.equal(c.persistentController.getSnapshot().view.currentVariationNumber, 5);
+});
+
+test("capture, navigation, reset or verification failure during the post-create read cannot force #1", async () => {
+  for (const outcome of ["capture", "navigation", "reset", "failure"]) {
+    let reads = 0;
+    const read = deferred();
+    const f = await emptyStreamFixture({ beforeStateRead: async () => { if (++reads === 2) await read.promise; } });
+    const c = f.context;
+    const { capture, sender } = installCaptureNotifications(c);
+    c.persistentController.subscribe(snapshot => { c.savedSnapshot = snapshot; });
+    const pending = beginInitialPresetSave(f); await settle();
+    assert.equal(c.variationPresetsSnapshot.total, 200);
+    assert.equal(c.selectedPresetVariationNumber, null);
+    if (outcome === "capture") {
+      require("../extension/shared/reconciliation.js").observeBiddingVariation(f.state, {
+        streamId: c.mountedStreamId, variationNumber: 5,
+      });
+      c.handleCaptureStateChanged(capture, sender);
+    } else if (outcome === "navigation") {
+      c.selectedPresetVariationNumber = 80;
+      c.variationNavigationGeneration++;
+    } else if (outcome === "reset") c.resetVariationPresetsDisplay();
+    if (outcome === "failure") read.reject(new Error("Synthetic read failure"));
+    else read.resolve();
+    await pending;
+    assert.equal(c.selectedPresetVariationNumber, outcome === "navigation" ? 80 : null, outcome);
+    if (outcome !== "reset") assert.equal(c.variationPresetsSnapshot.total, 200);
+    if (outcome === "failure") assert.equal(c.savedSnapshot.phase, "error");
+  }
+});
+
+test("capture during initial save prevents auto-selection even before the debounced view refresh", async () => {
+  const reconciliation = require("../extension/shared/reconciliation.js");
+  for (const updateView of [false, true]) {
+    const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+    installPresetNavigation(f);
+    const { capture, sender } = installCaptureNotifications(c);
+    c.variationPresetsClient.createPresets = () => reply.promise;
+    const pending = beginInitialPresetSave(f); await settle();
+    reconciliation.observeVariations(f.state, { streamId: c.mountedStreamId, variationNumbers: [5] });
+    if (updateView) c.savedSnapshot = await c.persistentController.refresh();
+    else {
+      c.handleCaptureStateChanged(capture, sender);
+      assert.equal(c.getRecordedVariations(c.savedSnapshot.view).length, 0, "UI is still stale");
+    }
+    reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.variationPresetsSnapshot.total, 200, "The plan itself still saves");
+    c.savedSnapshot = await c.persistentController.refresh(); c.renderAll();
+    assert.equal(c.getActiveView().selectedVariationNumber, 5);
+    assert.equal(c.getActiveView().currentVariationNumber, 5);
+    assert.equal(c.returnToCurrentButton.hidden, true, "Following the captured live/latest variation needs no Return button");
+  }
+});
+
+test("navigation during an initial save is not replaced by #1 or a late focus change", async () => {
+  const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+  const completed = { ...presetSnapshot(200), revision: "created", assignments: [] };
+  c.variationPresetsClient.createPresets = () => reply.promise;
+  const pending = beginInitialPresetSave(f); await settle();
+  // A view change after a saved-range notification must win over its delayed acknowledgement.
+  c.variationPresetsSnapshot = completed;
+  c.variationPresetsReadGeneration++;
+  c.selectedPresetVariationNumber = 80;
+  c.variationNavigationGeneration++;
+  reply.resolve(completed); await pending;
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.equal(c.variationPresetsSnapshot.total, 200);
+  assert.notEqual(c.variationPresetsButton.focused, true);
+});
+
+test("failed, canceled and stale initial creates never auto-select or reopen a discarded configuration", async () => {
+  for (const outcome of ["failed", "reset", "baseline", "stream", "controller"]) {
+    const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+    c.variationPresetsClient.createPresets = () => reply.promise;
+    const pending = beginInitialPresetSave(f); await settle();
+    if (outcome === "failed") reply.reject(new Error("Synthetic create failure"));
+    else {
+      if (outcome === "reset") c.resetVariationPresetsDisplay();
+      if (outcome === "controller") c.persistentController = { ...c.persistentController };
+      if (outcome === "stream") c.mountedStreamId = "new-stream";
+      if (outcome === "baseline") {
+        c.variationPresetsSnapshot = { ...presetSnapshot(null), baselineId: "new-baseline", revision: "replacement" };
+        c.variationPresetsReadGeneration++;
+        c.variationPresetsEntryContext = null;
+      }
+      reply.resolve({ ...presetSnapshot(200), revision: "old-create", assignments: [] });
+    }
+    await pending;
+    assert.equal(c.selectedPresetVariationNumber, null, outcome);
+    assert.notEqual(c.variationPresetsButton.focused, true, outcome);
+  }
+  const f = await emptyStreamFixture(), c = f.context;
+  await c.variationPresetsButton.dispatch("click");
+  c.variationPresetsInput.value = "200";
+  await c.variationPresetsInput.dispatch("keydown", { key: "Escape" });
+  await c.variationPresetsForm.dispatch("submit");
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(f.calls.length, 0);
+});
+
+test("Return stays hidden for offline future planning and returns normally after real capture", async () => {
+  const reconciliation = require("../extension/shared/reconciliation.js");
+  const f = await emptyStreamFixture(), c = f.context;
+  installPresetNavigation(f);
+  await beginInitialPresetSave(f);
+  c.selectVariationFromPicker(80);
+  assert.equal(c.returnToCurrentButton.hidden, true);
+  reconciliation.observeBiddingVariation(f.state, { streamId: c.mountedStreamId, variationNumber: 1 });
+  c.savedSnapshot = await c.persistentController.refresh(); c.renderAll();
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.equal(c.returnToCurrentButton.hidden, false);
+  await c.returnToCurrentButton.dispatch("click"); c.savedSnapshot = c.persistentController.getSnapshot(); c.renderAll();
+  assert.equal(c.getActiveView().selectedVariationNumber, 1);
+  assert.equal(c.returnToCurrentButton.hidden, true, "Returning to live hides the button again");
+  const live = fixture({ total: 200 });
+  installPresetNavigation(live);
+  assert.equal(live.context.returnToCurrentButton.hidden, true);
+  live.context.selectVariationFromPicker(29); live.context.renderAll();
+  assert.equal(live.context.returnToCurrentButton.hidden, false);
+});
+
+test("unrelated and untrusted notifications cannot suppress initial auto-selection", async () => {
+  const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+  const { capture, sender } = installCaptureNotifications(c);
+  c.variationPresetsClient.createPresets = () => reply.promise;
+  const pending = beginInitialPresetSave(f); await settle();
+  c.handleCaptureStateChanged(capture, { id: "other-extension" });
+  c.handleCaptureStateChanged(capture, { ...sender, tab: {} });
+  c.handleCaptureStateChanged({ ...capture, extra: true }, sender);
+  c.handleCaptureStateChanged(c.nextItemQueueProtocol.createQueueChangedNotification(), sender);
+  c.handleCaptureStateChanged(c.liveBidProtocol.createLiveBidChangedNotification(), sender);
+  assert.equal(c.captureStateNotificationGeneration, 0);
+  reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+  assert.equal(c.selectedPresetVariationNumber, 1);
+});
+
+test("initial save acknowledgement does not bypass newly active loading, error or session safeguards", async () => {
+  for (const lock of [
+    c => { c.captureHealthBadge.dataset.phase = "loading"; },
+    c => { c.savedSnapshot.phase = "error"; },
+    c => { c.streamSnapshot.resumed = false; },
+    c => { c.endConfirmationOpen = true; },
+  ]) {
+    const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+    c.variationPresetsClient.createPresets = () => reply.promise;
+    const pending = beginInitialPresetSave(f); await settle();
+    lock(c);
+    reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.variationPresetsSnapshot.total, 200);
+    assert.equal(c.variationPresetsButton.disabled, true);
+  }
+});
+
+test("fresh pre-stream presets open at #1 without changing descending order, selection, or accounting", async () => {
+  for (const phase of ["active", "blank"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    c.captureHealthBadge.dataset.phase = phase;
+    const picker = installVariationPicker(f);
+    const before = JSON.stringify([f.state, c.variationPresetsSnapshot, c.getActiveView()]);
+    await c.variationSelector.dispatch("click");
+    assert.equal(c.variationSelectorOpen, true);
+    assert.equal(c.pickerLocked, true);
+    assert.equal(c.activeVariationNumber, 1);
+    assert.equal(c.variationSelector.getAttribute("aria-activedescendant"), "variation-option-1");
+    assert.deepEqual(picker.scrolled, [{ number: 1, block: "nearest" }]);
+    assert.equal(c.variationListbox.children[0].dataset.variationNumber, "200");
+    assert.equal(c.variationListbox.children.at(-1).dataset.variationNumber, "1");
+    assert.equal(c.variationListbox.children.some(row => row.getAttribute("aria-selected") === "true"), false);
+    assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction variations");
+    assert.equal(JSON.stringify([f.state, c.variationPresetsSnapshot, c.getActiveView()]), before);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("pre-stream keyboard opening starts at #1 while explicit Home and End keep their existing boundaries", async () => {
+  for (const [key, number] of [["Enter", 1], [" ", 1], ["F4", 1], ["ArrowDown", 1],
+    ["ArrowUp", 1], ["PageDown", 1], ["PageUp", 1], ["Home", 200], ["End", 1]]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    const picker = installVariationPicker(f);
+    await c.variationSelector.dispatch("keydown", { key });
+    assert.equal(c.activeVariationNumber, number, key);
+    assert.equal(picker.scrolled.at(-1).number, number, key);
+    assert.equal(c.selectedPresetVariationNumber, null);
+    await c.variationSelector.dispatch("keydown", { key: "Escape" });
+    assert.equal(c.variationSelectorOpen, false);
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("confirming the initially highlighted #1 enables sequential planning without a captured order", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installVariationPicker(f);
+  const before = JSON.stringify(f.state);
+  await c.variationSelector.dispatch("click");
+  await c.variationSelector.dispatch("keydown", { key: "Enter" });
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.getActiveView().isReviewingPreset, true);
+  await rightClick(f);
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  await rightClick(f);
+  assert.equal(c.selectedPresetVariationNumber, 2);
+  assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 1).sku, "A");
+  assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 2).sku, "A");
+  assert.equal(JSON.stringify(f.state), before);
+});
+
+test("reopening preserves an intentional future selection from Var # or sequential right-click instead of returning to #1", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  const picker = installVariationPicker(f);
+  c.variationSearchInput.value = "80";
+  await c.variationSearchForm.dispatch("submit");
+  picker.render();
+  await c.variationSelector.dispatch("click");
+  assert.equal(c.activeVariationNumber, 80);
+  c.releaseVariationSelector();
+  await rightClick(f);
+  picker.render();
+  await c.variationSelector.dispatch("click");
+  assert.equal(c.activeVariationNumber, 81);
+  assert.equal(c.selectedPresetVariationNumber, 81);
+});
+
+test("any actual capture retains normal live and history menu opening even with Reload Site and no bidding marker", async () => {
+  for (const phase of ["active", "blank"]) {
+    const f = fixture({ total: 200 }), c = f.context;
+    c.captureHealthBadge.dataset.phase = phase;
+    f.rawView.activeBiddingVariationNumber = null;
+    const picker = installVariationPicker(f);
+    await c.variationSelector.dispatch("click");
+    assert.equal(c.activeVariationNumber, 30);
+    c.selectVariationFromPicker(29);
+    picker.render();
+    await c.variationSelector.dispatch("click");
+    assert.equal(c.activeVariationNumber, 29);
+    c.releaseVariationSelector();
+    c.variationSelector.removeAttribute("data-variation-number");
+    await c.variationSelector.dispatch("click");
+    assert.equal(c.activeVariationNumber, 200, "Missing selection after real capture keeps the ordinary fallback");
+  }
+});
+
+test("initial loading locks, disabled selectors and absence of presets still prevent opening", async () => {
+  for (const phase of ["connecting", "loading"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    const picker = installVariationPicker(f);
+    c.captureHealthBadge.dataset.phase = phase;
+    await c.variationSelector.dispatch("click");
+    c.openVariationSelector();
+    assert.equal(c.variationSelectorOpen, false);
+    assert.equal(picker.scrolled.length, 0);
+  }
+  for (const total of [null, 200]) {
+    const f = await emptyStreamFixture({ total }), c = f.context;
+    const picker = installVariationPicker(f);
+    if (total === null) assert.equal(c.variationSelector.getAttribute("aria-disabled"), "true");
+    else c.variationSelector.setAttribute("aria-disabled", "true");
+    await c.variationSelector.dispatch("click");
+    assert.equal(c.variationSelectorOpen, false);
+    assert.equal(picker.scrolled.length, 0);
+  }
+});
 
 function installSavedRenderer(f) {
   const c = f.context;
@@ -248,7 +720,7 @@ test("projection does not cap real captured numbers and never applies a differen
   assert.equal(projection.project(view, presetSnapshot(null), 80), view);
 });
 
-test("creating a range before first capture preserves live waiting and never selects the controller's fallback as a preset", () => {
+test("projecting a saved range before first capture preserves waiting unless a preset selection is explicitly provided", () => {
   const raw = baselineView();
   raw.currentVariationNumber = 203;
   raw.selectedVariationNumber = 203;
@@ -339,7 +811,9 @@ test("zero-capture planning supports total entry, exact lookup, left-click chang
   assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
   const waiting = f.context.getActiveView();
   assert.equal(waiting.variations.length, 200);
-  assert.equal(waiting.variations.some((entry) => entry.recorded || entry.current || entry.selected), false);
+  assert.equal(waiting.variations.some((entry) => entry.recorded || entry.current), false);
+  assert.equal(waiting.selectedVariationNumber, 1);
+  assert.equal(waiting.isReviewingPreset, true);
   assert.equal(waiting.auction, null);
   assert.equal(waiting.activeBiddingVariationNumber, null);
   f.context.variationSearchInput.value = "1";

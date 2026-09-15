@@ -1449,6 +1449,21 @@ button {
   min-width: 105px;
 }
 
+#report-action-confirmation {
+  width: min(248px, calc(100vw - 28px));
+  padding: 14px;
+}
+
+#report-action-confirmation h2 {
+  text-align: center;
+}
+
+#report-action-confirmation .report-action-confirmation-actions {
+  margin-top: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .report-rename-dialog label {
   display: block;
   margin-top: 13px;

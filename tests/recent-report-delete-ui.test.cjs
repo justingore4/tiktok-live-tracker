@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const directory = path.join(__dirname, "..", "extension", "tagger");
 const source = fs.readFileSync(path.join(directory, "sidepanel.js"), "utf8");
 const html = fs.readFileSync(path.join(directory, "sidepanel.html"), "utf8");
+const css = fs.readFileSync(path.join(directory, "sidepanel.css"), "utf8");
 
 function functionSource(name) {
   const start = source.search(new RegExp(`^  (?:async )?function ${name}\\(`, "m"));
@@ -128,7 +129,7 @@ function harness(overrides = {}) {
     runReportDownload() {},
     ...Object.fromEntries([
       "reportActionConfirmation", "reportActionConfirmationTitle",
-      "reportActionConfirmationMessage", "confirmReportActionButton",
+      "confirmReportActionButton",
       "streamReportsError", "archivedReportsError",
     ].map((name) => [name, new Element()])),
     ...overrides,
@@ -184,13 +185,51 @@ test("recent Delete opens the existing permanent-deletion confirmation without d
   assert.equal(recent.menu.hidden, true);
   assert.equal(h.context.reportActionConfirmation.open, true);
   assert.equal(h.context.reportActionConfirmationTitle.textContent, "Delete report forever?");
-  assert.match(h.context.reportActionConfirmationMessage.textContent, /cannot be undone/);
-  assert.match(h.context.reportActionConfirmationMessage.textContent, /TikTok LIVE and Google Sheets will not be changed/);
   assert.equal(h.context.confirmReportActionButton.textContent, "Delete forever");
   assert.equal(h.context.pendingReportDeletionArchived, false);
   assert.deepEqual(Array.from(h.context.pendingReportDeletion), ["recent-a"]);
   assert.deepEqual(h.writes, []);
   assert.deepEqual(h.reads, []);
+});
+
+test("compact delete confirmation contains only its accessible heading and two unchanged buttons", () => {
+  const dialog = html.match(/<dialog\s+id="report-action-confirmation"[\s\S]*?<\/dialog>/)[0];
+  assert.match(dialog, /aria-labelledby="report-action-confirmation-title"/);
+  assert.match(dialog, /<h2 id="report-action-confirmation-title">Delete report forever\?<\/h2>/);
+  assert.equal((dialog.match(/<button\b/g) ?? []).length, 2);
+  assert.doesNotMatch(dialog, /<p\b|aria-describedby|report-action-confirmation-message/);
+  assert.doesNotMatch(source, /reportActionConfirmationMessage|This permanently deletes/);
+  const compact = css.match(/#report-action-confirmation\s*\{([^}]+)\}/)[1];
+  assert.match(compact, /width:\s*min\(248px, calc\(100vw - 28px\)\);/);
+  assert.match(compact, /padding:\s*14px;/);
+  const title = css.match(/#report-action-confirmation h2\s*\{([^}]+)\}/)[1];
+  assert.match(title, /text-align:\s*center;/);
+  const actions = css.match(/#report-action-confirmation \.report-action-confirmation-actions\s*\{([^}]+)\}/)[1];
+  assert.match(actions, /margin-top:\s*12px;/);
+  assert.match(actions, /flex-wrap:\s*wrap;/);
+  assert.match(actions, /justify-content:\s*center;/);
+  assert.doesNotMatch(actions, /height:|padding:|font-size:/);
+  const sharedDialog = css.match(/\.report-action-confirmation\s*\{([^}]+)\}/)[1];
+  assert.match(sharedDialog, /width:\s*min\(340px, calc\(100vw - 28px\)\);/);
+  assert.match(sharedDialog, /padding:\s*16px;/);
+  const rename = html.match(/<dialog\s+id="report-rename-dialog"[\s\S]*?<\/dialog>/)[0];
+  assert.match(rename, /aria-describedby="report-rename-description report-rename-error"/);
+  assert.match(rename, /<p id="report-rename-description">/);
+});
+
+test("compact confirmation preserves singular and bulk titles for recent and archived reports", () => {
+  for (const archived of [false, true]) {
+    const h = harness();
+    h.context.requestPermanentReportDeletion(["a", "a", "b"], null, { archived });
+    assert.equal(h.context.reportActionConfirmationTitle.textContent, "Delete 2 reports forever?");
+    assert.equal(h.context.pendingReportDeletionArchived, archived);
+    assert.deepEqual(Array.from(h.context.pendingReportDeletion), ["a", "b"]);
+    h.context.reportActionConfirmation.close("cancel");
+    h.context.requestPermanentReportDeletion(["c"], null, { archived });
+    assert.equal(h.context.reportActionConfirmationTitle.textContent, "Delete report forever?");
+    assert.equal(h.context.confirmReportActionButton.textContent, "Delete forever");
+    assert.deepEqual(h.writes, []);
+  }
 });
 
 test("Cancel, Escape, and closing the confirmation perform no writes and restore the menu-button focus", () => {

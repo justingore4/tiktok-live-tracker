@@ -108,12 +108,18 @@ below the highest captured variation. Real capture can continue beyond the range
 Before submitting, press Escape or click outside the total field to discard the
 draft and return to **Preset items** without saving.
 
-Choose an **untracked** variation from the dropdown or Var #, then select its item.
+When you first save presets before any variations have been captured, **#1** opens
+automatically so you can immediately select its item. If capture or your view changes
+while saving, the tracker keeps that newer view instead. Extending presets or
+reopening the panel does not automatically select #1.
+Choose other **untracked** variations from the dropdown or Var #. Before the first
+capture, an unselected dropdown opens at **#1**; an existing selection is preserved.
+Normal live/history behavior and the dropdown's newest-first order stay unchanged.
 These are planning placeholders: no stock is reserved or deducted and no order is
 added to reports until the variation is actually captured. Capture then applies the
-ordinary mapping/payment rules. **Return to live item** resumes live following.
-Before the first capture, it does not invent a live target: the tracker continues
-to show that it is waiting for a live auction.
+ordinary mapping/payment rules. **Return to live item** stays hidden until a real
+variation is captured. After that, it appears when reviewing an earlier variation
+or future preset and resumes live following when clicked.
 
 While viewing a future preset, right-click an item to plan faster: if the current
 preset is empty, it receives the item and stays selected. Otherwise, the worker
