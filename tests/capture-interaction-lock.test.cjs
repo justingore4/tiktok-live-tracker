@@ -109,6 +109,8 @@ function fixture() {
     // executes the actual scope/target helpers in variation-presets-ui tests.
     isCapturePlanningTarget: () => false,
     isCapturePlanningEnabled: () => false,
+    hasCapturePlanningScope: () => false,
+    canChangeVariationPresets: () => false,
     isCapturePlanningLocked: () => context.isCaptureInteractionLocked(),
     syncCapturePlanningScope: () => false,
     getActiveView: () => null,
@@ -147,9 +149,9 @@ function fixture() {
   ];
   vm.createContext(context);
   vm.runInContext(names.map(declaration).join("\n"), context);
-  const callback = source.match(/onChange:\s*(\(state\) => \{[\s\S]*?\n    \})/);
-  assert.ok(callback, "The real health subscription must apply the lock after rendering the validated badge");
-  const onHealthChange = vm.runInContext(`(${callback[1]})`, context);
+  assert.match(source, /onChange: handleCaptureHealthChange/,
+    "The real health subscription must apply the lock after rendering the validated badge");
+  const onHealthChange = vm.runInContext(`(${declaration("handleCaptureHealthChange")})`, context);
   function health(phase) {
     onHealthChange({ phase, reason: "initializing" });
   }

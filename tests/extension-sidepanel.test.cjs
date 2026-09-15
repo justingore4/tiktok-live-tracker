@@ -1564,8 +1564,10 @@ test("inventory right click maps the current variation from history without chan
     contextMenuSource,
     /view\.isReviewingHistory[\s\S]+view\.selectedVariationNumber !== view\.currentVariationNumber[\s\S]+void mapCurrentVariationFromHistory\(button, view\)[\s\S]+return;[\s\S]+void toggleNextItemQueue\(button, view\)/,
   );
+  const capturedContextStart = contextMenuSource.indexOf("if (!hasSelectedEditableVariation(view))");
+  assert.ok(capturedContextStart >= 0, "the captured-only context route remains guarded after the future branch returns");
   assert.doesNotMatch(
-    contextMenuSource,
+    contextMenuSource.slice(capturedContextStart),
     /saveOrdinaryInventorySelection|mapSelectedSku|unmapSelectedVariation|selectVariation/,
   );
   assert.doesNotMatch(contextMenuSource, /view\.auction/);
@@ -1751,6 +1753,7 @@ function createInventoryCardBadgeHarness() {
     formatItemName: (group) => `${group.item} ${group.style}`,
     hasSelectedRecordedVariation: () => true,
     hasSelectedEditableVariation: () => true,
+    getFuturePresetContext: (view) => ({ variationNumber: view.selectedVariationNumber }),
   };
   vm.createContext(sandbox);
   vm.runInContext(`${currentMappingSource}\n${cardSource}`, sandbox);
@@ -1761,6 +1764,7 @@ function createInventoryCardBadgeHarness() {
       liveSku = null,
       queuedSku = null,
       reviewingHistory = true,
+      reviewingPreset = false,
       status = "pending",
       paymentStatus = "payment_processing",
       sizes = ["M"],
@@ -1781,6 +1785,7 @@ function createInventoryCardBadgeHarness() {
         selectedVariationNumber: reviewingHistory ? 100 : 115,
         currentVariationNumber: 115,
         isReviewingHistory: reviewingHistory,
+        isReviewingPreset: reviewingPreset,
         auction: { sku: selectedSku, status, paymentStatus },
         activeAuctionMapping: { variationNumber: 115, sku: liveSku },
         variations: [],
@@ -1802,6 +1807,22 @@ function createInventoryCardBadgeHarness() {
     },
   };
 }
+
+test("future preset card accessibility explains the swapped buttons and exact-size choice without live-mapping instructions", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const selectedSku of [null, "TEE-M"]) {
+    for (const sizes of [["M"], ["M", "L"]]) {
+      const card = harness.render({ selectedSku, reviewingPreset: true, sizes });
+      const label = card.button.getAttribute("aria-label");
+      assert.match(label, /Left-click to fill this future preset if empty, otherwise fill and open the next empty future preset/);
+      assert.match(label, /Right-click to change the viewed preset, or unselect the same item and size/);
+      assert.match(label, /No inventory is reserved/);
+      assert.doesNotMatch(label, /Right-click to (?:map|remap|unmap)|Click to unselect this item|current variation 115/);
+      if (sizes.length > 1) assert.match(label, /Choose the exact size after clicking/);
+      assert.equal(label.includes("This item is selected for the viewed preset"), selectedSku !== null);
+    }
+  }
+});
 
 test("inventory cards independently label every selected, live, and queued combination", () => {
   const harness = createInventoryCardBadgeHarness();
@@ -2301,13 +2322,15 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   assertTextOrder(
     pickerActionSource,
     [
-      'if (intent === "ordinary")',
+      'if (intent === "ordinary" || intent === "preset_current")',
       "saveOrdinaryInventorySelection(actionTarget, view)",
+      'if (intent === "preset_sequence")',
+      "assignNextFuturePreset(actionTarget, state.presetContext)",
       "view.isReviewingHistory",
       "mapCurrentVariationFromHistory(actionTarget, view)",
       "toggleNextItemQueue(actionTarget, view)",
     ],
-    "an exact child SKU must route to ordinary mapping, historical live mapping, or current queueing",
+    "an exact child SKU must retain its ordinary, current-preset, sequential-preset, history, or queue intent",
   );
 
   assertTextOrder(

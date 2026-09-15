@@ -79,10 +79,15 @@ function fixture({ kind = "empty", phase = "active", ready = false, entry = "res
   const view = syntheticView(kind);
   const context = {
     document, variationPresetsView, console,
-    capturePlanningCycleGeneration: 0,
+    capturePlanningCycleGeneration: 0, variationNavigationGeneration: 0,
+    captureStateNotificationGeneration: 0, pendingPresetResumeSelection: null,
+    variationPresetsGeneration: 0, variationPresetsEditing: false,
+    variationPresetsReady: kind === "preset",
     isCapturePlanningTarget: () => false,
     isCapturePlanningEnabled: () => false,
     syncCapturePlanningScope: () => false,
+    captureConnectingPlanning: null, capturePlanningDisposed: false,
+    resetConnectingPlanningDelay() {},
     isFuturePresetContextCurrent: () => false,
     pendingTrackerEntryViewport: null, persistentController: null, mountedStreamId: null,
     focusSavedWorkspaceAfterRetry: false, previousSavedPhase: "idle",
@@ -162,6 +167,7 @@ function fixture({ kind = "empty", phase = "active", ready = false, entry = "res
   vm.createContext(context);
   vm.runInContext([
     "restoreTrackerEntryViewport", "renderSavedSnapshot", "getRecordedVariations", "hasSelectedRecordedVariation",
+    "restoreResumedPresetSelection", "findVariationOption",
     "createSavedVariationSignatures", "getActiveView", "setTrackerWorkspaceVisible", "setWorkspaceBusy",
     "syncCaptureInteractionLock", "syncCaptureInventoryLock", "snapshotIsBackgroundRefresh", "isCaptureInteractionLocked",
     "isTrackerInteractionTarget", "openArchivedReportsDashboard",
@@ -231,6 +237,44 @@ test("Resume handles an already-ready synchronous restored layout without waitin
   assert.equal(f.context.pendingTrackerEntryViewport, null);
   f.render();
   assert.equal(f.scrollEvents().length, 1);
+});
+
+test("offline Resume restores saved preset #1 without a second viewport reset or extra focus when its read completes late", async () => {
+  for (const phase of ["connecting", "loading", "blank", "active"]) {
+    const f = fixture({ phase }), c = f.context;
+    f.resume(); f.render();
+    assert.equal(f.scrollEvents().length, 1);
+    assert.ok(c.pendingPresetResumeSelection);
+    c.window.scrollY = 460;
+    const focused = c.document.activeElement;
+    c.variationPresetsSnapshot = {
+      streamId: SESSION.streamId, baselineId: "synthetic-baseline", revision: "saved", total: 200,
+      assignments: [{ variationNumber: 1, sku: "SYNTHETIC-A" }],
+    };
+    c.variationPresetsReady = true;
+    let verificationReads = 0;
+    c.persistentController.refresh = async () => {
+      verificationReads++;
+      f.render({ phase: "loading", busy: true, operation: "refresh" });
+      f.render({ operation: "refresh" });
+      return c.savedSnapshot;
+    };
+    f.render({ operation: null });
+    await settle();
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(c.window.scrollY, 460);
+    assert.equal(f.scrollEvents().length, 1);
+    assert.ok(c.document.activeElement === focused || c.document.activeElement === null,
+      "Existing loading safeguards may blur the workspace; restoration must not move focus to another control");
+    assert.equal(f.events.filter(([type]) => type === "focus").length, 1);
+    assert.equal(verificationReads, 1);
+    assert.equal(c.captureHealthBadge.dataset.phase, phase);
+    assert.equal(c.variationSection.hasAttribute("inert"), ["connecting", "loading"].includes(phase));
+    f.render();
+    assert.equal(c.window.scrollY, 460);
+    assert.equal(f.scrollEvents().length, 1);
+  }
 });
 
 test("Start opens empty, captured and preset tracker layouts at the top once, including initial capture locks", async () => {
@@ -481,6 +525,7 @@ test("actual End and archive actions clear pending restoration without consuming
   f.render({ phase: "loading", busy: true });
   f.context.endStreamButton.dispatch("click");
   assert.equal(f.context.pendingTrackerEntryViewport, null);
+  assert.equal(f.context.pendingPresetResumeSelection, null);
   assert.equal(f.context.endConfirmationOpen, true);
   assert.equal(f.context.document.activeElement, f.context.cancelEndStreamButton);
   f.context.endConfirmationOpen = false;
@@ -493,6 +538,7 @@ test("actual End and archive actions clear pending restoration without consuming
   g.context.streamSnapshot.activeSession = null;
   g.context.openArchivedReportsDashboard();
   assert.equal(g.context.pendingTrackerEntryViewport, null);
+  assert.equal(g.context.pendingPresetResumeSelection, null);
   assert.equal(g.context.archivedReportsViewOpen, true);
   assert.equal(g.context.document.activeElement, g.context.backToBusinessRecordsButton);
   assert.equal(g.scrollEvents().length, 0);
@@ -540,7 +586,8 @@ test("unmount and page disposal clear the request; buttons never duplicate the s
   const g = fixture(); g.resume(); g.render({ phase: "loading", busy: true });
   Object.assign(g.context, {
     reportLibraryDisposed: false, streamReportsRefreshGeneration: 0,
-    captureHealthController: { dispose() {} }, clearCaptureRefreshTimer() {}, resetLiveBidTracking() {},
+    captureHealthController: { dispose() {} }, captureBadgeSizeObserver: { disconnect() {} },
+    clearCaptureRefreshTimer() {}, resetLiveBidTracking() {},
     resetConfirmedInventoryPreview() {}, handleCaptureStateChanged() {}, handleReportLibraryChanged() {},
     chrome: { runtime: { onMessage: { removeListener() {} } } },
   });

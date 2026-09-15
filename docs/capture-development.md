@@ -986,7 +986,11 @@ identity or explicit session change is needed to start another loading cycle.
 Late responses cannot finish another session/document's startup.
 
 Connecting/Loading apply the steady 50% tint and capture-only interaction lock by
-default. Once local data is valid, clicking the preset control opts into future
+default. Blue Connecting automatically enables planning after 1.3 seconds once
+local inventory/session/preset data is ready, without changing the badge's ten-second
+no-source grace. Both automatic and manual planning end on yellow; yellow stays
+tinted and editing-locked regardless of any preset override. During blue, once local
+data is valid, clicking the preset control opts into future
 planning and suppresses only the tint. Navigation, inventory search/expansion, and
 exact-size future assignments become available; live/history mapping, manual queue
 controls, pins, and SKU imports remain locked during startup. Scrolling and End/confirmation/cancel retain their
@@ -1061,14 +1065,14 @@ payment/mapping rules. Reload and confirm same-stream plans remain.
 Check both queue cases: a planned next item clears/disables queuing, but a queue due
 for #2 still applies when only #3 is preset. Reset while browsing a distant future
 variation must preserve captured mappings, remove uncaptured assignments, and return
-to live. Verify startup planning requires explicit opt-in and save/error locks still apply. Do not
+to live. Verify startup planning uses manual opt-in or the 1.3-second blue delay and save/error locks still apply. Do not
 use real seller reports or existing Chrome profiles for automated QA.
 
 Also start/resume a local tracker with confirmed synthetic inventory before any
 auction is captured. Once the existing Loading/Connecting state finishes, **Preset
 items** must work even when the badge says **Reload Site**. Successfully creating an
-initial range must select **#1** automatically, without opening the dropdown. Left-click
-to assign/unassign, then right-click sequentially through
+initial range must select **#1** automatically, without opening the dropdown. Right-click
+to change/unselect the current item, then left-click sequentially through
 future presets using exact sizes. All entries remain untracked; stock, metrics,
 report rows, and exports must remain unchanged. **Return to live item** must stay
 hidden with zero actual captures; once capture begins, it appears normally while
@@ -1076,9 +1080,17 @@ viewing a future or historical variation. Reopen the panel, reset plans, and
 exercise first actual capture to verify ordinary promotion. No fake current bid or
 live variation should appear just because a plan exists.
 
-Verify automatic #1 selection happens only after a successful initial create with no
-captured variations. Creating presets during live tracking, extending a range, ordinary
-refreshes, and reopening must not force #1. With a delayed save or its canonical
+Verify automatic #1 selection after a successful initial create with no captured
+variations. Also close the panel with saved presets before any capture, reopen it,
+and click **Resume stream tracking**: existing preset **#1** should display without
+opening the dropdown, retaining its saved item if assigned. Resume must leave
+Connecting/Loading and its locks unchanged; selecting #1 does not opt into planning.
+Repeat without a saved plan and after an actual capture: Resume must keep the ordinary
+waiting/live view. Delay the preset read and navigate, capture, reset, change sessions,
+or fail loading: the late result must not override the newer view. Subsequent refreshes
+must preserve an intentionally selected future variation.
+Creating presets during live tracking, extending a range, and ordinary refreshes must
+not force #1. With a delayed save or its canonical
 verification read, navigate elsewhere, deliver a real capture, reset presets, or change
 session; the late response must not override the newer state. Include a capture whose
 notification arrives before its debounced panel refresh. Failed verification must keep
@@ -1094,7 +1106,7 @@ and future entries, including already-assigned presets. Missing numbers are skip
 boundaries and an unselected waiting view disable navigation rather than wrapping or
 creating entries. Typed Var # drafts stay intact. Verify ordinary history/live following,
 future browsing through capture updates, and no mapping, queue, or accounting changes.
-Loading without planning opt-in, saving, queue changes, End confirmation, and unavailable preset state must
+Yellow Loading regardless of planning opt-in, saving, queue changes, End confirmation, and unavailable preset state must
 block the affected navigation and recover when their existing safeguards clear.
 Check 320px and normal-width panels: both 20px arrow buttons stay in the original 20px
 row, the badge remains centered, and the Var # field gives back its inset/width as needed
@@ -1108,19 +1120,33 @@ must not cancel an already accepted in-flight save.
 Check initial saved-workspace load and Retry loading with no capture notifications:
 preset state must be requested after successful loading so an early unavailable
 preset snapshot cannot leave the control disabled indefinitely. Failed saved-state
-loads, unconfirmed inventory, and other busy locks remain blocked. During both
-Connecting and Loading, opt in using Preset items (or Reset presets when already
+loads, unconfirmed inventory, and other busy locks remain blocked. During blue
+Connecting, opt in using Preset items (or Reset presets when already
 enabled): the field/action should work and the tint disappear, but the badge/spinner
 must not change. Test creation, automatic #1, Var #, arrows, dropdown, inventory search,
-Show all items, exact sizes, left-click toggles, and sequential right-click planning.
+Show all items, exact sizes, right-click toggles, and sequential left-click planning.
 Captured live/history mapping, manual queue actions, pins, and imports must stay blocked.
 Valid future assignment must still clear a conflicting automatic next-item queue.
 
+Without clicking the preset control, check blue at 1,299 ms and 1,300 ms: only the
+gray/planning restriction should change, never the badge. A missing dashboard must
+still reach Reload Site on the existing approximately ten-second grace plus polling.
+Delay local inventory or preset reads beyond 1.3 seconds: planning must wait for
+those reads, then unlock without another 1.3-second wait. Rerenders must not restart
+the timer. Check existing future cards actually become usable without extra navigation.
+Transition to yellow before and after the deadline: both automatic and manual
+planning must stop, old scopes must clear, and the preset control must reject even
+stale/programmatic requests. Check gray tint even with a stale planning attribute.
+On green/Reload Site, editing follows existing safeguards immediately; no extra
+timer or Sold Items/live-auction readiness requirement was introduced. New documents, sessions, disposal,
+busy saves, errors, and late timer callbacks must never bypass their guards. Neither
+the timer nor readiness changes may alter scroll, selection, queue, or accounting.
+
 Check both size-picker intents when capture reaches the viewed preset: no stale click
 may map/unmap the captured order or queue an item. Busy/save/error/End guards still
-win, and local refreshes do not discard the opt-in. First dashboard identity discovery
-must not regray the tracker; a different document (even with the same Loading badge)
-requires opting in again. A total-entry draft should return to the button on that
+win, and local refreshes do not discard a valid blue opt-in. First dashboard identity
+discovery during blue must not regray the tracker; a different document clears the
+opt-in, and yellow cannot be bypassed. A total-entry draft should return to the button on that
 document replacement, without deleting saved plans. Delay create/reset/sequential
 responses across the replacement: saved results remain authoritative, but no stale
 response may force selection/focus. Existing dropdown and size-picker focus should
@@ -1145,13 +1171,17 @@ passes 1,000, verify accessible limit feedback and uninterrupted normal capture.
 No label change or range extension may move selection, erase skipped assignments,
 clear an ordinary queue, or alter report/inventory values by itself.
 
-For sequential planning, view empty future #25 and right-click an exact SKU: #25
-should be assigned without navigation. Right-click another item: it should save
+For sequential planning, view empty future #25 and left-click an exact SKU: #25
+should be assigned without navigation. Left-click another item: it should save
 and open empty #26. With #27 assigned and #28 captured, the next click must skip to
 empty #29 without replacing either item. Exercise the multi-size picker as well.
 An empty final preset accepts one assignment; further clicks announce "No more
-future variations." without wrapping, queueing, or live mapping. Left-click still
-edits or clears the selected future item. Check normal live/history right-clicks
+future variations." without wrapping, queueing, or live mapping. Right-click
+edits or clears the selected future item without advancing. Confirm same-SKU left-click
+does not unselect, but same-SKU right-click does. Check both multi-size opening actions:
+choose an exact size after clicking; primary activation/Arrow/Home/End uses sequential
+planning and ContextMenu/Shift+F10 uses current-preset editing. Accessible card/size
+labels must describe those actions consistently. Check normal live/history clicks
 separately: their mapping/queue behavior must remain unchanged.
 
 Use synthetic delayed/failed saves to verify no early navigation, no buffered rapid

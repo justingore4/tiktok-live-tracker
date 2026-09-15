@@ -152,10 +152,14 @@ test("actual subscription keeps green for later errors and only resets for a dif
   const f = fixture(); let nextId = 0; const timers = new Map();
   let response = { ok: true, data: { streamId: "synthetic-stream", loadId: "document-a", phase: "active", reason: "ready" } };
   let failed = false, requests = 0;
-  const callback = panelSource.match(/onChange:\s*(\(state\) => \{[\s\S]*?\n    \})/)[1];
+  assert.match(panelSource, /onChange: handleCaptureHealthChange/);
+  const callback = panelSource.match(/function handleCaptureHealthChange\(state\) \{[\s\S]*?\n  \}/)[0];
   const onChange = vm.runInNewContext(`(${callback})`, {
     captureHealthView: view, captureHealthBadge: f.badge, captureHealthDescription: f.description,
     savedSnapshot: { busy: true }, setWorkspaceBusy(busy) { assert.equal(busy, true); },
+    hasCapturePlanningScope: () => false, canChangeVariationPresets: () => false,
+    isCaptureInteractionLocked: () => ["connecting", "loading"].includes(f.badge.dataset.phase),
+    getActiveView: () => null,
   });
   const controller = view.createCaptureHealthViewController({
     runtime: { async sendMessage() { requests++; if (failed) throw new Error("offline"); return response; } },

@@ -53,7 +53,9 @@ test("workspace tint targets only Connecting/Loading content, never the badge or
   assert.ok(tintRule);
   const selectors = tintRule[1].split(",").map((selector) => selector.trim());
   assert.deepEqual(selectors, ["connecting", "loading"].map((phase) =>
-    `.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="${phase}"]):not([data-capture-planning]) > :not(.capture-health-row)`));
+    `.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="${phase}"])${phase === "connecting" ? ":not([data-capture-planning])" : ""} > :not(.capture-health-row)`));
+  assert.doesNotMatch(selectors[1], /data-capture-planning/,
+    "Yellow remains gray even if a stale planning attribute has not yet been removed");
   assert.match(tintRule[2], /^\s*opacity:\s*0\.5;\s*$/,
     "The tint changes no dimensions, positioning, scrolling, interactions, or animation");
   assert.doesNotMatch(css, /\.tracker-workspace\[aria-busy=[^\]]+\]/,

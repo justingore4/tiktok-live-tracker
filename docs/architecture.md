@@ -767,7 +767,8 @@ Shared tagger behavior includes:
   displayed, the distinct right-click path maps or remaps the worker-verified
   current/newest variation and cannot mutate the queue; choosing its existing SKU unmaps
   that current variation. Ordinary left-click continues to map or unmap only the
-  displayed variation. Historical selection, the mapped current/newest variation, and a
+  displayed captured variation; uncaptured preset gestures are described separately below.
+  Historical selection, the mapped current/newest variation, and a
   pre-existing queue are exposed independently through green, blue, and red card-outline
   roles, including combined outlines when different sizes in one card have multiple
   roles. Exact option badges disambiguate those sizes.
@@ -887,8 +888,9 @@ transition: Start, Resume, remount, or recovery from an initial load that left t
 hidden. After the first successful workspace render, `restoreTrackerEntryViewport` focuses
 the named tracker region with `preventScroll` and scrolls to the top immediately. It can
 arm before the old root loading lock clears, but waits for ready, non-busy rendering before
-scrolling. Connecting/Loading child controls remain locked unless separately opted into
-preset planning; entry does not unlock them.
+scrolling. Connecting child controls remain locked except for the separate preset-planning
+override or 1.3-second blue planning delay. Yellow Loading is a strict editing lock;
+entry itself does not unlock either state.
 
 Start and Resume no longer use the bottom session-status focus fallback or button-specific
 viewport callbacks. A genuine entry also suppresses that fallback from an initial-load Retry.
@@ -1327,7 +1329,7 @@ load retry), rather than racing that initial load. Existing capture-refresh read
 remain. Thus preset availability does not depend on a later capture notification
 recovering an unsuccessful early preset read.
 
-Connecting/Loading blocks planning by default, but the preset button remains available
+Connecting initially blocks planning, but the preset button remains available
 once canonical inventory/session and preset data have loaded successfully. Clicking it
 opts into panel-local startup planning and opens the existing input (or performs the
 existing Reset presets action). `canUseVariationPresetData` retains independent save,
@@ -1339,6 +1341,28 @@ controls and external popovers. Future cards and both ordinary/sequential size m
 retain their source context so capture cannot turn a delayed future action into a real
 mapping. Worker revisions, serialization, queue-conflict clearing, and capture promotion
 are reused unchanged.
+
+Blue Connecting also enables the same planning-only exception automatically after
+1.3 seconds, once local prerequisites are usable. This is a separate panel-local
+timer, not a change to the badge's ten-second no-source grace or capture readiness.
+`captureConnectingPlanning` binds to the resumed stream, mounted controller, and
+planning-cycle epoch. It starts with that mounted blue attempt, counts time even if
+local inventory is still loading, and waits for valid local data before activating.
+Repeated renders and busy refreshes do not restart it; once active, saves may lock
+controls without bringing back the tint. A newly enabled future view refreshes its
+inventory-card disabled states without moving selection or focus. Yellow, green,
+Reload Site, a new document/session, unmount, and disposal cancel the automatic scope;
+stale callbacks cannot unlock a different cycle. First document identity discovery
+does not restart the delay. Yellow remains strictly gray; the manual preset override
+works only during blue and is never replaced by this timer.
+Yellow revokes both manual and automatic planning scopes. Preset creation/reset,
+navigation and assignment handlers reject yellow even if they receive stale events;
+the CSS yellow tint ignores any leftover planning attribute. The existing readiness
+signal ends yellow without an added timer or a new Sold Items/live-bidding gate.
+Normal busy/save/error restrictions still apply after startup readiness changes.
+On the existing unlock signal, previously disabled future-preset cards are rendered
+once so they become usable without waiting for another capture. Already-interactive
+blue planning skips that repaint; selection and keyboard focus are not moved.
 
 The override is scoped to the current panel, stream, and dashboard load. The existing
 health view controller exposes validated document identities through `onLoadChange`,
@@ -1353,7 +1377,7 @@ selection or focus. Accepted writes still complete through the existing coordina
 The `data-capture-planning` attribute suppresses only capture tint; independent locks
 still apply. Green and blank/Reload Site discard the exception and use normal rules.
 No settings are persisted, no navigation/scroll reset is triggered by readiness, and
-reopening during startup may require opting in again. Badge production, wording,
+reopening during startup starts a fresh blue planning delay or permits manual opt-in again. Badge production, wording,
 rendering, scheduling, and health thresholds are unchanged. Setup and
 Resume-only screens still do not expose planning. Empty-view placeholders remain
 outside canonical history and first actual capture uses normal preset promotion.
@@ -1364,8 +1388,19 @@ controller refresh, queued behind any existing refresh, and rechecks stream/cont
 baseline, acknowledged preset revision/total, navigation, and capture-notification state
 before selecting. Failed verification, intervening capture or navigation, and a newer
 reset/configuration cannot force #1. A save notification arriving before its matching
-acknowledgement remains supported. This one-shot selection does not run on reopening,
+acknowledgement remains supported. This submit-only selection does not run on
 ordinary reads, range extension, or creation during a captured stream.
+Explicit Resume has a separate one-shot restoration: after the resumed controller's
+canonical load and saved-preset read, select existing future **#1** only if no actual
+variations have been captured. One additional canonical verification read after
+presets arrive also covers delayed or missing capture notifications; an in-flight
+guard prevents its own refresh from restarting verification. The intent binds to the newly mounted controller,
+stream, navigation/capture/document/mutation generations, and the first loaded preset
+configuration. Capture notifications invalidate it before the debounced view refresh;
+navigation, reset/configuration changes, errors, or leaving the session cancel it.
+An absent plan consumes the intent rather than selecting a subsequently created plan.
+This display-only restoration does not change focus, scroll, capture readiness, or
+interaction locks, and does not opt into startup planning. Later reads never re-arm it.
 **Return to live item** stays hidden until at least one actual variation exists. An
 unselected pre-capture dropdown opens at #1 without reordering its descending list; intentional future
 selection and explicit Home/End navigation keep their existing behavior.
@@ -1421,8 +1456,15 @@ It reuses ordinary preset persistence and next-item queue-conflict handling, ret
 rotates the existing revision, so duplicate or delayed requests cannot advance twice.
 The dedicated client validates the returned target, assignment, identity, and revision.
 
-Only future-preset right-clicks use this command; live/captured-history behavior
-and future left-click toggle behavior are unchanged. Future-origin card and size-menu
+Future-preset left-clicks use this command. Right-click instead sets/unsets the item
+on the viewed preset, without advancing; the same exact SKU toggles off. Live and
+captured-history click behavior is unchanged. Size-menu opening normalizes primary
+`ordinary` intent to `preset_sequence` and secondary `context` to `preset_current`
+only in a valid future view. Native primary activation and size-menu navigation use
+the sequential action; ContextMenu/Shift+F10 use the current-preset action. Selecting
+a size commits that stored intent, not a newly inferred action. Future card and
+size-option accessible labels explain the swapped actions and planning-only effects.
+Future-origin card and size-menu
 context stays scoped to its original source/configuration, preventing a stale action
 from falling through to live mapping after capture. The panel blocks overlapping
 submissions and navigates only after a confirmed save if the originating view is

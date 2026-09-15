@@ -464,8 +464,11 @@ button {
 .variation-step-controls {
   grid-column: 1;
   grid-row: 1;
-  justify-self: end;
-  transform: translateX(-2px);
+  justify-self: start;
+  /* Center between the search's right edge and the visible badge's left edge,
+     accounting for its intrinsic width inside the unchanged 112px center slot. */
+  --variation-search-end: calc(min(28px, max(0px, calc(100% - 110px))) + min(64px, max(0px, calc(100% - 46px))));
+  margin-inline-start: calc((var(--variation-search-end) + 100% + 6px + (112px - var(--capture-badge-width, 112px)) / 2 - 42px) / 2);
   display: flex;
   gap: 2px;
   width: 42px;
@@ -1615,7 +1618,7 @@ button {
 /* Follow the validated badge state, not individual save/refresh busy cycles.
    Dim only content siblings so the health badge and spinner stay fully bright. */
 .tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="connecting"]):not([data-capture-planning]) > :not(.capture-health-row),
-.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="loading"]):not([data-capture-planning]) > :not(.capture-health-row) {
+.tracker-workspace:has(> .capture-health-row > .capture-health-badge[data-phase="loading"]) > :not(.capture-health-row) {
   opacity: 0.5;
 }
 

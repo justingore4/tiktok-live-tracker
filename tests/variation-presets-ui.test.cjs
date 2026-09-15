@@ -70,9 +70,35 @@ function deferred() {
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+function planningClock() {
+  let now = 0, nextId = 0;
+  const timers = new Map(), scheduled = [];
+  return {
+    scheduled,
+    get pendingCount() { return timers.size; },
+    setTimeout(callback, delay) {
+      const timer = { id: ++nextId, callback, delay, at: now + delay };
+      timers.set(timer.id, timer); scheduled.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    advance(ms) {
+      const target = now + ms;
+      let calls = 0;
+      for (;;) {
+        const due = [...timers.values()].filter(timer => timer.at <= target).sort((a, b) => a.at - b.at)[0];
+        if (!due) break;
+        assert.ok(++calls < 100, "A planning delay must not turn into polling");
+        now = due.at; timers.delete(due.id); due.callback();
+      }
+      now = target;
+    },
+  };
+}
+
 function fixture({ total = null, view = baselineView() } = {}) {
   const calls = [], selections = [], renders = [];
-  const rawView = view;
+  const rawView = view, clock = planningClock();
   const context = {
     variationPresetsView: projection, variationPresetsProtocol: protocol,
     variationPresetsSnapshot: presetSnapshot(total), variationPresetsReady: true,
@@ -80,8 +106,11 @@ function fixture({ total = null, view = baselineView() } = {}) {
     variationPresetsEntryContext: null,
     variationPresetsGeneration: 0, variationPresetsReadGeneration: 0,
     selectedPresetVariationNumber: null, variationNavigationGeneration: 0,
+    pendingPresetResumeSelection: null,
     captureStateNotificationGeneration: 0,
     capturePlanningOverride: null, capturePlanningLoad: null, capturePlanningCycleGeneration: 0,
+    captureConnectingPlanning: null, capturePlanningDisposed: false,
+    CONNECTING_PLANNING_DELAY_MS: 1300, window: clock,
     document: element(),
     variationPresetsForm: element(), variationPresetsButton: element(), variationPresetsInput: element(),
     variationSearchForm: element(), variationSearchInput: element(),
@@ -151,8 +180,10 @@ function fixture({ total = null, view = baselineView() } = {}) {
     "getActiveView", "getRecordedVariations", "getSelectableVariations", "hasSelectedRecordedVariation", "hasSelectedEditableVariation",
     "findVariationOption", "isCaptureInteractionLocked", "guardCaptureInteraction", "isCurrentVariationMapped", "getCurrentVariationMappedSku",
     "canUseVariationPresetData", "hasCapturePlanningScope", "isCapturePlanningEnabled", "isCapturePlanningLocked", "isCapturePlanningTarget", "handleCapturePlanningLoad", "syncCapturePlanningScope",
+    "resetConnectingPlanningDelay", "isConnectingPlanningContextCurrent", "syncConnectingPlanningDelay", "hasConnectingPlanningScope",
     "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "snapshotIsBackgroundRefresh", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection",
     "getFuturePresetContext", "isFuturePresetContextCurrent", "assignNextFuturePreset",
+    "restoreResumedPresetSelection",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch", "selectVariationFromPicker", "nextVariationHasPreset",
     "canStepVariation", "getAdjacentVariationNumber", "updateVariationStepAvailability",
     "saveOrdinaryInventorySelection", "toggleNextItemQueue", "mapCurrentVariationFromHistory", "selectInventorySizeFromPicker",
@@ -163,7 +194,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
   vm.runInContext(outsideDismissal[0], context);
   vm.runInContext(registrations("inventoryGrid"), context);
   context.updateVariationPresetsAvailability();
-  return { context, rawView, calls, selections, renders };
+  return { context, rawView, calls, selections, renders, clock };
 }
 
 async function emptyStreamFixture({ beforeStateRead, ...options } = {}) {
@@ -217,7 +248,7 @@ function installVariationPicker(f) {
   c.variationSelectShell = element();
   c.variationSelectorOpen = false;
   c.activeVariationNumber = null;
-  c.variationSelectorLock = { lock() { c.pickerLocked = true; } };
+  c.variationSelectorLock = { lock() { c.pickerLocked = true; }, isLocked: () => c.variationSelectorOpen };
   c.showVariationListbox = () => { c.variationListbox.hidden = false; };
   c.releaseVariationSelector = () => {
     c.variationSelectorOpen = false;
@@ -253,6 +284,7 @@ function installPresetNavigation(f) {
     const view = c.getActiveView();
     if (view) c.renderVariationNavigation(view);
     f.renders.push(view);
+    return view;
   };
   c.renderAll();
 }
@@ -299,9 +331,9 @@ test("successful initial pre-stream create immediately displays #1 and hides Ret
     assert.equal(c.variationNavigationGeneration, 1);
     assert.equal(JSON.stringify(f.state), before);
     assert.equal(c.getActiveView().inventory[0].reservedQuantity, 0);
-    await rightClick(f);
+    await leftClick(f);
     assert.equal(c.selectedPresetVariationNumber, 1);
-    await rightClick(f);
+    await leftClick(f);
     assert.equal(c.selectedPresetVariationNumber, 2);
     assert.equal(c.returnToCurrentButton.hidden, true);
     assert.equal(JSON.stringify(f.state), before);
@@ -600,16 +632,16 @@ test("confirming the initially highlighted #1 enables sequential planning withou
   await c.variationSelector.dispatch("keydown", { key: "Enter" });
   assert.equal(c.selectedPresetVariationNumber, 1);
   assert.equal(c.getActiveView().isReviewingPreset, true);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(c.selectedPresetVariationNumber, 1);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(c.selectedPresetVariationNumber, 2);
   assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 1).sku, "A");
   assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 2).sku, "A");
   assert.equal(JSON.stringify(f.state), before);
 });
 
-test("reopening preserves an intentional future selection from Var # or sequential right-click instead of returning to #1", async () => {
+test("reopening preserves an intentional future selection from Var # or sequential left-click instead of returning to #1", async () => {
   const f = await emptyStreamFixture({ total: 200 }), c = f.context;
   const picker = installVariationPicker(f);
   c.variationSearchInput.value = "80";
@@ -618,7 +650,7 @@ test("reopening preserves an intentional future selection from Var # or sequenti
   await c.variationSelector.dispatch("click");
   assert.equal(c.activeVariationNumber, 80);
   c.releaseVariationSelector();
-  await rightClick(f);
+  await leftClick(f);
   picker.render();
   await c.variationSelector.dispatch("click");
   assert.equal(c.activeVariationNumber, 81);
@@ -689,6 +721,237 @@ function installSavedRenderer(f) {
   ].map(declaration).join("\n"), c);
 }
 
+async function installOfflineResume(f, { presets = clone(f.context.variationPresetsSnapshot), preloaded = false } = {}) {
+  const c = f.context;
+  installSavedRenderer(f);
+  installPresetNavigation(f);
+  c.resumeStreamButton = element();
+  c.selectedPresetVariationNumber = null;
+  c.variationPresetsSnapshot = preloaded ? clone(presets) : null;
+  c.variationPresetsReady = preloaded;
+  c.variationPresetsClient.getPresets = async () => clone(presets);
+  const streamController = require("../extension/tagger/stream-session-controller.js").createStreamSessionController({ client: {
+    async getSession() {
+      return { state: { version: 1, activeSession: {
+        streamId: c.mountedStreamId, startedAt: "2026-09-15T18:00:00.000Z", identitySource: "local_session",
+      } }, result: null };
+    },
+    async startStream() { assert.fail("Resume must not start a different stream"); },
+    async endStream() { assert.fail("Resume must not end the stream"); },
+  } });
+  c.streamSessionController = streamController;
+  await streamController.start();
+  c.persistentController.subscribe?.(c.renderSavedSnapshot);
+  streamController.subscribe(snapshot => {
+    c.streamSnapshot = snapshot;
+    if (snapshot.resumed) c.scheduleVariationPresetsRefresh();
+  });
+  vm.runInContext(registrations("resumeStreamButton"), c);
+  return {
+    async resume() { await c.resumeStreamButton.dispatch("click"); await settle(); },
+    async refresh() { c.scheduleVariationPresetsRefresh(); await settle(); },
+  };
+}
+
+test("explicit offline Resume selects existing preset #1 once, preserving its item, canonical state and readiness locks", async () => {
+  for (const phase of ["blank", "active", "connecting", "loading"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    c.variationPresetsSnapshot.assignments.push({ variationNumber: 1, sku: "A" });
+    const beforeState = JSON.stringify(f.state), beforePlan = clone(c.variationPresetsSnapshot);
+    const flow = await installOfflineResume(f);
+    c.captureHealthBadge.dataset.phase = phase;
+    c.captureHealthBadge.textContent = phase === "blank" ? "Reload Site" : phase;
+    const lock = ["connecting", "loading"].includes(phase);
+    await flow.resume();
+    assert.equal(c.getActiveView().selectedVariationNumber, 1);
+    assert.equal(c.getActiveView().isReviewingPreset, true);
+    assert.equal(c.returnToCurrentButton.hidden, true);
+    assert.equal(c.variationSelector.dataset.variationNumber, "1");
+    assert.match(c.variationSelectorValue.children[0].textContent, /#1.*untracked/);
+    assert.equal(c.getActiveView().inventory.find(entry => entry.sku === "A").selected, true);
+    assert.deepEqual(clone(c.variationPresetsSnapshot), beforePlan);
+    assert.equal(JSON.stringify(f.state), beforeState);
+    assert.equal(c.getActiveView().variations.filter(entry => entry.recorded).length, 0);
+    assert.equal(c.getActiveView().activeBiddingVariationNumber, null);
+    assert.equal(c.captureHealthBadge.dataset.phase, phase);
+    assert.equal(c.isCaptureInteractionLocked(), lock);
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(f.calls.length, 0, "Resume only reads; it must not create or change presets");
+    const navigation = c.variationNavigationGeneration;
+    await flow.refresh();
+    assert.equal(c.variationNavigationGeneration, navigation);
+    assert.equal(c.variationSelector.focused, undefined);
+  }
+});
+
+test("a saved preset already loaded before Resume still restores #1 once and ordinary reopen without Resume does not", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  const flow = await installOfflineResume(f, { preloaded: true });
+  c.restoreResumedPresetSelection();
+  assert.equal(c.selectedPresetVariationNumber, null);
+  await flow.resume();
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  c.selectVariationFromPicker(80);
+  const navigation = c.variationNavigationGeneration;
+  await flow.refresh();
+  c.renderSavedSnapshot({ phase: "ready", busy: false, operation: null, view: f.rawView });
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.equal(c.variationNavigationGeneration, navigation);
+  await flow.resume();
+  assert.equal(c.selectedPresetVariationNumber, 80, "A stale second Resume click must not rearm navigation");
+});
+
+test("offline Resume waits for canonical loading and background refresh before selecting a loaded preset", async () => {
+  for (const operation of ["load", "refresh"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    const flow = await installOfflineResume(f);
+    c.savedSnapshot = { phase: "loading", busy: true, operation, view: operation === "load" ? null : f.rawView };
+    await flow.resume();
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.ok(c.pendingPresetResumeSelection);
+    c.renderSavedSnapshot({ phase: "ready", busy: false, operation, view: f.rawView });
+    await settle();
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(f.state.streams[0].variations.length, 0);
+  }
+});
+
+test("Resume with no saved range or any actually captured variation retains existing waiting/live selection", async () => {
+  for (const captured of [false, true]) {
+    const f = captured ? fixture({ total: 200 }) : await emptyStreamFixture();
+    const c = f.context, before = JSON.stringify(f.rawView);
+    const flow = await installOfflineResume(f);
+    await flow.resume();
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.getActiveView().selectedVariationNumber, f.rawView.selectedVariationNumber);
+    if (!captured) assert.equal(c.variationSelector.getAttribute("data-variation-number"), null);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(JSON.stringify(f.rawView), before);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("a capture persisted before Resume verification but without its notification never sends the live stream to preset #1", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  const flow = await installOfflineResume(f);
+  const reconciliation = require("../extension/shared/reconciliation.js");
+  reconciliation.observeVariations(f.state, { streamId: c.mountedStreamId, variationNumbers: [85] });
+  assert.equal(c.savedSnapshot.view.variations.filter(entry => entry.recorded).length, 0, "The initial panel read is intentionally stale");
+  await flow.resume();
+  assert.equal(c.captureStateNotificationGeneration, 0);
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.getActiveView().selectedVariationNumber, 85);
+  assert.equal(c.pendingPresetResumeSelection, null);
+  assert.equal(f.calls.length, 0);
+});
+
+test("Resume verification is a single read and late capture, navigation, reset, session or failed-read results cannot restore #1", async () => {
+  for (const change of ["capture", "navigation", "reset", "stream", "error"]) {
+    const read = deferred();
+    let reads = 0;
+    const f = await emptyStreamFixture({ total: 200, beforeStateRead: async () => { if (++reads === 2) await read.promise; } });
+    const c = f.context, flow = await installOfflineResume(f);
+    await flow.resume();
+    assert.equal(reads, 2, "Only initial loading and one verification read may run");
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.pendingPresetResumeSelection.verifying, true);
+    c.restoreResumedPresetSelection(); c.restoreResumedPresetSelection();
+    assert.equal(reads, 2, "Ordinary renders while verifying must not start a refresh loop");
+    if (change === "capture") require("../extension/shared/reconciliation.js").observeVariations(f.state, { streamId: c.mountedStreamId, variationNumbers: [90] });
+    else if (change === "navigation") c.variationNavigationGeneration++;
+    else if (change === "reset") c.resetVariationPresetsDisplay();
+    else if (change === "stream") { c.mountedStreamId = "different-stream"; c.streamSnapshot.activeSession.streamId = "different-stream"; }
+    if (change === "error") read.reject(new Error("Synthetic verification read failure"));
+    else read.resolve();
+    await settle(); await settle();
+    assert.equal(c.selectedPresetVariationNumber, null, change);
+    assert.equal(c.pendingPresetResumeSelection, null, change);
+    assert.equal(reads, 2);
+    assert.equal(f.calls.length, 0);
+    if (change === "capture") assert.equal(c.getActiveView().selectedVariationNumber, 90);
+    if (change === "error") assert.equal(c.savedSnapshot.phase, "error");
+  }
+});
+
+test("pending Resume does not override navigation or changed stream, controller, load cycle, preset configuration, or capture epochs", async () => {
+  for (const change of ["navigation", "capture", "controller", "stream", "cycle", "reset"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context, read = deferred();
+    const saved = clone(c.variationPresetsSnapshot);
+    const flow = await installOfflineResume(f);
+    c.variationPresetsClient.getPresets = () => read.promise;
+    await flow.resume();
+    assert.ok(c.pendingPresetResumeSelection);
+    if (change === "navigation") {
+      c.variationPresetsSnapshot = saved; c.variationPresetsReady = true;
+      c.selectVariationFromPicker(80);
+    } else if (change === "capture") {
+      const { capture, sender } = installCaptureNotifications(c);
+      c.handleCaptureStateChanged(capture, sender);
+    } else if (change === "controller") c.persistentController = {};
+    else if (change === "stream") { c.mountedStreamId = "other-stream"; c.streamSnapshot.activeSession.streamId = "other-stream"; }
+    else if (change === "cycle") c.capturePlanningCycleGeneration++;
+    else c.resetVariationPresetsDisplay();
+    read.resolve(saved); await settle();
+    c.restoreResumedPresetSelection(); await settle();
+    assert.notEqual(c.selectedPresetVariationNumber, 1, change);
+    if (change === "navigation") assert.equal(c.selectedPresetVariationNumber, 80);
+    assert.equal(c.pendingPresetResumeSelection, null, change);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("first ready preset identity is pinned while canonical loading and replaced plans cannot satisfy the older Resume", async () => {
+  for (const change of [{ baselineId: "different-baseline" }, { revision: "replacement" }, { total: 300 }, { total: null, assignments: [] }]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    const flow = await installOfflineResume(f);
+    c.savedSnapshot = { phase: "loading", busy: true, operation: "load", view: null };
+    await flow.resume();
+    assert.ok(c.pendingPresetResumeSelection);
+    c.variationPresetsClient.getPresets = async () => ({ ...presetSnapshot(200), ...change });
+    await flow.refresh();
+    c.renderSavedSnapshot({ phase: "ready", busy: false, operation: null, view: f.rawView });
+    await settle();
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("Resume selection rejects busy/error/edit/End/archive prerequisites without retrying later and preset read errors do not invent #1", async () => {
+  for (const block of [
+    c => { c.savedSnapshot.phase = "error"; },
+    c => { c.streamSnapshot.phase = "error"; },
+    c => { c.streamSnapshot.busy = true; },
+    c => { c.streamSnapshot.resumed = false; },
+    c => { c.variationPresetsEditing = true; },
+    c => { c.variationPresetsBusy = true; },
+    c => { c.pendingSavedAction = {}; },
+    c => { c.endConfirmationOpen = true; },
+    c => { c.archivedReportsViewOpen = true; },
+  ]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context, read = deferred();
+    const saved = clone(c.variationPresetsSnapshot);
+    const flow = await installOfflineResume(f);
+    c.variationPresetsClient.getPresets = () => read.promise;
+    await flow.resume(); block(c);
+    read.resolve(saved); await settle();
+    c.restoreResumedPresetSelection(); await settle();
+    assert.equal(c.selectedPresetVariationNumber, null);
+    assert.equal(c.pendingPresetResumeSelection, null);
+    assert.equal(f.calls.length, 0);
+  }
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  const flow = await installOfflineResume(f);
+  c.variationPresetsClient.getPresets = async () => { throw new Error("Synthetic preset read error"); };
+  await flow.resume();
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.variationPresetsReady, false);
+  assert.equal(c.pendingPresetResumeSelection, null);
+  assert.match(c.mappingAnnouncement.textContent, /Synthetic preset read error/);
+});
+
 function inventoryCard(f, sku = "A", multipleSizes = false) {
   const card = element();
   card.isInventoryCard = true;
@@ -698,12 +961,17 @@ function inventoryCard(f, sku = "A", multipleSizes = false) {
   return card;
 }
 
+async function leftClick(f, sku = "A") {
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f, sku) });
+  await settle();
+}
+
 async function rightClick(f, sku = "A") {
   await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, sku) });
   await settle();
 }
 
-function installPlanningRuntime(f, phase = "loading") {
+function installPlanningRuntime(f, phase = "connecting") {
   const c = f.context;
   c.document.activeElement = null;
   c.variationSelectorOpen ??= false;
@@ -740,33 +1008,510 @@ function installPlanningRuntime(f, phase = "loading") {
   return { row, variation, inventory, metrics, pin };
 }
 
-test("startup opt-in enables planning only, removes tint without changing Connecting/Loading, and creates initial #1", async () => {
-  for (const phase of ["connecting", "loading"]) {
-    const f = await emptyStreamFixture(), c = f.context;
-    installPresetNavigation(f);
-    const dom = installPlanningRuntime(f, phase), before = JSON.stringify(f.state);
-    assert.equal(c.isCaptureInteractionLocked(), true);
-    assert.equal(c.canChangeVariationPresets(), false);
-    assert.equal(c.variationPresetsButton.disabled, false);
-    assert.equal(dom.inventory.hasAttribute("inert"), true);
-    await beginInitialPresetSave(f, 200);
+test("automatic planning untints only at 1.3 seconds of blue Connecting without changing readiness or extending the delay", async () => {
+  assert.match(source, /const CONNECTING_PLANNING_DELAY_MS = 1_300;/);
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installPresetNavigation(f);
+  c.selectVariationFromPicker(1);
+  const dom = installPlanningRuntime(f, "connecting");
+  const before = JSON.stringify(f.state), plan = clone(c.variationPresetsSnapshot);
+  c.queuedNextItemSku = "unchanged-queue";
+  assert.equal(f.clock.pendingCount, 1);
+  assert.equal(f.clock.scheduled[0].delay, 1300);
+  f.clock.advance(1299);
+  c.setWorkspaceBusy(false); c.renderAll();
+  assert.equal(c.isCapturePlanningEnabled(), false);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+  assert.equal(dom.inventory.hasAttribute("inert"), true);
+  await leftClick(f); await rightClick(f);
+  assert.equal(f.calls.length, 0);
+  f.clock.advance(1);
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+  assert.equal(dom.inventory.hasAttribute("inert"), false);
+  assert.equal(c.inventoryGrid.hasAttribute("inert"), false);
+  assert.equal(dom.metrics.hasAttribute("inert"), true);
+  assert.equal(dom.pin.hasAttribute("inert"), true);
+  assert.equal(c.addActiveStreamSkusButton.hasAttribute("inert"), true);
+  assert.equal(c.captureHealthBadge.dataset.phase, "connecting");
+  assert.equal(c.captureHealthBadge.textContent, "Connecting");
+  assert.equal(c.isCaptureInteractionLocked(), true);
+  assert.equal(c.capturePlanningOverride, null, "Automatic untint must not manufacture a manual override");
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  assert.equal(JSON.stringify(f.state), before);
+  assert.deepEqual(clone(c.variationPresetsSnapshot), plan);
+  assert.equal(c.queuedNextItemSku, "unchanged-queue");
+  f.clock.advance(6000); c.setWorkspaceBusy(false);
+  assert.equal(f.clock.scheduled.length, 1, "Ordinary renders and time passage cannot start a second countdown");
+  assert.equal(c.captureHealthBadge.textContent, "Connecting", "This planning timer must not drive the badge's existing timeout");
+  assert.equal(c.capturePlanningOverride, null);
+});
+
+test("1.3-second automatic planning uses the existing future click/search/size workflows without changing canonical state", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installPresetNavigation(f); c.selectVariationFromPicker(1);
+  installPlanningRuntime(f, "connecting");
+  const before = JSON.stringify(f.state);
+  f.clock.advance(1300);
+  await leftClick(f); await leftClick(f);
+  assert.equal(c.selectedPresetVariationNumber, 2);
+  await rightClick(f);
+  assert.equal(c.variationPresetsSnapshot.assignments.some(entry => entry.variationNumber === 2), false);
+  c.variationSearchInput.value = "3";
+  await c.variationSearchForm.dispatch("submit");
+  assert.equal(c.selectedPresetVariationNumber, 3);
+  installSizeMenu(f);
+  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f, "A", true) });
+  assert.equal(c.inventorySizeMenuState.intent, "preset_sequence");
+  c.selectInventorySizeFromPicker("A-L"); await settle();
+  assert.equal(f.calls.at(-1).command.sku, "A-L");
+  assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 3).sku, "A-L");
+  assert.equal(JSON.stringify(f.state), before);
+  assert.equal(c.capturePlanningOverride, null);
+  assert.equal(c.captureHealthBadge.dataset.phase, "connecting");
+  assert.equal(c.getActiveView().inventory[0].reservedQuantity, 0);
+});
+
+test("automatic activation repaints disabled future cards once without changing selection, focus, or scrolling", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context, repaints = [];
+  installPresetNavigation(f); c.selectVariationFromPicker(1);
+  const card = inventoryCard(f); card.disabled = true;
+  const focus = element(); c.document.activeElement = focus;
+  c.renderInventory = (view, focusSku) => {
+    repaints.push({ number: view.selectedVariationNumber, focusSku });
+    // Model the actual renderer's disabled condition, keeping one real event
+    // target to prove untint alone would otherwise leave its click disabled.
+    card.disabled = !c.hasSelectedEditableVariation(view) || !view.inventory.some(entry => entry.selectionAllowed);
+  };
+  assert.match(declaration("createInventoryCard"), /button\.disabled = !selectionAllowed \|\| !canTagSelectedVariation/);
+  installPlanningRuntime(f, "connecting");
+  c.document.activeElement = focus;
+  f.clock.advance(1299);
+  assert.equal(card.disabled, true);
+  assert.equal(repaints.length, 0);
+  f.clock.advance(1);
+  assert.equal(card.disabled, false);
+  assert.deepEqual(repaints, [{ number: 1, focusSku: undefined }]);
+  assert.equal(c.document.activeElement, focus);
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  for (let render = 0; render < 3; render++) c.setWorkspaceBusy(false);
+  f.clock.advance(6000);
+  assert.equal(repaints.length, 1);
+  await c.inventoryGrid.dispatch("click", { target: card }); await settle();
+  assert.equal(f.calls[0].kind, "assignNextPresetItem");
+});
+
+function installPlanningHealthCallback(f) {
+  const c = f.context;
+  c.captureHealthView = require("../extension/tagger/capture-health-view.js");
+  c.captureHealthDescription = element();
+  vm.runInContext(declaration("handleCaptureHealthChange"), c);
+}
+
+test("existing yellow-to-green or Reload Site signals immediately repaint disabled future cards once without waiting for another capture", async () => {
+  for (const phase of ["active", "blank"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context, repaints = [];
+    installPresetNavigation(f); c.selectVariationFromPicker(1);
+    installPlanningRuntime(f, "loading"); installPlanningHealthCallback(f);
+    const card = inventoryCard(f); card.disabled = true;
+    const before = JSON.stringify(f.state), focus = element();
+    c.document.activeElement = focus;
+    c.renderInventory = (view, focusSku) => {
+      repaints.push({ number: view.selectedVariationNumber, focusSku });
+      card.disabled = !c.hasSelectedEditableVariation(view) || !view.inventory.some(entry => entry.selectionAllowed);
+    };
+    assert.match(declaration("createInventoryCard"), /button\.disabled = !selectionAllowed \|\| !canTagSelectedVariation/);
+    await c.inventoryGrid.dispatch("click", { target: card });
+    assert.equal(f.calls.length, 0);
+    c.handleCaptureHealthChange({ phase, reason: phase === "active" ? "ready" : "unavailable" });
+    assert.equal(card.disabled, false);
+    assert.deepEqual(repaints, [{ number: 1, focusSku: undefined }]);
     assert.equal(c.captureHealthBadge.dataset.phase, phase);
-    assert.equal(c.captureHealthBadge.textContent, phase === "loading" ? "Loading" : "Connecting");
-    assert.equal(c.isCaptureInteractionLocked(), true, "Actual readiness must not be faked");
-    assert.equal(c.isCapturePlanningEnabled(), true);
-    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
-    assert.equal(dom.inventory.hasAttribute("inert"), false);
-    assert.equal(dom.variation.hasAttribute("inert"), false);
-    assert.equal(dom.metrics.hasAttribute("inert"), true);
-    assert.equal(dom.pin.hasAttribute("inert"), true);
-    assert.equal(c.addActiveStreamSkusButton.hasAttribute("inert"), true);
-    assert.equal(c.activeStreamInventoryUpdateForm.hasAttribute("inert"), true);
-    assert.equal(c.inventoryGrid.hasAttribute("inert"), false);
-    assert.equal(c.getActiveView().selectedVariationNumber, 1);
-    assert.equal(c.getActiveView().isReviewingPreset, true);
+    assert.equal(c.captureHealthBadge.textContent, phase === "active" ? "Capture active" : "Reload Site");
+    assert.equal(c.canChangeVariationPresets(), true);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.document.activeElement, focus);
     assert.equal(c.trackerWorkspace.scrollTop, 123);
+    assert.equal(f.clock.scheduled.length, 0, "Unlocking uses the existing readiness callback, not a new timer or poll");
+    assert.equal(JSON.stringify(f.state), before);
+    c.handleCaptureHealthChange({ phase, reason: "ready" });
+    c.handleCaptureHealthChange({ phase: phase === "active" ? "blank" : "active", reason: "ready" });
+    assert.equal(repaints.length, 1);
+    await c.inventoryGrid.dispatch("click", { target: card }); await settle();
+    assert.equal(f.calls[0].kind, "assignNextPresetItem");
+    assert.equal(f.calls[0].command.variationNumber, 1);
     assert.equal(JSON.stringify(f.state), before);
   }
+});
+
+test("ready signals do not repaint or move focus in an already-interactive blue manual or automatic future view", async () => {
+  for (const mode of ["manual", "automatic"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    installPresetNavigation(f); c.selectVariationFromPicker(1);
+    installPlanningRuntime(f, "connecting"); installPlanningHealthCallback(f);
+    if (mode === "manual") {
+      c.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic reset failure retains saved plan"); };
+      await c.variationPresetsButton.dispatch("click");
+    } else f.clock.advance(1300);
+    const card = inventoryCard(f);
+    c.document.activeElement = card;
+    assert.equal(c.hasCapturePlanningScope(), true);
+    assert.equal(c.canChangeVariationPresets(), true);
+    c.renderInventory = () => assert.fail("A ready signal must not replace already-interactive focused cards");
+    c.handleCaptureHealthChange({ phase: "active", reason: "ready" });
+    assert.equal(c.captureHealthBadge.dataset.phase, "active");
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.captureConnectingPlanning, null);
+    assert.equal(c.document.activeElement, card);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+    assert.equal(c.canChangeVariationPresets(), true);
+  }
+});
+
+test("ready repaint still respects local busy/error safeguards and never repaints a captured live or historical view", async () => {
+  for (const block of [
+    c => { c.savedSnapshot.busy = true; },
+    c => { c.savedSnapshot.phase = "error"; },
+    c => { c.pendingSavedAction = {}; },
+    c => { c.nextItemQueueMutationBusy = true; },
+    c => { c.variationPresetsBusy = true; },
+    c => { c.activeStreamInventoryUpdateBusy = true; },
+    c => { c.endConfirmationOpen = true; },
+    c => { c.variationPresetsReady = false; },
+  ]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    c.selectVariationFromPicker(1); installPlanningRuntime(f, "loading"); installPlanningHealthCallback(f);
+    const card = inventoryCard(f); card.disabled = true;
+    block(c);
+    c.renderInventory = () => assert.fail("Readiness cannot repaint past unrelated busy/error guards");
+    c.handleCaptureHealthChange({ phase: "active", reason: "ready" });
+    assert.equal(c.canChangeVariationPresets(), false);
+    assert.equal(card.disabled, true);
+    await c.inventoryGrid.dispatch("click", { target: card });
+    assert.equal(f.calls.length, 0);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+  }
+  for (const number of [30, 29]) {
+    const f = fixture({ total: 200 }), c = f.context;
+    c.selectVariationFromPicker(number); installPlanningRuntime(f, "loading"); installPlanningHealthCallback(f);
+    c.renderInventory = () => assert.fail("This targeted repaint must not touch captured live/history views");
+    c.handleCaptureHealthChange({ phase: "active", reason: "ready" });
+    assert.equal(c.getActiveView().selectedVariationNumber, number);
+  }
+});
+
+test("a manual opt-in before 1.3 seconds suppresses redundant automatic repaint and preserves focused future controls", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installPresetNavigation(f); c.selectVariationFromPicker(1);
+  installPlanningRuntime(f, "connecting");
+  c.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic reset failure retains saved plan"); };
+  await c.variationPresetsButton.dispatch("click");
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  const manual = c.capturePlanningOverride, card = inventoryCard(f);
+  c.document.activeElement = card;
+  c.renderInventory = () => assert.fail("Already-interactive future cards must not be replaced when the automatic timer catches up");
+  f.clock.advance(1300);
+  assert.equal(c.captureConnectingPlanning.activated, true);
+  assert.equal(c.capturePlanningOverride, manual);
+  assert.equal(c.document.activeElement, card);
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  assert.equal(c.captureHealthBadge.dataset.phase, "connecting");
+});
+
+test("yellow rejects automatic and manual planning, including a previous blue opt-in, and restores the capture restriction", async () => {
+  for (const initial of ["connecting", "loading"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    installPresetNavigation(f); c.selectVariationFromPicker(1);
+    const dom = installPlanningRuntime(f, initial);
+    f.clock.advance(1300);
+    assert.equal(c.isCapturePlanningEnabled(), initial === "connecting");
+    c.captureHealthBadge.dataset.phase = "loading";
+    c.captureHealthBadge.textContent = "Loading";
+    c.setWorkspaceBusy(false);
+    assert.equal(c.captureConnectingPlanning, null);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+    assert.equal(dom.inventory.hasAttribute("inert"), true);
+    f.clock.advance(10000);
+    assert.equal(c.isCapturePlanningEnabled(), false);
+    assert.equal(f.clock.pendingCount, 0);
+    c.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic reset failure retains saved plan"); };
+    await c.variationPresetsButton.dispatch("click");
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.isCapturePlanningEnabled(), false);
+    assert.equal(c.variationPresetsButton.disabled, true);
+    assert.equal(c.variationPresetsForm.hasAttribute("inert"), true);
+    assert.equal(f.calls.length, 0);
+    assert.equal(c.captureHealthBadge.dataset.phase, "loading");
+    assert.equal(c.captureHealthBadge.textContent, "Loading");
+  }
+  const f = await emptyStreamFixture(), c = f.context;
+  installPlanningRuntime(f, "connecting");
+  await c.variationPresetsButton.dispatch("click");
+  assert.ok(c.capturePlanningOverride);
+  f.clock.advance(1300);
+  c.captureHealthBadge.dataset.phase = "loading"; c.setWorkspaceBusy(false);
+  assert.equal(c.capturePlanningOverride, null, "Yellow revokes the blue manual opt-in");
+  assert.equal(c.isCapturePlanningEnabled(), false);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+});
+
+test("yellow rejects stale blue planning events before rerender and closes open future pickers without mapping, queueing or focus restoration", async () => {
+  for (const mode of ["manual", "automatic"]) {
+    for (const type of ["click", "contextmenu"]) {
+      const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+      installPresetNavigation(f); c.selectVariationFromPicker(1); installSizeMenu(f);
+      const dom = installPlanningRuntime(f, "connecting");
+      if (mode === "manual") {
+        c.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic reset failure retains saved plan"); };
+        await c.variationPresetsButton.dispatch("click");
+      } else f.clock.advance(1300);
+      assert.equal(c.isCapturePlanningEnabled(), true);
+      const sizeCard = inventoryCard(f, "A", true), singleCard = inventoryCard(f);
+      await c.inventoryGrid.dispatch(type, { target: sizeCard });
+      assert.ok(c.inventorySizeMenuState);
+      const oldPicker = c.inventorySizeMenuState, beforePlan = clone(c.variationPresetsSnapshot);
+      const beforeState = JSON.stringify(f.state), callsBefore = f.calls.length;
+      c.captureHealthBadge.dataset.phase = "loading";
+      c.captureHealthBadge.textContent = "Loading";
+      // The old manual/automatic scope and enabled DOM attributes still exist:
+      // handlers must reject based on the current yellow phase, not repaint.
+      assert.equal(c.hasCapturePlanningScope(), false);
+      assert.equal(c.isCapturePlanningTarget(c.variationPresetsButton), false);
+      await c.inventoryGrid.dispatch("click", { target: singleCard });
+      await c.inventoryGrid.dispatch("contextmenu", { target: singleCard });
+      await c.assignNextFuturePreset(singleCard, singleCard.futurePresetContext);
+      c.saveOrdinaryInventorySelection(singleCard, c.getActiveView());
+      c.selectInventorySizeFromPicker("A-L");
+      await c.variationPresetsButton.dispatch("click");
+      await c.variationPresetsForm.dispatch("submit");
+      c.variationSearchInput.value = "80"; await c.variationSearchForm.dispatch("submit");
+      await c.nextVariationButton.dispatch("click");
+      await c.returnToCurrentButton.dispatch("click");
+      await c.toggleNextItemQueue(singleCard, c.getActiveView());
+      await c.mapCurrentVariationFromHistory(singleCard, c.getActiveView());
+      await settle();
+      assert.equal(f.calls.length, callsBefore);
+      assert.equal(c.selectedPresetVariationNumber, 1);
+      assert.deepEqual(clone(c.variationPresetsSnapshot), beforePlan);
+      assert.equal(JSON.stringify(f.state), beforeState);
+      const closed = [];
+      c.inventorySizeMenuState = oldPicker;
+      c.releaseInventorySizeMenu = options => { closed.push(options); c.inventorySizeMenuState = null; };
+      sizeCard.blur = () => { c.document.activeElement = null; };
+      c.document.activeElement = sizeCard;
+      c.setWorkspaceBusy(false);
+      assert.equal(c.inventorySizeMenuState, null);
+      assert.deepEqual(clone(closed), [{ restoreFocus: false }]);
+      assert.equal(c.document.activeElement, null, "Existing capture lock may blur a now-inert control but must not focus another");
+      assert.equal(c.capturePlanningOverride, null);
+      assert.equal(c.captureConnectingPlanning, null);
+      assert.equal(c.variationPresetsButton.disabled, true);
+      assert.equal(c.variationPresetsForm.hasAttribute("inert"), true);
+      assert.equal(dom.variation.hasAttribute("inert"), true);
+      assert.equal(dom.inventory.hasAttribute("inert"), true);
+      assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+      assert.equal(c.trackerWorkspace.scrollTop, 123);
+      f.clock.advance(10000);
+      assert.equal(c.canChangeVariationPresets(), false);
+      assert.equal(c.captureHealthBadge.textContent, "Loading");
+    }
+  }
+});
+
+test("a blue preset-entry draft cannot submit in yellow and only resumes after existing readiness plus other guards allow it", async () => {
+  for (const readyPhase of ["active", "blank"]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPlanningRuntime(f, "connecting");
+    await c.variationPresetsButton.dispatch("click");
+    c.variationPresetsInput.value = "200";
+    assert.equal(c.variationPresetsEditing, true);
+    c.captureHealthBadge.dataset.phase = "loading";
+    c.setWorkspaceBusy(false);
+    assert.equal(c.variationPresetsInput.disabled, true);
+    assert.equal(c.variationPresetsForm.hasAttribute("inert"), true);
+    await c.variationPresetsForm.dispatch("submit");
+    assert.equal(f.calls.length, 0);
+    assert.equal(c.variationPresetsInput.value, "200");
+    assert.equal(c.variationPresetsSnapshot.total, null);
+    c.pendingSavedAction = {};
+    c.captureHealthBadge.dataset.phase = readyPhase;
+    c.setWorkspaceBusy(false);
+    assert.equal(c.isCaptureInteractionLocked(), false);
+    assert.equal(c.variationPresetsInput.disabled, true, "Readiness removes only the capture restriction");
+    await c.variationPresetsForm.dispatch("submit");
+    assert.equal(f.calls.length, 0);
+    c.pendingSavedAction = null; c.setWorkspaceBusy(false);
+    assert.equal(c.variationPresetsInput.disabled, false);
+    await c.variationPresetsForm.dispatch("submit");
+    assert.equal(f.calls[0].kind, "createPresets");
+    assert.equal(c.variationPresetsSnapshot.total, 200);
+    assert.equal(c.captureHealthBadge.dataset.phase, readyPhase);
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+  }
+});
+
+test("elapsed automatic planning waits for local readiness and the existing preset refresh enables it without another 1.3 seconds", async () => {
+  for (const pending of ["canonical", "presets"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    if (pending === "canonical") {
+      c.savedSnapshot = { ...c.savedSnapshot, phase: "loading", busy: true };
+      c.trackerWorkspace.hidden = true;
+    }
+    else c.variationPresetsReady = false;
+    installPlanningRuntime(f, "connecting");
+    c.setWorkspaceBusy(c.savedSnapshot.busy);
+    const scope = c.captureConnectingPlanning;
+    f.clock.advance(6000);
+    assert.equal(scope.elapsed, true);
+    assert.equal(scope.activated, false);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+    if (pending === "canonical") {
+      c.savedSnapshot = { ...c.savedSnapshot, phase: "ready", busy: false };
+      c.trackerWorkspace.hidden = false;
+      c.setWorkspaceBusy(false);
+    } else {
+      c.variationPresetsClient.getPresets = async () => presetSnapshot(200);
+      vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+      c.scheduleVariationPresetsRefresh(); await settle();
+    }
+    assert.equal(c.captureConnectingPlanning, scope);
+    assert.equal(scope.activated, true);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+    assert.equal(f.clock.scheduled.length, 1);
+    assert.equal(c.captureHealthBadge.dataset.phase, "connecting");
+  }
+});
+
+test("automatic planning latches through unrelated busy safeguards without enabling edits or restarting its timer", async () => {
+  for (const block of [
+    c => { c.pendingSavedAction = {}; },
+    c => { c.variationPresetsBusy = true; },
+    c => { c.nextItemQueueMutationBusy = true; },
+    c => { c.activeStreamInventoryUpdateBusy = true; },
+    c => { c.savedSnapshot.phase = "error"; },
+    c => { c.savedSnapshot.busy = true; },
+    c => { c.streamSnapshot.busy = true; },
+    c => { c.endConfirmationOpen = true; },
+    c => { c.variationPresetsReady = false; },
+  ]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    c.selectVariationFromPicker(1); installPlanningRuntime(f, "connecting");
+    f.clock.advance(1300);
+    const scope = c.captureConnectingPlanning;
+    assert.equal(c.isCapturePlanningEnabled(), true);
+    block(c); c.setWorkspaceBusy(c.savedSnapshot.busy);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+    assert.equal(c.isCapturePlanningEnabled(), false);
+    await leftClick(f); await rightClick(f);
+    c.variationSearchInput.value = "2"; await c.variationSearchForm.dispatch("submit");
+    await c.variationPresetsButton.dispatch("click");
+    assert.equal(f.calls.length, 0);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    assert.equal(c.captureConnectingPlanning, scope);
+    assert.equal(f.clock.scheduled.length, 1);
+    assert.equal(c.capturePlanningOverride, null);
+  }
+});
+
+test("automatic planning keeps actual live/history mutations and queueing capture-locked after the 1.3-second delay", async () => {
+  for (const number of [30, 29]) {
+    const f = fixture({ total: 200 }), c = f.context;
+    c.selectVariationFromPicker(number); installPlanningRuntime(f, "connecting");
+    c.nextItemQueueClient = { toggleQueue() { assert.fail("Automatic planning must not queue live inventory"); } };
+    f.clock.advance(1300);
+    assert.equal(c.isCapturePlanningEnabled(), true);
+    await leftClick(f); await rightClick(f);
+    await c.toggleNextItemQueue(inventoryCard(f), c.getActiveView());
+    await c.mapCurrentVariationFromHistory(inventoryCard(f), c.getActiveView());
+    c.saveOrdinaryInventorySelection(inventoryCard(f), c.getActiveView());
+    assert.equal(f.calls.length, 0);
+    assert.equal(c.getActiveView().selectedVariationNumber, number);
+    assert.equal(c.isCaptureInteractionLocked(), true);
+  }
+});
+
+test("first dashboard identity binding preserves the countdown while a real refresh restarts it and rejects stale callbacks", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+  installPlanningRuntime(f, "connecting");
+  const first = c.captureConnectingPlanning, expiredCallback = f.clock.scheduled[0].callback;
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: null });
+  f.clock.advance(650);
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first-document" });
+  assert.equal(c.captureConnectingPlanning, first);
+  f.clock.advance(650);
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "new-document" });
+  const next = c.captureConnectingPlanning;
+  assert.notEqual(next, first);
+  assert.equal(c.isCapturePlanningEnabled(), false);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+  expiredCallback();
+  assert.equal(next.elapsed, false);
+  f.clock.advance(1299); assert.equal(c.isCapturePlanningEnabled(), false);
+  f.clock.advance(1); assert.equal(c.isCapturePlanningEnabled(), true);
+  assert.equal(f.clock.scheduled.length, 2);
+});
+
+test("old automatic-planning timers cannot affect a new controller/session, inactive view, or disposed panel", async () => {
+  for (const change of ["controller", "session", "inactive", "archive", "dispose"]) {
+    const f = await emptyStreamFixture({ total: 200 }), c = f.context;
+    installPlanningRuntime(f, "connecting");
+    const old = c.captureConnectingPlanning, staleCallback = f.clock.scheduled[0].callback;
+    f.clock.advance(650);
+    if (change === "controller") c.persistentController = {};
+    else if (change === "session") c.streamSnapshot.activeSession = { streamId: "other-stream" };
+    else if (change === "inactive") c.streamSnapshot.resumed = false;
+    else if (change === "archive") c.archivedReportsViewOpen = true;
+    else c.capturePlanningDisposed = true;
+    c.setWorkspaceBusy(false);
+    staleCallback();
+    assert.equal(old.elapsed, false);
+    assert.equal(c.isCapturePlanningEnabled(), false);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+    if (change === "controller") {
+      assert.notEqual(c.captureConnectingPlanning, old);
+      f.clock.advance(650); assert.equal(c.isCapturePlanningEnabled(), false);
+      f.clock.advance(650); assert.equal(c.isCapturePlanningEnabled(), true);
+    } else {
+      assert.equal(c.captureConnectingPlanning, null);
+      assert.equal(f.clock.pendingCount, 0);
+      f.clock.advance(10000); assert.equal(c.isCapturePlanningEnabled(), false);
+    }
+  }
+  const disposal = source.slice(source.lastIndexOf('"pagehide"'));
+  assert.match(disposal, /capturePlanningDisposed = true;[\s\S]*resetConnectingPlanningDelay\(\)/);
+});
+
+test("blue startup opt-in enables planning only, removes tint without changing Connecting, and creates initial #1", async () => {
+  const phase = "connecting";
+  const f = await emptyStreamFixture(), c = f.context;
+  installPresetNavigation(f);
+  const dom = installPlanningRuntime(f, phase), before = JSON.stringify(f.state);
+  assert.equal(c.isCaptureInteractionLocked(), true);
+  assert.equal(c.canChangeVariationPresets(), false);
+  assert.equal(c.variationPresetsButton.disabled, false);
+  assert.equal(dom.inventory.hasAttribute("inert"), true);
+  await beginInitialPresetSave(f, 200);
+  assert.equal(c.captureHealthBadge.dataset.phase, phase);
+  assert.equal(c.captureHealthBadge.textContent, "Connecting");
+  assert.equal(c.isCaptureInteractionLocked(), true, "Actual readiness must not be faked");
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+  assert.equal(dom.inventory.hasAttribute("inert"), false);
+  assert.equal(dom.variation.hasAttribute("inert"), false);
+  assert.equal(dom.metrics.hasAttribute("inert"), true);
+  assert.equal(dom.pin.hasAttribute("inert"), true);
+  assert.equal(c.addActiveStreamSkusButton.hasAttribute("inert"), true);
+  assert.equal(c.activeStreamInventoryUpdateForm.hasAttribute("inert"), true);
+  assert.equal(c.inventoryGrid.hasAttribute("inert"), false);
+  assert.equal(c.getActiveView().selectedVariationNumber, 1);
+  assert.equal(c.getActiveView().isReviewingPreset, true);
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  assert.equal(JSON.stringify(f.state), before);
 });
 
 test("startup planning uses dropdown, Var #, arrows, inventory search, exact sizes, and sequential clicks without accounting", async () => {
@@ -774,11 +1519,11 @@ test("startup planning uses dropdown, Var #, arrows, inventory search, exact siz
   installPresetNavigation(f); installPlanningRuntime(f);
   const before = JSON.stringify(f.state);
   await beginInitialPresetSave(f, 200);
-  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) }); await settle();
+  await rightClick(f);
   assert.equal(c.variationPresetsSnapshot.assignments[0].variationNumber, 1);
-  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) }); await settle();
+  await rightClick(f);
   assert.equal(c.variationPresetsSnapshot.assignments.length, 0);
-  await rightClick(f); await rightClick(f);
+  await leftClick(f); await leftClick(f);
   assert.equal(c.selectedPresetVariationNumber, 2);
   await c.nextVariationButton.dispatch("click");
   assert.equal(c.selectedPresetVariationNumber, 3);
@@ -797,9 +1542,9 @@ test("startup planning uses dropdown, Var #, arrows, inventory search, exact siz
   assert.equal(c.inventoryListExpanded, true);
   installSizeMenu(f);
   const commandsBeforeSize = f.calls.length;
-  await c.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
+  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f, "A", true) });
   assert.equal(f.calls.length, commandsBeforeSize);
-  assert.equal(c.inventorySizeMenuState.intent, "preset_context");
+  assert.equal(c.inventorySizeMenuState.intent, "preset_sequence");
   c.selectInventorySizeFromPicker("A-L"); await settle();
   assert.equal(f.calls.at(-1).command.sku, "A-L");
   assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 6).sku, "A-L");
@@ -1028,7 +1773,7 @@ test("new-document changes suppress delayed create, sequential, and reset naviga
     c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first" });
     if (action !== "create") {
       await beginInitialPresetSave(f, 200);
-      await rightClick(f);
+      await leftClick(f);
     }
     const kind = { create: "createPresets", sequential: "assignNextPresetItem", reset: "resetPresets" }[action];
     const original = c.variationPresetsClient[kind];
@@ -1041,7 +1786,7 @@ test("new-document changes suppress delayed create, sequential, and reset naviga
     let pending;
     if (action === "create") pending = beginInitialPresetSave(f, 200);
     else if (action === "reset") pending = c.variationPresetsButton.dispatch("click");
-    else await c.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+    else await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
     await settle();
     assert.equal(c.variationPresetsBusy, true);
     const selected = c.selectedPresetVariationNumber;
@@ -1160,23 +1905,23 @@ test("loading retry refreshes preset prerequisites once and stale earlier reads 
   assert.equal(reads, 2, "Ordinary ready rerenders must not add preset reads or polling");
 });
 
-test("zero-capture planning needs explicit opt-in during Connecting/Loading and remains normally available when ready", async () => {
+test("zero-capture planning allows blue opt-in, blocks yellow entirely, and remains normally available when ready", async () => {
   for (const phase of ["connecting", "loading", "blank", "active"]) {
     const f = await emptyStreamFixture();
     f.context.captureHealthBadge.dataset.phase = phase;
     f.context.updateVariationPresetsAvailability();
     const locked = ["connecting", "loading"].includes(phase);
-    assert.equal(f.context.variationPresetsButton.disabled, false);
+    assert.equal(f.context.variationPresetsButton.disabled, phase === "loading");
     assert.equal(f.context.canChangeVariationPresets(), !locked);
     await f.context.variationPresetsButton.dispatch("click");
-    assert.equal(f.context.variationPresetsEditing, true);
+    assert.equal(f.context.variationPresetsEditing, phase !== "loading");
     assert.equal(f.context.captureHealthBadge.dataset.phase, phase);
     assert.equal(f.rawView.activeBiddingVariationNumber, null);
     assert.equal(f.state.streams[0].variations.length, 0);
   }
 });
 
-test("zero-capture planning supports total entry, exact lookup, left-click changes and sequential right-click without stock effects", async () => {
+test("zero-capture planning supports total entry, exact lookup, right-click changes and sequential left-click without stock effects", async () => {
   const f = await emptyStreamFixture(), before = JSON.stringify(f.state);
   f.context.captureHealthBadge.dataset.phase = "blank";
   await f.context.variationPresetsButton.dispatch("click");
@@ -1193,15 +1938,13 @@ test("zero-capture planning supports total entry, exact lookup, left-click chang
   f.context.variationSearchInput.value = "1";
   await f.context.variationSearchForm.dispatch("submit");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 1);
-  f.context.saveOrdinaryInventorySelection(inventoryCard(f), f.context.getActiveView());
-  await settle();
+  await rightClick(f);
   assert.equal(f.context.variationPresetsSnapshot.assignments[0].variationNumber, 1);
-  f.context.saveOrdinaryInventorySelection(inventoryCard(f), f.context.getActiveView());
-  await settle();
+  await rightClick(f);
   assert.equal(f.context.variationPresetsSnapshot.assignments.length, 0);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 1);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 2);
   assert.equal(f.context.variationPresetsSnapshot.assignments.length, 2);
   assert.equal(JSON.stringify(f.state), before);
@@ -1246,7 +1989,7 @@ test("pre-stream canonical readiness still waits for the original capture lock a
   read.resolve(presetSnapshot(null));
   await settle();
   assert.equal(f.context.variationPresetsReady, true);
-  assert.equal(f.context.variationPresetsButton.disabled, false, "Only explicit planning opt-in is available");
+  assert.equal(f.context.variationPresetsButton.disabled, true, "Yellow remains locked even after local preset data becomes ready");
   assert.equal(f.context.canChangeVariationPresets(), false);
   f.context.captureHealthBadge.dataset.phase = "blank";
   f.context.setWorkspaceBusy(false);
@@ -1455,8 +2198,8 @@ test("dismissing an unsaved preset input never removes capture-loading or unrela
     await c.document.dispatch("pointerdown", { target: c.trackerWorkspace });
     assert.equal(c.variationPresetsEditing, false);
     assert.equal(c.canChangeVariationPresets(), false);
-    assert.equal(c.variationPresetsButton.disabled, c.savedSnapshot.busy);
-    assert.equal(c.variationPresetsForm.hasAttribute("inert"), c.savedSnapshot.busy);
+    assert.equal(c.variationPresetsButton.disabled, true);
+    assert.equal(c.variationPresetsForm.hasAttribute("inert"), true);
     assert.equal(calls.length, 0);
   }
 });
@@ -1515,19 +2258,19 @@ test("future selection and Var # lookup never call the captured controller and i
   assert.equal(f.context.getActiveView().currentVariationNumber, 31);
 });
 
-test("future assignment and unassignment use only revision-checked preset messages and leave inventory unchanged", async () => {
+test("future right-click assignment and unassignment use only revision-checked preset messages without advancing or changing inventory", async () => {
   const f = fixture({ total: 200 });
   f.context.selectVariationFromPicker(81);
   const before = JSON.stringify(f.rawView);
-  f.context.saveOrdinaryInventorySelection({ dataset: { sku: "A" } }, f.context.getActiveView());
-  await settle();
+  await rightClick(f);
   assert.equal(f.calls[0].kind, "setPresetItem");
   assert.equal(f.calls[0].command.variationNumber, 81);
   assert.equal(f.calls[0].command.sku, "A");
   assert.equal(JSON.stringify(f.rawView), before);
-  f.context.saveOrdinaryInventorySelection({ dataset: { sku: "A" } }, f.context.getActiveView());
-  await settle();
+  assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
+  await rightClick(f);
   assert.equal(f.calls[1].command.sku, null);
+  assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
   assert.equal(JSON.stringify(f.rawView), before);
 });
 
@@ -1748,16 +2491,16 @@ test("real controller holds intentional future browsing after promotion through 
   assert.equal(f.context.getActiveView().selectedVariationNumber, 27);
 });
 
-test("right-click fills an empty current future preset and then fills and advances through subsequent presets", async () => {
+test("left-click fills an empty current future preset and then fills and advances through subsequent presets", async () => {
   const f = fixture({ total: 200 });
   f.rawView.inventory.push({ ...f.rawView.inventory[0], sku: "B", item: "Jeans" });
   f.context.selectVariationFromPicker(81);
   const canonicalBefore = JSON.stringify(f.rawView);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
-  await rightClick(f, "B");
+  await leftClick(f, "B");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 82);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 83);
   assert.deepEqual(f.calls.map(({ kind, command }) => [kind, command.variationNumber, command.sku]), [
     ["assignNextPresetItem", 81, "A"], ["assignNextPresetItem", 81, "B"], ["assignNextPresetItem", 82, "A"],
@@ -1775,7 +2518,7 @@ test("sequential UI uses the worker-returned target, skipping assigned and captu
   f.context.variationPresetsSnapshot.assignments.push({ variationNumber: 81, sku: "A" });
   f.rawView.variations.push({ variationNumber: 82, recorded: true, sku: "A" });
   f.context.selectVariationFromPicker(80);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.calls[0].command.variationNumber, 80, "The panel sends the source, not its own guessed next target");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 83);
   assert.deepEqual(clone(f.context.variationPresetsSnapshot.assignments), [
@@ -1784,12 +2527,12 @@ test("sequential UI uses the worker-returned target, skipping assigned and captu
   assert.equal(f.rawView.variations.find((entry) => entry.variationNumber === 82).sku, "A");
 });
 
-test("final empty preset accepts its first right-click; subsequent clicks preserve it and announce the end without wrapping", async () => {
+test("final empty preset accepts its first left-click; subsequent clicks preserve it and announce the end without wrapping", async () => {
   const f = fixture({ total: 200 });
   f.context.selectVariationFromPicker(200);
-  await rightClick(f);
+  await leftClick(f);
   const saved = clone(f.context.variationPresetsSnapshot);
-  await rightClick(f);
+  await leftClick(f);
   assert.deepEqual(clone(f.context.variationPresetsSnapshot), saved);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 200);
   assert.equal(f.context.mappingAnnouncement.textContent, "No more future variations.");
@@ -1797,27 +2540,77 @@ test("final empty preset accepts its first right-click; subsequent clicks preser
   assert.deepEqual(f.selections, []);
 });
 
-test("same SKU right-clicks never toggle off a preset, while left-click still unassigns the viewed future item", async () => {
+test("same SKU left-clicks never toggle off a preset, while right-click unassigns only the viewed future item", async () => {
   const f = fixture({ total: 200 });
   f.context.selectVariationFromPicker(80);
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
   assert.equal(f.context.variationPresetsSnapshot.assignments.filter((entry) => entry.sku === "A").length, 2);
-  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
-  await settle();
+  await rightClick(f);
   assert.equal(f.calls.at(-1).kind, "setPresetItem");
   assert.equal(f.calls.at(-1).command.sku, null);
   assert.equal(f.context.variationPresetsSnapshot.assignments.some((entry) => entry.variationNumber === 80), true);
   assert.equal(f.context.variationPresetsSnapshot.assignments.some((entry) => entry.variationNumber === 81), false);
 });
 
-test("sequential right-click failure neither advances nor retries or changes authoritative assignments", async () => {
+test("right-click replaces only the current future assignment and never advances, even at the final preset", async () => {
+  for (const number of [80, 200]) {
+    const f = fixture({ total: 200 });
+    f.rawView.inventory.push({ ...f.rawView.inventory[0], sku: "B", item: "Jeans" });
+    f.context.selectVariationFromPicker(number);
+    const canonicalBefore = JSON.stringify(f.rawView);
+    if (number === 200) await rightClick(f);
+    await rightClick(f, "B");
+    assert.equal(f.context.getActiveView().selectedVariationNumber, number);
+    assert.equal(f.calls.every(({ kind, command }) => kind === "setPresetItem" && command.variationNumber === number), true);
+    assert.equal(f.context.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === number).sku, "B");
+    await rightClick(f, "B");
+    assert.equal(f.context.variationPresetsSnapshot.assignments.some(entry => entry.variationNumber === number), false);
+    assert.equal(f.context.getActiveView().selectedVariationNumber, number);
+    assert.equal(JSON.stringify(f.rawView), canonicalBefore);
+  }
+});
+
+test("failed secondary assignment preserves the current plan and view without attempting sequential or live actions", async () => {
+  const f = fixture({ total: 200 });
+  f.context.selectVariationFromPicker(80);
+  const before = clone(f.context.variationPresetsSnapshot);
+  let requests = 0;
+  f.context.variationPresetsClient.setPresetItem = async () => { requests++; throw new Error("Synthetic secondary save failure"); };
+  await rightClick(f);
+  assert.equal(requests, 1);
+  assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+  assert.deepEqual(clone(f.context.variationPresetsSnapshot), before);
+  assert.match(f.context.mappingAnnouncement.textContent, /Synthetic secondary save failure/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.context.variationPresetsBusy, false);
+});
+
+test("pending future assignments block both mouse buttons without buffering a second action", async () => {
+  for (const type of ["click", "contextmenu"]) {
+    const f = fixture({ total: 200 }), reply = deferred();
+    f.context.selectVariationFromPicker(81);
+    const kind = type === "click" ? "assignNextPresetItem" : "setPresetItem";
+    const original = f.context.variationPresetsClient[kind];
+    f.context.variationPresetsClient[kind] = async command => { const result = await original(command); await reply.promise; return result; };
+    await f.context.inventoryGrid.dispatch(type, { target: inventoryCard(f) });
+    assert.equal(f.context.variationPresetsBusy, true);
+    await leftClick(f); await rightClick(f);
+    assert.equal(f.calls.length, 1);
+    reply.resolve(); await settle();
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
+    assert.deepEqual(clone(f.context.variationPresetsSnapshot.assignments.slice(-1)), [{ variationNumber: 81, sku: "A" }]);
+  }
+});
+
+test("sequential left-click failure neither advances nor retries or changes authoritative assignments", async () => {
   const f = fixture({ total: 200 });
   f.context.selectVariationFromPicker(80);
   const before = clone(f.context.variationPresetsSnapshot);
   let requests = 0;
   f.context.variationPresetsClient.assignNextPresetItem = async () => { requests++; throw new Error("Synthetic save failure"); };
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(requests, 1);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
   assert.deepEqual(clone(f.context.variationPresetsSnapshot), before);
@@ -1825,7 +2618,7 @@ test("sequential right-click failure neither advances nor retries or changes aut
   assert.equal(f.context.variationPresetsBusy, false);
 });
 
-test("rapid right-clicks are not buffered and cannot overlap a pending sequential assignment", async () => {
+test("rapid left-clicks are not buffered and cannot overlap a pending sequential assignment", async () => {
   const f = fixture({ total: 200 }), reply = deferred();
   f.context.selectVariationFromPicker(80);
   const client = f.context.variationPresetsClient.assignNextPresetItem;
@@ -1836,10 +2629,10 @@ test("rapid right-clicks are not buffered and cannot overlap a pending sequentia
     await reply.promise;
     return result;
   };
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
   assert.equal(f.context.variationPresetsBusy, true);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
   assert.equal(requests, 1);
   reply.resolve();
   await settle();
@@ -1854,7 +2647,7 @@ test("a delayed sequential acknowledgement does not override navigation to a cap
   f.context.variationPresetsClient.assignNextPresetItem = async (command) => {
     const result = await client(command); await reply.promise; return result;
   };
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
   f.context.selectVariationFromPicker(29);
   reply.resolve();
   await settle();
@@ -1868,7 +2661,7 @@ test("late sequential acknowledgements cannot restore a reset, another baseline,
     f.context.selectVariationFromPicker(80);
     const old = clone(f.context.variationPresetsSnapshot);
     f.context.variationPresetsClient.assignNextPresetItem = () => reply.promise;
-    await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+    await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
     f.context.resetVariationPresetsDisplay();
     const replacement = presetSnapshot(300);
     replacement.revision = "new-configuration";
@@ -1883,17 +2676,19 @@ test("late sequential acknowledgements cannot restore a reset, another baseline,
   }
 });
 
-test("capture of a future-card source before its stale contextmenu event never falls back to live mapping", async () => {
-  const f = fixture({ total: 200 });
-  f.context.selectVariationFromPicker(80);
-  const card = inventoryCard(f);
-  f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
-  f.context.preserveCapturedPresetSelection(f.context.savedSnapshot);
-  f.context.mapCurrentVariationFromHistory = () => assert.fail("Stale future action must not map live");
-  f.context.toggleNextItemQueue = () => assert.fail("Stale future action must not queue");
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: card });
-  assert.equal(f.calls.length, 0);
-  assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+test("capture of a future-card source before either stale mouse event never falls back to live mapping", async () => {
+  for (const type of ["click", "contextmenu"]) {
+    const f = fixture({ total: 200 });
+    f.context.selectVariationFromPicker(80);
+    const card = inventoryCard(f);
+    f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
+    f.context.preserveCapturedPresetSelection(f.context.savedSnapshot);
+    f.context.mapCurrentVariationFromHistory = () => assert.fail("Stale future action must not map live");
+    f.context.toggleNextItemQueue = () => assert.fail("Stale future action must not queue");
+    await f.context.inventoryGrid.dispatch(type, { target: card });
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+  }
 });
 
 test("capture after sequential submission keeps the newly captured source selected instead of jumping on a late acknowledgement", async () => {
@@ -1901,7 +2696,7 @@ test("capture after sequential submission keeps the newly captured source select
   f.context.selectVariationFromPicker(80);
   const client = f.context.variationPresetsClient.assignNextPresetItem;
   f.context.variationPresetsClient.assignNextPresetItem = async (command) => { const result = await client(command); await reply.promise; return result; };
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
   f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
   f.context.preserveCapturedPresetSelection(f.context.savedSnapshot);
   reply.resolve(); await settle();
@@ -1918,7 +2713,7 @@ test("a notification read starting before the assignment acknowledgement does no
     f.context.variationPresetsReadGeneration++;
     return result;
   };
-  await rightClick(f);
+  await leftClick(f);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
 });
 
@@ -1927,7 +2722,7 @@ test("newer authoritative preset refresh suppresses stale sequential navigation 
   f.context.selectVariationFromPicker(80);
   const old = clone(f.context.variationPresetsSnapshot);
   f.context.variationPresetsClient.assignNextPresetItem = () => reply.promise;
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
   const current = { ...presetSnapshot(null), revision: "newer-reset" };
   f.context.variationPresetsReadGeneration++;
   f.context.variationPresetsSnapshot = current;
@@ -1940,23 +2735,29 @@ test("newer authoritative preset refresh suppresses stale sequential navigation 
 function installSizeMenu(f) {
   f.rawView.inventory.push({ ...f.rawView.inventory[0], sku: "A-L", size: "L" });
   Object.assign(f.context, {
-    queuedNextItemSku: null, variationSelectorOpen: false,
+    queuedNextItemSku: null, variationSelectorOpen: false, activeInventorySizeSku: null,
     findInventoryGroup: (view) => ({ key: "synthetic-group", entries: view.inventory }),
-    renderInventorySizeOptions(group, view, intent) { f.sizeIntent = intent; },
-    showInventorySizeListbox() {}, setActiveInventorySize(sku) { f.preferredSize = sku; },
+    renderInventorySizeOptions(group, view, intent) {
+      f.sizeIntent = intent;
+      f.sizeRows = group.entries.map(entry => ({ dataset: { sku: entry.sku, disabled: String(!entry.selectionAllowed) } }));
+    },
+    showInventorySizeListbox() {}, setActiveInventorySize(sku) { f.preferredSize = sku; f.context.activeInventorySizeSku = sku; },
   });
-  vm.runInContext(declaration("openInventorySizeMenu"), f.context);
-  vm.runInContext(declaration("getInventorySizeOptionActionDescription"), f.context);
+  f.context.inventorySizeListbox.querySelectorAll = () => f.sizeRows ?? [];
+  vm.runInContext([
+    "openInventorySizeMenu", "getInventorySizeOptionActionDescription", "commitActiveInventorySize", "handleInventorySizeMenuKeydown",
+    "getInventorySizeOptionRows", "moveActiveInventorySizeToBoundary",
+  ].map(declaration).join("\n"), f.context);
 }
 
-test("future right-click opens existing size picker and submits only the exact chosen SKU, never a representative size", async () => {
+test("future left-click opens sequential size picker and submits only the exact chosen SKU, never a representative size", async () => {
   const f = fixture({ total: 200 });
   installSizeMenu(f);
   f.context.selectVariationFromPicker(80);
   const card = inventoryCard(f, "A", true);
-  await f.context.inventoryGrid.dispatch("contextmenu", { target: card });
+  await f.context.inventoryGrid.dispatch("click", { target: card });
   assert.equal(f.calls.length, 0);
-  assert.equal(f.context.inventorySizeMenuState.intent, "preset_context");
+  assert.equal(f.context.inventorySizeMenuState.intent, "preset_sequence");
   assert.equal(f.preferredSize, "A");
   f.context.selectInventorySizeFromPicker("A-L");
   await settle();
@@ -1964,42 +2765,102 @@ test("future right-click opens existing size picker and submits only the exact c
   assert.equal(f.calls[0].command.sku, "A-L");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
   assert.equal(f.context.variationPresetsSnapshot.assignments.find((entry) => entry.variationNumber === 81).sku, "A-L");
-  assert.match(f.context.getInventorySizeOptionActionDescription({}, f.context.getActiveView(), "preset_context"), /next empty future preset/);
+  assert.match(f.context.getInventorySizeOptionActionDescription({}, f.context.getActiveView(), "preset_sequence"), /next empty future preset/);
 });
 
-test("keyboard context-menu entry uses the same future-size intent and does not submit before size confirmation", async () => {
+test("future right-click size picker changes or unselects the exact size on the current preset without advancing", async () => {
   const f = fixture({ total: 200 });
   installSizeMenu(f);
-  f.context.selectVariationFromPicker(81);
-  await f.context.inventoryGrid.dispatch("keydown", { target: inventoryCard(f, "A", true), key: "F10", shiftKey: true });
-  assert.equal(f.context.inventorySizeMenuState.intent, "preset_context");
+  f.context.selectVariationFromPicker(80);
+  const initial = clone(f.context.variationPresetsSnapshot);
+  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
+  assert.equal(f.context.inventorySizeMenuState.intent, "preset_current");
+  assert.deepEqual(clone(f.context.variationPresetsSnapshot), initial);
   assert.equal(f.calls.length, 0);
-  f.context.selectInventorySizeFromPicker("A-L");
-  await settle();
+  f.context.selectInventorySizeFromPicker("A-L"); await settle();
+  assert.equal(f.calls[0].kind, "setPresetItem");
   assert.equal(f.calls[0].command.sku, "A-L");
+  assert.equal(f.calls[0].command.variationNumber, 80);
+  assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+  assert.equal(f.context.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 80).sku, "A-L");
+  await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
+  assert.equal(f.preferredSize, "A-L");
+  f.context.selectInventorySizeFromPicker("A-L"); await settle();
+  assert.equal(f.calls[1].command.sku, null);
+  assert.equal(f.context.variationPresetsSnapshot.assignments.some(entry => entry.variationNumber === 80), false);
+  assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+  assert.match(f.context.getInventorySizeOptionActionDescription({ selected: false }, f.context.getActiveView(), "preset_current"), /Select this size for future preset 80; stay on this preset/);
+  assert.match(f.context.getInventorySizeOptionActionDescription({ selected: true }, f.context.getActiveView(), "preset_current"), /Unselect this size from future preset 80; stay on this preset/);
+});
+
+test("keyboard ContextMenu and Shift+F10 use current-only future size selection and Enter confirms exactly once", async () => {
+  for (const entry of [{ key: "ContextMenu" }, { key: "F10", shiftKey: true }]) {
+    const f = fixture({ total: 200 });
+    installSizeMenu(f);
+    f.context.selectVariationFromPicker(80);
+    const card = inventoryCard(f, "A", true);
+    await f.context.inventoryGrid.dispatch("keydown", { target: card, ...entry });
+    assert.equal(f.context.inventorySizeMenuState.intent, "preset_current");
+    assert.equal(f.calls.length, 0);
+    f.context.setActiveInventorySize("A-L");
+    await f.context.inventoryGrid.dispatch("keydown", { target: card, key: "Enter" });
+    await settle();
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].kind, "setPresetItem");
+    assert.equal(f.calls[0].command.sku, "A-L");
+    assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
+  }
+});
+
+test("keyboard primary size-picker entry and native button activation retain sequential future assignment", async () => {
+  for (const key of ["ArrowDown", "ArrowUp", "Home", "End"]) {
+    const f = fixture({ total: 200 });
+    installSizeMenu(f);
+    f.context.selectVariationFromPicker(80);
+    const card = inventoryCard(f, "A", true);
+    await f.context.inventoryGrid.dispatch("keydown", { target: card, key });
+    assert.equal(f.context.inventorySizeMenuState.intent, "preset_sequence");
+    assert.equal(f.preferredSize, key === "End" ? "A-L" : "A");
+    assert.equal(f.calls.length, 0);
+    f.context.setActiveInventorySize("A-L");
+    await f.context.inventoryGrid.dispatch("keydown", { target: card, key: "Enter" });
+    await settle();
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].kind, "assignNextPresetItem");
+    assert.equal(f.calls[0].command.sku, "A-L");
+    assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
+  }
+  const f = fixture({ total: 200 });
+  f.context.selectVariationFromPicker(80);
+  // Native Enter/Space activation of a single-size button dispatches click.
+  await f.context.inventoryGrid.dispatch("click", { target: inventoryCard(f), detail: 0 });
+  await settle();
+  assert.equal(f.calls[0].kind, "assignNextPresetItem");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 81);
 });
 
 test("capture, reset and assignment-revision changes while choosing a future size reject the old intent without live fallback", async () => {
-  for (const change of ["capture", "reset", "revision"]) {
-    const f = fixture({ total: 200 });
-    installSizeMenu(f);
-    f.context.selectVariationFromPicker(80);
-    await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
-    f.context.mapCurrentVariationFromHistory = () => assert.fail("A stale future size choice must not map live");
-    if (change === "capture") {
-      f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
-      f.context.preserveCapturedPresetSelection(f.context.savedSnapshot);
-    } else if (change === "reset") f.context.variationPresetsSnapshot = presetSnapshot(null);
-    else f.context.variationPresetsSnapshot.revision = "newer-assignment";
-    f.context.selectInventorySizeFromPicker("A-L");
-    await settle();
-    assert.equal(f.calls.length, 0);
-    assert.equal(f.context.inventorySizeMenuState, null);
+  for (const type of ["click", "contextmenu"]) {
+    for (const change of ["capture", "reset", "revision"]) {
+      const f = fixture({ total: 200 });
+      installSizeMenu(f);
+      f.context.selectVariationFromPicker(80);
+      await f.context.inventoryGrid.dispatch(type, { target: inventoryCard(f, "A", true) });
+      f.context.mapCurrentVariationFromHistory = () => assert.fail("A stale future size choice must not map live");
+      if (change === "capture") {
+        f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
+        f.context.preserveCapturedPresetSelection(f.context.savedSnapshot);
+      } else if (change === "reset") f.context.variationPresetsSnapshot = presetSnapshot(null);
+      else f.context.variationPresetsSnapshot.revision = "newer-assignment";
+      f.context.selectInventorySizeFromPicker("A-L");
+      await settle();
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.context.inventorySizeMenuState, null);
+    }
   }
 });
 
-test("all existing loading, session and busy safeguards prevent stale sequential right-click and future size submissions", async () => {
+test("all existing loading, session and busy safeguards prevent both future mouse actions and size submissions", async () => {
   for (const block of [
     (c) => { c.captureHealthBadge.dataset.phase = "connecting"; },
     (c) => { c.captureHealthBadge.dataset.phase = "loading"; },
@@ -2021,8 +2882,10 @@ test("all existing loading, session and busy safeguards prevent stale sequential
     const card = inventoryCard(f);
     const context = card.futurePresetContext;
     block(f.context);
+    await f.context.inventoryGrid.dispatch("click", { target: card });
     await f.context.inventoryGrid.dispatch("contextmenu", { target: card });
     await f.context.assignNextFuturePreset(card, context);
+    f.context.openInventorySizeMenu(inventoryCard(f, "A", true), "ordinary");
     f.context.openInventorySizeMenu(inventoryCard(f, "A", true), "context");
     assert.equal(f.calls.length, 0);
     assert.equal(f.context.inventorySizeMenuState, null);
@@ -2039,6 +2902,23 @@ test("actual live and captured-history contextmenu routes remain unchanged", asy
     await rightClick(f);
     assert.deepEqual(actions, [[route, number]]);
     assert.equal(f.calls.length, 0);
+  }
+});
+
+test("actual live and captured-history primary clicks still map or unmap the selected variation rather than sequencing", async () => {
+  for (const number of [30, 29]) {
+    for (const selected of [true, false]) {
+      const f = fixture({ total: 200 }), mutations = [];
+      vm.runInContext(declaration("runSavedMutation"), f.context);
+      f.context.selectVariationFromPicker(number);
+      f.rawView.inventory[0].selected = selected;
+      f.context.persistentController.mapSelectedSku = async sku => { mutations.push(["map", number, sku]); };
+      f.context.persistentController.unmapSelectedVariation = async () => { mutations.push(["unmap", number]); };
+      await leftClick(f);
+      assert.deepEqual(mutations, selected ? [["unmap", number]] : [["map", number, "A"]]);
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.context.getActiveView().selectedVariationNumber, number);
+    }
   }
 });
 

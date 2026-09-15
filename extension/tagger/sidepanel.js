@@ -76,6 +76,7 @@
   const variationSearchForm = document.querySelector("#variation-search-form");
   const variationSearchInput = document.querySelector("#variation-search-input");
   const variationStepControls = document.querySelector("#variation-step-controls");
+  const captureBadgeSizeObserver = new ResizeObserver(updateCaptureBadgeWidth);
   const previousVariationButton = document.querySelector("#previous-variation");
   const nextVariationButton = document.querySelector("#next-variation");
   const variationPresetsForm = document.querySelector("#variation-presets-form");
@@ -86,10 +87,7 @@
     runtime: chrome.runtime,
     protocol: globalThis.TikTokLiveTrackerCaptureHealth,
     onLoadChange: handleCapturePlanningLoad,
-    onChange: (state) => {
-      captureHealthView.renderBadge(captureHealthBadge, captureHealthDescription, state);
-      setWorkspaceBusy(savedSnapshot?.busy === true);
-    },
+    onChange: handleCaptureHealthChange,
   });
   const appFooter = document.querySelector(".app-footer");
   const savedSessionError = document.querySelector("#saved-session-error");
@@ -610,14 +608,18 @@
   let variationPresetsEditing = false;
   let variationPresetsEntryContext = null;
   let variationPresetsBusy = false;
+  const CONNECTING_PLANNING_DELAY_MS = 1_300;
   let capturePlanningOverride = null;
   let capturePlanningLoad = null;
   let capturePlanningCycleGeneration = 0;
+  let captureConnectingPlanning = null;
+  let capturePlanningDisposed = false;
   let variationPresetsGeneration = 0;
   let variationPresetsReadGeneration = 0;
   let selectedPresetVariationNumber = null;
   let variationNavigationGeneration = 0;
   let captureStateNotificationGeneration = 0;
+  let pendingPresetResumeSelection = null;
   let lastRenderedSavedVariations = new Map();
   let previousInventoryImportPhase = null;
   let focusInventoryImportAfterRetry = false;
@@ -1300,7 +1302,8 @@
       !trackerWorkspace.hidden && !archivedReportsViewOpen;
     variationPresetsForm.hidden = !visible;
     const disabled = !canChangeVariationPresets();
-    const canOptIn = !variationPresetsEditing && isCaptureInteractionLocked() && canUseVariationPresetData();
+    const canOptIn = !variationPresetsEditing && captureHealthBadge.dataset.phase === "connecting" &&
+      isCaptureInteractionLocked() && canUseVariationPresetData();
     variationPresetsForm.toggleAttribute("inert", disabled && !canOptIn);
     variationPresetsButton.disabled = disabled && !canOptIn;
     variationPresetsInput.disabled = disabled;
@@ -1313,6 +1316,7 @@
   }
 
   function resetVariationPresetsDisplay() {
+    pendingPresetResumeSelection = null;
     variationNavigationGeneration += 1;
     variationPresetsGeneration += 1;
     variationPresetsReadGeneration += 1;
@@ -1350,15 +1354,87 @@
         variationPresetsEditing = false;
         variationPresetsEntryContext = null;
       }
+      restoreResumedPresetSelection();
+      // Presets may finish loading after the blue-only planning delay elapsed.
+      if (captureConnectingPlanning?.elapsed && !captureConnectingPlanning.activated) {
+        setWorkspaceBusy(savedSnapshot?.busy === true);
+      }
       updateVariationPresetsAvailability();
       updateVariationSearchAvailability();
       renderAll();
     }).catch((error) => {
       if (streamId !== mountedStreamId || generation !== variationPresetsReadGeneration) return;
+      pendingPresetResumeSelection = null;
       variationPresetsReady = false;
       updateVariationPresetsAvailability();
       mappingAnnouncement.textContent = error?.message ?? "Presets could not be loaded. Reopen the tracker panel to retry.";
     });
+  }
+
+  function restoreResumedPresetSelection() {
+    const request = pendingPresetResumeSelection;
+    if (!request) return false;
+    // Resume is an explicit, one-shot navigation intent. Ordinary reads and
+    // rerenders must never re-arm it or replace a newer user/capture view.
+    if (request.controller !== persistentController || request.streamId !== mountedStreamId ||
+        !streamSnapshot.resumed || streamSnapshot.activeSession?.streamId !== request.streamId ||
+        streamSnapshot.busy || streamSnapshot.phase === "error" || savedSnapshot?.phase === "error" ||
+        request.navigationGeneration !== variationNavigationGeneration ||
+        request.captureGeneration !== captureStateNotificationGeneration ||
+        request.planningCycle !== capturePlanningCycleGeneration ||
+        request.presetGeneration !== variationPresetsGeneration ||
+        selectedPresetVariationNumber !== null || variationPresetsEditing || variationPresetsBusy ||
+        pendingSavedAction || endConfirmationOpen || archivedReportsViewOpen) {
+      pendingPresetResumeSelection = null;
+      return false;
+    }
+    if (!variationPresetsReady) return false;
+    const presets = variationPresetsSnapshot;
+    request.presets ??= presets;
+    if (!presets || presets.streamId !== request.streamId || presets.total === null ||
+        presets.baselineId !== request.presets.baselineId ||
+        presets.revision !== request.presets.revision || presets.total !== request.presets.total) {
+      pendingPresetResumeSelection = null;
+      return false;
+    }
+    // Initial canonical loading and preset loading may finish in either order.
+    // A capture notification invalidates this intent before its debounced view
+    // refresh, so a stale empty view cannot send a newly-live stream back to #1.
+    if (savedSnapshot?.phase !== "ready" || savedSnapshot.busy || !savedSnapshot.view) return false;
+    if (savedSnapshot.view.streamId !== request.streamId ||
+        getRecordedVariations(savedSnapshot.view).length !== 0 ||
+        findVariationOption(getActiveView(), 1)?.preset !== true) {
+      pendingPresetResumeSelection = null;
+      return false;
+    }
+    if (!request.verified) {
+      if (request.verifying) return false;
+      request.verifying = true;
+      // Capture notifications are best-effort. Verify once after presets arrive
+      // as well, covering a capture persisted since the initial workspace read.
+      // The flag prevents the refresh's own renders/reads from starting a loop.
+      Promise.resolve().then(() => pendingPresetResumeSelection === request
+        ? request.controller.refresh() : null).then((snapshot) => {
+        if (pendingPresetResumeSelection !== request) return;
+        if (snapshot?.phase !== "ready" || snapshot.view?.streamId !== request.streamId ||
+            getRecordedVariations(snapshot.view).length !== 0) {
+          pendingPresetResumeSelection = null;
+          return;
+        }
+        request.verified = true;
+        if (restoreResumedPresetSelection()) renderAll();
+      }).catch((error) => {
+        if (pendingPresetResumeSelection !== request) return;
+        pendingPresetResumeSelection = null;
+        console.error("[TikTok Live Tracker] Resumed preset view could not be verified.", error);
+      });
+      return false;
+    }
+    pendingPresetResumeSelection = null;
+    selectedPresetVariationNumber = 1;
+    variationNavigationGeneration += 1;
+    mappingAnnouncement.textContent = "Saved presets restored. Planning untracked variation #1.";
+    return true;
   }
 
   function nextVariationHasPreset(view) {
@@ -1582,7 +1658,8 @@
     if (!isCurrentCreate()) return;
 
     // Only this successful initial create may enter planning automatically.
-    // Reopening/refreshing a saved plan and extending it never choose a view.
+    // Ordinary reads and extensions never choose a view; explicit Resume has
+    // its own guarded restoration for an existing, entirely uncaptured plan.
     if (confirmedBeforeCapture && captureGeneration === captureStateNotificationGeneration &&
         canChangeVariationPresets() && getRecordedVariations(savedSnapshot.view).length === 0 &&
         findVariationOption(getActiveView(), 1)?.preset === true) {
@@ -1730,6 +1807,7 @@
 
   function unmountPersistentController() {
     pendingTrackerEntryViewport = null;
+    resetConnectingPlanningDelay();
     capturePlanningOverride = null;
     capturePlanningCycleGeneration += 1;
     clearCaptureRefreshTimer();
@@ -1792,6 +1870,30 @@
     scheduleNextItemQueueRefresh();
   }
 
+  function handleCaptureHealthChange(state) {
+    const wasStartupLocked = ["connecting", "loading"].includes(captureHealthBadge.dataset.phase);
+    const wasPlanning = hasCapturePlanningScope() && canChangeVariationPresets();
+    captureHealthView.renderBadge(captureHealthBadge, captureHealthDescription, state);
+    setWorkspaceBusy(savedSnapshot?.busy === true);
+    // Future cards may have been rendered disabled during yellow. Release their
+    // disabled state on the existing ready/unavailable signal, without waiting
+    // for another capture, changing selection, or taking keyboard focus.
+    const view = getActiveView();
+    if (wasStartupLocked && !wasPlanning && !isCaptureInteractionLocked() &&
+        canChangeVariationPresets() && view?.isReviewingPreset) {
+      renderInventory(view);
+    }
+  }
+
+  function updateCaptureBadgeWidth(entries) {
+    const entry = entries.find((candidate) => candidate.target === captureHealthBadge);
+    const width = entry?.borderBoxSize?.[0]?.inlineSize;
+    if (!Number.isFinite(width) || width < 0) return;
+    // Only the arrows use this measurement; it cannot resize the observed badge.
+    if (width === 0) variationStepControls.style.removeProperty("--capture-badge-width");
+    else variationStepControls.style.setProperty("--capture-badge-width", `${width}px`);
+  }
+
   function isCaptureInteractionLocked() {
     const phase = captureHealthBadge.dataset.phase;
     return (
@@ -1819,6 +1921,7 @@
         capturePlanningLoad.loadId !== null && nextLoad.loadId !== null &&
           capturePlanningLoad.loadId !== nextLoad.loadId);
     if (changedCycle) {
+      resetConnectingPlanningDelay();
       capturePlanningCycleGeneration += 1;
       variationNavigationGeneration += 1;
       // Restore an available opt-in control for the new load. This dismisses
@@ -1843,11 +1946,65 @@
     setWorkspaceBusy(savedSnapshot?.busy === true);
   }
 
+  function resetConnectingPlanningDelay() {
+    if (captureConnectingPlanning?.timerId != null) {
+      window.clearTimeout(captureConnectingPlanning.timerId);
+    }
+    captureConnectingPlanning = null;
+  }
+
+  function isConnectingPlanningContextCurrent(scope) {
+    return scope !== null && scope === captureConnectingPlanning && !capturePlanningDisposed &&
+      captureHealthBadge.dataset.phase === "connecting" && streamSnapshot.resumed === true &&
+      streamSnapshot.activeSession?.streamId === scope.streamId && mountedStreamId === scope.streamId &&
+      persistentController === scope.controller && capturePlanningCycleGeneration === scope.cycleGeneration &&
+      !archivedReportsViewOpen;
+  }
+
+  function syncConnectingPlanningDelay() {
+    if (capturePlanningDisposed || captureHealthBadge.dataset.phase !== "connecting" ||
+        !persistentController || !mountedStreamId || streamSnapshot.resumed !== true ||
+        streamSnapshot.activeSession?.streamId !== mountedStreamId || archivedReportsViewOpen) {
+      resetConnectingPlanningDelay();
+      return;
+    }
+    if (!isConnectingPlanningContextCurrent(captureConnectingPlanning)) {
+      resetConnectingPlanningDelay();
+      const scope = {
+        controller: persistentController, streamId: mountedStreamId,
+        cycleGeneration: capturePlanningCycleGeneration,
+        elapsed: false, activated: false, timerId: null,
+      };
+      captureConnectingPlanning = scope;
+      scope.timerId = window.setTimeout(() => {
+        if (!isConnectingPlanningContextCurrent(scope)) return;
+        scope.timerId = null;
+        scope.elapsed = true;
+        setWorkspaceBusy(savedSnapshot?.busy === true);
+      }, CONNECTING_PLANNING_DELAY_MS);
+    }
+    // Timing only permits planning; it never proves capture ready or overrides
+    // local loading/errors. Once activated, ordinary saves need not redim it.
+    if (captureConnectingPlanning.elapsed && !captureConnectingPlanning.activated &&
+        canUseVariationPresetData({ allowBackgroundRefresh: true })) {
+      captureConnectingPlanning.activated = true;
+      return true;
+    }
+    return false;
+  }
+
+  function hasConnectingPlanningScope() {
+    return isConnectingPlanningContextCurrent(captureConnectingPlanning) &&
+      captureConnectingPlanning.activated;
+  }
+
   function hasCapturePlanningScope() {
-    return isCaptureInteractionLocked() && capturePlanningOverride !== null &&
+    const manual = capturePlanningOverride !== null &&
       capturePlanningOverride.streamId === mountedStreamId &&
       (capturePlanningLoad === null || capturePlanningLoad.streamId === mountedStreamId &&
         capturePlanningLoad.loadId === capturePlanningOverride.loadId);
+    return captureHealthBadge.dataset.phase === "connecting" &&
+      isCaptureInteractionLocked() && (manual || hasConnectingPlanningScope());
   }
 
   function isCapturePlanningEnabled({ allowBackgroundRefresh = false } = {}) {
@@ -1859,21 +2016,31 @@
   }
 
   function syncCapturePlanningScope() {
-    if (capturePlanningOverride && (!isCaptureInteractionLocked() ||
+    const alreadyPlanning = hasCapturePlanningScope();
+    const activated = syncConnectingPlanningDelay();
+    if (capturePlanningOverride && (captureHealthBadge.dataset.phase !== "connecting" || !isCaptureInteractionLocked() ||
         capturePlanningOverride.streamId !== streamSnapshot.activeSession?.streamId ||
         capturePlanningOverride.streamId !== mountedStreamId)) {
       capturePlanningOverride = null;
     }
     const planning = isCapturePlanningEnabled({ allowBackgroundRefresh: true });
-    // A local save/refresh can temporarily block controls without bringing the
-    // capture tint back or discarding the user's opt-in.
-    trackerWorkspace.toggleAttribute("data-capture-planning", capturePlanningOverride !== null);
+    // Both planning exceptions belong only to blue. Yellow revokes them and
+    // remains a strict editing lock until the existing startup signal changes.
+    trackerWorkspace.toggleAttribute("data-capture-planning",
+      capturePlanningOverride !== null || hasConnectingPlanningScope());
+    // A resumed future view may already have rendered disabled cards. Refresh
+    // those cards once when automatic planning becomes available, without
+    // changing the selected variation, opening a picker, or moving focus.
+    if (activated && planning && !alreadyPlanning && getActiveView()?.isReviewingPreset) {
+      renderInventory(getActiveView());
+    }
     return planning;
   }
 
   function isCapturePlanningTarget(target, { allowBackgroundRefresh = false } = {}) {
     if (!target) return false;
-    if (!variationPresetsEditing && variationPresetsButton.contains(target) &&
+    if (captureHealthBadge.dataset.phase === "connecting" &&
+        !variationPresetsEditing && variationPresetsButton.contains(target) &&
         canUseVariationPresetData()) return true;
     if (!isCapturePlanningEnabled({ allowBackgroundRefresh })) return false;
     if ([variationPresetsForm, variationSearchForm, variationStepControls,
@@ -2817,6 +2984,7 @@
     }
 
     pendingTrackerEntryViewport = null;
+    pendingPresetResumeSelection = null;
     archivedReportsViewOpen = true;
     renderStreamReportsPanel();
     archivedReportsView.scrollIntoView({ block: "start" });
@@ -3222,9 +3390,16 @@
     }
 
     if (view.isReviewingPreset === true && canTagSelectedVariation && selectionAllowed) {
+      const sizeDescription = multipleSizes
+        ? `${group.entries.length} sizes` : `size ${representativeEntry?.size ?? ""}`;
       button.setAttribute(
         "aria-label",
-        `${button.getAttribute("aria-label")} Right-click to fill this future preset if empty, otherwise fill and open the next empty future preset. No inventory is reserved.`,
+        `${itemName}, ${sizeDescription}, ${stockAriaLabel}. ` +
+        (selected ? "This item is selected for the viewed preset. " : "") +
+        "Left-click to fill this future preset if empty, otherwise fill and open the next empty future preset. " +
+        "Right-click to change the viewed preset, or unselect the same item and size. " +
+        (multipleSizes ? "Choose the exact size after clicking. " : "") +
+        "No inventory is reserved.",
       );
     } else if (reviewingHistory && canUseCurrentContextAction) {
       const currentMappingDescription = mappedToCurrent
@@ -3414,8 +3589,14 @@
         : `Map variation ${view.selectedVariationNumber} to this size`;
     }
 
-    if (intent === "preset_context") {
+    if (intent === "preset_sequence") {
       return "Assign this size to the current future preset if empty, otherwise assign and open the next empty future preset; no inventory is reserved";
+    }
+
+    if (intent === "preset_current") {
+      return entry.selected
+        ? `Unselect this size from future preset ${view.selectedVariationNumber}; stay on this preset; no inventory is reserved`
+        : `Select this size for future preset ${view.selectedVariationNumber}; stay on this preset; no inventory is reserved`;
     }
 
     const reviewingHistory =
@@ -3744,8 +3925,11 @@
     if (presetContext && (!canChangeVariationPresets() ||
         !isFuturePresetContextCurrent(presetContext))) return false;
     if (isCaptureInteractionLocked() && !presetContext) return false;
-    if (intent === "context" && presetContext) intent = "preset_context";
-    if (intent === "preset_context" &&
+    if (presetContext) {
+      if (intent === "ordinary") intent = "preset_sequence";
+      else if (intent === "context") intent = "preset_current";
+    }
+    if ((intent === "preset_sequence" || intent === "preset_current") &&
         (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext))) return false;
     if (intent === "context" && !view?.isReviewingHistory &&
         isCurrentVariationMapped(view) && nextVariationHasPreset(view)) {
@@ -3793,7 +3977,7 @@
     const selectedSku = group.entries.find((entry) => entry.selected)?.sku;
     const currentMappedSku = getCurrentVariationMappedSku(view);
     const preferredSku =
-      intent === "ordinary" || intent === "preset_context"
+      intent === "ordinary" || intent === "preset_sequence" || intent === "preset_current"
         ? selectedSku
         : reviewingHistory
           ? currentMappedSku
@@ -4958,6 +5142,7 @@
     if (failed) {
       endConfirmationOpen = false;
       pendingTrackerEntryViewport = null;
+      pendingPresetResumeSelection = null;
       streamSessionEndConfirmation.hidden = true;
       streamSessionBadge.textContent = "Needs attention";
       streamSessionErrorTitle.textContent =
@@ -5119,6 +5304,7 @@
     if (failed) {
       const loadFailure = snapshot.error?.scope === "load" || !hasView;
       pendingTrackerEntryViewport = null;
+      pendingPresetResumeSelection = null;
       const refreshFailure = snapshot.error?.scope === "refresh" && hasView;
 
       setWorkspaceBusy(false);
@@ -5186,6 +5372,7 @@
         focusOptions.focusSku = captureRefreshFocusSku;
       }
 
+      restoreResumedPresetSelection();
       const view = renderAll(focusOptions);
       // Read preset prerequisites after the canonical workspace has loaded its
       // confirmed baseline. A parallel mount-time read can fail before that
@@ -5455,7 +5642,8 @@
   document.addEventListener("pointerdown", dismissVariationPresetsEntry, true);
   variationPresetsForm.addEventListener("submit", submitVariationPresets);
   variationPresetsButton.addEventListener("click", async (event) => {
-    if (isCaptureInteractionLocked() && !variationPresetsEditing && canUseVariationPresetData()) {
+    if (captureHealthBadge.dataset.phase === "connecting" &&
+        isCaptureInteractionLocked() && !variationPresetsEditing && canUseVariationPresetData()) {
       capturePlanningOverride = {
         streamId: mountedStreamId,
         loadId: capturePlanningLoad?.streamId === mountedStreamId ? capturePlanningLoad.loadId : null,
@@ -5961,12 +6149,12 @@
 
     releaseInventorySizeMenu();
 
-    if (intent === "ordinary") {
+    if (intent === "ordinary" || intent === "preset_current") {
       saveOrdinaryInventorySelection(actionTarget, view);
       return;
     }
 
-    if (intent === "preset_context") {
+    if (intent === "preset_sequence") {
       void assignNextFuturePreset(actionTarget, state.presetContext);
       return;
     }
@@ -6057,7 +6245,17 @@
 
     const view = getActiveView();
 
-    if (button.futurePresetContext && !isFuturePresetContextCurrent(button.futurePresetContext)) return;
+    const presetContext = button.futurePresetContext ?? getFuturePresetContext(view);
+    if (presetContext) {
+      if (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext)) return;
+      if (button.dataset.multipleSizes === "true") {
+        openInventorySizeMenu(button, "ordinary");
+      } else {
+        if (inventorySizeMenuState) releaseInventorySizeMenu();
+        void assignNextFuturePreset(button, presetContext);
+      }
+      return;
+    }
     if (isCaptureInteractionLocked() && !getFuturePresetContext(view)) return;
     if (!hasSelectedEditableVariation(view)) {
       mappingAnnouncement.textContent =
@@ -6097,10 +6295,10 @@
     if (presetContext) {
       if (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext)) return;
       if (button.dataset.multipleSizes === "true") {
-        openInventorySizeMenu(button, "preset_context");
+        openInventorySizeMenu(button, "context");
       } else {
         if (inventorySizeMenuState) releaseInventorySizeMenu();
-        void assignNextFuturePreset(button, presetContext);
+        saveOrdinaryInventorySelection(button, view);
       }
       return;
     }
@@ -6634,10 +6832,22 @@
 
     try {
       streamSessionController.resumeActiveStream();
+      // Resume publishes synchronously and mounts a fresh controller first;
+      // bind the intent after that mount has reset the old display generations.
+      pendingPresetResumeSelection = persistentController && mountedStreamId ? {
+        controller: persistentController,
+        streamId: mountedStreamId,
+        navigationGeneration: variationNavigationGeneration,
+        captureGeneration: captureStateNotificationGeneration,
+        planningCycle: capturePlanningCycleGeneration,
+        presetGeneration: variationPresetsGeneration,
+      } : null;
       mappingAnnouncement.textContent =
         "Active tracker stream resumed. Saved inventory is loading.";
+      if (restoreResumedPresetSelection()) renderAll();
     } catch (error) {
       pendingTrackerEntryViewport = null;
+      pendingPresetResumeSelection = null;
       mappingAnnouncement.textContent =
         error?.message ?? "The tracker stream could not be resumed.";
     }
@@ -6651,6 +6861,7 @@
     }
 
     pendingTrackerEntryViewport = null;
+    pendingPresetResumeSelection = null;
     endConfirmationOpen = true;
     endReportReadiness.textContent = describeReportReadiness();
     renderStreamSnapshot(streamSessionController.getSnapshot());
@@ -6942,14 +7153,19 @@
 
   chrome.runtime.onMessage.addListener(handleCaptureStateChanged);
   chrome.runtime.onMessage.addListener(handleReportLibraryChanged);
+  captureBadgeSizeObserver.observe(captureHealthBadge, { box: "border-box" });
   window.addEventListener(
     "pagehide",
     () => {
       reportLibraryDisposed = true;
       ++streamReportsRefreshGeneration;
       pendingTrackerEntryViewport = null;
+      pendingPresetResumeSelection = null;
+      capturePlanningDisposed = true;
+      resetConnectingPlanningDelay();
       capturePlanningOverride = null;
       captureHealthController.dispose();
+      captureBadgeSizeObserver.disconnect();
       clearCaptureRefreshTimer();
       resetLiveBidTracking();
       resetConfirmedInventoryPreview();

@@ -3,13 +3,15 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 15, 2026
 Repository branch at this update: main
-Base commit before these local updates: 81fffda27d4c0bd6d7aae548a106a71465fd04db
-Commit subject: Improve preset startup planning and tracker navigation
-Preset work, documentation refresh, tooltip removal, variation arrows, Resume viewport
-fix, and startup planning override are committed. The shared tracker-entry viewport
-update is subsequent local work; inspect git status before staging anything.
+Base commit before these local updates: c666fba49764c6e21a1707a0ef52996ffb1a8ac7
+Commit subject: fix top scrolling
+Preset work, documentation, variation arrows, startup planning, and shared tracker-entry
+scrolling are committed. The future-preset mouse-button swap, offline Resume's
+saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
+unlock, and strict yellow editing lock are subsequent local work;
+inspect git status before staging anything.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,743 passed, 0 failed
+Latest full synthetic test run: 1,777 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -32,7 +34,7 @@ For the receiving assistant:
 - Read any current AGENTS.md or applicable skill instructions. No applicable
   AGENTS.md was found during preparation; that may change later.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before this tracker-entry viewport update.
+- The worktree was clean on main before this future-preset mouse-button swap.
   Existing committed work is preserved. No commit or push was performed for this update.
 
 1. PRODUCT, OWNER, AND SCOPE
@@ -436,6 +438,10 @@ validation remain. No report/canonical/storage schema or saved-data change.
 Blue/yellow together drive the spinner, steady 50% tint, and capture-only lock by default.
 The preset control can now opt into future planning once local data is ready, removing
 only capture tint and permitting planning controls without altering the badge phase.
+Blue also enables this planning-only exception after 1.3 seconds once local data is
+usable; yellow never enables it. Both manual and automatic planning exceptions are
+blue-only. Yellow clears prior overrides and keeps editing locked with a gray screen
+until the existing startup signal changes. No new readiness requirement or delay was added.
 Real live/history mapping, manual queues, imports, pins, and other editing stay locked.
 Preserve reduced motion, typed drafts, picker-close behavior, native scrolling,
 and End/confirmation/cancel availability. Green/blank remove ONLY that initial
@@ -499,7 +505,7 @@ oversold replacement quantity clamps to zero and needs a physical recount.
 - Cards group normalized item+style; sizes select exact SKUs. Single-row groups map
   directly. Search covers SKU/item/style/size. Filtering, ordering, and counts are
   existing view-model behavior, not quantities guessed from card labels.
-- Left-click selects/unmaps for the viewed variation.
+- On captured variations, left-click selects/unmaps for the viewed variation.
 - On live: right-click maps if unassigned; if already mapped, toggles next-item queue.
 - In history: right-click targets live/newest without changing history selection or
   the queue. Preserve the explicit distinct workflow.
@@ -526,7 +532,11 @@ oversold replacement quantity clamps to zero and needs a physical recount.
   Both 20px buttons fit in the existing left grid track. The row stays 20px tall and
   its 112px center slot is unchanged. Var # keeps its normal 64px width/28px inset;
   at narrow widths it shrinks and gives back the inset to reserve 46px for the arrows
-  and gap. Normal/narrow browser layout and keyboard focus remain manual checks.
+  and gap. The arrow pair is centered between the search field's right edge and
+  the visible badge's left edge. A border-box ResizeObserver supplies badge width
+  to an arrow-only CSS variable, adjusting for each label without resizing the
+  badge or other controls; it disconnects on pagehide. Normal/narrow browser layout
+  and keyboard focus remain manual checks.
 - Size/variation pickers use dedicated render locking so updates do not jump under
   the pointer. Latest queued render applies on release; this is not the health lock.
 
@@ -543,21 +553,36 @@ Current compact visual decisions:
   highlights/scrolls #1 without committing it. Existing selections and explicit
   Home/End boundaries retain priority; the descending option order stays unchanged.
   A successful initial create before capture also directly selects future #1.
-  This is a one-shot submit action, never a refresh/reopen or range-extension rule.
+  This is a one-shot submit action, never an ordinary-read or range-extension rule.
   One canonical verification read waits behind any own-notification refresh; stale
   captures, navigation, controller/session or preset identity changes suppress the
   automatic selection. A validated capture-notification generation also protects
   against captures whose debounced panel refresh has not arrived yet. No canonical
   order or reservation is created by selecting #1. Return to live stays hidden until
   there is an actual captured variation, then uses normal future/history visibility.
-  Left-click plans/unplans an SKU. Right-click fills an empty current
+  Explicit Resume additionally restores an existing saved preset #1 if the freshly
+  loaded canonical stream has no captured variations. pendingPresetResumeSelection
+  binds after the synchronous Resume mount; restoreResumedPresetSelection waits for
+  canonical/preset readiness, verifies with one fresh canonical read (no polling),
+  and consumes it once. Controller/stream, navigation,
+  capture-notification/document/mutation generations and preset configuration guard
+  against late results. A missing plan, errors, newer navigation, capture, reset or
+  session change cancel restoration. Ordinary refreshes never re-arm it. Selection
+  alone does not enable the startup planning override, alter locks/readiness, move
+  focus/scroll, or change stored assignments/accounting.
+  Right-click changes/unplans the current SKU without advancing (the same exact
+  SKU toggles off). Left-click fills an empty current
   future preset and stays, or saves the next higher empty uncaptured preset and
   opens it. Skip assigned/captured entries; never wrap or replace an assignment.
   Exhaustion announces "No more future variations." without changing anything.
-  Live and captured historical right-clicks keep their existing behavior.
+  Live and captured historical clicks keep their existing behavior.
+  Future size menus preserve explicit preset_sequence (primary) or preset_current
+  (secondary) intent. Keyboard primary activation/size navigation follows sequential
+  planning; ContextMenu/Shift+F10 opens current-preset editing. Both intents retain
+  stale-source safeguards. Card and size-option accessible labels match these actions.
   Untracked plans do not reserve stock or affect reports/metrics/exports.
 - Pre-stream planning: after confirmed inventory and local Start/Resume, presets
-  work with zero captured variations. Connecting/Loading now permits explicit opt-in
+  work with zero captured variations. Blue Connecting permits explicit opt-in
   by clicking Preset items (or the existing Reset presets control), once canonical
   inventory/session and preset data are valid. The panel ungrays without changing
   badge readiness; future-only assignments, browsing, search, expansion, and exact
@@ -584,6 +609,25 @@ Current compact visual decisions:
   An actual new document dismisses only the total editor and rotates the planning
   cycle/navigation epochs. Late create/reset/sequential replies cannot restore a view
   or focus from the old cycle; authoritative writes are not canceled or discarded.
+- Blue Connecting additionally untints/enables future planning automatically after
+  CONNECTING_PLANNING_DELAY_MS (1,300 ms), once local data/guards permit. This does
+  not modify the badge's 10-second no-source grace, polling, or readiness. Separate
+  captureConnectingPlanning scope/timer tracks controller, stream, and cycle epoch;
+  ordinary renders/busy refreshes retain it. Slow local data can finish after the
+  deadline without requiring a second wait. On activation, existing future cards
+  refresh their disabled state without moving focus or selection. Auto scope ends
+  on yellow, green/Reload Site, new document/session, unmount, or page disposal;
+  late callbacks cannot affect a newer scope. First document discovery binds without
+  restarting. Manual capturePlanningOverride remains independent and still works
+  only on blue; yellow now strictly blocks all editing, including presets. It clears
+  prior manual/automatic scopes; stale input/card/menu events cannot bypass the lock.
+  Yellow's CSS tint is unconditional even if a planning attribute were left behind.
+  Existing startup readiness, source requirements and polling stay unchanged by
+  explicit user choice; no new Sold Items requirement or catch-up delay was added.
+  handleCaptureHealthChange refreshes previously disabled future cards when the
+  existing green/Reload Site signal permits editing, without waiting for another
+  capture. Already-interactive blue planning skips this repaint to preserve focus.
+  Live mapping/queue/import/pin and save/error guards remain.
 - Future assignments persist in the separate preset record, guarded by expected
   stream/baseline/revision. Reset saves a disabled revision tombstone and removes
   only uncaptured plans, returns to live, and restores Preset items. Captured
@@ -903,8 +947,13 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,743 tests passed, 0 failed, on Windows (September 15, 2026).
-This includes 214 preset tests (61 core, 54 real-worker integration, 99 UI).
+Latest full verification: 1,777 tests passed, 0 failed, on Windows (September 15, 2026).
+This includes 244 preset tests (61 core, 54 real-worker integration, 129 UI).
+The future-preset mouse swap updates existing sequential/toggle regressions and adds
+seven tests over the 1,743-test baseline: six UI cases plus a card-label regression.
+Coverage includes primary sequential and secondary current-preset size/keyboard
+actions, secondary failure, cross-button busy guards, and unchanged captured mapping.
+Native Chrome pointer/size-picker verification remains manual; no real profiles used.
 The preset/UI implementation passed 1,691 tests before two compact-delete-dialog
 regressions brought the full suite to 1,693. The later centering change retained that count.
 Variation arrows add 16 regressions: 14 navigation/guard tests and two layout/markup
@@ -919,7 +968,7 @@ Startup planning adds 16 tests: 11 UI/guard/lifecycle/race cases, three real-cli
 integration cases, and two validated document-discovery cases. The pre-change baseline
 was 1,720 passing tests. Native tint, popup/focus, and normal/narrow layout still require
 manual Chrome verification; no real tracker/profile data was accessed.
-Sequential right-click assignment adds 41 tests over the preceding 1,565-test run.
+Sequential preset assignment originally added 41 tests over the preceding 1,565-test run.
 Automatic range extension adds 43 tests over the preceding 1,606-test run, including
 recovery when readiness persistence fails before payment clears the live marker.
 Pre-stream planning readiness adds 14 tests over the preceding 1,649-test run,
@@ -1095,6 +1144,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed work is preserved. The shared tracker-entry viewport update is
+Previously committed work is preserved. The future-preset mouse-button swap is
 local; no commit or push was performed for this update.
 There is no approved pending functional change to start automatically.

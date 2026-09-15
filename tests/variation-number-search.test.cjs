@@ -191,10 +191,16 @@ test("step buttons occupy the left row slot with accessible names and remain out
   assert.doesNotMatch(fs.readFileSync(path.join(tagger, "..", "report", "report.html"), "utf8"), /variation-step-controls|previous-variation|next-variation/);
 });
 
-test("synthetic row geometry reserves both arrows at normal and narrow viewport widths", () => {
+test("synthetic row geometry centers both arrows between the search input and the measured badge without moving either", () => {
   assert.match(css, /\.app-shell\s*\{[^}]*padding: 18px clamp\(14px, 4vw, 24px\) 14px;/);
-  assert.match(css, /\.variation-step-controls\s*\{[^}]*grid-column: 1;[^}]*grid-row: 1;[^}]*justify-self: end;[^}]*gap: 2px;[^}]*width: 42px;[^}]*height: 20px;/);
-  assert.match(css, /\.variation-step-controls\s*\{[^}]*transform: translateX\(-2px\);/);
+  const arrows = css.match(/\.variation-step-controls\s*\{([^}]+)\}/)?.[1];
+  assert.ok(arrows);
+  assert.match(arrows, /grid-column: 1;[^}]*grid-row: 1;[^}]*justify-self: start;[^}]*gap: 2px;[^}]*width: 42px;[^}]*height: 20px;/);
+  assert.doesNotMatch(arrows, /transform:/);
+  assert.match(arrows, /--variation-search-end:\s*calc\(min\(28px, max\(0px, calc\(100% - 110px\)\)\) \+ min\(64px, max\(0px, calc\(100% - 46px\)\)\)\);/);
+  assert.match(arrows, /margin-inline-start:\s*calc\(\(var\(--variation-search-end\) \+ 100% \+ 6px \+ \(112px - var\(--capture-badge-width, 112px\)\) \/ 2 - 42px\) \/ 2\);/);
+  assert.equal((css.match(/var\(--capture-badge-width/g) ?? []).length, 1,
+    "Only the arrow placement may consume the measured width; never resize or reposition the badge");
   assert.match(css, /\.variation-step-controls > button\s*\{[^}]*flex: 0 0 20px;[^}]*width: 20px;[^}]*min-width: 0;[^}]*height: 20px;[^}]*padding: 0;/);
   assert.match(css, /\.variation-step-controls > button:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\);/);
   // This validates CSS constraints, not rendered browser pixels or glyph metrics.
@@ -204,16 +210,75 @@ test("synthetic row geometry reserves both arrows at normal and narrow viewport 
     const leftTrack = (rowWidth - 112 - 12) / 2;
     const inputLeft = Math.min(28, Math.max(0, leftTrack - 110));
     const inputWidth = Math.min(64, Math.max(0, leftTrack - 46));
-    const arrowsLeft = leftTrack - 42 - 2;
     assert.ok(inputWidth >= 38, `Readable compact input at ${viewport}`);
-    assert.ok(arrowsLeft - (inputLeft + inputWidth) >= 2 - 1e-9, `No search/arrow overlap at ${viewport}`);
-    assert.equal(arrowsLeft + 42, leftTrack - 2, "Arrows move left without moving the center slot");
     assert.equal(leftTrack + 6 + 56, rowWidth / 2, "Badge center is unchanged in every phase");
+    // Representative synthetic border-box widths cover differently sized
+    // retained badge labels and fractional font metrics, not actual glyph QA.
+    for (const badgeWidth of [70, 83.625, 96, 112]) {
+      const inputRight = inputLeft + inputWidth;
+      const badgeLeft = leftTrack + 6 + (112 - badgeWidth) / 2;
+      const arrowsLeft = (inputRight + badgeLeft - 42) / 2;
+      const beforeGap = arrowsLeft - inputRight;
+      const afterGap = badgeLeft - (arrowsLeft + 42);
+      assert.ok(Math.abs(beforeGap - afterGap) < 1e-9, `Equal gaps at ${viewport}px, ${badgeWidth}px badge`);
+      assert.ok(beforeGap >= 5 - 1e-9, `Search and focus rings remain clear at ${viewport}px`);
+      assert.ok(afterGap >= 5 - 1e-9, `Badge and focus rings remain clear at ${viewport}px`);
+      assert.equal(badgeLeft + badgeWidth / 2, rowWidth / 2, "Measuring does not move the centered badge");
+      assert.ok(arrowsLeft >= 0 && arrowsLeft + 42 <= rowWidth, "Arrows never cause horizontal overflow");
+    }
     if (viewport >= 480) {
       assert.equal(inputLeft, 28);
       assert.equal(inputWidth, 64);
     }
   }
+});
+
+test("badge-width measurements adjust only the arrow offset and retain safe fallback for hidden or invalid observations", () => {
+  const properties = new Map(), writes = [];
+  const badge = element();
+  badge.dataset.phase = "active";
+  badge.textContent = "Capture active";
+  const context = {
+    captureHealthBadge: badge,
+    variationStepControls: {
+      style: {
+        setProperty(name, value) { properties.set(name, value); writes.push([name, value]); },
+        removeProperty(name) { properties.delete(name); writes.push([name, null]); },
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(declaration("updateCaptureBadgeWidth"), context);
+  const measure = width => context.updateCaptureBadgeWidth([{ target: badge, borderBoxSize: [{ inlineSize: width }] }]);
+  for (const width of [112, 83.625, 70]) {
+    measure(width);
+    assert.equal(properties.get("--capture-badge-width"), `${width}px`);
+  }
+  const validWrites = writes.length;
+  for (const width of [undefined, NaN, Infinity, -1, "94"]) measure(width);
+  context.updateCaptureBadgeWidth([]);
+  context.updateCaptureBadgeWidth([{ target: badge }]);
+  context.updateCaptureBadgeWidth([{ target: element(), borderBoxSize: [{ inlineSize: 200 }] }]);
+  assert.equal(writes.length, validWrites, "Invalid or unrelated observations must not move the arrows");
+  assert.equal(properties.get("--capture-badge-width"), "70px");
+  measure(0);
+  assert.equal(properties.has("--capture-badge-width"), false, "A hidden badge restores the CSS 112px fallback");
+  measure(95.5);
+  assert.equal(properties.get("--capture-badge-width"), "95.5px", "Showing a different badge measures again");
+  assert.equal(writes.every(([name]) => name === "--capture-badge-width"), true);
+  assert.equal(badge.textContent, "Capture active");
+  assert.equal(badge.dataset.phase, "active");
+  assert.equal(badge.hidden, false);
+  assert.equal(badge.hasAttribute("style"), false);
+});
+
+test("one border-box observer tracks badge label/font/viewport resizing and disconnects on page disposal without polling", () => {
+  assert.match(source, /const captureBadgeSizeObserver = new ResizeObserver\(updateCaptureBadgeWidth\);/);
+  assert.match(source, /captureBadgeSizeObserver\.observe\(captureHealthBadge, \{ box: "border-box" \}\);/);
+  assert.equal((source.match(/new ResizeObserver\(updateCaptureBadgeWidth\)/g) ?? []).length, 1);
+  const pagehide = source.slice(source.lastIndexOf('"pagehide"'));
+  assert.match(pagehide, /captureBadgeSizeObserver\.disconnect\(\)/);
+  assert.doesNotMatch(declaration("updateCaptureBadgeWidth"), /setTimeout|setInterval|requestAnimationFrame|captureHealthBadge\.(?:style|dataset|textContent)\s*=/);
 });
 
 test("submitting an exact variation number reuses historical and live selection without a dropdown DOM lookup", () => {

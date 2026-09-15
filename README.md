@@ -79,7 +79,7 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
   end or while controls are locked. Navigation does not change item assignments.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
-- Left-click selects or unmaps the item for the viewed variation.
+- On a captured variation, left-click selects or unmaps the item being viewed.
 - On the live variation, right-click maps an unassigned variation; if it is already
   mapped, right-click toggles the next-item queue.
 - While viewing history, right-click targets the live/newest variation without
@@ -106,8 +106,13 @@ explicit cancellation countdown, remain unresolved rather than being reclassifie
 After confirming inventory, start or resume the local tracker session. You can do
 this before TikTok LIVE begins. Choose **Preset items** above the Variation selector,
 even with no live auction or captured variations yet. Once local inventory and preset
-data are loaded, you can click it during **Connecting/Loading** to ungray the tracker
-and plan while capture continues starting. The badge stays unchanged; live/history
+data are loaded, you can click it during blue **Connecting** to ungray the tracker
+and plan while capture continues starting. During blue **Connecting**, the gray screen
+also lifts automatically after **1.3 seconds** once that local data is ready. This does
+not shorten the badge's existing roughly 10-second no-response wait. Yellow **Loading**
+always grays the screen and locks editing, including presets, until the existing
+startup-readiness checks finish. Neither the timer nor the preset button bypasses yellow.
+The badge stays unchanged; live/history
 mapping and manual queue actions remain locked until startup finishes. **Reload Site**
 also permits planning. Other save/error safeguards still apply. Enter
 the total numbered range for this stream and press Enter: **200 means #1–#200**, not
@@ -118,8 +123,9 @@ draft and return to **Preset items** without saving.
 
 When you first save presets before any variations have been captured, **#1** opens
 automatically so you can immediately select its item. If capture or your view changes
-while saving, the tracker keeps that newer view instead. Extending presets or
-reopening the panel does not automatically select #1.
+while saving, the tracker keeps that newer view instead. **Resume stream tracking**
+also opens saved presets at **#1** if no variations have been captured yet.
+Extending presets or ordinary updates won't reset your selected variation.
 Choose other **untracked** variations from the dropdown or Var #. Before the first
 capture, an unselected dropdown opens at **#1**; an existing selection is preserved.
 Normal live/history behavior and the dropdown's newest-first order stay unchanged.
@@ -129,14 +135,15 @@ ordinary mapping/payment rules. **Return to live item** stays hidden until a rea
 variation is captured. After that, it appears when reviewing an earlier variation
 or future preset and resumes live following when clicked.
 
-While viewing a future preset, right-click an item to plan faster: if the current
+While viewing a future preset, left-click an item to plan faster: if the current
 preset is empty, it receives the item and stays selected. Otherwise, the worker
 assigns the next higher empty, uncaptured preset and opens it after saving. Already
 assigned or captured variations are skipped. For multi-size items, choose the exact
-size from the picker. Right-click never replaces or unassigns a future assignment.
+size from the picker. Left-click never replaces or unassigns a future assignment.
 When no later empty preset remains, it makes no changes and announces **No more
-future variations.** Left-click still changes or clears the current future item.
-Live and captured historical views retain their existing right-click behavior.
+future variations.** Right-click changes the current future item without advancing;
+right-click the same item/size again to unselect it. Live and captured historical
+views retain their existing click behavior.
 
 A preset on the next variation disables next-item queuing and clears an existing
 conflicting queue. It does not disable right-click mapping of the live variation.
@@ -159,8 +166,9 @@ continues but another preset range cannot be created within the supported limit.
 Presets survive
 refresh/reopening for the same stream, but never carry into a new stream or inventory
 baseline. Planning cannot bypass local-data loading or another save. After an actual
-dashboard refresh or reopening the panel during startup, click the preset control
-again to enable planning; an existing **Reset presets** control can also opt in.
+dashboard refresh or reopening the panel during startup, blue Connecting gets a fresh
+1.3-second planning delay. You can still click the preset control to plan sooner;
+an existing **Reset presets** control can also opt in.
 
 ### Capture startup badge
 
@@ -176,9 +184,9 @@ delivery activity, or disconnections. It is a readiness indicator, **not an ongo
 connection or completeness check**. A new session or newly loaded dashboard document
 starts another cycle; ordinary updates and reopening the panel do not restart yellow.
 
-Blue and yellow show a spinner, dim the tracker, and lock editing by default. Clicking
-the preset control enables planning only and removes the tint without changing the
-badge. Scrolling and **End Stream Tracking** keep their existing availability. Capture and retries
+Blue and yellow show a spinner and initially dim the tracker. Blue permits preset
+planning as described above; yellow always stays gray and locks editing, including
+presets. Scrolling and **End Stream Tracking** keep their existing availability. Capture and retries
 continue. Green/Reload Site remove only this startup lock; other save/error safeguards
 remain. Missing GMV does not block startup. There is no red badge or auto-hide timer.
 Setup and Resume/End-only screens do not show the row. Reduced-motion settings
