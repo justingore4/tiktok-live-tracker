@@ -27,7 +27,10 @@ function element() {
   const attrs = new Map();
   const handlers = new Map();
   return {
-    value: "", hidden: false, disabled: false, textContent: "", dataset: {},
+    value: "", hidden: false, disabled: false, textContent: "", dataset: {}, children: [],
+    classList: { contains: () => false },
+    contains(target) { return target === this || this.children.some(child => child.contains?.(target)); },
+    querySelectorAll: () => [],
     setAttribute(key, value) { attrs.set(key, String(value)); },
     getAttribute(key) { return attrs.get(key) ?? null; },
     hasAttribute(key) { return attrs.has(key); },
@@ -78,11 +81,16 @@ function fixture({ total = null, view = baselineView() } = {}) {
     variationPresetsGeneration: 0, variationPresetsReadGeneration: 0,
     selectedPresetVariationNumber: null, variationNavigationGeneration: 0,
     captureStateNotificationGeneration: 0,
+    capturePlanningOverride: null, capturePlanningLoad: null, capturePlanningCycleGeneration: 0,
     document: element(),
     variationPresetsForm: element(), variationPresetsButton: element(), variationPresetsInput: element(),
     variationSearchForm: element(), variationSearchInput: element(),
+    variationStepControls: element(), previousVariationButton: element(), nextVariationButton: element(),
     variationSelector: element(), searchInput: element(), returnToCurrentButton: element(),
     inventoryGrid: element(), inventorySizeListbox: element(),
+    variationListbox: element(), clearSearchButton: element(), inventoryListToggle: element(),
+    addActiveStreamSkusButton: element(), activeStreamInventoryUpdateForm: element(),
+    retrySavedSessionButton: element(), retryStreamSessionButton: element(),
     trackerWorkspace: element(), captureHealthBadge: element(), mappingAnnouncement: element(),
     mountedStreamId: rawView.streamId,
     streamSnapshot: { activeSession: { streamId: rawView.streamId }, resumed: true, busy: false },
@@ -142,9 +150,11 @@ function fixture({ total = null, view = baselineView() } = {}) {
   vm.runInContext([
     "getActiveView", "getRecordedVariations", "getSelectableVariations", "hasSelectedRecordedVariation", "hasSelectedEditableVariation",
     "findVariationOption", "isCaptureInteractionLocked", "guardCaptureInteraction", "isCurrentVariationMapped", "getCurrentVariationMappedSku",
+    "canUseVariationPresetData", "hasCapturePlanningScope", "isCapturePlanningEnabled", "isCapturePlanningLocked", "isCapturePlanningTarget", "handleCapturePlanningLoad", "syncCapturePlanningScope",
     "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "snapshotIsBackgroundRefresh", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection",
     "getFuturePresetContext", "isFuturePresetContextCurrent", "assignNextFuturePreset",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch", "selectVariationFromPicker", "nextVariationHasPreset",
+    "canStepVariation", "getAdjacentVariationNumber", "updateVariationStepAvailability",
     "saveOrdinaryInventorySelection", "toggleNextItemQueue", "mapCurrentVariationFromHistory", "selectInventorySizeFromPicker",
   ].map(declaration).join("\n"), context);
   vm.runInContext(["variationPresetsForm", "variationPresetsButton", "variationPresetsInput", "variationSearchForm", "returnToCurrentButton"].map(registrations).join("\n"), context);
@@ -540,7 +550,8 @@ test("initial save acknowledgement does not bypass newly active loading, error o
     reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
     assert.equal(c.selectedPresetVariationNumber, null);
     assert.equal(c.variationPresetsSnapshot.total, 200);
-    assert.equal(c.variationPresetsButton.disabled, true);
+    assert.equal(c.canChangeVariationPresets(), false);
+    assert.equal(c.variationPresetsInput.disabled, true);
   }
 });
 
@@ -660,6 +671,7 @@ function installSavedRenderer(f) {
     previousSavedPhase: "loading", lastRenderedSavedVariations: new Map(),
     hasFocusedSavedError: false, captureRefreshFocusSku: null,
     captureRefreshHadVariationFocus: false, focusSavedWorkspaceAfterRetry: false,
+    pendingResumeViewport: null,
     captureRefreshDirty: false, document: { activeElement: null },
     pendingMapping: { contains: () => false },
     endStreamButton: element(), confirmEndStreamButton: element(),
@@ -672,13 +684,14 @@ function installSavedRenderer(f) {
     syncCaptureInteractionLock() { c.updateVariationPresetsAvailability(); },
   });
   vm.runInContext([
-    "renderSavedSnapshot", "createSavedVariationSignatures", "setWorkspaceBusy",
+    "renderSavedSnapshot", "restoreResumeViewport", "createSavedVariationSignatures", "setWorkspaceBusy",
     "snapshotIsBackgroundRefresh", "scheduleVariationPresetsRefresh",
   ].map(declaration).join("\n"), c);
 }
 
 function inventoryCard(f, sku = "A", multipleSizes = false) {
   const card = element();
+  card.isInventoryCard = true;
   card.dataset = { sku, multipleSizes: String(multipleSizes), groupKey: "synthetic-group" };
   card.futurePresetContext = f.context.getFuturePresetContext(f.context.getActiveView());
   card.closest = (selector) => selector === ".inventory-card" ? card : null;
@@ -689,6 +702,365 @@ async function rightClick(f, sku = "A") {
   await f.context.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, sku) });
   await settle();
 }
+
+function installPlanningRuntime(f, phase = "loading") {
+  const c = f.context;
+  c.document.activeElement = null;
+  c.variationSelectorOpen ??= false;
+  c.variationSelectorLock ??= {};
+  c.variationSelectorLock.isLocked = () => c.variationSelectorOpen;
+  const row = element(), variation = element(), inventory = element(), metrics = element();
+  row.classList.contains = name => name === "capture-health-row";
+  variation.classList.contains = name => name === "current-auction";
+  inventory.classList.contains = name => name === "inventory-section";
+  variation.children = [c.variationSelector];
+  inventory.children = [c.searchInput, c.inventoryGrid, c.inventoryListToggle, c.addActiveStreamSkusButton];
+  c.trackerWorkspace.children = [row, variation, inventory, metrics];
+  c.variationSearchForm.children = [c.variationSearchInput];
+  c.variationStepControls.children = [c.previousVariationButton, c.nextVariationButton];
+  c.inventoryGrid.contains = target => target === c.inventoryGrid || target?.isInventoryCard === true;
+  const pin = element();
+  c.inventoryGrid.querySelectorAll = () => [pin];
+  c.inventoryListExpanded = false;
+  c.inventoryGroupOrderController = { trimPinnedGroups: () => ({ changed: false }) };
+  c.COLLAPSED_INVENTORY_ITEM_LIMIT = 9;
+  vm.runInContext([
+    "isTrackerInteractionTarget", "syncCaptureInteractionLock", "syncCaptureInventoryLock",
+    "setWorkspaceBusy", "stepVariation",
+  ].map(declaration).join("\n"), c);
+  // The normal renderer reapplies this actual helper after replacing inventory
+  // cards. Retain that step when the fixture isolates the selector rendering.
+  const render = c.renderAll;
+  c.renderAll = (...args) => { const result = render(...args); c.syncCaptureInventoryLock(); return result; };
+  vm.runInContext(["previousVariationButton", "nextVariationButton", "searchInput", "inventoryListToggle"].map(registrations).join("\n"), c);
+  c.captureHealthBadge.dataset.phase = phase;
+  c.captureHealthBadge.textContent = phase === "loading" ? "Loading" : "Connecting";
+  c.trackerWorkspace.scrollTop = 123;
+  c.setWorkspaceBusy(false);
+  return { row, variation, inventory, metrics, pin };
+}
+
+test("startup opt-in enables planning only, removes tint without changing Connecting/Loading, and creates initial #1", async () => {
+  for (const phase of ["connecting", "loading"]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPresetNavigation(f);
+    const dom = installPlanningRuntime(f, phase), before = JSON.stringify(f.state);
+    assert.equal(c.isCaptureInteractionLocked(), true);
+    assert.equal(c.canChangeVariationPresets(), false);
+    assert.equal(c.variationPresetsButton.disabled, false);
+    assert.equal(dom.inventory.hasAttribute("inert"), true);
+    await beginInitialPresetSave(f, 200);
+    assert.equal(c.captureHealthBadge.dataset.phase, phase);
+    assert.equal(c.captureHealthBadge.textContent, phase === "loading" ? "Loading" : "Connecting");
+    assert.equal(c.isCaptureInteractionLocked(), true, "Actual readiness must not be faked");
+    assert.equal(c.isCapturePlanningEnabled(), true);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+    assert.equal(dom.inventory.hasAttribute("inert"), false);
+    assert.equal(dom.variation.hasAttribute("inert"), false);
+    assert.equal(dom.metrics.hasAttribute("inert"), true);
+    assert.equal(dom.pin.hasAttribute("inert"), true);
+    assert.equal(c.addActiveStreamSkusButton.hasAttribute("inert"), true);
+    assert.equal(c.activeStreamInventoryUpdateForm.hasAttribute("inert"), true);
+    assert.equal(c.inventoryGrid.hasAttribute("inert"), false);
+    assert.equal(c.getActiveView().selectedVariationNumber, 1);
+    assert.equal(c.getActiveView().isReviewingPreset, true);
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+    assert.equal(JSON.stringify(f.state), before);
+  }
+});
+
+test("startup planning uses dropdown, Var #, arrows, inventory search, exact sizes, and sequential clicks without accounting", async () => {
+  const f = await emptyStreamFixture(), c = f.context;
+  installPresetNavigation(f); installPlanningRuntime(f);
+  const before = JSON.stringify(f.state);
+  await beginInitialPresetSave(f, 200);
+  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) }); await settle();
+  assert.equal(c.variationPresetsSnapshot.assignments[0].variationNumber, 1);
+  await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) }); await settle();
+  assert.equal(c.variationPresetsSnapshot.assignments.length, 0);
+  await rightClick(f); await rightClick(f);
+  assert.equal(c.selectedPresetVariationNumber, 2);
+  await c.nextVariationButton.dispatch("click");
+  assert.equal(c.selectedPresetVariationNumber, 3);
+  await c.previousVariationButton.dispatch("click");
+  assert.equal(c.selectedPresetVariationNumber, 2);
+  c.variationSearchInput.value = "5";
+  await c.variationSearchForm.dispatch("submit");
+  assert.equal(c.selectedPresetVariationNumber, 5);
+  await c.variationSelector.dispatch("click");
+  assert.equal(c.variationSelectorOpen, true);
+  c.selectVariationFromPicker(6);
+  c.searchInput.value = "Hoodie";
+  await c.searchInput.dispatch("input");
+  assert.equal(c.searchInput.value, "Hoodie");
+  await c.inventoryListToggle.dispatch("click");
+  assert.equal(c.inventoryListExpanded, true);
+  installSizeMenu(f);
+  const commandsBeforeSize = f.calls.length;
+  await c.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
+  assert.equal(f.calls.length, commandsBeforeSize);
+  assert.equal(c.inventorySizeMenuState.intent, "preset_context");
+  c.selectInventorySizeFromPicker("A-L"); await settle();
+  assert.equal(f.calls.at(-1).command.sku, "A-L");
+  assert.equal(c.variationPresetsSnapshot.assignments.find(entry => entry.variationNumber === 6).sku, "A-L");
+  assert.equal(JSON.stringify(f.state), before);
+  assert.equal(c.getActiveView().inventory[0].reservedQuantity, 0);
+  assert.equal(c.getActiveView().inventory[0].remainingQuantity, 10);
+});
+
+test("existing Reset presets can opt into startup planning without bypassing reset acknowledgement", async () => {
+  const f = await emptyStreamFixture({ total: 200 }), c = f.context, reply = deferred();
+  installPlanningRuntime(f, "connecting");
+  c.variationPresetsClient.resetPresets = () => reply.promise;
+  const pending = c.variationPresetsButton.dispatch("click");
+  assert.ok(c.capturePlanningOverride);
+  assert.equal(c.variationPresetsSnapshot.total, 200);
+  assert.equal(c.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(c.variationPresetsButton.disabled, true);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+  reply.resolve({ ...presetSnapshot(null), revision: "reset" }); await pending;
+  assert.equal(c.variationPresetsSnapshot.total, null);
+  assert.equal(c.variationPresetsButton.textContent, "Preset items");
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  assert.equal(c.captureHealthBadge.dataset.phase, "connecting");
+});
+
+test("startup opt-in cannot bypass local-data, session, baseline, save, import, queue or End prerequisites", async () => {
+  for (const block of [
+    c => { c.savedSnapshot.phase = "loading"; c.savedSnapshot.busy = true; },
+    c => { c.savedSnapshot.phase = "error"; },
+    c => { c.savedSnapshot.view = null; },
+    c => { c.variationPresetsReady = false; },
+    c => { c.variationPresetsSnapshot = null; },
+    c => { c.variationPresetsSnapshot.streamId = "other-stream"; },
+    c => { c.streamSnapshot.phase = "error"; },
+    c => { c.streamSnapshot.resumed = false; },
+    c => { c.nextItemQueueMutationBusy = true; },
+    c => { c.pendingSavedAction = {}; },
+    c => { c.activeStreamInventoryUpdateBusy = true; },
+    c => { c.endConfirmationOpen = true; },
+  ]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPlanningRuntime(f);
+    block(c); c.setWorkspaceBusy(c.savedSnapshot.busy);
+    await c.variationPresetsButton.dispatch("click");
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.variationPresetsEditing, false);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("planning during startup keeps captured mapping and manual queue controls capture-locked", async () => {
+  const f = fixture({ total: 200 }), c = f.context;
+  installPlanningRuntime(f);
+  // Preserve an existing range while opting in through the applicable control.
+  c.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic reset failure"); };
+  await c.variationPresetsButton.dispatch("click");
+  assert.equal(c.isCapturePlanningEnabled(), true);
+  c.nextItemQueueClient = {
+    toggleQueue() { assert.fail("Startup planning must not queue live inventory"); },
+    mapCurrent() { assert.fail("Startup planning must not map live inventory"); },
+    clearQueue() { assert.fail("Startup planning must not manually clear the queue"); },
+  };
+  c.runSavedMutation = () => assert.fail("Startup planning must not mutate captured mappings");
+  c.clearQueuedItemButton = element();
+  vm.runInContext(declaration("clearQueuedItem"), c);
+  for (const number of [30, 29]) {
+    c.selectVariationFromPicker(number); c.setWorkspaceBusy(false);
+    assert.equal(c.getActiveView().selectedVariationNumber, number);
+    assert.equal(c.inventoryGrid.hasAttribute("inert"), true);
+    const card = inventoryCard(f);
+    await c.inventoryGrid.dispatch("click", { target: card });
+    await c.inventoryGrid.dispatch("contextmenu", { target: card });
+    c.saveOrdinaryInventorySelection(card, c.getActiveView());
+    await c.toggleNextItemQueue(card, c.getActiveView());
+    await c.mapCurrentVariationFromHistory(card, c.getActiveView());
+    await c.clearQueuedItem({ type: "click", target: c.clearQueuedItemButton, preventDefault() {}, stopImmediatePropagation() {} });
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test("planning survives ordinary renders and busy work without tint but clears on actual load or readiness changes", async () => {
+  const f = await emptyStreamFixture(), c = f.context;
+  installPlanningRuntime(f);
+  await beginInitialPresetSave(f, 200);
+  const selection = c.selectedPresetVariationNumber;
+  const token = c.capturePlanningOverride;
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first-document" });
+  assert.equal(c.capturePlanningOverride, token, "Learning the first identity is not refresh");
+  assert.equal(token.loadId, "first-document");
+  for (const busy of [true, false, true, false]) {
+    c.savedSnapshot.busy = busy;
+    c.setWorkspaceBusy(busy); c.renderAll();
+    assert.equal(c.capturePlanningOverride, token);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+    assert.equal(c.canChangeVariationPresets(), !busy);
+  }
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first-document" });
+  assert.equal(c.capturePlanningOverride, token);
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "new-document" });
+  assert.equal(c.capturePlanningOverride, null);
+  assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+  assert.equal(c.selectedPresetVariationNumber, selection);
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  for (const phase of ["active", "blank"]) {
+    c.captureHealthBadge.dataset.phase = "loading";
+    c.capturePlanningOverride = { streamId: c.mountedStreamId, loadId: "new-document" };
+    c.captureHealthBadge.dataset.phase = phase; c.setWorkspaceBusy(false);
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.canChangeVariationPresets(), true);
+    assert.equal(c.selectedPresetVariationNumber, selection);
+  }
+});
+
+test("leaving or replacing the active session clears the panel-local override and reopening does not inherit it", async () => {
+  for (const leave of [c => { c.streamSnapshot.resumed = false; },
+    c => { c.streamSnapshot.activeSession = null; },
+    c => { c.mountedStreamId = "other-stream"; },
+    c => { c.trackerWorkspace.hidden = true; }]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPlanningRuntime(f); await c.variationPresetsButton.dispatch("click");
+    assert.ok(c.capturePlanningOverride);
+    leave(c); c.setWorkspaceBusy(false);
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), false);
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+  }
+  const reopened = await emptyStreamFixture({ total: 200 });
+  installPlanningRuntime(reopened);
+  assert.equal(reopened.context.capturePlanningOverride, null);
+  assert.equal(reopened.context.canChangeVariationPresets(), false);
+});
+
+test("future-origin clicks and exact-size choices invalidated by capture never fall through to mapping during planning", async () => {
+  for (const kind of ["left", "right", "ordinary-size", "context-size"]) {
+    const f = fixture(), c = f.context;
+    installPlanningRuntime(f); await beginInitialPresetSave(f, 200);
+    c.selectVariationFromPicker(80);
+    const card = inventoryCard(f);
+    if (kind.endsWith("size")) {
+      installSizeMenu(f);
+      await c.inventoryGrid.dispatch(kind === "ordinary-size" ? "click" : "contextmenu", { target: inventoryCard(f, "A", true) });
+    }
+    f.rawView.variations.push({ variationNumber: 80, recorded: true, sku: "A" });
+    c.preserveCapturedPresetSelection(c.savedSnapshot);
+    const before = JSON.stringify([c.variationPresetsSnapshot, f.rawView]), calls = f.calls.length;
+    c.runSavedMutation = () => assert.fail("Old future intent cannot map a captured variation");
+    if (kind.endsWith("size")) c.selectInventorySizeFromPicker("A-L");
+    else await c.inventoryGrid.dispatch(kind === "left" ? "click" : "contextmenu", { target: card });
+    await settle();
+    assert.equal(f.calls.length, calls);
+    assert.equal(JSON.stringify([c.variationPresetsSnapshot, f.rawView]), before);
+  }
+});
+
+test("a safe background refresh preserves planning pickers and focus while rejecting edits until ready", async () => {
+  for (const picker of ["variation", "size"]) {
+    const f = await emptyStreamFixture(), c = f.context;
+    installPresetNavigation(f); installPlanningRuntime(f);
+    await beginInitialPresetSave(f, 200);
+    if (picker === "size") {
+      installSizeMenu(f);
+      await c.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f, "A", true) });
+      c.document.activeElement = c.inventorySizeListbox;
+    } else {
+      await c.variationSelector.dispatch("click");
+      c.document.activeElement = c.variationSelector;
+    }
+    const focused = c.document.activeElement;
+    let blurs = 0;
+    focused.blur = () => { blurs++; c.document.activeElement = null; };
+    const commands = f.calls.length;
+    c.savedSnapshot = { ...c.savedSnapshot, phase: "loading", operation: "refresh", busy: true };
+    c.setWorkspaceBusy(true);
+    assert.equal(c.trackerWorkspace.hasAttribute("inert"), false, "Keep the pre-existing open-picker refresh exemption");
+    assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
+    assert.equal(c.canChangeVariationPresets(), false);
+    assert.equal(blurs, 0);
+    assert.equal(c.document.activeElement, focused);
+    if (picker === "size") {
+      assert.ok(c.inventorySizeMenuState);
+      assert.equal(c.inventorySizeListbox.hasAttribute("inert"), false);
+      c.selectInventorySizeFromPicker("A-L");
+    } else {
+      assert.equal(c.variationSelectorOpen, true);
+      c.selectVariationFromPicker(2);
+    }
+    assert.equal(f.calls.length, commands);
+    assert.equal(c.selectedPresetVariationNumber, 1);
+    c.savedSnapshot = { ...c.savedSnapshot, phase: "ready", busy: false };
+    c.setWorkspaceBusy(false);
+    assert.equal(c.canChangeVariationPresets(), true);
+    if (picker === "size") {
+      c.selectInventorySizeFromPicker("A-L"); await settle();
+      assert.equal(f.calls.at(-1).command.sku, "A-L");
+    }
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+  }
+});
+
+test("an actual new document dismisses only the unsaved preset draft and restores a fresh opt-in button", async () => {
+  const f = await emptyStreamFixture(), c = f.context;
+  installPlanningRuntime(f);
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first" });
+  await c.variationPresetsButton.dispatch("click");
+  c.variationPresetsInput.value = "200";
+  const state = JSON.stringify(f.state), plans = JSON.stringify(c.variationPresetsSnapshot);
+  c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "next" });
+  assert.equal(c.capturePlanningOverride, null);
+  assert.equal(c.variationPresetsEditing, false);
+  assert.equal(c.variationPresetsInput.value, "");
+  assert.equal(c.variationPresetsButton.disabled, false);
+  assert.equal(c.variationPresetsInput.hidden, true);
+  assert.equal(c.variationPresetsButton.textContent, "Preset items");
+  assert.equal(JSON.stringify(f.state), state);
+  assert.equal(JSON.stringify(c.variationPresetsSnapshot), plans);
+  assert.equal(c.trackerWorkspace.scrollTop, 123);
+  await c.variationPresetsButton.dispatch("click");
+  assert.equal(c.capturePlanningOverride.loadId, "next");
+  assert.equal(c.variationPresetsEditing, true);
+});
+
+test("new-document changes suppress delayed create, sequential, and reset navigation or focus without undoing saved work", async () => {
+  for (const action of ["create", "sequential", "reset"]) {
+    const f = await emptyStreamFixture(), c = f.context, reply = deferred();
+    installPresetNavigation(f); installPlanningRuntime(f);
+    c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "first" });
+    if (action !== "create") {
+      await beginInitialPresetSave(f, 200);
+      await rightClick(f);
+    }
+    const kind = { create: "createPresets", sequential: "assignNextPresetItem", reset: "resetPresets" }[action];
+    const original = c.variationPresetsClient[kind];
+    let result;
+    c.variationPresetsClient[kind] = async command => {
+      result = await original(command);
+      await reply.promise;
+      return result;
+    };
+    let pending;
+    if (action === "create") pending = beginInitialPresetSave(f, 200);
+    else if (action === "reset") pending = c.variationPresetsButton.dispatch("click");
+    else await c.inventoryGrid.dispatch("contextmenu", { target: inventoryCard(f) });
+    await settle();
+    assert.equal(c.variationPresetsBusy, true);
+    const selected = c.selectedPresetVariationNumber;
+    c.variationPresetsButton.focused = false;
+    c.handleCapturePlanningLoad({ streamId: c.mountedStreamId, loadId: "new" });
+    const generation = c.variationNavigationGeneration;
+    reply.resolve(); await pending; await settle();
+    assert.equal(c.variationPresetsBusy, false);
+    assert.equal(c.capturePlanningOverride, null);
+    assert.equal(c.variationNavigationGeneration, generation);
+    assert.equal(c.selectedPresetVariationNumber, selected);
+    assert.equal(c.variationPresetsButton.focused, false);
+    assert.equal(c.variationPresetsEditing, false);
+    assert.equal(c.trackerWorkspace.scrollTop, 123);
+    assert.equal(c.variationPresetsSnapshot.total, action === "reset" ? null : 200);
+    if (action === "sequential") assert.equal(c.variationPresetsSnapshot.assignments.length, 2);
+    assert.equal(f.state.streams[0].variations.length, 0);
+  }
+});
 
 test("preset union supplies 1–200 once, preserves captured entries and never changes source data or accounting", () => {
   const view = baselineView(), presets = presetSnapshot(), before = JSON.stringify([view, presets]);
@@ -788,15 +1160,17 @@ test("loading retry refreshes preset prerequisites once and stale earlier reads 
   assert.equal(reads, 2, "Ordinary ready rerenders must not add preset reads or polling");
 });
 
-test("zero-capture planning unlocks for Reload Site and active readiness but never during Connecting or Loading", async () => {
+test("zero-capture planning needs explicit opt-in during Connecting/Loading and remains normally available when ready", async () => {
   for (const phase of ["connecting", "loading", "blank", "active"]) {
     const f = await emptyStreamFixture();
     f.context.captureHealthBadge.dataset.phase = phase;
     f.context.updateVariationPresetsAvailability();
     const locked = ["connecting", "loading"].includes(phase);
-    assert.equal(f.context.variationPresetsButton.disabled, locked);
+    assert.equal(f.context.variationPresetsButton.disabled, false);
+    assert.equal(f.context.canChangeVariationPresets(), !locked);
     await f.context.variationPresetsButton.dispatch("click");
-    assert.equal(f.context.variationPresetsEditing, !locked);
+    assert.equal(f.context.variationPresetsEditing, true);
+    assert.equal(f.context.captureHealthBadge.dataset.phase, phase);
     assert.equal(f.rawView.activeBiddingVariationNumber, null);
     assert.equal(f.state.streams[0].variations.length, 0);
   }
@@ -819,11 +1193,10 @@ test("zero-capture planning supports total entry, exact lookup, left-click chang
   f.context.variationSearchInput.value = "1";
   await f.context.variationSearchForm.dispatch("submit");
   assert.equal(f.context.getActiveView().selectedVariationNumber, 1);
-  const button = inventoryCard(f);
-  f.context.saveOrdinaryInventorySelection(button, f.context.getActiveView());
+  f.context.saveOrdinaryInventorySelection(inventoryCard(f), f.context.getActiveView());
   await settle();
   assert.equal(f.context.variationPresetsSnapshot.assignments[0].variationNumber, 1);
-  f.context.saveOrdinaryInventorySelection(button, f.context.getActiveView());
+  f.context.saveOrdinaryInventorySelection(inventoryCard(f), f.context.getActiveView());
   await settle();
   assert.equal(f.context.variationPresetsSnapshot.assignments.length, 0);
   await rightClick(f);
@@ -873,7 +1246,8 @@ test("pre-stream canonical readiness still waits for the original capture lock a
   read.resolve(presetSnapshot(null));
   await settle();
   assert.equal(f.context.variationPresetsReady, true);
-  assert.equal(f.context.variationPresetsButton.disabled, true);
+  assert.equal(f.context.variationPresetsButton.disabled, false, "Only explicit planning opt-in is available");
+  assert.equal(f.context.canChangeVariationPresets(), false);
   f.context.captureHealthBadge.dataset.phase = "blank";
   f.context.setWorkspaceBusy(false);
   assert.equal(f.context.variationPresetsButton.disabled, false);
@@ -932,6 +1306,8 @@ test("preset bubble and editor occupy only the existing third startup-row slot w
   assert.match(row, /id="variation-presets-button" type="button"/);
   assert.match(row, /id="variation-presets-input" type="text" inputmode="numeric"/);
   assert.match(row, /aria-label="Total preset variations"/);
+  assert.match(row, /aria-describedby="variation-presets-help"/);
+  assert.doesNotMatch(row, /<(?:button|input)[^>]*id="variation-presets-(?:button|input)"[^>]*\btitle=/);
   assert.match(row, /Escape cancels/);
   assert.match(css, /\.variation-presets-form\s*\{[^}]*grid-column: 3;[^}]*grid-row: 1;[^}]*justify-self: end;[^}]*max-width: 100%;[^}]*min-width: 0;/);
   assert.match(css, /#variation-presets-input\s*\{[^}]*height: 20px;[^}]*color: var\(--blue\);/);
@@ -1078,8 +1454,9 @@ test("dismissing an unsaved preset input never removes capture-loading or unrela
     c.updateVariationPresetsAvailability();
     await c.document.dispatch("pointerdown", { target: c.trackerWorkspace });
     assert.equal(c.variationPresetsEditing, false);
-    assert.equal(c.variationPresetsButton.disabled, true);
-    assert.equal(c.variationPresetsForm.hasAttribute("inert"), true);
+    assert.equal(c.canChangeVariationPresets(), false);
+    assert.equal(c.variationPresetsButton.disabled, c.savedSnapshot.busy);
+    assert.equal(c.variationPresetsForm.hasAttribute("inert"), c.savedSnapshot.busy);
     assert.equal(calls.length, 0);
   }
 });
@@ -1261,10 +1638,8 @@ test("next-preset queue guard blocks queueing but preserves unmapped-live and hi
   assert.doesNotMatch(declaration("mapCurrentVariationFromHistory"), /nextVariationHasPreset|toggleQueue/);
 });
 
-test("capture, queue, save, session, End, import and error guards disable all preset mutation entry points", async () => {
+test("queue, save, session, End, import and error guards disable preset entry including planning opt-in", async () => {
   for (const block of [
-    (f) => { f.context.captureHealthBadge.dataset.phase = "connecting"; },
-    (f) => { f.context.captureHealthBadge.dataset.phase = "loading"; },
     (f) => { f.context.nextItemQueueMutationBusy = true; },
     (f) => { f.context.pendingSavedAction = {}; },
     (f) => { f.context.savedSnapshot.busy = true; },

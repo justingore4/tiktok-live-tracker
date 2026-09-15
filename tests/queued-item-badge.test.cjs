@@ -79,6 +79,7 @@ function fixture() {
     variationPresetsProtocol: require("../extension/shared/variation-presets-protocol.js"),
     variationPresetsSnapshot: null, selectedPresetVariationNumber: null,
     variationPresetsBusy: false,
+    isCapturePlanningTarget: () => false,
     scheduleVariationPresetsRefresh() {},
     updateVariationPresetsAvailability() {},
     queuedItemSlot: element(), queuedItemBadge: element(), queuedItemLabel: element(),

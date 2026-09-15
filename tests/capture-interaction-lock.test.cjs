@@ -103,10 +103,20 @@ function fixture() {
     updateVariationSearchAvailability() {},
     updateQueuedItemBadgeAvailability() {},
     updateVariationPresetsAvailability() {},
+    // This suite covers the default, non-opted-in capture lock. Planning opt-in
+    // executes the actual scope/target helpers in variation-presets-ui tests.
+    isCapturePlanningTarget: () => false,
+    isCapturePlanningEnabled: () => false,
+    isCapturePlanningLocked: () => context.isCaptureInteractionLocked(),
+    syncCapturePlanningScope: () => false,
+    getActiveView: () => null,
+    isFuturePresetContextCurrent: () => false,
     variationPresetsBusy: false, variationPresetsReady: true,
     isCurrentVariationMapped: () => true,
     nextVariationHasPreset: () => false,
     variationListbox, inventorySizeListbox, searchInput,
+    addActiveStreamSkusButton: node(), activeStreamInventoryUpdateForm: node(),
+    inventoryGrid: Object.assign(node(), { querySelectorAll: () => [] }),
     activeStreamInventorySheetReference,
     retrySavedSessionButton: node(), retryStreamSessionButton: node(),
     streamSnapshot: { resumed: true, activeSession: { streamId: "synthetic-stream" }, busy: false },
@@ -131,7 +141,7 @@ function fixture() {
   };
   const names = [
     "isCaptureInteractionLocked", "isTrackerInteractionTarget", "guardCaptureInteraction",
-    "syncCaptureInteractionLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
+    "syncCaptureInteractionLock", "syncCaptureInventoryLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
   ];
   vm.createContext(context);
   vm.runInContext(names.map(declaration).join("\n"), context);

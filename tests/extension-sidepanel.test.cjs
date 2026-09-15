@@ -2276,7 +2276,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   );
   assert.match(
     pickerActionSource,
-    /view\?\.inventory\.find\(\(candidate\) => candidate\.sku === sku\)[\s\S]*?const actionTarget = \{ dataset: \{ sku \} \}/,
+    /view\?\.inventory\.find\(\(candidate\) => candidate\.sku === sku\)[\s\S]*?const actionTarget = \{ dataset: \{ sku \}, futurePresetContext: state\.presetContext \}/,
   );
   assert.match(
     openSizeMenuSource,

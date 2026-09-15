@@ -82,9 +82,18 @@ function fixture() {
     variationPresetsView: require("../extension/tagger/variation-presets-view.js"),
     variationPresetsSnapshot: null, selectedPresetVariationNumber: null,
     variationNavigationGeneration: 0,
+    isCapturePlanningTarget: () => false,
+    isCapturePlanningEnabled: () => false,
+    isCapturePlanningLocked: () => context.isCaptureInteractionLocked(),
+    syncCapturePlanningScope: () => false,
+    isFuturePresetContextCurrent: () => false,
+    addActiveStreamSkusButton: element(), activeStreamInventoryUpdateForm: element(),
+    inventoryGrid: Object.assign(element(), { querySelectorAll: () => [] }),
     variationPresetsBusy: false, nextItemQueueMutationBusy: false,
     updateVariationPresetsAvailability() {},
     variationSearchForm: element(), variationSearchInput: element(),
+    variationStepControls: element(), previousVariationButton: element(), nextVariationButton: element(),
+    pendingSavedAction: null,
     trackerWorkspace: element(), captureHealthBadge: element(),
     mappingAnnouncement: element(), searchInput: element(), variationSelector: element(),
     returnToCurrentButton: element(),
@@ -117,8 +126,9 @@ function fixture() {
   vm.runInContext([
     "getActiveView", "getRecordedVariations", "getSelectableVariations", "findVariationOption",
     "isCaptureInteractionLocked", "isTrackerInteractionTarget", "guardCaptureInteraction", "isSavedWorkspaceUnavailable",
-    "syncCaptureInteractionLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
+    "syncCaptureInteractionLock", "syncCaptureInventoryLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch",
+    "canStepVariation", "getAdjacentVariationNumber", "updateVariationStepAvailability",
     "selectVariationFromPicker",
   ].map(declaration).join("\n"), context);
   vm.runInContext([
@@ -163,10 +173,47 @@ test("existing startup-row height and spacing stay unchanged while Reload Site r
   assert.match(css, /#variation-search-input\s*\{/);
   assert.match(row, /grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 112px\) minmax\(0, 1fr\);/,
     "Equal flexible sides keep the badge centered and reserve its slot for the reload hint");
-  assert.match(css, /\.variation-search-form\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*64px;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/);
-  assert.match(css, /\.variation-search-form\s*\{[^}]*margin:\s*0;[^}]*margin-inline-start:\s*min\(28px, max\(0px, calc\(100% - 64px\)\)\);/,
-    "Rightward alignment gives back its inset when the badge leaves less space");
+  assert.match(css, /\.variation-search-form\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*64px;[^}]*max-width:\s*max\(0px, calc\(100% - 46px\)\);[^}]*min-width:\s*0;/);
+  assert.match(css, /\.variation-search-form\s*\{[^}]*margin:\s*0;[^}]*margin-inline-start:\s*min\(28px, max\(0px, calc\(100% - 110px\)\)\);/,
+    "Rightward alignment gives back its inset and reserves both arrows on narrow panels");
   assert.match(css, /#variation-search-input\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*height:\s*20px;/);
+});
+
+test("step buttons occupy the left row slot with accessible names and remain outside reports", () => {
+  const row = html.slice(html.indexOf('<div class="capture-health-row"'), html.indexOf('<section class="current-auction"'));
+  assert.match(row, /id="variation-step-controls"[^>]*role="group"[^>]*aria-label="Variation navigation"[^>]*inert/);
+  assert.match(row, /id="previous-variation" type="button" aria-label="Previous variation" disabled/);
+  assert.match(row, /id="next-variation" type="button" aria-label="Next variation" disabled/);
+  assert.ok(row.indexOf('id="variation-search-form"') < row.indexOf('id="previous-variation"'));
+  assert.ok(row.indexOf('id="next-variation"') < row.indexOf('id="capture-health-badge"'));
+  assert.match(row, /title="Start stream tracking to initialize dashboard capture\.">Not tracking<\/span>\s*<span id="capture-health-description"/,
+    "Keep the badge and its custom tooltip adjacent");
+  assert.doesNotMatch(fs.readFileSync(path.join(tagger, "..", "report", "report.html"), "utf8"), /variation-step-controls|previous-variation|next-variation/);
+});
+
+test("synthetic row geometry reserves both arrows at normal and narrow viewport widths", () => {
+  assert.match(css, /\.app-shell\s*\{[^}]*padding: 18px clamp\(14px, 4vw, 24px\) 14px;/);
+  assert.match(css, /\.variation-step-controls\s*\{[^}]*grid-column: 1;[^}]*grid-row: 1;[^}]*justify-self: end;[^}]*gap: 2px;[^}]*width: 42px;[^}]*height: 20px;/);
+  assert.match(css, /\.variation-step-controls\s*\{[^}]*transform: translateX\(-2px\);/);
+  assert.match(css, /\.variation-step-controls > button\s*\{[^}]*flex: 0 0 20px;[^}]*width: 20px;[^}]*min-width: 0;[^}]*height: 20px;[^}]*padding: 0;/);
+  assert.match(css, /\.variation-step-controls > button:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\);/);
+  // This validates CSS constraints, not rendered browser pixels or glyph metrics.
+  for (const viewport of [320, 321, 360, 399, 400, 420, 480, 700]) {
+    const padding = Math.min(24, Math.max(14, viewport * 0.04));
+    const rowWidth = viewport - padding * 2;
+    const leftTrack = (rowWidth - 112 - 12) / 2;
+    const inputLeft = Math.min(28, Math.max(0, leftTrack - 110));
+    const inputWidth = Math.min(64, Math.max(0, leftTrack - 46));
+    const arrowsLeft = leftTrack - 42 - 2;
+    assert.ok(inputWidth >= 38, `Readable compact input at ${viewport}`);
+    assert.ok(arrowsLeft - (inputLeft + inputWidth) >= 2 - 1e-9, `No search/arrow overlap at ${viewport}`);
+    assert.equal(arrowsLeft + 42, leftTrack - 2, "Arrows move left without moving the center slot");
+    assert.equal(leftTrack + 6 + 56, rowWidth / 2, "Badge center is unchanged in every phase");
+    if (viewport >= 480) {
+      assert.equal(inputLeft, 28);
+      assert.equal(inputWidth, 64);
+    }
+  }
 });
 
 test("submitting an exact variation number reuses historical and live selection without a dropdown DOM lookup", () => {

@@ -114,7 +114,7 @@ test("no red presentation timer or auto-hide controller remains", () => {
   assert.doesNotMatch(css, /capture-health-badge\[data-phase="unavailable"\]/);
 });
 
-test("fixed reserved center width keeps the existing Var search position stable in blank and visible phases", () => {
+test("fixed reserved center width keeps search and arrow positions stable across startup phases", () => {
   const row = css.match(/\.capture-health-row\s*\{([^}]+)\}/)[1];
   const badge = css.match(/\.capture-health-badge\s*\{([^}]+)\}/)[1];
   const form = css.match(/\.variation-search-form\s*\{([^}]+)\}/)[1];
@@ -123,13 +123,13 @@ test("fixed reserved center width keeps the existing Var search position stable 
   assert.match(badge, /grid-column:\s*2;/); assert.match(badge, /justify-self:\s*center;/);
   assert.doesNotMatch(badge, /(?:^|;)\s*width:/, "Visible pills retain their intrinsic width and existing padding");
   assert.match(form, /grid-column:\s*1;/); assert.match(form, /width:\s*64px;/);
-  assert.match(form, /margin-inline-start:\s*min\(28px, max\(0px, calc\(100% - 64px\)\)\);/);
+  assert.match(form, /margin-inline-start:\s*min\(28px, max\(0px, calc\(100% - 110px\)\)\);/);
   // Numeric grid-track checks are synthetic layout checks, not browser pixels.
   for (const available of [100, 160, 220, 320, 500]) {
     const positions = ["connecting", "loading", "active", "blank"].map(() => {
       const centerTrack = Math.min(112, Math.max(0, available - 12));
       const leftTrack = Math.max(0, (available - centerTrack - 12) / 2);
-      return Math.min(28, Math.max(0, leftTrack - 64));
+      return Math.min(28, Math.max(0, leftTrack - 110));
     });
     assert.equal(new Set(positions).size, 1);
   }

@@ -1,13 +1,16 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 14, 2026
-Repository branch at latest update: feature/preset-vars
-Base commit before preset work: 814ad5c959617db941e37cdcde8446b27bf31ba4
-Commit subject: Update tracker controls and capture status behavior
-Preset implementation is uncommitted at this update; inspect git status.
+Snapshot date: September 15, 2026
+Repository branch at this update: main
+Base commit before these local updates: 4501afc5476b7052dace67fae22a279815861800
+Commit subject: Improve pre-stream preset planning and compact report deletion dialog
+Preset work is merged; the latest pre-stream and dialog changes are committed.
+The documentation refresh, preset-entry hover-tooltip removal, variation arrows,
+Resume viewport fix, and startup planning override are subsequent local changes;
+inspect git status before staging anything.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,691 passed, 0 failed
+Latest full synthetic test run: 1,736 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -30,8 +33,8 @@ For the receiving assistant:
 - Read any current AGENTS.md or applicable skill instructions. No applicable
   AGENTS.md was found during preparation; that may change later.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean before preset implementation. The feature and this
-  updated handoff are pending changes; no commit or push was performed.
+- The worktree was clean on main before the documentation refresh. Subsequent
+  requested UI changes preserve those edits. No commit or push was performed.
 
 1. PRODUCT, OWNER, AND SCOPE
 ---------------------------
@@ -166,13 +169,13 @@ tests/                              Node built-in tests and synthetic fixtures/h
 There is no running backend. Tracked empty backend placeholders were removed.
 config/ and editor examples are not a server implementation; leave them alone.
 
-Documentation drift to watch:
-- Some older architecture/checklist passages still use "Business Records" for the
-  now-visible "STREAM REPORT RECORDS" section or only name "Canceled".
-- Current code also accepts "Cancelled" and "Order processing" variants.
-- One older architecture "commit rule" sentence groups revenue with mapped sales;
-  actual Gross Item Sales/AOV include priced unmapped completions. Mapped cost,
-  stock consumption, and gross profit remain mapping-dependent. See section 5.
+Documentation conventions:
+- The recent-report heading is "STREAM REPORT RECORDS". The archive's existing
+  "Back to Business Records" button and restore announcement retain their older
+  wording; documenting those literal labels does not authorize a UI rename.
+- The payment tables include "Cancelled" and "Order processing" variants.
+- Gross Item Sales/AOV include priced unmapped completions. Mapped cost, stock
+  consumption, and gross profit remain mapping-dependent. See section 5.
 - Do not infer implemented APIs/features solely from future-looking doc sections.
 
 4. EXECUTION, TRUST, AND PERSISTENCE BOUNDARIES
@@ -431,7 +434,10 @@ the same page's readiness after worker restart. Panel reads every 2 seconds disc
 new dashboard documents, not health loss. Request deadlines and stale-message
 validation remain. No report/canonical/storage schema or saved-data change.
 
-Blue/yellow together drive the spinner, steady 50% tint, and capture-only lock.
+Blue/yellow together drive the spinner, steady 50% tint, and capture-only lock by default.
+The preset control can now opt into future planning once local data is ready, removing
+only capture tint and permitting planning controls without altering the badge phase.
+Real live/history mapping, manual queues, imports, pins, and other editing stay locked.
 Preserve reduced motion, typed drafts, picker-close behavior, native scrolling,
 and End/confirmation/cancel availability. Green/blank remove ONLY that initial
 lock, never independent busy/save/error/inert/confirmation safeguards. Background
@@ -439,6 +445,11 @@ capture, business retries, and in-flight saves/imports keep running unchanged.
 Later glitches cannot reapply loading tint or the capture-loading lock.
 
 The badge/lock apply only to the active resumed tracker. Other screens are unchanged.
+The active hover tooltip now contains only "Capture setup is ready for this dashboard
+page load." Its custom description is centered within the badge row, wraps at narrow
+widths, and replaces the active phase's native title to avoid a duplicate tooltip.
+Other phase descriptions remain unchanged. Do not restore the removed second sentence
+or interpret this wording-only change as continuous connection verification.
 Users should watch the active variation and reload website/extension if it stops
 updating; green deliberately does not guarantee connection or capture completeness.
 See capture-development.md for synthetic tests and remaining live/manual checks.
@@ -503,6 +514,20 @@ oversold replacement quantity clamps to zero and needs a physical recount.
   are not persisted. Queue storage remains schema 1.
 - Return to live item resumes follow-newest. Pins move cards to front; otherwise
   preserve original order. Completed sales do not cause reordering.
+- Compact previous/next arrows beside Var # navigate the nearest lower/higher
+  existing captured or preset number, including assigned presets. They skip gaps,
+  never wrap or create entries, and disable at boundaries or with no selected entry.
+  They reuse selectVariationFromPicker, including history/live-follow and future
+  selection, announcements, inventory-filter clearing, and navigation-generation
+  safeguards. The Var # draft is preserved; Return to live still clears it.
+  Capture/session/save/queue/import/End guards are rechecked at click time. A future
+  target also requires preset availability. Capture and queue/save lifecycle updates
+  refresh disabled states; no timers or worker commands were added. Selection alone
+  changes no mappings, reservations, payments, reports, or queue state.
+  Both 20px buttons fit in the existing left grid track. The row stays 20px tall and
+  its 112px center slot is unchanged. Var # keeps its normal 64px width/28px inset;
+  at narrow widths it shrinks and gives back the inset to reserve 46px for the arrows
+  and gap. Normal/narrow browser layout and keyboard focus remain manual checks.
 - Size/variation pickers use dedicated render locking so updates do not jump under
   the pointer. Latest queued render applies on release; this is not the health lock.
 
@@ -513,6 +538,7 @@ Current compact visual decisions:
   Clicking outside an unsaved total field discards its draft and restores the
   bubble without saving or moving focus. Inside clicks keep editing; an accepted
   in-flight save retains its context. Enter saves and Escape still cancels.
+  The Total vars input has no hover title; its accessible label/help remain intact.
   Var # also finds preset placeholders. Future selection is display-only history
   browsing. With no captured variations or selected preset, opening the dropdown
   highlights/scrolls #1 without committing it. Existing selections and explicit
@@ -532,8 +558,12 @@ Current compact visual decisions:
   Live and captured historical right-clicks keep their existing behavior.
   Untracked plans do not reserve stock or affect reports/metrics/exports.
 - Pre-stream planning: after confirmed inventory and local Start/Resume, presets
-  work with zero captured variations once existing Connecting/Loading ends. The
-  internal blank/Reload Site state permits planning, without changing badge logic.
+  work with zero captured variations. Connecting/Loading now permits explicit opt-in
+  by clicking Preset items (or the existing Reset presets control), once canonical
+  inventory/session and preset data are valid. The panel ungrays without changing
+  badge readiness; future-only assignments, browsing, search, expansion, and exact
+  sizes work. Live/history mapping, manual queue changes, imports, and pins remain
+  capture-locked. The internal blank/Reload Site state also permits normal planning.
   START and GET_STREAM_SESSION already pin the prepared baseline before capture;
   no new baseline or fake auction is required. Side-panel preset reads now follow
   successful canonical workspace load/initialization/retry instead of racing mount,
@@ -541,6 +571,20 @@ Current compact visual decisions:
   refresh reads, stale-result guards, and save/session/error locks remain intact.
   Empty future selections support Var #, ordinary and sequential exact-SKU planning,
   reset, and reopening; real capture alone activates reservations/accounting.
+- Startup planning override is panel-local, not stored. canUseVariationPresetData
+  retains independent safeguards; isCapturePlanningLocked grants only the narrow
+  exception. Global editing guards use an explicit allowed-target check; inert
+  regions and stale future card/size contexts prevent fallthrough into live edits.
+  Automatic queue-conflict clearing still uses the existing worker coordinator.
+  The health view's onLoadChange exposes its already-validated document identity;
+  it does not change badge phase, capture timing, or the readiness latch. First
+  identity discovery binds the opt-in; actual document changes or leaving the resumed
+  stream clear it. Busy states/rerenders/edits retain it. Green/Reload Site restore
+  normal rules without navigation or scrolling. Reopening may require opting in again.
+  Safe background refresh preserves open picker focus/display, not permission to save.
+  An actual new document dismisses only the total editor and rotates the planning
+  cycle/navigation epochs. Late create/reset/sequential replies cannot restore a view
+  or focus from the old cycle; authoritative writes are not canceled or discarded.
 - Future assignments persist in the separate preset record, guarded by expected
   stream/baseline/revision. Reset saves a disabled revision tombstone and removes
   only uncaptured plans, returns to live, and restores Preset items. Captured
@@ -619,6 +663,18 @@ Local sessions persist across panel/browser restarts. Closing the panel is not E
 Resume reopens the existing local identity; it does not invent a new stream or clock.
 Start/Resume-only screens differ from the active/resumed tracker workspace.
 
+Resume now opens the restored tracker at the top once. Its pendingResumeViewport
+token is scoped to streamId and the mounted controller, armed only after a successful
+explicit Resume. restoreResumeViewport runs after the first ready workspace render
+(or immediately if already ready), focuses the named tracker region with preventScroll,
+and calls an instant scroll to top. The region has tabindex=-1, not a new tab stop;
+Connecting/Loading can keep child controls inert without blocking this viewport reset.
+The token is consumed before scrolling. Ordinary refreshes and later badge changes
+cannot repeat it. Errors, mismatched session/controller, unmount, End confirmation,
+archive navigation and pagehide cancel it. Resume no longer uses the legacy bottom
+status/retry-focus path; Start and Retry are unchanged. No capture, storage, selection,
+mapping, preset, or accounting behavior is modified by this UI-only fix.
+
 End confirmation now has only:
   Keep stream active
   End and create report
@@ -684,6 +740,12 @@ Management:
 - Recent report menu: Download PDF, Rename, Archive, Delete.
 - Recent Delete uses the same explicit permanent-delete confirmation as archives;
   it does not require archiving first. Cancel preserves the record.
+- That dialog now contains only a centered "Delete report forever?" heading (with
+  a count for bulk deletion) and centered Cancel / Delete forever buttons, without
+  the former explanatory paragraph. Delete-only CSS uses a 248px maximum width,
+  14px padding, and wrapping actions at narrow widths. Rename's layout is unchanged.
+  Pending-ID snapshots, busy/stale safeguards, cancellation, and deletion behavior
+  are unchanged; compacting the dialog did not remove its confirmation step.
 - Archived reports support restore, selection/bulk actions, and permanent deletion.
 - Default report name uses tracking START time. Preserve edited names and tier.
 - No silent data deletion to make space. Library management is hidden while tracking.
@@ -839,8 +901,18 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest preset implementation run: 1,691 tests passed, 0 failed, on Windows.
-This includes 200 preset tests (61 core, 51 real-worker integration, 88 UI).
+Latest full verification: 1,736 tests passed, 0 failed, on Windows (September 15, 2026).
+This includes 214 preset tests (61 core, 54 real-worker integration, 99 UI).
+The preset/UI implementation passed 1,691 tests before two compact-delete-dialog
+regressions brought the full suite to 1,693. The later centering change retained that count.
+Variation arrows add 16 regressions: 14 navigation/guard tests and two layout/markup
+checks. Browser pixel/focus verification is still manual, not inferred from Node tests.
+Resume-to-top adds 11 tests for one-shot restoration, capture-loading compatibility,
+error/cancellation behavior, later manual scrolling, and real-controller read-only loading.
+Startup planning adds 16 tests: 11 UI/guard/lifecycle/race cases, three real-client/worker
+integration cases, and two validated document-discovery cases. The pre-change baseline
+was 1,720 passing tests. Native tint, popup/focus, and normal/narrow layout still require
+manual Chrome verification; no real tracker/profile data was accessed.
 Sequential right-click assignment adds 41 tests over the preceding 1,565-test run.
 Automatic range extension adds 43 tests over the preceding 1,606-test run, including
 recovery when readiness persistence fails before payment clears the live marker.
@@ -848,7 +920,8 @@ Pre-stream planning readiness adds 14 tests over the preceding 1,649-test run,
 including real Start/Resume before first capture and preset reads after ready load.
 The isolated Chrome QA launch failed before rendering (GPU process unavailable),
 so preset-row normal/narrow visual dimensions remain a manual check.
-Previous focused packaging group: 52/52. Current locator group after alias: 36/36.
+Historical focused snapshots: packaging 52/52; locator 36/36 after the initial
+Cancelled alias. Those are earlier run counts, not the current locator coverage.
 Counts are snapshot facts, not fixed requirements for future edits.
 
 Useful targeted groups:
@@ -860,6 +933,10 @@ Useful targeted groups:
   capture-health-badge-visibility, capture-interaction-lock tests.
 - Mapping/reservations/queue: mapping-workflow, live-inventory-tracking,
   next-item-queue-state, live-bid-state, variation-selector-lock tests.
+- Variation arrows: variation-step-navigation plus variation-number-search layout
+  tests cover captured/preset navigation, boundaries, safeguards and unchanged state.
+- Resume viewport: resume-viewport-ui covers one-shot top reset, empty/captured/preset
+  restoration, loading locks, cancellation, and preservation of later user scrolling.
 - Sheets: inventory-sheet-import, inventory-import-protocol/client/controller,
   google-sheets-inventory-import and google-sheets-inventory-e2e tests.
 - Reports: stream-report, stream-report-storage/coordinator/protocol,
@@ -889,9 +966,11 @@ writes known synthetic PDF/PNG/text outputs under tmp/pdfs; do not overwrite wan
 QA artifacts without considering ownership.
 
 Windows execution was freshly verified. The user previously reported Mac testing/
-packaging working after the realpath fix; the preparing assistant did NOT execute
-macOS tests itself. No fresh live dashboard/Chrome UI verification occurred for this
-handoff. Do not claim either platform's browser behavior is fully verified by Node.
+packaging working after the realpath fix and a full stream without gaps or post-stream
+errors after the payment/startup changes. Those are user-reported checks, not assistant
+execution or proof of every later preset/UI change. No fresh macOS execution or live
+dashboard/Chrome UI verification occurred for this documentation refresh. Do not claim
+either platform's browser behavior is fully verified by Node.
 
 16. KNOWN ISSUES, LIMITATIONS, AND UNAPPROVED FUTURE WORK
 ------------------------------------------------------
@@ -956,7 +1035,15 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
-Recent commits at preparation, newest first:
+Recent commits at this documentation refresh, newest first:
+  4501afc  Improve pre-stream preset planning and compact report deletion dialog
+  77b1f2c  capture active badge ui updates
+  9cfcea4  Merge pull request #10 from justingore4/feature/preset-vars
+  8b75188  Add future variation preset planning
+  814ad5c  Update tracker controls and capture status behavior
+  500c927  payment badge variations
+
+Earlier cleanup/packaging milestones:
   93560c7  Clean up unused placeholders and support Cancelled payment badges
   000108a  Remove end-without-report flow and expand Keep stream active button
   2ffc66a  Update tracker UI, report management, and cost preservation
@@ -1001,5 +1088,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-The immediate task that produced this file was documentation handoff only.
+The documentation refresh is preserved alongside the subsequently requested preset
+tooltip removal, variation-navigation arrows, and Resume-to-top fix. No commit or push was performed.
 There is no approved pending functional change to start automatically.

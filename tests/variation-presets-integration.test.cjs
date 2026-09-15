@@ -13,6 +13,7 @@ const presetProtocol = require("../extension/shared/variation-presets-protocol.j
 const presetStorage = require("../extension/shared/variation-presets-storage.js");
 const presetClientModule = require("../extension/tagger/variation-presets-client.js");
 const queueStorage = require("../extension/shared/next-item-queue-storage.js");
+const captureHealth = require("../extension/shared/capture-health.js");
 
 const STREAM = "local-stream:11111111-1111-4111-8111-111111111111";
 const BASELINE = "inventory-baseline:11111111-1111-4111-8111-111111111111";
@@ -31,6 +32,7 @@ const CHANNELS = {
   queue: "tiktok-live-tracker.next-item-queue",
   live: "tiktok-live-tracker.live-bid",
   report: "tiktok-live-tracker.stream-report",
+  health: captureHealth.CHANNEL,
 };
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -145,7 +147,9 @@ function createHarness({ active = true, pinned = active, inventory = "confirmed"
 
     async function raw(channel, command, sender = PANEL) {
       const capture = channel === "capture";
-      const message = { channel: CHANNELS[channel], version: 1, [capture ? "event" : "command"]: command };
+      const message = channel === "health"
+        ? { channel: captureHealth.CHANNEL, version: captureHealth.VERSION, ...command }
+        : { channel: CHANNELS[channel], version: 1, [capture ? "event" : "command"]: command };
       return new Promise((resolve, reject) => {
         const retained = listener(inRealm(message), inRealm(sender), (response) => resolve(clone(response)));
         if (retained !== true) reject(new Error(`The real worker did not accept channel ${channel}`));
@@ -187,6 +191,9 @@ function createHarness({ active = true, pinned = active, inventory = "confirmed"
       },
       async end() { return send("session", { type: "end_stream", streamId: STREAM }); },
       async report(reportId) { return send("report", { type: "get_report", reportId }); },
+      async health(type = "get", options = {}, sender = type === "get" ? PANEL : DASHBOARD) {
+        return send("health", { type, ...(type === "get" ? { streamId: STREAM } : {}), ...options }, sender);
+      },
     };
   }
   return { open, values, sessionValues, writes, notifications, errors, failedWrites, failNext };
@@ -197,6 +204,127 @@ function auction(state, variationNumber) { return reconciliation.getAuction(stat
 function expected(snapshot) {
   return { expectedStreamId: snapshot.streamId, expectedBaselineId: snapshot.baselineId, expectedRevision: snapshot.revision };
 }
+
+async function setStartupPhase(worker, phase) {
+  if (phase === "connecting") return null;
+  const context = await worker.health("context");
+  await worker.health("pulse", {
+    streamId: STREAM, contextId: context.contextId, sequence: 0,
+    sampledAt: Date.now(), sample: { phase: "loading" },
+  });
+  return context;
+}
+
+test("startup planning through the real preset client never changes Connecting/Loading or canonical inventory", async () => {
+  for (const phase of ["connecting", "loading"]) {
+    const h = createHarness(), worker = h.open();
+    await setStartupPhase(worker, phase);
+    const beforeHealth = await worker.health();
+    assert.equal(beforeHealth.phase, phase);
+    const beforeState = await worker.state();
+    const ready = await worker.presetClient.getPresets();
+    const created = await worker.presetClient.createPresets({ ...expected(ready), total: 200 });
+    const first = await worker.presetClient.setPresetItem({
+      ...expected(created), variationNumber: 1, sku: "SYNTH-A",
+    });
+    const next = await worker.presetClient.assignNextPresetItem({
+      ...expected(first), variationNumber: 1, sku: "SYNTH-B",
+    });
+    assert.equal(next.assignedVariationNumber, 2);
+    assert.deepEqual(await worker.state(), beforeState);
+    assert.equal(summary(await worker.state()).totals.auctionCount, 0);
+    assert.deepEqual(await worker.health(), beforeHealth, "Planning is not a capture-ready signal");
+
+    const cleared = await worker.presetClient.setPresetItem({
+      ...expected(next.presets), variationNumber: 1, sku: null,
+    });
+    await worker.presetClient.resetPresets(expected(cleared));
+    assert.deepEqual(await worker.state(), beforeState, "Unassign/reset are still planning-only during startup");
+    assert.deepEqual(await worker.health(), beforeHealth);
+    assert.equal((await worker.presets()).total, null);
+    assert.ok(Object.keys(h.values).every((key) => [
+      reconciliationStorage.STORAGE_KEY, sessionStorage.STORAGE_KEY, presetStorage.STORAGE_KEY,
+    ].includes(key)), "The panel override does not need an extra persisted setting");
+  }
+});
+
+test("startup planning preserves automatic queue conflict clearing and real capture promotion without forcing readiness", async () => {
+  const h = createHarness(), worker = h.open();
+  // This represents a saved live stream whose new dashboard document is still
+  // loading. Its existing queue was created before the current startup lock.
+  await worker.bid(1);
+  await worker.map(1);
+  await worker.queue("toggle_queue", 1, "SYNTH-B");
+  const context = await setStartupPhase(worker, "loading");
+  const loading = await worker.health();
+  const queued = await worker.send("queue", { type: "get_queue" });
+  const stateBeforePlanning = await worker.state();
+  const initial = await worker.presetClient.getPresets();
+  const created = await worker.presetClient.createPresets({ ...expected(initial), total: 10 });
+  const distant = await worker.presetClient.setPresetItem({
+    ...expected(created), variationNumber: 8, sku: "SYNTH-B",
+  });
+  assert.deepEqual(await worker.send("queue", { type: "get_queue" }), queued);
+  const next = await worker.presetClient.assignNextPresetItem({
+    ...expected(distant), variationNumber: 2, sku: "SYNTH-A",
+  });
+  assert.equal(next.assignedVariationNumber, 2);
+  assert.equal((await worker.send("queue", { type: "get_queue" })).queuedSku, null);
+  assert.ok(h.notifications.some((message) => message.channel === CHANNELS.queue));
+  assert.deepEqual(await worker.state(), stateBeforePlanning);
+  assert.deepEqual(await worker.health(), loading);
+
+  await worker.capture("payment_complete", { variationNumber: 2, soldPriceCents: 1700 });
+  const captured = await worker.state();
+  assert.equal(auction(captured, 2).sku, "SYNTH-A");
+  assert.equal(summary(captured).inventory[0].soldQuantity, 1);
+  assert.equal(summary(captured).totals.costOfGoodsCents, 500);
+  assert.equal(summary(captured).totals.profitCents, 1200);
+  assert.deepEqual((await worker.presets()).assignments, [{ variationNumber: 8, sku: "SYNTH-B" }]);
+  await worker.capture("payment_complete", { variationNumber: 2, soldPriceCents: 1700 });
+  assert.deepEqual(await worker.state(), captured, "Startup promotion remains idempotent");
+  assert.deepEqual(await worker.health(), loading, "Capture accounting cannot mark initialization complete");
+  await worker.health("pulse", {
+    streamId: STREAM, contextId: context.contextId, sequence: 1,
+    sampledAt: Date.now(), sample: { phase: "ready" },
+  });
+  assert.equal((await worker.health()).phase, "active", "Only the capture producer completes readiness");
+});
+
+test("startup capture/save races retain authoritative future validation and never turn stale planning into live mapping", async () => {
+  for (const captureFirst of [true, false]) {
+    const worker = createHarness().open();
+    await setStartupPhase(worker, "loading");
+    const healthBefore = await worker.health();
+    const created = await worker.presetClient.createPresets({
+      ...expected(await worker.presetClient.getPresets()), total: 10,
+    });
+    const capture = () => worker.bid(3);
+    const assign = () => worker.presetClient.assignNextPresetItem({
+      ...expected(created), variationNumber: 3, sku: "SYNTH-A",
+    });
+    const first = captureFirst ? capture() : assign();
+    // The real preset client queues transport on its promise tail. Let that
+    // send reach the worker before scheduling the competing capture; neither
+    // authoritative operation needs to finish before the other is submitted.
+    if (!captureFirst) await Promise.resolve();
+    const second = captureFirst ? assign() : capture();
+    const outcomes = await Promise.allSettled([first, second]);
+    assert.equal(outcomes[0].status, "fulfilled");
+    assert.equal(outcomes[1].status, captureFirst ? "rejected" : "fulfilled");
+    if (captureFirst) assert.equal(outcomes[1].reason.code, "VARIATION_ALREADY_CAPTURED");
+    const captured = await worker.state();
+    assert.equal(auction(captured, 3).sku, captureFirst ? null : "SYNTH-A");
+    assert.equal(summary(captured).inventory[0].reservedQuantity, captureFirst ? 0 : 1);
+    assert.deepEqual((await worker.presets()).assignments, []);
+    assert.deepEqual(await worker.health(), healthBefore);
+    const current = await worker.presets();
+    await assert.rejects(worker.presetClient.setPresetItem({
+      ...expected(current), variationNumber: 3, sku: "SYNTH-B",
+    }), { code: "VARIATION_ALREADY_CAPTURED" });
+    assert.deepEqual(await worker.state(), captured);
+  }
+});
 
 test("starting with confirmed inventory pins the existing baseline and permits client planning before first capture", async () => {
   const h = createHarness({ active: false }), worker = h.open();

@@ -54,6 +54,7 @@ copy or CSV export to update the Sheet manually.
    **LIVE auctions / Sold items** content available for capture.
 4. Choose **Start stream tracking**. Returning to an existing local session uses
    **Resume stream tracking**; it does not create a new session.
+   Resume opens the restored tracker at the top, including before any auction is captured.
 5. Assign inventory items to variations as they appear. Review unresolved payments,
    unmapped sales, and stock warnings before ending.
 6. Choose **End Stream Tracking → End and create report** to save the report and
@@ -71,6 +72,9 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
 
 - Enter a captured or preset variation number in **Var #** and press Enter to review it.
   Typing alone does not switch variations.
+- Use **‹ / ›** beside Var # to move to the previous/next available variation,
+  including future presets. Missing numbers are skipped; arrows disable at either
+  end or while controls are locked. Navigation does not change item assignments.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
 - Left-click selects or unmaps the item for the viewed variation.
@@ -98,10 +102,12 @@ explicit cancellation countdown, remain unresolved rather than being reclassifie
 ### Plan items ahead with presets
 
 After confirming inventory, start or resume the local tracker session. You can do
-this before TikTok LIVE begins. Once the existing loading state finishes and the
-tracker is ungrayed, choose **Preset items** above the Variation selector—even with
-no live auction or captured variations yet. The **Reload Site** state does not block
-planning; Connecting/Loading and other save/error safeguards still do. Enter
+this before TikTok LIVE begins. Choose **Preset items** above the Variation selector,
+even with no live auction or captured variations yet. Once local inventory and preset
+data are loaded, you can click it during **Connecting/Loading** to ungray the tracker
+and plan while capture continues starting. The badge stays unchanged; live/history
+mapping and manual queue actions remain locked until startup finishes. **Reload Site**
+also permits planning. Other save/error safeguards still apply. Enter
 the total numbered range for this stream and press Enter: **200 means #1–#200**, not
 200 additional variations. The preset-only limit is **1,000**; the total cannot be
 below the highest captured variation. Real capture can continue beyond the range.
@@ -150,7 +156,9 @@ continues but another preset range cannot be created within the supported limit.
 
 Presets survive
 refresh/reopening for the same stream, but never carry into a new stream or inventory
-baseline. Changing presets is unavailable during initial loading or another save.
+baseline. Planning cannot bypass local-data loading or another save. After an actual
+dashboard refresh or reopening the panel during startup, click the preset control
+again to enable planning; an existing **Reset presets** control can also opt in.
 
 ### Capture startup badge
 
@@ -166,8 +174,9 @@ delivery activity, or disconnections. It is a readiness indicator, **not an ongo
 connection or completeness check**. A new session or newly loaded dashboard document
 starts another cycle; ordinary updates and reopening the panel do not restart yellow.
 
-Blue and yellow show a spinner, dim the tracker, and lock editing except scrolling
-and **End Stream Tracking** with its confirmation controls. Capture and retries
+Blue and yellow show a spinner, dim the tracker, and lock editing by default. Clicking
+the preset control enables planning only and removes the tint without changing the
+badge. Scrolling and **End Stream Tracking** keep their existing availability. Capture and retries
 continue. Green/Reload Site remove only this startup lock; other save/error safeguards
 remain. Missing GMV does not block startup. There is no red badge or auto-hide timer.
 Setup and Resume/End-only screens do not show the row. Reduced-motion settings
@@ -180,13 +189,13 @@ If the active variation stops updating, reload the website or extension. See
 
 Reports include the saved name and tracking dates, notices, performance metrics,
 SKU results, variation details, and updated inventory. The default report name uses
-the **tracking-start time**. Rename current reports in Business Records or edit the
-name at the top of the report. Restore an archived report to Business Records before
-renaming it.
+the **tracking-start time**. Rename current reports in **STREAM REPORT RECORDS** or
+edit the name at the top of the report. Restore an archived report to the recent
+list before renaming it.
 
 ### Library and downloads
 
-- **Business Records** holds up to **5** recent reports; **Archived Reports** holds
+- **STREAM REPORT RECORDS** holds up to **5** recent reports; **Archived Reports** holds
   up to **25** more. Saving beyond five recent reports archives the oldest finalized
   report when there is room. Older reports are **never automatically deleted**.
 - The combined library also has an approximately **4 MiB** serialized-data limit.
@@ -196,8 +205,8 @@ renaming it.
   at 80% used and turn red at 90%. Three or fewer remaining slots trigger a red
   warning; when both limits are close, the bubble combines them.
   Usage includes pending reports and the same serialized-data overhead as the save
-  safeguard. Download needed reports, then deliberately delete unwanted archived
-  reports to free space; archiving alone does not free space. Even below 80%, a large
+  safeguard. Download needed reports, then deliberately delete unwanted recent or
+  archived reports to free space; archiving alone does not free space. Even below 80%, a large
   new report may exceed the remaining space, so this is not a guarantee it will fit.
 - If the library cannot accept a report, the normal End action fails without ending
   the session. Free report space before starting: saved-report management is hidden

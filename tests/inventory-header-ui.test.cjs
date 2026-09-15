@@ -65,7 +65,7 @@ function createRenderHarness() {
     createInventoryCard(group) { return { group }; },
     restoreCardFocus() {},
     restoreInventoryPinFocus() {},
-    renderQueuedItemBadge() {},
+    renderQueuedItemBadge() {}, syncCaptureInventoryLock() {},
     inventoryGrid: element(),
     inventorySelectionNote: element(),
     inventoryListToggle: element(),

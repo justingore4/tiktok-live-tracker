@@ -399,6 +399,9 @@
       <div
         id="tracker-workspace"
         class="tracker-workspace"
+        role="region"
+        aria-label="Live tracker"
+        tabindex="-1"
         aria-busy="true"
         inert
         hidden
@@ -411,6 +414,10 @@
             title="Enter a captured or preset variation number and press Enter." disabled>
           <span id="variation-search-help" class="visually-hidden">Enter a captured or preset variation number and press Enter.</span>
         </form>
+        <span id="variation-step-controls" class="variation-step-controls" role="group" aria-label="Variation navigation" inert>
+          <button id="previous-variation" type="button" aria-label="Previous variation" disabled><span aria-hidden="true">‹</span></button>
+          <button id="next-variation" type="button" aria-label="Next variation" disabled><span aria-hidden="true">›</span></button>
+        </span>
         <span id="capture-health-badge" class="capture-health-badge"
           data-phase="not_tracking" role="status" aria-live="polite"
           aria-atomic="true" aria-describedby="capture-health-description"
@@ -420,8 +427,7 @@
           <button id="variation-presets-button" type="button" disabled>Preset items</button>
           <input id="variation-presets-input" type="text" inputmode="numeric"
             placeholder="Total vars" autocomplete="off" spellcheck="false"
-            aria-label="Total preset variations" aria-describedby="variation-presets-help"
-            title="Enter a total from 1 to 1000. Enter saves; Escape cancels." hidden disabled>
+            aria-label="Total preset variations" aria-describedby="variation-presets-help" hidden disabled>
           <span id="variation-presets-help" class="visually-hidden">Enter the total variation count, up to 1000. Enter saves; Escape cancels. Presets do not reserve stock until captured.</span>
         </form>
       </div>

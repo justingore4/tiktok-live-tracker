@@ -731,10 +731,10 @@ distribution; reassess Google's requirements before expanding the audience.
     after making the backup. If a row is oversold, the exported count is zero but its raw
     shortage/recount warning remains; physically recount it. Review every attention notice
     before using the replacement counts.
-17. Reopen the side panel and confirm **Business Records** lists the new report with its
+17. Reopen the side panel and confirm **STREAM REPORT RECORDS** lists the new report with its
     date, completed/total count, and Gross Item Sales. Open it, retry a simulated list failure, and
     restart Chrome/the worker to verify local recovery. Create six isolated test reports:
-    only the newest five should remain in Business Records, while the oldest finalized
+    only the newest five should remain in the recent list, while the oldest finalized
     one must move intact to **Archived stream reports**. Open that archived report and
     verify its Print/Save-as-PDF and inventory CSV actions still work.
 18. Exercise **More actions -> Rename** on a current report. Verify its custom title appears
@@ -743,11 +743,17 @@ distribution; reassess Google's requirements before expanding the audience.
     automatic timestamp title with **Use default**. Then exercise **More actions -> Archive**
     on that current report. In the archive, use Select,
     Select all, and Clear selection. Restore a selection no larger than the available
-    Business Records slots and verify every selected report moves atomically. Attempt an
+    recent-report slots and verify every selected report moves atomically. Attempt an
     oversized restore and verify none moves. Select disposable archived records, choose
     **Delete selected**, cancel the confirmation once, then confirm and verify only the
     selected archived records are permanently deleted.
-19. Fill five Business Records and 25 archived slots, or use a test fixture that reaches
+    Also use **More actions -> Delete** on a disposable recent report without archiving
+    it first. The compact dialog shows the centered **Delete report forever?** heading
+    (or the report count for bulk deletion) and only **Cancel** / **Delete forever**;
+    there is no explanatory paragraph. Check balanced padding and usable buttons at
+    narrow widths, cancel/Escape without deletion, and confirm only the intended IDs.
+    The separate Rename dialog must keep its existing layout.
+19. Fill five recent-report and 25 archived slots, or use a test fixture that reaches
     the combined cap of approximately 4 MiB. The next report-aware End must fail
     explicitly before ending the stream and preserve every record. Manual Archive must
     likewise fail without a mutation when archive capacity is unavailable. Release
@@ -778,7 +784,8 @@ the newest deferred saved view is retained and applied once when the employee se
 dismisses the listbox. The inventory size list uses the same visible-stability rule:
 canonical and queue refreshes may continue, but its visible size/SKU options remain fixed
 until close, when the newest deferred inventory render is applied once. A
-compact **Return to live item** action is visible only in that historical-review state. It
+compact **Return to live item** action is hidden until at least one actual variation
+has been captured, then appears when reviewing history or a future preset. It
 targets the active bidding variation when available and otherwise the newest captured
 variation; selecting it resumes automatic follow without a mapping, inventory, payment,
 or persistence mutation.
@@ -923,6 +930,11 @@ health monitoring. The active, resumed tracker keeps its centered 20px badge row
 and report screens remain unaffected. Blue Connecting and yellow Loading keep
 their decorative spinner; reduced motion stops its rotation.
 
+The active badge's hover tooltip reads only **Capture setup is ready for this dashboard
+page load.** It uses the centered custom description instead of a duplicate native
+title; other phases retain their existing descriptions. The shortened tooltip does
+not change the startup-only meaning or latch behavior below.
+
 ### Startup and latch
 
 - Blue Connecting waits for a current dashboard context/first readiness response.
@@ -973,9 +985,11 @@ malformed, or delayed requests do not demote green. A valid different document
 identity or explicit session change is needed to start another loading cycle.
 Late responses cannot finish another session/document's startup.
 
-Connecting/Loading alone apply the steady 50% tint and capture-only interaction
-lock. Search, variations, mappings, queue controls, pins, expansion, and SKU import
-remain locked during startup. Scrolling and End/confirmation/cancel retain their
+Connecting/Loading apply the steady 50% tint and capture-only interaction lock by
+default. Once local data is valid, clicking the preset control opts into future
+planning and suppresses only the tint. Navigation, inventory search/expansion, and
+exact-size future assignments become available; live/history mapping, manual queue
+controls, pins, and SKU imports remain locked during startup. Scrolling and End/confirmation/cancel retain their
 existing availability. Open pickers close without choosing an item; typed drafts
 remain. Green/blank remove only this lock, never unrelated busy/save/error/inert
 safeguards. Capture observers, business delivery retries, live updates, and
@@ -993,6 +1007,8 @@ Remaining manual checks: normal/narrow Chrome layout; startup with empty Sold
 Items; initial catch-up; dashboard refresh; panel reopening; and green remaining
 unchanged through later metric glitches or disconnection. Verify Var # placement,
 scrolling, End controls, and independent busy safeguards using synthetic data.
+Hover the active badge at normal and narrow widths: its single-sentence tooltip
+must remain centered in the badge row and wrap within the row without moving controls.
 Green is deliberately not proof of a current connection or complete order capture.
 If the active variation stops updating, reload the website or extension.
 
@@ -1018,6 +1034,14 @@ If the active variation stops updating, reload the website or extension.
 
 ## Preset variation verification
 
+Resume synthetic sessions with no captured variations, saved presets only, and captured
+orders. Once the workspace renders, it should open at the top even while Connecting or
+Loading remains active. Editing must stay locked as before. Then scroll down manually:
+later capture refreshes, preset refreshes, and green/Reload Site updates must not repeat
+the top reset. A failed load must retain error focus; an intervening End confirmation,
+session change, or panel closure must cancel the old viewport request. These browser
+scroll/focus checks remain manual alongside the synthetic `resume-viewport-ui` tests.
+
 Use synthetic inventory and an isolated test stream for development. Presets add
 no dashboard capture source or timer. The `variation-presets-core`,
 `variation-presets-integration`, and `variation-presets-ui` tests cover planning,
@@ -1026,29 +1050,81 @@ strict messages, storage, capture promotion, queue precedence, reset, and recove
 For a manual UI check, verify the existing badge row at normal and narrow panel
 widths with **Preset items**, its inline input, and **Reset presets**. Var # and the
 capture badge must not move or overlap. Enter 200, plan multiple future items, browse
-one by Var #, and Return to live. Check that
+one by Var #, and use Return to live after an actual variation has been captured. Check that
 planning changes neither stock nor metrics, while actual capture applies the normal
 payment/mapping rules. Reload and confirm same-stream plans remain.
 
 Check both queue cases: a planned next item clears/disables queuing, but a queue due
 for #2 still applies when only #3 is preset. Reset while browsing a distant future
 variation must preserve captured mappings, remove uncaptured assignments, and return
-to live. Verify initial Connecting/Loading and save/error locks still apply. Do not
+to live. Verify startup planning requires explicit opt-in and save/error locks still apply. Do not
 use real seller reports or existing Chrome profiles for automated QA.
 
 Also start/resume a local tracker with confirmed synthetic inventory before any
 auction is captured. Once the existing Loading/Connecting state finishes, **Preset
-items** must work even when the badge says **Reload Site**. Create a range, find #1
-with Var #, left-click to assign/unassign, then right-click sequentially through
+items** must work even when the badge says **Reload Site**. Successfully creating an
+initial range must select **#1** automatically, without opening the dropdown. Left-click
+to assign/unassign, then right-click sequentially through
 future presets using exact sizes. All entries remain untracked; stock, metrics,
-report rows, and exports must remain unchanged. Reopen the panel, reset plans, and
+report rows, and exports must remain unchanged. **Return to live item** must stay
+hidden with zero actual captures; once capture begins, it appears normally while
+viewing a future or historical variation. Reopen the panel, reset plans, and
 exercise first actual capture to verify ordinary promotion. No fake current bid or
 live variation should appear just because a plan exists.
 
+Verify automatic #1 selection happens only after a successful initial create with no
+captured variations. Creating presets during live tracking, extending a range, ordinary
+refreshes, and reopening must not force #1. With a delayed save or its canonical
+verification read, navigate elsewhere, deliver a real capture, reset presets, or change
+session; the late response must not override the newer state. Include a capture whose
+notification arrives before its debounced panel refresh. Failed verification must keep
+saved plans without forcing a selection. The creation's own preset notification and
+background refresh must not prevent #1 selection when no intervening change occurred.
+
+For a pre-stream view with no selected variation, open the dropdown: it should
+highlight/scroll to #1 without changing selection merely by opening. Existing future
+selections and explicit Home/End navigation take priority; the list remains newest-first.
+Verify exact Var # lookup, and input clearing when Return to live is available and used.
+Check **‹ / ›** beside Var #: move one available number lower/higher through captured
+and future entries, including already-assigned presets. Missing numbers are skipped;
+boundaries and an unselected waiting view disable navigation rather than wrapping or
+creating entries. Typed Var # drafts stay intact. Verify ordinary history/live following,
+future browsing through capture updates, and no mapping, queue, or accounting changes.
+Loading without planning opt-in, saving, queue changes, End confirmation, and unavailable preset state must
+block the affected navigation and recover when their existing safeguards clear.
+Check 320px and normal-width panels: both 20px arrow buttons stay in the original 20px
+row, the badge remains centered, and the Var # field gives back its inset/width as needed
+without overlap or horizontal scrolling. Native keyboard activation should remain on
+an enabled arrow; reaching a boundary returns focus through the existing selector workflow.
+Before submitting a total, Escape or an outside click must discard the draft and restore
+**Preset items** without saving. Escape returns focus to the bubble; an outside click
+leaves focus with the clicked control. Inside clicks keep entry open, and outside clicks
+must not cancel an already accepted in-flight save.
+
 Check initial saved-workspace load and Retry loading with no capture notifications:
 preset state must be requested after successful loading so an early unavailable
-preset snapshot cannot leave the control disabled indefinitely. Connecting/Loading,
-failed saved-state loads, unconfirmed inventory, and other busy locks remain blocked.
+preset snapshot cannot leave the control disabled indefinitely. Failed saved-state
+loads, unconfirmed inventory, and other busy locks remain blocked. During both
+Connecting and Loading, opt in using Preset items (or Reset presets when already
+enabled): the field/action should work and the tint disappear, but the badge/spinner
+must not change. Test creation, automatic #1, Var #, arrows, dropdown, inventory search,
+Show all items, exact sizes, left-click toggles, and sequential right-click planning.
+Captured live/history mapping, manual queue actions, pins, and imports must stay blocked.
+Valid future assignment must still clear a conflicting automatic next-item queue.
+
+Check both size-picker intents when capture reaches the viewed preset: no stale click
+may map/unmap the captured order or queue an item. Busy/save/error/End guards still
+win, and local refreshes do not discard the opt-in. First dashboard identity discovery
+must not regray the tracker; a different document (even with the same Loading badge)
+requires opting in again. A total-entry draft should return to the button on that
+document replacement, without deleting saved plans. Delay create/reset/sequential
+responses across the replacement: saved results remain authoritative, but no stale
+response may force selection/focus. Existing dropdown and size-picker focus should
+survive safe canonical background refresh; new assignments remain blocked until ready.
+Green/Reload Site use normal availability without moving
+selection or scroll. Leaving/resuming another session and reopening the panel cannot
+inherit the override. Check normal/narrow layout, native tint, focus, and interaction
+in isolated Chrome fixtures; synthetic DOM tests are not native visual verification.
 
 Preset to 100, keep an uncaptured assignment at #80, and capture live #100: the
 control must still say **Reset presets**. Capture live #101 (or skip directly past
@@ -1158,17 +1234,18 @@ outbound Sheets writes remain intentionally absent.
 - A report is limited to facts durably captured before End. It cannot recover a Sold
   Items row TikTok did not render. Internal completeness metadata does not independently
   verify TikTok's full stream totals and is not shown as a customer-facing state label.
-- The narrow canonical payment correction resolves fixing/temporary-failed payments
-  only on the newest safe ended stream. Report-only item-mapping correction supports
+- The narrow canonical payment correction resolves processing, fixing, and legacy
+  temporary-failed payments only on the newest safe ended stream. Report-only item-mapping correction supports
   completed/canceled variations in an eligible finalized report, with no active tracker
   or unfinished/pending report conditions. Unit cost can be corrected in any finalized
   current or archived report. The mapping and cost paths change only the selected report
   and its handoff, never canonical inventory, other reports, or future streams. None of
   these paths reopens capture. Payment completion requires a seller-verified price;
   unit-cost correction requires confirmation of a nonnegative cost.
-- Reports are stored locally as five Business Records plus as many as 25 archived records
-  under a combined cap of approximately 4 MiB. Capacity never silently deletes an
-  existing report; archive deletion is employee-selected and explicitly confirmed.
+- Reports are stored locally as five recent **STREAM REPORT RECORDS** plus as many as
+  25 archived records under a combined cap of approximately 4 MiB. Capacity never silently
+  deletes an existing report; recent or archived deletion is employee-selected and
+  explicitly confirmed.
   Clearing extension storage or uninstalling removes the entire library, so save required
   PDF/CSV copies first. Reports contain local stream timestamps, inventory/SKU/cost/count
   data, captured sale prices and status aggregates, and profit, but no buyer, Sheet ID/link, token, or raw DOM text.

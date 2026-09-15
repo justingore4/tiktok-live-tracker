@@ -8,10 +8,11 @@ const good = (streamId, phase = "active", reason = "ready", loadId = "dashboard-
 
 function fixture(send = async (message) => good(message.streamId)) {
   let clock = 0, nextId = 0;
-  const timers = new Map(), states = [], messages = [];
+  const timers = new Map(), states = [], messages = [], loads = [];
   const runtime = { sendMessage(message, callback) { messages.push(message); return send(message, callback); } };
   const controller = view.createCaptureHealthViewController({
     runtime, protocol, onChange: (value) => states.push(value), now: () => clock,
+    onLoadChange: (value) => loads.push(value),
     setTimeoutFn(fn, delay) { timers.set(++nextId, { fn, at: clock + delay }); return nextId; },
     clearTimeoutFn(id) { timers.delete(id); },
   });
@@ -24,7 +25,7 @@ function fixture(send = async (message) => good(message.streamId)) {
     }
     clock = target; await flush();
   }
-  return { controller, states, messages, timers, runtime, advance, jump: (ms) => { clock += ms; } };
+  return { controller, states, messages, loads, timers, runtime, advance, jump: (ms) => { clock += ms; } };
 }
 
 test("active badge tooltip and accessible description contain only the startup-ready sentence", () => {
@@ -158,4 +159,50 @@ test("duplicate callback/promise completions and later callback errors cannot de
   });
   f.controller.setSession("a"); await flush(); fail = true; await f.advance(2000);
   assert.deepEqual(f.states.map((state) => state.phase), ["connecting", "active"]); f.controller.dispose();
+});
+
+test("validated document discovery notifies planning even when the badge phase does not change", async () => {
+  let response = good("a", "loading", "initializing", null);
+  const f = fixture(async () => response);
+  f.controller.setSession("a"); await flush();
+  assert.deepEqual(f.loads, [{ streamId: "a", loadId: null }]);
+  response = good("a", "loading", "initializing", "first-document");
+  await f.advance(2000);
+  const phases = [...f.states];
+  response = good("a", "loading", "initializing", "second-document");
+  await f.advance(2000);
+  assert.deepEqual(f.states, phases, "Same phase is not republished just to detect refresh");
+  assert.deepEqual(f.loads, [
+    { streamId: "a", loadId: null },
+    { streamId: "a", loadId: "first-document" },
+    { streamId: "a", loadId: "second-document" },
+  ]);
+  const documents = [...f.loads];
+  for (response of [good("a", "loading", "initializing", null),
+    good("a", "loading", "initializing", "second-document"),
+    good("a", "active", "ready", "first-document"), good("wrong-stream"),
+    good("a", "loading", "initializing", "invalid document id"), null]) {
+    await f.advance(2000);
+    assert.deepEqual(f.loads, documents, "Missing, repeated, retired or invalid identity is not a new load");
+  }
+  f.controller.setSession(null);
+  assert.deepEqual(f.loads.at(-1), { streamId: null, loadId: null });
+  f.controller.dispose();
+});
+
+test("stale, disposed and duplicate readiness replies do not publish a planning document change", async () => {
+  const deferred = [];
+  const f = fixture(() => new Promise(resolve => deferred.push(resolve)));
+  f.controller.setSession("old"); f.controller.setSession("new");
+  deferred[0](good("old")); await flush();
+  assert.deepEqual(f.loads, [{ streamId: "old", loadId: null }, { streamId: "new", loadId: null }]);
+  f.controller.dispose(); deferred[1](good("new")); await flush();
+  assert.equal(f.loads.length, 2);
+  const duplicate = fixture((message, callback) => {
+    callback(good(message.streamId));
+    return Promise.resolve(good(message.streamId, "loading", "initializing", "duplicate-document"));
+  });
+  duplicate.controller.setSession("a"); await flush();
+  assert.deepEqual(duplicate.loads, [{ streamId: "a", loadId: null }, { streamId: "a", loadId: "dashboard-a" }]);
+  duplicate.controller.dispose();
 });

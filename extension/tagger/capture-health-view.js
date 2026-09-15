@@ -42,7 +42,7 @@
   }
 
   function createCaptureHealthViewController({
-    runtime, protocol, onChange,
+    runtime, protocol, onChange, onLoadChange = () => {},
     now = Date.now, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout,
     pollMs = 2000, requestTimeoutMs = 4000, failureGraceMs = 20000,
   }) {
@@ -123,6 +123,9 @@
           if (loadId !== null) retiredLoadIds.add(loadId);
           loadId = data.loadId;
           ready = false;
+          // Expose already-validated document identity without changing badge
+          // phases, readiness, request timing, or capture behavior.
+          onLoadChange({ streamId, loadId });
         }
         if (data.phase === "active") ready = true;
         if (!ready) startupPhase = data.phase;
@@ -157,6 +160,7 @@
       retiredLoadIds.clear();
       ready = false;
       failedSince = null;
+      onLoadChange({ streamId, loadId });
       publish(streamId === null ? "not_tracking" : "connecting", streamId === null ? "not_tracking" : "awaiting_capture");
       if (streamId !== null) void refresh();
     }

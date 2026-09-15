@@ -69,11 +69,16 @@ canonical sale truth:
 | --- | --- |
 | `not_observed` | No row-local payment badge has been captured yet |
 | `payment_processing` | TikTok shows `Payment processing` |
+| `order_processing` | TikTok shows `Order processing` |
 | `payment_fixing` | TikTok shows `Payment fixing` |
 | `payment_failed` | Legacy unresolved saved status, or a fresh failure badge explicitly accompanied by a cancellation countdown |
 | `canceled` | Fresh terminal `Payment failed`, `Canceled`, or `Cancelled` |
 | `payment_complete` | TikTok shows `Payment complete` |
 | `unrecognized` | A nonempty tag was present but was not allowlisted; raw text is discarded |
+
+The processing and fixing labels also recognize their three-period and Unicode-ellipsis
+forms. `order_processing` remains unresolved and follows the same reservation rules as
+`payment_processing`.
 
 Canonical `paymentStatus` is `unknown`, `canceled`, or `payment_complete`. Processing,
 fixing, failed, and unrecognized remain nonterminal observations under canonical
@@ -109,8 +114,9 @@ The engine derives a user-facing auction status from both axes:
 
 ### The commit rule
 
-> Count revenue, record gross profit, and decrement stock **if and only if** TikTok
-> shows payment complete and the variation is mapped to an inventory entry.
+> A priced canonical completion contributes to **Gross Item Sales**, completed-sales
+> counts, and AOV whether mapped or unmapped. Committed revenue, inventory deduction,
+> cost of goods, and gross profit additionally require a valid inventory mapping.
 
 Consequences:
 
@@ -640,8 +646,15 @@ capture can only report facts that reached durable reconciliation state before E
 
 ## 5. Employee tagger — Live session implemented
 
-The tagger is a Chrome side-panel interface based on the current mockup. The employee
-should never type a variation number or interact with the hidden SKU.
+The tagger is a Chrome side-panel interface. The employee can browse variations in the
+dropdown or find an existing captured/preset number with **Var #**, and selects inventory
+through item cards and exact-size choices rather than typing a hidden SKU.
+The adjacent **‹ / ›** buttons select the nearest lower/higher existing number through
+the same selection workflow. They include assigned and empty future presets, skip missing
+numbers, and never wrap, extend a range, or change assignments. No selected entry or no
+neighbor disables the relevant arrow. Current capture/preset/save/session safeguards
+apply to both rendering and click handling. The row and badge center stay fixed; only
+the Var # field's width/inset compress when needed to fit the arrows at narrow widths.
 
 The Chrome side panel is a single **Live session** employee workspace. It requires a
 persistent local active stream, restores the last durable reconciliation state, persists
@@ -656,7 +669,8 @@ is the last substantive section and shows a small status dot plus
 The active view has no separate Active pill, persistence explanation, or restored-data
 footer. Setup and Resume/End-only screens retain their lifecycle context. Genuine
 save/error status remains available; removing routine footer text does not suppress it.
-After End, the inactive side panel shows up to five **Business Records**. Each record
+After End, the inactive side panel shows up to five recent reports under
+**STREAM REPORT RECORDS**. Each record
 shows its tracking-start timestamp as the default name, completed/total sales, and exact Gross Item Sales,
 then opens the
 same extension report page in a new tab. **View archived reports** switches to a managed
@@ -667,12 +681,16 @@ panel does not read `chrome.storage` directly.
 
 Each current record's **More actions** menu offers Download PDF, Rename, Archive, and
 Delete. Delete uses the same separate permanent-delete confirmation as archived reports;
-no intermediate archive operation is required. Renaming changes neither the canonical report snapshot nor
+no intermediate archive operation is required. The compact dialog contains only its
+**Delete report forever?** title (including the count for multiple reports) and **Cancel** /
+**Delete forever** buttons. It has no warning paragraph; cancellation, focus restoration,
+busy safeguards, and the recent/archived deletion routes remain unchanged.
+Renaming changes neither the canonical report snapshot nor
 its immutable report/stream IDs; the display name survives reload, archive, restore, and
 report-only corrections. The report cover shows that name (or the tracking-start timestamp fallback),
 while its footer retains the stream reference. Archived
 selection mode supports Select/Select all/Clear selection, atomic **Restore selected**
-into currently available Business Records slots, and **Delete selected** behind an
+into currently available recent-report slots, and **Delete selected** behind an
 explicit permanent-delete confirmation. Restore rejects the entire selection when it is
 larger than the available slot count. Archive deletion applies only to archived records;
 canceling confirmation or any failed worker command changes nothing.
@@ -863,14 +881,28 @@ Employees should finish mapping corrections and wait for expected capture retrie
 practical. Report links appear after End and open the local printable page; no automatic
 Google Sheet write occurs.
 
-The live selector lists only persisted variations for the active local stream and keeps
-mapping unavailable until at least one such record exists. If the controller still holds
-its internal unrecorded startup placeholder, the first canonical view selects the newest
-recorded variation. A non-null `activeBiddingVariationNumber` is the effective current
+Resume requests a one-time viewport reset scoped to the restored stream and mounted
+controller. After its first successful workspace render, the panel focuses the named
+tracker region with `preventScroll` and scrolls to the top immediately. This works even
+when Connecting/Loading still makes the child controls inert; it does not unlock them.
+Resume no longer uses the bottom session-status focus fallback. The request is consumed
+before scrolling and canceled on errors, controller/session changes, unmount, End
+confirmation, archive navigation, or page disposal. Subsequent capture/readiness updates
+do not repeat the reset. Start and Retry retain their existing focus behavior.
+
+The selector lists persisted variations for the active local stream together with any
+uncaptured future presets. Actual mapping requires a captured variation; before the first
+capture, future-preset assignment remains available as planning only once the existing
+session/inventory safeguards permit it, including an explicit planning opt-in during
+capture startup. Presets never turn the controller's
+internal unrecorded startup placeholder into a real auction. Without intentional preset
+browsing, the first canonical view selects the newest recorded variation. A non-null
+`activeBiddingVariationNumber` is the effective current
 variation. A changed marker takes focus only when the employee was already viewing the
 previous current/latest variation. If the employee manually selects history, new
 variations and status changes continue updating the closed combobox without taking focus;
-the compact **Return to live item** action appears while history is selected. It targets
+the compact **Return to live item** action appears while history or a future preset is
+selected, but only after at least one actual variation has been captured. It targets
 the active bidding variation when present and otherwise the newest captured variation;
 returning through it resumes automatic follow.
 Selection navigation itself is local UI state and does not write to storage.
@@ -910,6 +942,9 @@ No readiness message writes business data or acknowledges a capture event. See
 Green means startup completed, not current connection or complete order capture.
 The internal blank startup state displays a neutral, noninteractive **Reload Site**
 disclaimer in the same badge slot; it does not automatically reload the dashboard.
+The active badge's accessible description appears as a centered hover tooltip below the
+badge instead of a cursor-positioned native title. Other phases retain their native
+titles. The tooltip adds no layout height, focus target, or capture/interaction behavior.
 
 Next tagger work includes:
 
@@ -1051,15 +1086,16 @@ current-baseline, and last-canonical-stream guards because it mutates reconcilia
 state. Unit-cost correction instead accepts any finalized current or archived report,
 validates and reprices only the selected report's self-contained rows, and never consults
 or mutates reconciliation state. Identical retries are idempotent; contradictory payment
-outcomes fail closed. Replacement preserves whether the report is in Business Records or
-Archived Reports. Report renaming is a separate active-Business-Record mutation on the
+outcomes fail closed. Replacement preserves whether the report is in the recent or
+archived tier. Report renaming is a separate recent-report mutation on the
 saved wrapper, so it cannot change calculations, exports, or report identity.
 
 The finalized library has two tiers under a combined cap of approximately 4 MiB: no more
-than five non-archived **Business Records** and no more than 25 archived records, with 30
-total records. At most one non-archived `pending_end` record temporarily stages the
+than five non-archived recent reports under **STREAM REPORT RECORDS** and no more than
+25 archived records, with 30 total records. At most one non-archived `pending_end`
+record temporarily stages the
 report-aware End transaction. It is hidden from both employee lists, is never eligible for archive/restore/deletion,
-does not consume one of the five finalized Business Records slots, and still counts
+does not consume one of the five finalized recent-report slots, and still counts
 toward the total-record and byte caps. A small fixed allowance lets a valid near-cap
 version-1 envelope acquire archive fields and reserves bounded room for optional report
 names without data loss while keeping the effective enforced ceiling approximately 4 MiB.
@@ -1091,7 +1127,7 @@ pruning, or deletion. It also does not bound reconciliation history, eliminate t
 of processing and saving that history, or prevent disk/resource failures.
 
 Finalizing what would be a sixth
-Business Record atomically moves the oldest finalized Business Record into archive when
+recent report atomically moves the oldest finalized recent report into archive when
 capacity permits. Equal end times use report identity as the stable tie-break.
 
 There is no automatic report deletion. If the archive already contains 25 reports, the
@@ -1099,7 +1135,7 @@ combined byte cap is reached, or no finalized current record can move, preparati
 before the active stream is cleared and leaves every record intact. Manual archive,
 multi-report restore, and permanent deletion are serialized worker operations.
 Archive and restore are all-or-none; restore additionally rejects a selection larger
-than the available Business Records slots. The `delete_reports` command accepts finalized
+than the available recent-report slots. The `delete_reports` command accepts finalized
 current or archived records; `delete_archived_reports` retains its archive-only guard.
 Both reject pending recovery records and persist the complete selection atomically.
 Deletion requires the separate employee confirmation in the panel. Clearing extension
@@ -1219,7 +1255,8 @@ continues without reopening the listbox. When the employee manually reviews hist
 markers, repeated markers, and payment/status changes update the closed combobox without
 changing the selection. If the listbox is open, its rendered rows and scroll position stay
 fixed while the newest canonical view is deferred, then applied once when the listbox
-closes. While history is selected, a compact **Return to live item**
+closes. While history or a future preset is selected and an actual captured variation
+exists, a compact **Return to live item**
 action targets the active bidding variation or, when no bidding marker exists, the newest
 captured variation. Returning through it re-enables follow without issuing a mapping,
 inventory, payment, or persistence mutation.
@@ -1282,12 +1319,48 @@ load retry), rather than racing that initial load. Existing capture-refresh read
 remain. Thus preset availability does not depend on a later capture notification
 recovering an unsuccessful early preset read.
 
-Only the existing Connecting/Loading interaction lock blocks planning for capture
-readiness. Green and the internal blank/Reload Site state both permit it when the
-other session, inventory, save, error, and inert safeguards are satisfied. Badge
-production, rendering, scheduling, and health thresholds are unchanged. Setup and
+Connecting/Loading blocks planning by default, but the preset button remains available
+once canonical inventory/session and preset data have loaded successfully. Clicking it
+opts into panel-local startup planning and opens the existing input (or performs the
+existing Reset presets action). `canUseVariationPresetData` retains independent save,
+queue, import, session, error, and root-inert guards. `isCapturePlanningLocked` adds a
+narrow exception for navigation and future assignments; live/history mapping, manual
+queue controls, pins, imports, and unrelated editing retain `isCaptureInteractionLocked`.
+An explicit event-target allowlist and nested inert regions protect both ordinary
+controls and external popovers. Future cards and both ordinary/sequential size menus
+retain their source context so capture cannot turn a delayed future action into a real
+mapping. Worker revisions, serialization, queue-conflict clearing, and capture promotion
+are reused unchanged.
+
+The override is scoped to the current panel, stream, and dashboard load. The existing
+health view controller exposes validated document identities through `onLoadChange`,
+including same-phase document changes, without changing readiness or request timing.
+First discovery binds the opt-in; a different non-null document or leaving the resumed
+stream clears it. Rerenders, preset edits, and local busy states do not discard it.
+Safe background refresh preserves already-open picker display/focus through the existing
+picker exemption, but new submissions still require ready local data. Actual document
+replacement dismisses the unsaved total editor to restore the opt-in button and rotates
+a navigation/cycle epoch; late create/reset/sequential acknowledgements cannot steal
+selection or focus. Accepted writes still complete through the existing coordinator.
+The `data-capture-planning` attribute suppresses only capture tint; independent locks
+still apply. Green and blank/Reload Site discard the exception and use normal rules.
+No settings are persisted, no navigation/scroll reset is triggered by readiness, and
+reopening during startup may require opting in again. Badge production, wording,
+rendering, scheduling, and health thresholds are unchanged. Setup and
 Resume-only screens still do not expose planning. Empty-view placeholders remain
 outside canonical history and first actual capture uses normal preset promotion.
+
+After a successful initial range creation before any capture, the panel selects future
+**#1** so item planning can begin immediately. It verifies the canonical view with one
+controller refresh, queued behind any existing refresh, and rechecks stream/controller,
+baseline, acknowledged preset revision/total, navigation, and capture-notification state
+before selecting. Failed verification, intervening capture or navigation, and a newer
+reset/configuration cannot force #1. A save notification arriving before its matching
+acknowledgement remains supported. This one-shot selection does not run on reopening,
+ordinary reads, range extension, or creation during a captured stream.
+**Return to live item** stays hidden until at least one actual variation exists. An
+unselected pre-capture dropdown opens at #1 without reordering its descending list; intentional future
+selection and explicit Home/End navigation keep their existing behavior.
 
 The side-panel-only protocol supports get/create/set-item/assign-next-item/reset. Mutations compare
 stream, pinned baseline, and a durable UUID revision inside the coordinator FIFO
@@ -1323,6 +1396,9 @@ The panel uses the durable latch or the same-stream actual live bidding marker f
 the button label, never its selected variation or historical fallback. An open total
 draft survives ordinary refreshes and is scoped to its originating configuration;
 stale submissions are rejected rather than silently retried against a new range.
+Escape or an outside click dismisses an unsaved total draft without changing the saved
+range or assignments. Outside clicks do not cancel a save already in flight or steal
+focus from the clicked control.
 Delayed snapshots cannot undo a latched flag for the same revision. Successful
 extension does not force a selection or label: latest authoritative capture may
 already have overtaken the newly saved range.
@@ -1370,7 +1446,8 @@ existing refreshes; no new polling or capture timing is introduced.
 The tagger's pure `variation-presets-view.js` projects untracked dropdown entries and
 future selection without passing placeholders into canonical controllers. Preset
 assignments use the dedicated client. Reset discards uncaptured plans based on actual
-capture state, returns to live, and restores the creation control. Presets survive
+capture state, returns to the actual live/newest variation when one exists (otherwise
+the waiting-for-live view), and restores the creation control. Presets survive
 same-stream reloads and never apply to another baseline/session. Successful End
 cleans up best-effort; failed End retains plans, and old scoped data cannot leak into
 the next stream if cleanup fails.
@@ -1719,8 +1796,8 @@ Browser support beyond Chrome is a later decision.
       viewing the current auction, preserve a manually selected historical variation as
       newer options update, provide a mutation-free **Return to live item** action that
       falls back to the newest captured variation when no bid is active, and visibly
-      update sanitized payment status and the Metrics section. A prioritized work queue,
-      visible capture state, TikTok identity,
+      update sanitized payment status and the Metrics section. Startup-readiness display
+      is also implemented; a prioritized work queue, verified TikTok identity,
       and broader live validation remain next.
 7. Connect Google Sheets inventory in three stages:
    1. **Completed:** exact template, pure validation, detached preview, and opening
@@ -1731,7 +1808,7 @@ Browser support beyond Chrome is a later decision.
    3. **Completed:** browser OAuth, fixed-range Sheet reading, detached preview,
       employee confirmation, and durable import.
 8. **Completed:** strict end-of-stream projection, report-aware End/recovery,
-   two-tier local Business Records/archive library, printable/Save-as-PDF business page,
+   two-tier local recent-report/archive library, printable/Save-as-PDF business page,
    exact SKU and combined
    product analytics, and six-column clipboard/CSV inventory handoff.
 9. Optional automatic Google Sheets writes, broader real-stream report validation, and
