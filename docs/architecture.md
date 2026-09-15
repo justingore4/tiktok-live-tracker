@@ -881,14 +881,22 @@ Employees should finish mapping corrections and wait for expected capture retrie
 practical. Report links appear after End and open the local printable page; no automatic
 Google Sheet write occurs.
 
-Resume requests a one-time viewport reset scoped to the restored stream and mounted
-controller. After its first successful workspace render, the panel focuses the named
-tracker region with `preventScroll` and scrolls to the top immediately. This works even
-when Connecting/Loading still makes the child controls inert; it does not unlock them.
-Resume no longer uses the bottom session-status focus fallback. The request is consumed
-before scrolling and canceled on errors, controller/session changes, unmount, End
-confirmation, archive navigation, or page disposal. Subsequent capture/readiness updates
-do not repeat the reset. Start and Retry retain their existing focus behavior.
+Every genuine tracker entry requests one viewport reset scoped to the current stream
+and mounted controller. `setTrackerWorkspaceVisible` arms it only on a valid hidden-to-visible
+transition: Start, Resume, remount, or recovery from an initial load that left the tracker
+hidden. After the first successful workspace render, `restoreTrackerEntryViewport` focuses
+the named tracker region with `preventScroll` and scrolls to the top immediately. It can
+arm before the old root loading lock clears, but waits for ready, non-busy rendering before
+scrolling. Connecting/Loading child controls remain locked unless separately opted into
+preset planning; entry does not unlock them.
+
+Start and Resume no longer use the bottom session-status focus fallback or button-specific
+viewport callbacks. A genuine entry also suppresses that fallback from an initial-load Retry.
+The request is consumed before scrolling and canceled on hiding, errors, controller/session
+changes, unmount, End confirmation, archive navigation, or page disposal. It is not armed
+while showing an error or End confirmation. Repeated visible renders, delayed Start replies,
+capture/readiness updates, and in-place refresh recovery do not schedule another reset.
+Retry focus behavior is otherwise unchanged when the tracker was already visible.
 
 The selector lists persisted variations for the active local stream together with any
 uncaptured future presets. Actual mapping requires a captured variation; before the first

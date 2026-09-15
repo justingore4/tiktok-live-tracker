@@ -99,6 +99,8 @@ function fixture() {
   const released = [];
   const context = {
     trackerWorkspace, captureHealthBadge, captureHealthDescription, captureHealthView: healthView,
+    pendingTrackerEntryViewport: null, persistentController: null, mountedStreamId: null,
+    focusSavedWorkspaceAfterRetry: false,
     // The dedicated variation-number search suite exercises its disabled state.
     updateVariationSearchAvailability() {},
     updateQueuedItemBadgeAvailability() {},

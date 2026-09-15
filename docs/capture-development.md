@@ -1034,12 +1034,16 @@ If the active variation stops updating, reload the website or extension.
 
 ## Preset variation verification
 
-Resume synthetic sessions with no captured variations, saved presets only, and captured
-orders. Once the workspace renders, it should open at the top even while Connecting or
-Loading remains active. Editing must stay locked as before. Then scroll down manually:
-later capture refreshes, preset refreshes, and green/Reload Site updates must not repeat
-the top reset. A failed load must retain error focus; an intervening End confirmation,
-session change, or panel closure must cancel the old viewport request. These browser
+Start and resume synthetic sessions with no captured variations, saved presets only,
+and captured orders. Every entry into a previously hidden tracker should open at the top
+after a successful ready render, even while Connecting or Loading remains active.
+Editing and preset-planning safeguards must remain unchanged. Verify repeated hide/show
+entry and failed initial load followed by successful Retry also open at the top once.
+Then scroll down manually: later capture/preset refreshes, green/Reload Site updates,
+and a delayed Start acknowledgement must not repeat the reset. A failed load retains
+error focus, and recovery while the tracker remained visible is not another entry.
+End confirmation open before the first ready view, a changed session, or panel closure
+must prevent stale restoration. Existing End/error focus must win. These browser
 scroll/focus checks remain manual alongside the synthetic `resume-viewport-ui` tests.
 
 Use synthetic inventory and an isolated test stream for development. Presets add

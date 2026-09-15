@@ -3,14 +3,13 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 15, 2026
 Repository branch at this update: main
-Base commit before these local updates: 4501afc5476b7052dace67fae22a279815861800
-Commit subject: Improve pre-stream preset planning and compact report deletion dialog
-Preset work is merged; the latest pre-stream and dialog changes are committed.
-The documentation refresh, preset-entry hover-tooltip removal, variation arrows,
-Resume viewport fix, and startup planning override are subsequent local changes;
-inspect git status before staging anything.
+Base commit before these local updates: 81fffda27d4c0bd6d7aae548a106a71465fd04db
+Commit subject: Improve preset startup planning and tracker navigation
+Preset work, documentation refresh, tooltip removal, variation arrows, Resume viewport
+fix, and startup planning override are committed. The shared tracker-entry viewport
+update is subsequent local work; inspect git status before staging anything.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,736 passed, 0 failed
+Latest full synthetic test run: 1,743 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -33,8 +32,8 @@ For the receiving assistant:
 - Read any current AGENTS.md or applicable skill instructions. No applicable
   AGENTS.md was found during preparation; that may change later.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before the documentation refresh. Subsequent
-  requested UI changes preserve those edits. No commit or push was performed.
+- The worktree was clean on main before this tracker-entry viewport update.
+  Existing committed work is preserved. No commit or push was performed for this update.
 
 1. PRODUCT, OWNER, AND SCOPE
 ---------------------------
@@ -663,16 +662,19 @@ Local sessions persist across panel/browser restarts. Closing the panel is not E
 Resume reopens the existing local identity; it does not invent a new stream or clock.
 Start/Resume-only screens differ from the active/resumed tracker workspace.
 
-Resume now opens the restored tracker at the top once. Its pendingResumeViewport
-token is scoped to streamId and the mounted controller, armed only after a successful
-explicit Resume. restoreResumeViewport runs after the first ready workspace render
-(or immediately if already ready), focuses the named tracker region with preventScroll,
-and calls an instant scroll to top. The region has tabindex=-1, not a new tab stop;
-Connecting/Loading can keep child controls inert without blocking this viewport reset.
-The token is consumed before scrolling. Ordinary refreshes and later badge changes
-cannot repeat it. Errors, mismatched session/controller, unmount, End confirmation,
-archive navigation and pagehide cancel it. Resume no longer uses the legacy bottom
-status/retry-focus path; Start and Retry are unchanged. No capture, storage, selection,
+Every tracker entry now opens at the top once, including Start, Resume, remounts,
+and successful recovery from a hidden initial-load failure. setTrackerWorkspaceVisible
+arms pendingTrackerEntryViewport on a valid hidden-to-visible transition for the current
+stream/controller, never an ordinary visible rerender or delayed Start acknowledgement.
+restoreTrackerEntryViewport consumes it after ready, non-busy workspace rendering,
+focuses the named tracker region with preventScroll, and scrolls instantly to the top.
+The region has tabindex=-1, not a new tab stop; capture-loading locks and optional
+preset planning are unchanged. Start/Resume no longer focus the bottom status, and a
+genuine entry suppresses the legacy Retry fallback too. In-place Retry focus remains
+unchanged if the tracker stayed visible. Hiding, errors, mismatched session/controller,
+unmount, End confirmation, archive navigation, and pagehide cancel pending restoration.
+An error or open End confirmation cannot arm a new entry token. Ordinary refreshes
+and later badge changes cannot repeat the reset. No capture, storage, selection,
 mapping, preset, or accounting behavior is modified by this UI-only fix.
 
 End confirmation now has only:
@@ -901,7 +903,7 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,736 tests passed, 0 failed, on Windows (September 15, 2026).
+Latest full verification: 1,743 tests passed, 0 failed, on Windows (September 15, 2026).
 This includes 214 preset tests (61 core, 54 real-worker integration, 99 UI).
 The preset/UI implementation passed 1,691 tests before two compact-delete-dialog
 regressions brought the full suite to 1,693. The later centering change retained that count.
@@ -909,6 +911,10 @@ Variation arrows add 16 regressions: 14 navigation/guard tests and two layout/ma
 checks. Browser pixel/focus verification is still manual, not inferred from Node tests.
 Resume-to-top adds 11 tests for one-shot restoration, capture-loading compatibility,
 error/cancellation behavior, later manual scrolling, and real-controller read-only loading.
+The shared entry update generalizes that coverage and adds seven tests (18 viewport
+tests total) for Start, hidden-load recovery, repeated entry, stream replacement, and
+late acknowledgements, including actual session/persistent-controller Start behavior.
+Its full-suite baseline was 1,736 passing tests. Native Chrome scrolling remains manual.
 Startup planning adds 16 tests: 11 UI/guard/lifecycle/race cases, three real-client/worker
 integration cases, and two validated document-discovery cases. The pre-change baseline
 was 1,720 passing tests. Native tint, popup/focus, and normal/narrow layout still require
@@ -935,8 +941,9 @@ Useful targeted groups:
   next-item-queue-state, live-bid-state, variation-selector-lock tests.
 - Variation arrows: variation-step-navigation plus variation-number-search layout
   tests cover captured/preset navigation, boundaries, safeguards and unchanged state.
-- Resume viewport: resume-viewport-ui covers one-shot top reset, empty/captured/preset
-  restoration, loading locks, cancellation, and preservation of later user scrolling.
+- Tracker-entry viewport: resume-viewport-ui covers Start/Resume/reentry top reset,
+  empty/captured/preset views, loading/error recovery, cancellation, delayed Start
+  replies, and preservation of later user scrolling.
 - Sheets: inventory-sheet-import, inventory-import-protocol/client/controller,
   google-sheets-inventory-import and google-sheets-inventory-e2e tests.
 - Reports: stream-report, stream-report-storage/coordinator/protocol,
@@ -1088,6 +1095,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-The documentation refresh is preserved alongside the subsequently requested preset
-tooltip removal, variation-navigation arrows, and Resume-to-top fix. No commit or push was performed.
+Previously committed work is preserved. The shared tracker-entry viewport update is
+local; no commit or push was performed for this update.
 There is no approved pending functional change to start automatically.

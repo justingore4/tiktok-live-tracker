@@ -54,7 +54,9 @@ copy or CSV export to update the Sheet manually.
    **LIVE auctions / Sold items** content available for capture.
 4. Choose **Start stream tracking**. Returning to an existing local session uses
    **Resume stream tracking**; it does not create a new session.
-   Resume opens the restored tracker at the top, including before any auction is captured.
+   Whenever the tracker opens—after Start, Resume, or retrying an initial load—it
+   starts at the top, including before any auction is captured. Later updates keep
+   your scroll position.
 5. Assign inventory items to variations as they appear. Review unresolved payments,
    unmapped sales, and stock warnings before ending.
 6. Choose **End Stream Tracking → End and create report** to save the report and

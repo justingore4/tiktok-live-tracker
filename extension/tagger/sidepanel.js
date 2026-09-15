@@ -584,7 +584,7 @@
   let pendingSavedAction = null;
   let hasFocusedSavedError = false;
   let focusSavedWorkspaceAfterRetry = false;
-  let pendingResumeViewport = null;
+  let pendingTrackerEntryViewport = null;
   let hasFocusedStreamError = false;
   let endConfirmationOpen = false;
   let captureRefreshTimerId = null;
@@ -1606,33 +1606,47 @@
   }
 
   function setTrackerWorkspaceVisible(visible) {
+    const entering = visible && trackerWorkspace.hidden;
+    if (!visible) {
+      pendingTrackerEntryViewport = null;
+    } else if (entering && persistentController !== null && mountedStreamId !== null &&
+        streamSnapshot.resumed === true && streamSnapshot.activeSession?.streamId === mountedStreamId &&
+        savedSnapshot?.view?.streamId === mountedStreamId &&
+        streamSnapshot.phase !== "error" && savedSnapshot.phase !== "error" &&
+        !endConfirmationOpen && !archivedReportsViewOpen) {
+      // Start, Resume, and recovery that reopens a hidden workspace all use
+      // this entry boundary. Never rearm from an ordinary visible rerender or
+      // a late Start acknowledgement after the tracker has already opened.
+      pendingTrackerEntryViewport = { streamId: mountedStreamId, controller: persistentController };
+      focusSavedWorkspaceAfterRetry = false;
+    }
     trackerWorkspace.hidden = !visible;
     syncCaptureInteractionLock();
     updateFooterVisibility();
   }
 
-  function restoreResumeViewport() {
-    const request = pendingResumeViewport;
+  function restoreTrackerEntryViewport() {
+    const request = pendingTrackerEntryViewport;
     if (!request) return;
     if (request.controller !== persistentController ||
         request.streamId !== mountedStreamId ||
         request.streamId !== streamSnapshot.activeSession?.streamId ||
         !streamSnapshot.resumed || streamSnapshot.phase === "error" ||
         savedSnapshot?.phase === "error" || endConfirmationOpen || archivedReportsViewOpen) {
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       return;
     }
     if (savedSnapshot?.phase !== "ready" || savedSnapshot.busy || streamSnapshot.busy ||
         !savedSnapshot.view || trackerWorkspace.hidden || trackerWorkspace.hasAttribute("inert")) return;
     if (savedSnapshot.view.streamId !== request.streamId) {
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       return;
     }
 
-    // Consume only after the restored layout exists. This wrapper stays focusable
+    // Consume only after the ready tracker layout exists. This wrapper stays focusable
     // while Connecting/Loading makes its editing controls inert; don't unlock them.
     // Later renders and readiness changes must leave the user's scrolling alone.
-    pendingResumeViewport = null;
+    pendingTrackerEntryViewport = null;
     trackerWorkspace.focus({ preventScroll: true });
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }
@@ -1715,7 +1729,7 @@
   }
 
   function unmountPersistentController() {
-    pendingResumeViewport = null;
+    pendingTrackerEntryViewport = null;
     capturePlanningOverride = null;
     capturePlanningCycleGeneration += 1;
     clearCaptureRefreshTimer();
@@ -2802,7 +2816,7 @@
       return;
     }
 
-    pendingResumeViewport = null;
+    pendingTrackerEntryViewport = null;
     archivedReportsViewOpen = true;
     renderStreamReportsPanel();
     archivedReportsView.scrollIntoView({ block: "start" });
@@ -4943,7 +4957,7 @@
 
     if (failed) {
       endConfirmationOpen = false;
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       streamSessionEndConfirmation.hidden = true;
       streamSessionBadge.textContent = "Needs attention";
       streamSessionErrorTitle.textContent =
@@ -5104,7 +5118,7 @@
 
     if (failed) {
       const loadFailure = snapshot.error?.scope === "load" || !hasView;
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       const refreshFailure = snapshot.error?.scope === "refresh" && hasView;
 
       setWorkspaceBusy(false);
@@ -5217,7 +5231,7 @@
       if (captureRefreshDirty) {
         armCaptureRefresh();
       }
-      restoreResumeViewport();
+      restoreTrackerEntryViewport();
     }
 
     if (endConfirmationOpen) {
@@ -6591,8 +6605,7 @@
       return;
     }
 
-    focusSavedWorkspaceAfterRetry = true;
-    streamSessionStatus.focus();
+    focusSavedWorkspaceAfterRetry = false;
     mappingAnnouncement.textContent =
       "Starting the tracker stream with the confirmed inventory baseline.";
     Promise.resolve()
@@ -6617,19 +6630,14 @@
   resumeStreamButton.addEventListener("click", () => {
     if (streamSnapshot.resumed || !streamSnapshot.activeSession ||
         streamSnapshot.busy || endConfirmationOpen || archivedReportsViewOpen) return;
-    const streamId = streamSnapshot.activeSession.streamId;
     focusSavedWorkspaceAfterRetry = false;
 
     try {
-      const snapshot = streamSessionController.resumeActiveStream();
-      if (snapshot.resumed && snapshot.activeSession?.streamId === streamId && persistentController) {
-        pendingResumeViewport = { streamId, controller: persistentController };
-        restoreResumeViewport();
-      }
+      streamSessionController.resumeActiveStream();
       mappingAnnouncement.textContent =
         "Active tracker stream resumed. Saved inventory is loading.";
     } catch (error) {
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       mappingAnnouncement.textContent =
         error?.message ?? "The tracker stream could not be resumed.";
     }
@@ -6642,7 +6650,7 @@
       return;
     }
 
-    pendingResumeViewport = null;
+    pendingTrackerEntryViewport = null;
     endConfirmationOpen = true;
     endReportReadiness.textContent = describeReportReadiness();
     renderStreamSnapshot(streamSessionController.getSnapshot());
@@ -6939,7 +6947,7 @@
     () => {
       reportLibraryDisposed = true;
       ++streamReportsRefreshGeneration;
-      pendingResumeViewport = null;
+      pendingTrackerEntryViewport = null;
       capturePlanningOverride = null;
       captureHealthController.dispose();
       clearCaptureRefreshTimer();

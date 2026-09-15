@@ -671,7 +671,7 @@ function installSavedRenderer(f) {
     previousSavedPhase: "loading", lastRenderedSavedVariations: new Map(),
     hasFocusedSavedError: false, captureRefreshFocusSku: null,
     captureRefreshHadVariationFocus: false, focusSavedWorkspaceAfterRetry: false,
-    pendingResumeViewport: null,
+    pendingTrackerEntryViewport: null,
     captureRefreshDirty: false, document: { activeElement: null },
     pendingMapping: { contains: () => false },
     endStreamButton: element(), confirmEndStreamButton: element(),
@@ -684,7 +684,7 @@ function installSavedRenderer(f) {
     syncCaptureInteractionLock() { c.updateVariationPresetsAvailability(); },
   });
   vm.runInContext([
-    "renderSavedSnapshot", "restoreResumeViewport", "createSavedVariationSignatures", "setWorkspaceBusy",
+    "renderSavedSnapshot", "restoreTrackerEntryViewport", "createSavedVariationSignatures", "setWorkspaceBusy",
     "snapshotIsBackgroundRefresh", "scheduleVariationPresetsRefresh",
   ].map(declaration).join("\n"), c);
 }
