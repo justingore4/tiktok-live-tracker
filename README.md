@@ -69,7 +69,7 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
 
 ### Inventory controls
 
-- Enter a captured variation number in **Var #** and press Enter to review it.
+- Enter a captured or preset variation number in **Var #** and press Enter to review it.
   Typing alone does not switch variations.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
@@ -94,6 +94,57 @@ means canceled. **Payment processing** stays unresolved until a final status is
 captured or manually resolved; the tracker has no five-minute cancellation timer.
 Older saved `payment_failed` records, and legacy failure badges accompanied by an
 explicit cancellation countdown, remain unresolved rather than being reclassified.
+
+### Plan items ahead with presets
+
+After confirming inventory, start or resume the local tracker session. You can do
+this before TikTok LIVE begins. Once the existing loading state finishes and the
+tracker is ungrayed, choose **Preset items** above the Variation selector—even with
+no live auction or captured variations yet. The **Reload Site** state does not block
+planning; Connecting/Loading and other save/error safeguards still do. Enter
+the total numbered range for this stream and press Enter: **200 means #1–#200**, not
+200 additional variations. The preset-only limit is **1,000**; the total cannot be
+below the highest captured variation. Real capture can continue beyond the range.
+Before submitting, press Escape or click outside the total field to discard the
+draft and return to **Preset items** without saving.
+
+Choose an **untracked** variation from the dropdown or Var #, then select its item.
+These are planning placeholders: no stock is reserved or deducted and no order is
+added to reports until the variation is actually captured. Capture then applies the
+ordinary mapping/payment rules. **Return to live item** resumes live following.
+Before the first capture, it does not invent a live target: the tracker continues
+to show that it is waiting for a live auction.
+
+While viewing a future preset, right-click an item to plan faster: if the current
+preset is empty, it receives the item and stays selected. Otherwise, the worker
+assigns the next higher empty, uncaptured preset and opens it after saving. Already
+assigned or captured variations are skipped. For multi-size items, choose the exact
+size from the picker. Right-click never replaces or unassigns a future assignment.
+When no later empty preset remains, it makes no changes and announces **No more
+future variations.** Left-click still changes or clears the current future item.
+Live and captured historical views retain their existing right-click behavior.
+
+A preset on the next variation disables next-item queuing and clears an existing
+conflicting queue. It does not disable right-click mapping of the live variation.
+An empty preset range alone does not disable queuing.
+
+The bubble becomes **Reset presets** after saving. Reset removes all uncaptured
+placeholders and their planned assignments, preserves captured variations and
+mappings, and returns to live. While live capture is within the preset range, reset
+first to choose another total.
+
+If actual live capture exceeds the total (for example, #101 after presetting 100),
+the bubble automatically becomes **Preset items** again. Enter a larger total to
+extend the range without deleting skipped, still-uncaptured assignments or changing
+your selected variation. This is not an automatic reset. At #100 the bubble still
+says **Reset presets**; browsing future entries or historical backfill alone never
+unlocks extension. Extension remains available after the live item finishes and the
+panel reopens. The 1,000 preset limit still applies: beyond it, normal tracking
+continues but another preset range cannot be created within the supported limit.
+
+Presets survive
+refresh/reopening for the same stream, but never carry into a new stream or inventory
+baseline. Changing presets is unavailable during initial loading or another save.
 
 ### Capture startup badge
 

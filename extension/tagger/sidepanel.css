@@ -491,6 +491,55 @@ button {
   border-color: var(--amber);
 }
 
+.variation-presets-form {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  width: 86px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+#variation-presets-button,
+#variation-presets-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid rgb(72 165 255 / 45%);
+  border-radius: 999px;
+  background: rgb(72 165 255 / 12%);
+  color: var(--blue);
+  font-size: 10px;
+  line-height: 18px;
+  font-weight: 650;
+  text-align: center;
+}
+
+#variation-presets-button {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#variation-presets-input::placeholder { color: var(--text-muted); }
+#variation-presets-button:disabled,
+#variation-presets-input:disabled { opacity: 0.5; cursor: default; }
+#variation-presets-button:focus-visible,
+#variation-presets-input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+#variation-presets-input[aria-invalid="true"] { border-color: var(--amber); }
+
+@media (max-width: 320px) {
+  /* Fit the complete Reset presets label in the existing right-hand track
+     at narrow panel widths; leave the search, center badge and row unchanged. */
+  #variation-presets-button,
+  #variation-presets-input {
+    padding: 0 1px;
+    font-size: 9px;
+  }
+}
+
 .capture-health-badge {
   grid-column: 2;
   grid-row: 1;

@@ -133,6 +133,9 @@ function createRealWorkerHarness(options = {}) {
     async set(values) {
       Object.assign(storage, clone(values));
     },
+    async remove(key) {
+      delete storage[key];
+    },
     async setAccessLevel() {},
   };
   const sessionStorageArea = {

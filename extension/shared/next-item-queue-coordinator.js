@@ -809,8 +809,40 @@
         });
       }
 
+      function clearForPresets(input) {
+        let snapshot;
+        try {
+          if (!hasExactKeys(input, ["streamId", "capturedVariationNumbers", "blockNext", "currentVariationNumber"]) ||
+              typeof input.blockNext !== "boolean" || !Array.isArray(input.capturedVariationNumbers) ||
+              !Number.isSafeInteger(input.currentVariationNumber) || input.currentVariationNumber < 0) {
+            fail("INVALID_ARGUMENT", "Preset queue clearing requires a stream and explicit capture targets.");
+          }
+          requireTrimmedString(input.streamId, "streamId");
+          input.capturedVariationNumbers.forEach((number) => requirePositiveInteger(number, "variationNumber"));
+          snapshot = cloneSerializable(input, "INVALID_ARGUMENT", "Preset queue context must be serializable.");
+        } catch (error) { return Promise.reject(error); }
+        return enqueue(async () => {
+          const queue = await loadQueue();
+          const blocksFutureQueue = snapshot.blockNext &&
+            queue?.armedAfterVariationNumber >= snapshot.currentVariationNumber;
+          if (queue?.streamId !== snapshot.streamId ||
+              (!blocksFutureQueue && !snapshot.capturedVariationNumbers.some(
+                (number) => number > queue.armedAfterVariationNumber))) {
+            return { status: "unchanged" };
+          }
+          // Old Sold Items backfill must not erase a queue armed for a newer
+          // live variation. Only an actual future target or next-preset conflict
+          // cancels it. Also preserve an older queue already due for the current
+          // captured variation: its mapping/clear may still need capture retry.
+          // This shares the ordinary queue-token invalidation path.
+          await clearPersistedQueue();
+          return { status: "cleared" };
+        });
+      }
+
       return Object.freeze({
         applyToObservedBiddingVariation,
+        clearForPresets,
         clearForStream,
         dispatch,
       });

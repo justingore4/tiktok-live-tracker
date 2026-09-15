@@ -1016,6 +1016,70 @@ If the active variation stops updating, reload the website or extension.
 - The capture script makes no TikTok network request and never clicks or edits TikTok
   controls.
 
+## Preset variation verification
+
+Use synthetic inventory and an isolated test stream for development. Presets add
+no dashboard capture source or timer. The `variation-presets-core`,
+`variation-presets-integration`, and `variation-presets-ui` tests cover planning,
+strict messages, storage, capture promotion, queue precedence, reset, and recovery.
+
+For a manual UI check, verify the existing badge row at normal and narrow panel
+widths with **Preset items**, its inline input, and **Reset presets**. Var # and the
+capture badge must not move or overlap. Enter 200, plan multiple future items, browse
+one by Var #, and Return to live. Check that
+planning changes neither stock nor metrics, while actual capture applies the normal
+payment/mapping rules. Reload and confirm same-stream plans remain.
+
+Check both queue cases: a planned next item clears/disables queuing, but a queue due
+for #2 still applies when only #3 is preset. Reset while browsing a distant future
+variation must preserve captured mappings, remove uncaptured assignments, and return
+to live. Verify initial Connecting/Loading and save/error locks still apply. Do not
+use real seller reports or existing Chrome profiles for automated QA.
+
+Also start/resume a local tracker with confirmed synthetic inventory before any
+auction is captured. Once the existing Loading/Connecting state finishes, **Preset
+items** must work even when the badge says **Reload Site**. Create a range, find #1
+with Var #, left-click to assign/unassign, then right-click sequentially through
+future presets using exact sizes. All entries remain untracked; stock, metrics,
+report rows, and exports must remain unchanged. Reopen the panel, reset plans, and
+exercise first actual capture to verify ordinary promotion. No fake current bid or
+live variation should appear just because a plan exists.
+
+Check initial saved-workspace load and Retry loading with no capture notifications:
+preset state must be requested after successful loading so an early unavailable
+preset snapshot cannot leave the control disabled indefinitely. Connecting/Loading,
+failed saved-state loads, unconfirmed inventory, and other busy locks remain blocked.
+
+Preset to 100, keep an uncaptured assignment at #80, and capture live #100: the
+control must still say **Reset presets**. Capture live #101 (or skip directly past
+100): it should become **Preset items**, retaining #80 and the current view. Enter
+200, verify the preserved #80 assignment and exactly one entry per number, then
+capture #80 later to check normal promotion. Payment completion clearing the live
+marker and panel/worker reopening must not lose extension availability. Historical
+backfill alone, with or without an active live marker, must not enable it.
+
+While entering an extension, check Enter/Escape, typing through refreshes, failed
+saves, capture overtaking the proposed total, external reset, and delayed responses.
+At live #201 a saved total of 200 must become extendable again. After actual capture
+passes 1,000, verify accessible limit feedback and uninterrupted normal capture.
+No label change or range extension may move selection, erase skipped assignments,
+clear an ordinary queue, or alter report/inventory values by itself.
+
+For sequential planning, view empty future #25 and right-click an exact SKU: #25
+should be assigned without navigation. Right-click another item: it should save
+and open empty #26. With #27 assigned and #28 captured, the next click must skip to
+empty #29 without replacing either item. Exercise the multi-size picker as well.
+An empty final preset accepts one assignment; further clicks announce "No more
+future variations." without wrapping, queueing, or live mapping. Left-click still
+edits or clears the selected future item. Check normal live/history right-clicks
+separately: their mapping/queue behavior must remain unchanged.
+
+Use synthetic delayed/failed saves to verify no early navigation, no buffered rapid
+clicks, and no second assignment after a duplicate response. Capture or reset while
+a future size menu is open must invalidate its old action, never reinterpret it as
+live mapping. A late successful response must not pull the view back after navigation
+or a new session. Existing accessible announcements must not add layout height.
+
 ## Next live-validation checklist
 
 The next capture stage should validate and implement:

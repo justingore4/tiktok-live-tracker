@@ -75,6 +75,12 @@ function fixture() {
     auction: { sku: "SYNTHETIC-B", paymentStatus: "payment_complete" },
   };
   const context = {
+    variationPresetsView: require("../extension/tagger/variation-presets-view.js"),
+    variationPresetsProtocol: require("../extension/shared/variation-presets-protocol.js"),
+    variationPresetsSnapshot: null, selectedPresetVariationNumber: null,
+    variationPresetsBusy: false,
+    scheduleVariationPresetsRefresh() {},
+    updateVariationPresetsAvailability() {},
     queuedItemSlot: element(), queuedItemBadge: element(), queuedItemLabel: element(),
     queuedItemTooltip: element(), clearQueuedItemButton: element(),
     queuedNextItemSku: "SYNTHETIC-A",

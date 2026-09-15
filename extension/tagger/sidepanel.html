@@ -408,14 +408,22 @@
           <input id="variation-search-input" type="text" inputmode="numeric"
             placeholder="Var #" autocomplete="off" spellcheck="false"
             aria-label="Find variation by number" aria-describedby="variation-search-help"
-            title="Enter a captured variation number and press Enter." disabled>
-          <span id="variation-search-help" class="visually-hidden">Enter a captured variation number and press Enter.</span>
+            title="Enter a captured or preset variation number and press Enter." disabled>
+          <span id="variation-search-help" class="visually-hidden">Enter a captured or preset variation number and press Enter.</span>
         </form>
         <span id="capture-health-badge" class="capture-health-badge"
           data-phase="not_tracking" role="status" aria-live="polite"
           aria-atomic="true" aria-describedby="capture-health-description"
           title="Start stream tracking to initialize dashboard capture.">Not tracking</span>
         <span id="capture-health-description" class="visually-hidden">Start stream tracking to initialize dashboard capture.</span>
+        <form id="variation-presets-form" class="variation-presets-form" novalidate hidden inert>
+          <button id="variation-presets-button" type="button" disabled>Preset items</button>
+          <input id="variation-presets-input" type="text" inputmode="numeric"
+            placeholder="Total vars" autocomplete="off" spellcheck="false"
+            aria-label="Total preset variations" aria-describedby="variation-presets-help"
+            title="Enter a total from 1 to 1000. Enter saves; Escape cancels." hidden disabled>
+          <span id="variation-presets-help" class="visually-hidden">Enter the total variation count, up to 1000. Enter saves; Escape cancels. Presets do not reserve stock until captured.</span>
+        </form>
       </div>
 
       <section class="current-auction" aria-labelledby="current-auction-title">
@@ -1131,6 +1139,7 @@
     <script src="../shared/stream-report-protocol.js"></script>
     <script src="../shared/live-bid-protocol.js"></script>
     <script src="../shared/next-item-queue-protocol.js"></script>
+    <script src="../shared/variation-presets-protocol.js"></script>
     <script src="reconciliation-client.js"></script>
     <script src="stream-session-client.js"></script>
     <script src="stream-session-controller.js"></script>
@@ -1138,6 +1147,8 @@
     <script src="inventory-import-controller.js"></script>
     <script src="live-bid-client.js"></script>
     <script src="next-item-queue-client.js"></script>
+    <script src="variation-presets-client.js"></script>
+    <script src="variation-presets-view.js"></script>
     <script src="../shared/tiktok-fee-calculator.js"></script>
     <script src="inventory-view-model.js"></script>
     <script src="live-auction-view-model.js"></script>

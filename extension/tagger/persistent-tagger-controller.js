@@ -351,6 +351,7 @@
       let view = null;
       let projectionSession = null;
       let selectedVariationNumber = currentVariationNumber;
+      let holdSelectedVariation = false;
       // This baseline advances with canonical capture even while an employee
       // deliberately keeps a historical variation selected.
       let latestVariationNumber = currentVariationNumber;
@@ -401,7 +402,7 @@
               : { ...activeAuctionMapping },
           currentVariationNumber,
           isReviewingHistory:
-            candidateView.selectedVariationNumber !== currentVariationNumber,
+            holdSelectedVariation || candidateView.selectedVariationNumber !== currentVariationNumber,
           variations: candidateView.variations.map((variation) => ({
             ...variation,
             current:
@@ -523,7 +524,7 @@
 
       function acceptCanonicalState(candidateState, options = {}) {
         const wasFollowingLatestVariation =
-          selectedVariationNumber === latestVariationNumber;
+          !holdSelectedVariation && selectedVariationNumber === latestVariationNumber;
         const projection = buildProjection(
           candidateState,
           selectedVariationNumber,
@@ -602,6 +603,7 @@
           );
 
           selectedVariationNumber = currentVariationNumber;
+          holdSelectedVariation = false;
           acceptCanonicalState(response.state, {
             resetFollowBaseline: true,
           });
@@ -763,7 +765,7 @@
         return begin(() => performMutation(retryDescriptor));
       }
 
-      function selectVariation(value) {
+      function selectVariation(value, selectionOptions = {}) {
         const canSelectDuringRefresh =
           phase === PHASES.LOADING && operation === OPERATIONS.REFRESH;
 
@@ -781,6 +783,7 @@
         }
 
         selectedVariationNumber = result.view.selectedVariationNumber;
+        holdSelectedVariation = selectionOptions.holdSelection === true;
         view = decorateProjectionView(
           result.view,
           view?.activeBiddingVariationNumber ?? null,

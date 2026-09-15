@@ -28,6 +28,7 @@ function createFixture() {
     trackerWorkspace: workspace,
     streamSnapshot: { resumed: true, activeSession: { streamId: "synthetic-stream" }, busy: false },
     activeStreamInventoryUpdateBusy: false,
+    variationPresetsBusy: false,
     savedSnapshot: { phase: "loading", operation: "refresh" },
     variationSelectorLock: { isLocked: () => false },
     inventorySizeMenuState: null,

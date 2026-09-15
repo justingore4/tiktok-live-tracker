@@ -172,6 +172,17 @@ test("service worker opens the side panel from the toolbar action", () => {
         };
       },
     },
+    TikTokLiveTrackerVariationPresetsProtocol: require("../extension/shared/variation-presets-protocol.js"),
+    TikTokLiveTrackerVariationPresetsStorage: {
+      createVariationPresetsStore: () => ({}),
+    },
+    TikTokLiveTrackerVariationPresetsCoordinator: {
+      createVariationPresetsCoordinator: () => ({
+        dispatch: async () => ({ streamId: null, baselineId: null, revision: null, total: null, assignments: [] }),
+        synchronize: async ({ state }) => ({ state, changed: false }),
+        clearForStream: async () => ({ status: "unchanged" }),
+      }),
+    },
     TikTokLiveTrackerInventorySheetImport: {},
     TikTokLiveTrackerInventoryImportProtocol: {
       MESSAGE_CHANNEL: "tiktok-live-tracker.inventory-import",
@@ -294,6 +305,7 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../shared/stream-report-protocol.js",
     "../shared/live-bid-protocol.js",
     "../shared/next-item-queue-protocol.js",
+    "../shared/variation-presets-protocol.js",
     "reconciliation-client.js",
     "stream-session-client.js",
     "stream-session-controller.js",
@@ -301,6 +313,8 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "inventory-import-controller.js",
     "live-bid-client.js",
     "next-item-queue-client.js",
+    "variation-presets-client.js",
+    "variation-presets-view.js",
     "../shared/tiktok-fee-calculator.js",
     "inventory-view-model.js",
     "live-auction-view-model.js",
@@ -1736,6 +1750,7 @@ function createInventoryCardBadgeHarness() {
     inventoryGroupOrderController: { isGroupPinned: () => false },
     formatItemName: (group) => `${group.item} ${group.style}`,
     hasSelectedRecordedVariation: () => true,
+    hasSelectedEditableVariation: () => true,
   };
   vm.createContext(sandbox);
   vm.runInContext(`${currentMappingSource}\n${cardSource}`, sandbox);

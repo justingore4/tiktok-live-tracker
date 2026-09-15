@@ -119,7 +119,7 @@ test("waiting, live, and historical navigation never replaces the Inventory head
     variationSelectorLock: { requestRender(view) { requestedViews.push(view); } },
   };
   vm.runInNewContext(
-    functionBefore("getRecordedVariations", "hasSelectedRecordedVariation") +
+    functionBefore("getSelectableVariations", "hasSelectedEditableVariation") +
       functionBefore("renderVariationNavigation", "renderInventory"),
     sandbox,
   );
