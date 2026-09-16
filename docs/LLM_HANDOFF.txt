@@ -1,7 +1,7 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 15, 2026
+Snapshot date: September 16, 2026
 Repository branch at this update: main
 Latest implementation commit at this snapshot: b7b818926edb9259e7e822cb4680373180a8a569
 Commit subject: Refine preset planning, navigation, and startup locks
@@ -10,6 +10,9 @@ scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
 unlock, and strict yellow editing lock are committed. This refresh changes only
 documentation; inspect current git status before staging anything.
+The root AGENTS.md now provides shared Mac/Windows development rules; this addition
+does not change tracker behavior. Instruction loading on both devices remains a
+manual check.
 Manifest version: 1.0.0
 Latest full synthetic test run: 1,777 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
@@ -22,8 +25,8 @@ questions. It is not a backup of Chrome data or an export of the original chats.
 Conversation screenshots and their underlying dashboard HTML are not embedded.
 
 Suggested first message to a new assistant:
-  Read docs/LLM_HANDOFF.txt and README.md, inspect the current Git status, and use
-  the current source/tests to verify any relevant details before making changes.
+  Read AGENTS.md, docs/LLM_HANDOFF.txt, and README.md, inspect the current Git status,
+  and use the current source/tests to verify relevant details before making changes.
   Preserve existing work. Do not commit, push, touch real tracker data, or begin
   unrelated improvements unless I explicitly request them. Then wait for my task.
 
@@ -31,8 +34,8 @@ For the receiving assistant:
 - Follow current higher-priority instructions and the user's latest request.
 - This is a dated snapshot, not authority to change the repository by itself.
 - Current code, tests, manifest, and Git state take precedence if this file drifts.
-- Read any current AGENTS.md or applicable skill instructions. No applicable
-  AGENTS.md was found during preparation; that may change later.
+- Read the root AGENTS.md and any applicable overrides or skill instructions.
+  AGENTS.md holds durable working rules; this handoff holds implementation context.
 - Paths below are repository-relative and work on both Mac and Windows.
 - The worktree was clean on main before this documentation cleanup.
   Existing committed work is preserved. No commit or push was performed for this update.
@@ -88,6 +91,8 @@ and separate computers have separate tracker data.
 
 3. REPOSITORY MAP AND READING ORDER
 ---------------------------------
+AGENTS.md
+  Shared development rules for either Codex account on Windows or macOS.
 README.md
   Concise current setup, usage, data-safety, development, and packaging guide.
 docs/architecture.md
@@ -890,18 +895,19 @@ Use Node >=22.2.0 (current verified Windows run: Node 24.19.0).
 There is no frontend build step. The shipped folder is the working extension/ tree.
 
 Windows PowerShell, from repository root:
-  npm.cmd ci
+  npm.cmd ci --include=dev
   node --test
   npm.cmd run package
 
 macOS terminal, from repository root:
-  npm ci
+  npm ci --include=dev
   node --test
   npm run package
 
 npm.cmd avoids PowerShell's blocked npm.ps1 wrapper without changing execution
 policy. Do not tell the user to disable system script security just to run npm.
-npm ci installs the exact lockfile dependency tree and recreates node_modules.
+npm ci --include=dev installs the exact lockfile tree, including test dependencies,
+and recreates node_modules.
 Use after cloning, missing dependencies, or lockfile changes; it is not required
 before every ZIP. Running it again is allowed but usually unnecessary for packaging.
 
@@ -939,8 +945,13 @@ Cross-platform notes:
 - Mac temp paths may resolve /var/... to /private/var/.... Packaging tests already
   canonicalize fixture paths; do not regress to comparing unresolved temp strings.
 - Shell commands should be portable Node or appropriate native shell syntax.
-- Before switching computers: review, commit intended changes, push; on the other
-  computer use git pull --ff-only from a suitable clean/safely preserved worktree.
+- User-run device switch: review/test intended changes and update the handoff,
+  commit and push; on the other computer check status/branch and use git pull --ff-only
+  from a clean worktree. Assistants must not execute this routine without authorization.
+- After pulling updated instructions, start a new Codex session in the repository
+  and ask which project instructions loaded; confirm root AGENTS.md is included.
+  Local/nested overrides may differ. Verify on each device; neither device's result
+  is proof of the other's. See README's shared-instructions section for the routine.
 - --ff-only refuses divergent history instead of creating an accidental merge.
   Do not reset/restore valuable work to bypass that safeguard.
 - Source sync is independent of extension data/installation location on each machine.
@@ -1087,6 +1098,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  4f9ecff  doc updates
   b7b8189  Refine preset planning, navigation, and startup locks
   c666fba  fix top scrolling
   81fffda  Improve preset startup planning and tracker navigation

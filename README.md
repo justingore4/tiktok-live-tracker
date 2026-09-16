@@ -313,7 +313,7 @@ Node 24). From the repository root, install the pinned development dependency on
 after cloning, or after the lockfile changes:
 
 ```sh
-npm ci
+npm ci --include=dev
 ```
 
 Run the full offline suite independently with:
@@ -326,9 +326,28 @@ Tests use synthetic fixtures; real TikTok capture, Google authorization, Chrome
 downloads, and Windows/macOS layout still need appropriate manual checks.
 The [developer checklist](docs/capture-development.md) contains detailed procedures.
 
-For work across Mac and PC, commit and push before switching computers, then use
-`git pull --ff-only` on the other computer. The committed `.gitattributes` normalizes
-text files to LF.
+### Shared Codex instructions and switching devices
+
+The root [AGENTS.md](AGENTS.md) contains shared working rules for both Mac and Windows.
+The [developer handoff](docs/LLM_HANDOFF.txt) holds implementation details, decisions,
+and verification notes. Keep both with the source; neither transfers chat history or
+Chrome's saved tracker data. The committed `.gitattributes` normalizes text files to LF.
+
+When you choose to switch devices:
+
+1. Save files, review/test intended changes, update the handoff as needed, then commit
+   and push them. Uncommitted changes and local stashes do not transfer with a normal push.
+2. On the other device, inspect Git status and select the intended branch before using
+   `git pull --ff-only` from a clean worktree. Stop and resolve unexpected local changes
+   or divergent history instead of discarding them. Install dependencies after a fresh
+   clone or lockfile change using the command above.
+3. Start a new Codex session in that repository and ask: "Which project instructions
+   did you load?" Confirm it includes the root `AGENTS.md`. Local or nested overrides
+   can affect the instructions; this check is manual on each device.
+
+These are user-run steps, not permission for an assistant to change branches or Git
+history without authorization. Codex discovers project instructions at session startup;
+see the [official AGENTS.md guidance](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 ### Package a release
 
