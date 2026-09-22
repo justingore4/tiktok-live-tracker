@@ -87,6 +87,9 @@ const REPORT_SELECTORS = [
   "#canceled-orders-empty",
   "#canceled-orders-note",
   "#canceled-orders-rows",
+  "#canceled-sku-summary",
+  "#canceled-sku-summary-caption",
+  "#canceled-sku-summary-rows",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
   "#copy-inventory",
@@ -334,6 +337,12 @@ function allText(element) {
     element.textContent,
     ...element.children.map(allText),
   ].join(" ");
+}
+
+function canceledSkuRows(document) {
+  return document.querySelector("#canceled-sku-summary-rows").children.map(
+    (row) => row.children.map((cell) => cell.textContent),
+  );
 }
 
 function createClient(options = {}) {
@@ -1420,7 +1429,7 @@ test("canceled orders disclosure follows stream variations and exposes only the 
   const nextSection = html.indexOf('<section', canceledEnd);
   const detailsTag = canceledSection.match(/<details\b[^>]*id="canceled-orders-disclosure"[^>]*>/)?.[0];
   const summary = canceledSection.match(/<summary\b[\s\S]*?<\/summary>/)?.[0];
-  const table = canceledSection.match(/<table\b[\s\S]*?<\/table>/)?.[0];
+  const table = canceledSection.match(/<table\b[^>]*class="data-table canceled-orders-table"[\s\S]*?<\/table>/)?.[0];
   const printCss = css.slice(css.indexOf("@media print"));
 
   assert.ok(canceledStart > variationsStart);
@@ -1458,6 +1467,39 @@ test("canceled orders disclosure follows stream variations and exposes only the 
     /#canceled-orders-disclosure:not\(\[open\]\)[^{]*\{[^}]*display:\s*block\s*!important;/,
   );
   assert.doesNotMatch(canceledSection, /class="[^"]*screen-only/);
+});
+
+test("canceled SKU summary shares the collapsed disclosure above the detail table with four accessible columns", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const contentStart = html.indexOf('id="canceled-orders-content"');
+  const disclosureEnd = html.indexOf("</details>", contentStart);
+  const content = html.slice(contentStart, disclosureEnd);
+  const summaryWrapper = content.match(/<div\b[^>]*id="canceled-sku-summary"[^>]*>/)?.[0];
+  const summaryTable = content.match(/<table\b[^>]*>[\s\S]*?<\/table>/)?.[0];
+  const detailTableIndex = content.indexOf('class="data-table canceled-orders-table"');
+  assert.ok(summaryWrapper);
+  assert.match(summaryWrapper, /\shidden(?:\s|>)/);
+  assert.match(summaryWrapper, /class="[^"]*table-scroll[^"]*screen-scroll[^"]*"/);
+  assert.match(summaryWrapper, /tabindex="0"/);
+  assert.match(summaryWrapper, /aria-labelledby="canceled-sku-summary-caption"/);
+  assert.match(summaryTable, /class="[^"]*data-table[^"]*"/);
+  assert.match(summaryTable, /<caption\b[^>]*id="canceled-sku-summary-caption"[^>]*>[^<]+<\/caption>/);
+  assert.match(summaryTable, /<tbody id="canceled-sku-summary-rows"><\/tbody>/);
+  assert.deepEqual(
+    [...summaryTable.matchAll(/<th\b[^>]*scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]),
+    ["SKU", "Item", "Style", "Canceled"],
+  );
+  assert.ok(content.indexOf('id="canceled-sku-summary-rows"') < detailTableIndex);
+  assert.equal((content.match(/<table\b/g) ?? []).length, 2);
+  assert.doesNotMatch(summaryTable, /Sold price|Unit cost|Gross profit|<button|<input|<select|<details|screen-only/i);
+  for (const id of ["canceled-sku-summary", "canceled-sku-summary-caption", "canceled-sku-summary-rows"]) {
+    assert.equal((html.match(new RegExp(`id="${id}"`, "g")) ?? []).length, 1);
+  }
+  assert.match(css, /\.table-scroll\s*\{[^}]*overflow-x:\s*auto;/);
+  assert.match(css, /\.data-table\s*\{[^}]*width:\s*100%;/);
+  assert.match(css, /\.canceled-sku-summary-table th,[\s\S]*?\.canceled-sku-summary-table td\s*\{[^}]*overflow-wrap:\s*anywhere;/);
 });
 
 test("print uses white dark-section headings without recoloring metric cards or tables", () => {
@@ -1506,9 +1548,10 @@ test("all report tables use high-contrast zebra rows on screen and in print", ()
   const screenCss = css.slice(0, printIndex);
   const printCss = css.slice(printIndex);
 
-  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 4);
+  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 5);
   assert.match(html, /<table class="data-table sales-table">/);
   assert.match(html, /<table class="data-table canceled-orders-table">/);
+  assert.match(html, /<table class="data-table canceled-sku-summary-table">/);
   assert.doesNotMatch(html, /sku-profit|Profit\/Loss by SKU/);
   assert.match(html, /<table class="data-table performance-table">/);
   assert.match(html, /<table class="data-table inventory-table">/);
@@ -1829,6 +1872,9 @@ test("Print expands both variation sections and restores their independent scree
     },
     print() {
       printedStates.push([completedSales.open, canceledOrders.open]);
+      assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
+      assert.equal(canceledSkuRows(document)[0][0], "SKU-A");
+      assert.equal(canceledSkuRows(document)[0][3], "1");
     },
   });
 
@@ -1860,6 +1906,8 @@ test("Print expands both variation sections and restores their independent scree
   assert.deepEqual(printedStates, Array.from({ length: 4 }, () => [true, true]));
   assert.equal(completedSales.open, true);
   assert.equal(canceledOrders.open, true);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
+  assert.equal(canceledSkuRows(document).length, 1);
 });
 
 test("native printing uses the saved PDF filename without accepting an unsaved or pending rename", async () => {
@@ -1909,10 +1957,13 @@ test("native print events expand both sections once and restore screen states af
 
       await printEventTarget.dispatch("beforeprint");
       assert.deepEqual([variations.open, canceled.open], [true, true]);
+      assert.equal(surface.document.querySelector("#canceled-sku-summary").hidden, false);
+      const summaryBeforePrint = canceledSkuRows(surface.document);
       assert.deepEqual([mapping.open, costs.open], [false, true]);
       await printEventTarget.dispatch("beforeprint");
       await printEventTarget.dispatch("afterprint");
       assert.deepEqual([variations.open, canceled.open], initialStates);
+      assert.deepEqual(canceledSkuRows(surface.document), summaryBeforePrint);
       assert.deepEqual([mapping.open, costs.open], [false, true]);
 
       // A duplicate afterprint must not restore a stale snapshot over later user changes.
@@ -2219,6 +2270,8 @@ test("saving a canceled reference correction refreshes both tables without affec
   const inventoryBefore = allText(document.querySelector("#inventory-rows"));
   const totalsBefore = allText(document.querySelector("#summary-grid"));
   assert.equal(document.querySelector("#canceled-orders-rows").children[0].children[2].textContent, "SKU-A");
+  assert.equal(canceledSkuRows(document)[0][0], "SKU-A");
+  assert.equal(canceledSkuRows(document)[0][3], "1");
 
   const group = document.querySelector("#mapping-item-group");
   group.value = inlineCorrection.UNMAPPED_GROUP_VALUE;
@@ -2242,6 +2295,8 @@ test("saving a canceled reference correction refreshes both tables without affec
   assert.equal(document.querySelector("#completed-sales-rows").children.at(-1).children[2].textContent, "Unmapped");
   assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
   assert.equal(canceledDisclosure.open, true);
+  assert.deepEqual(canceledSkuRows(document), [["Unmapped", "Not selected", "—", "1"]]);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
   assert.equal(allText(document.querySelector("#inventory-rows")), inventoryBefore);
   assert.equal(allText(document.querySelector("#summary-grid")), totalsBefore);
   assert.deepEqual(correctedReport.sheetRows, originalReport.sheetRows);
@@ -2987,6 +3042,114 @@ test("canceled-only rows are sorted references with no payment amounts or report
   assert.deepEqual(report, original, "Rendering must not alter references, accounting, or export data");
 });
 
+test("canceled SKU summary counts exact SKUs with separate sizes and Unmapped last", () => {
+  const document = new FakeDocument();
+  const mappedOrder = (variationNumber, sku, size) => ({
+    variationNumber, mapped: true, sku, item: "BAPE TEE", style: "RED CAMO", size,
+  });
+  const canceledOrders = [
+    { variationNumber: 50, mapped: false, sku: null, item: null, style: null, size: null },
+    mappedOrder(20, "BAPE-TEE-M", "M"),
+    mappedOrder(3, "BAPE-TEE-L", "L"),
+    mappedOrder(7, "BAPE-TEE-M", "M"),
+    mappedOrder(8, "BAPE-TEE-M", "M"),
+    mappedOrder(9, "BAPE-TEE-M", "M"),
+    mappedOrder(10, "BAPE-TEE-M", "M"),
+    mappedOrder(11, "BAPE-TEE-L", "L"),
+    { variationNumber: 51, mapped: false, sku: null, item: null, style: null, size: null },
+  ];
+  const report = createReport({ canceledOrders });
+  const before = structuredClone(report);
+  for (const row of canceledOrders) Object.freeze(row);
+  Object.freeze(canceledOrders);
+  Object.freeze(report);
+
+  reportPage.renderReport(document, { reportId: REPORT_ID, lifecycleStatus: "finalized", report });
+
+  assert.deepEqual(canceledSkuRows(document), [
+    ["BAPE-TEE-L", "BAPE TEE", "RED CAMO", "2"],
+    ["BAPE-TEE-M", "BAPE TEE", "RED CAMO", "5"],
+    ["Unmapped", "Not selected", "—", "2"],
+  ]);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 9);
+  assert.equal(canceledSkuRows(document).reduce((sum, cells) => sum + Number(cells[3]), 0), 9);
+  assert.deepEqual(report, before, "Summary rendering must not alter orders, accounting, or export quantities");
+});
+
+test("all-mapped cancellations omit Unmapped and use saved SKU labels instead of inventory labels", () => {
+  const document = new FakeDocument();
+  const report = createReport({
+    canceledOrders: [
+      { variationNumber: 3, mapped: true, sku: "SKU-Z", item: "Saved last", style: "", size: "OS" },
+      { variationNumber: 2, mapped: true, sku: "SKU-A", item: "Saved first", style: null, size: "M" },
+      { variationNumber: 1, mapped: true, sku: "SKU-Z", item: "Saved last", style: "", size: "OS" },
+    ],
+    inventory: [{ sku: "SKU-A", item: "Not the saved item", style: "Not the saved style" }],
+  });
+  reportPage.renderCanceledOrders(document, report);
+  assert.deepEqual(canceledSkuRows(document), [
+    ["SKU-A", "Saved first", "", "1"],
+    ["SKU-Z", "Saved last", "", "2"],
+  ]);
+  assert.doesNotMatch(allText(document.querySelector("#canceled-sku-summary-rows")), /Unmapped|Not the saved/);
+});
+
+test("all-unmapped cancellations produce exactly one summary row without guessing items", () => {
+  const document = new FakeDocument();
+  const report = createReport({
+    canceledOrders: Array.from({ length: 9 }, (_, index) => ({
+      variationNumber: index + 1, mapped: false, sku: null, item: null, style: null, size: null,
+    })),
+  });
+  reportPage.renderCanceledOrders(document, report);
+  assert.deepEqual(canceledSkuRows(document), [["Unmapped", "Not selected", "—", "9"]]);
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 9);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
+});
+
+test("canceled SKU summary uses safe text and never reads prices or noncanceled sources", () => {
+  const document = new FakeDocument();
+  const unsafeItem = '<img src=x onerror="stealOAuthToken()">';
+  const unsafeStyle = '<script>stealOAuthToken()</script>';
+  const report = createReport({
+    canceledOrders: [{
+      variationNumber: 25, mapped: true, sku: "SKU-CANCELED", item: unsafeItem,
+      style: unsafeStyle, size: "L", soldPriceCents: 12500, unitCostCents: 600,
+    }],
+    completedSales: [{ variationNumber: 26, mapped: true, sku: "SKU-COMPLETED", item: "Do not count" }],
+    paymentFixingOrders: [
+      { variationNumber: 27, observedPaymentStatus: "payment_failed", sku: "SKU-LEGACY" },
+      { variationNumber: 28, observedPaymentStatus: "payment_processing", sku: "SKU-PROCESSING" },
+    ],
+    futurePresets: [{ variationNumber: 29, sku: "SKU-PRESET" }],
+    totals: { canceledOrderCount: 99 },
+  });
+  reportPage.renderCanceledOrders(document, report);
+  assert.deepEqual(canceledSkuRows(document), [["SKU-CANCELED", unsafeItem, unsafeStyle, "1"]]);
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "99 canceled orders");
+  const cells = document.querySelector("#canceled-sku-summary-rows").children[0].children;
+  assert.ok(cells.every((cell) => cell.tagName === "td" && cell.children.length === 0));
+  assert.equal(document.createdTags.includes("img"), false);
+  assert.equal(document.createdTags.includes("script"), false);
+  assert.doesNotMatch(allText(document.querySelector("#canceled-sku-summary-rows")), /SKU-COMPLETED|SKU-LEGACY|SKU-PROCESSING|SKU-PRESET|\$|12500/);
+});
+
+test("canceled SKU summary sorting is stable across saved variation ordering", () => {
+  const document = new FakeDocument();
+  const orders = [
+    { variationNumber: 4, mapped: false, sku: null },
+    { variationNumber: 3, mapped: true, sku: "SKU-C", item: "Third", style: "" },
+    { variationNumber: 2, mapped: true, sku: "SKU-B", item: "Second", style: "" },
+    { variationNumber: 1, mapped: true, sku: "SKU-A", item: "First", style: "" },
+  ];
+  reportPage.renderCanceledOrders(document, createReport({ canceledOrders: orders }));
+  const expectedRows = canceledSkuRows(document);
+  reportPage.renderCanceledOrders(document, createReport({ canceledOrders: [...orders].reverse() }));
+  assert.deepEqual(canceledSkuRows(document), expectedRows);
+  assert.deepEqual(expectedRows.map((cells) => cells[0]), ["SKU-A", "SKU-B", "SKU-C", "Unmapped"]);
+});
+
 test("canceled-only rendering has a truthful empty state and singular count", () => {
   const document = new FakeDocument();
   const base = createReport();
@@ -3005,6 +3168,8 @@ test("canceled-only rendering has a truthful empty state and singular count", ()
     assert.equal(document.querySelector("#canceled-orders-empty").hidden, false);
     assert.equal(document.querySelector("#canceled-orders-note").hidden, true);
     assert.equal(document.querySelector("#canceled-orders-note").textContent, "");
+    assert.deepEqual(canceledSkuRows(document), []);
+    assert.equal(document.querySelector("#canceled-sku-summary").hidden, true);
   }
 });
 
@@ -3039,6 +3204,8 @@ test("legacy canceled-only rendering preserves saved totals without inventing or
         `${count} canceled order${count === 1 ? "" : "s"}`,
       );
       assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+      assert.deepEqual(canceledSkuRows(document), []);
+      assert.equal(document.querySelector("#canceled-sku-summary").hidden, true);
       assert.equal(document.querySelector("#canceled-orders-empty").hidden, true);
       assert.equal(document.querySelector("#canceled-orders-note").hidden, false);
       assert.match(
@@ -3063,11 +3230,14 @@ test("canceled-order rerenders replace rows without duplicates and preserve both
 
   render(base);
   assert.equal(canceledDisclosure.open, false);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, false);
   canceledDisclosure.open = true;
   combinedDisclosure.open = false;
   render(base);
   render(base);
   assert.equal(document.querySelector("#canceled-orders-rows").children.length, 1);
+  assert.equal(canceledSkuRows(document).length, 1);
+  assert.equal(canceledSkuRows(document)[0][3], "1");
   assert.equal(canceledDisclosure.open, true);
   assert.equal(combinedDisclosure.open, false);
 
@@ -3083,6 +3253,7 @@ test("canceled-order rerenders replace rows without duplicates and preserve both
   render(corrected);
   assert.equal(document.querySelector("#canceled-orders-rows").children[0].children[2].textContent, "SKU-CORRECTED");
   assert.equal(document.querySelector("#completed-sales-rows").children.at(-1).children[2].textContent, "SKU-CORRECTED");
+  assert.deepEqual(canceledSkuRows(document), [["SKU-CORRECTED", "Corrected reference", "", "1"]]);
   assert.equal(canceledDisclosure.open, true);
 
   canceledDisclosure.open = false;
@@ -3092,6 +3263,8 @@ test("canceled-order rerenders replace rows without duplicates and preserve both
     canceledOrders: [],
   }));
   assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+  assert.deepEqual(canceledSkuRows(document), []);
+  assert.equal(document.querySelector("#canceled-sku-summary").hidden, true);
   assert.equal(document.querySelector("#canceled-orders-empty").hidden, false);
   assert.equal(canceledDisclosure.open, false);
   assert.equal(combinedDisclosure.open, true);
@@ -3991,6 +4164,9 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
     ["#220", "Canceled", "SKU-A", "Example tee", "black", "L", "—", "—", "—"],
   );
   assert.equal(document.querySelector("#canceled-orders-count").textContent, "2 canceled orders");
+  assert.equal(canceledSkuRows(document).length, 1);
+  assert.equal(canceledSkuRows(document)[0][0], "SKU-A");
+  assert.equal(canceledSkuRows(document)[0][3], "2");
   const canceledRows = document.querySelector("#canceled-orders-rows").children;
   assert.equal(canceledRows.length, 2);
   assert.deepEqual(

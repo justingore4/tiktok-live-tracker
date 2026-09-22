@@ -21,7 +21,7 @@ function deepFreeze(value) {
   return value;
 }
 
-test("PDF presentation retains existing metrics and the combined variations plus canceled-only table", () => {
+test("PDF presentation retains existing metrics and canceled SKU summary above canceled-only details", () => {
   const record = makePdfRecord({ allWarnings: true });
   const original = structuredClone(record);
   const model = pdf.createReportPresentation(deepFreeze(record));
@@ -32,8 +32,8 @@ test("PDF presentation retains existing metrics and the combined variations plus
   assert.equal(model.warnings.length, 7);
   assert.equal(model.warnings[4], "Completed sales have no item assigned. Metrics are incomplete. Count: 1.");
   assert.equal(model.warnings[6], "More units were allocated than starting stock. Check oversold units and recount stock. Oversold: 2. SKU: SKU-0001.");
-  assert.deepEqual(model.tables.map((table) => table.rows.length), [3, 3, 4, 1]);
-  assert.deepEqual(model.tables.map((table) => table.key), ["performance", "inventory", "variations", "canceled"]);
+  assert.deepEqual(model.tables.map((table) => table.rows.length), [3, 3, 4, 1, 1]);
+  assert.deepEqual(model.tables.map((table) => table.key), ["performance", "inventory", "variations", "canceledSummary", "canceled"]);
   assert.deepEqual(model.tables[0].rows[0].map((cell) => cell.text), [
     "SKU-0001", "Café winter collection - Long-sleeve tee - limited edition", "OS", "1", "$5.00", "$15.00", "$15.00", "$5.00", "1.0%", "66.7%", "+$10.00",
   ]);
@@ -44,9 +44,12 @@ test("PDF presentation retains existing metrics and the combined variations plus
     "#4", "Canceled", "Unmapped", "Not selected", "—", "—", "—", "—", "—",
   ]);
   assert.deepEqual(model.tables[3].rows[0].map((cell) => cell.text), [
+    "Unmapped", "Not selected", "—", "1",
+  ]);
+  assert.deepEqual(model.tables[4].rows[0].map((cell) => cell.text), [
     "#4", "Canceled", "Unmapped", "Not selected", "—", "—",
   ]);
-  assert.equal(model.tables[3].count, "1 canceled order");
+  assert.equal(model.tables[4].count, "1 canceled order");
   assert.equal(model.performers.length, 3);
   assert.equal(model.performers[0].rows.length, 2);
   assert.match(model.performers[0].rows[0].description, /SKU-0001/);
@@ -61,7 +64,7 @@ test("PDF presentation retains existing metrics and the combined variations plus
 test("PDF table headings match their corresponding report tables", () => {
   const html = fs.readFileSync(path.join(root, "extension/report/report.html"), "utf8");
   const model = pdf.createReportPresentation(makePdfRecord());
-  for (const [index, className] of ["performance-table", "inventory-table", "sales-table", "canceled-orders-table"].entries()) {
+  for (const [index, className] of ["performance-table", "inventory-table", "sales-table", "canceled-sku-summary-table", "canceled-orders-table"].entries()) {
     const table = html.match(new RegExp(`<table class="data-table ${className}">([\\s\\S]*?)<\\/table>`))[1];
     const headers = [...table.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)].map((entry) => entry[1].replace(/\s+/g, " ").trim());
     assert.deepEqual(model.tables[index].headers, headers);
@@ -85,6 +88,7 @@ test("PDF presentation preserves older report fallbacks, canceled detail notices
   assert.equal(model.tables[3].note, model.tables[2].note);
   assert.deepEqual(model.tables[3].rows, []);
   assert.equal(model.tables[3].emptyHidden, true, "Legacy cancellation totals must not be presented as no cancellations");
+  assert.ok(!model.tables.some((table) => table.key === "canceledSummary"), "Missing legacy detail must not invent a SKU summary");
   assert.equal(model.performers.length, 2);
   assert.equal(model.performers[0].rows[0].description, "Not enough mapped completed-sale data.");
   assert.deepEqual(model.warnings, []);
@@ -101,7 +105,7 @@ test("PDF canceled-only rows include every reference mapping in variation order 
   record.report.totals.totalSalesCount = 6;
   const before = structuredClone(record);
   const model = pdf.createReportPresentation(deepFreeze(record));
-  const table = model.tables[3];
+  const table = model.tables.find((entry) => entry.key === "canceled");
   assert.equal(table.title, "Canceled orders");
   assert.equal(table.eyebrow, "Canceled variations");
   assert.equal(table.count, "3 canceled orders");
@@ -122,12 +126,88 @@ test("PDF canceled-only empty state shows no orders without inventing rows or le
   record.report.canceledOrders = [];
   record.report.totals.canceledOrderCount = 0;
   record.report.totals.totalSalesCount = 0;
-  const table = pdf.createReportPresentation(record).tables[3];
+  const model = pdf.createReportPresentation(record);
+  const table = model.tables.find((entry) => entry.key === "canceled");
+  assert.ok(!model.tables.some((entry) => entry.key === "canceledSummary"), "Empty cancellations need only the existing detail empty state");
   assert.equal(table.count, "0 canceled orders");
   assert.deepEqual(table.rows, []);
   assert.equal(table.empty, "No canceled orders were captured for this stream.");
   assert.equal(table.emptyHidden, false);
   assert.equal(table.note, "");
+});
+
+test("PDF canceled SKU summary groups exact SKUs and puts unmapped cancellations last", () => {
+  const record = makePdfRecord();
+  record.report.canceledOrders = [
+    { variationNumber: 9, mapped: true, sku: "BAPE-TEE-M", item: "BAPE TEE", style: "RED CAMO", size: "M" },
+    { variationNumber: 5, mapped: false, sku: null },
+    { variationNumber: 7, mapped: true, sku: "BAPE-TEE-L", item: "BAPE TEE", style: "RED CAMO", size: "L" },
+    { variationNumber: 4, mapped: true, sku: "BAPE-TEE-M", item: "BAPE TEE", style: "RED CAMO", size: "M" },
+    { variationNumber: 8, mapped: false, sku: null },
+  ];
+  record.report.totals.canceledOrderCount = 5;
+  record.report.totals.totalSalesCount = 8;
+  const before = structuredClone(record);
+  const model = pdf.createReportPresentation(deepFreeze(record));
+  const summaryIndex = model.tables.findIndex((table) => table.key === "canceledSummary");
+  const summary = model.tables[summaryIndex];
+  assert.equal(model.tables[summaryIndex + 1].key, "canceled");
+  assert.equal(summary.title, "Canceled orders by SKU");
+  assert.deepEqual(summary.headers, ["SKU", "Item", "Style", "Canceled"]);
+  assert.deepEqual(summary.rows.map((row) => row.map((cell) => cell.text)), [
+    ["BAPE-TEE-L", "BAPE TEE", "RED CAMO", "1"],
+    ["BAPE-TEE-M", "BAPE TEE", "RED CAMO", "2"],
+    ["Unmapped", "Not selected", "—", "2"],
+  ]);
+  assert.ok(summary.rows.every((row) => row[3].className.includes("number-cell")));
+  assert.deepEqual(model.metrics, reportPage.createSummaryMetrics(record.report));
+  assert.deepEqual(record, before, "The summary must not alter saved orders, totals, or inventory");
+});
+
+test("PDF canceled SKU summary omits Unmapped when every cancellation has an item", () => {
+  const record = makePdfRecord();
+  record.report.canceledOrders = [
+    { variationNumber: 4, mapped: true, ...record.report.inventory[1] },
+    { variationNumber: 6, mapped: true, ...record.report.inventory[1] },
+  ];
+  record.report.totals.canceledOrderCount = 2;
+  const summary = pdf.createReportPresentation(record).tables.find((table) => table.key === "canceledSummary");
+  assert.equal(summary.rows.length, 1);
+  assert.deepEqual(summary.rows[0].map((cell) => cell.text), [
+    record.report.inventory[1].sku, record.report.inventory[1].item, record.report.inventory[1].style, "2",
+  ]);
+  assert.ok(!summary.rows.some((row) => row[0].text === "Unmapped"));
+});
+
+test("empty and legacy direct PDFs omit the SKU summary heading without replacing their existing notices", async () => {
+  const { jsPDF } = require("../extension/vendor/jspdf/jspdf.umd.min.js");
+  for (const legacy of [false, true]) {
+    const record = makePdfRecord({ rows: 0 });
+    if (legacy) {
+      delete record.report.canceledOrders;
+    } else {
+      record.report.canceledOrders = [];
+      record.report.totals.canceledOrderCount = 0;
+      record.report.totals.totalSalesCount = 0;
+    }
+    const texts = [];
+    function RecordingPdf(options) {
+      const document = new jsPDF(options);
+      const originalText = document.text;
+      document.text = function recordText(value, ...args) {
+        texts.push(...[value].flat());
+        return originalText.call(this, value, ...args);
+      };
+      return document;
+    }
+    const bytes = await pdf.generateReportPdf(record, { fonts, jsPDF: RecordingPdf });
+    assert.ok(Buffer.from(bytes).toString("latin1").startsWith("%PDF-"));
+    assert.ok(!texts.some((value) => value.includes("Canceled orders by SKU")));
+    assert.ok(texts.includes("Canceled orders"));
+    const content = texts.join(" ");
+    assert.equal(content.includes("No canceled orders were captured for this stream."), !legacy);
+    assert.equal(content.includes("Individual item details for 1 canceled variation"), legacy);
+  }
 });
 
 test("direct PDF generation returns real PDF bytes with fonts and never mutates its frozen record", async () => {
@@ -167,16 +247,21 @@ test("long PDFs retain all rows, repeat headings and use automatic table paginat
       autoTable(document, settings);
     },
   });
-  assert.deepEqual(calls.map((call) => call.body.length), [180, 180, 360, 180]);
+  assert.deepEqual(calls.map((call) => call.body.length), [180, 180, 360, 180, 180]);
   assert.ok(calls.every((call) => call.showHead === "everyPage" && call.rowPageBreak === "avoid"));
   assert.equal(calls[0].body.at(-1)[0].content, "SKU-0180");
   assert.equal(calls[1].body.at(-1)[0].content, "SKU-0180");
   assert.equal(calls[2].body.at(-1)[0].content, "#360");
-  assert.equal(calls[3].body[0][0].content, "#181");
-  assert.equal(calls[3].body.at(-1)[0].content, "#360");
-  assert.ok(calls[3].body.every((row) => row.length === 6));
+  assert.deepEqual(calls[3].head, [["SKU", "Item", "Style", "Canceled"]]);
+  assert.equal(calls[3].body[0][0].content, "SKU-0001");
+  assert.equal(calls[3].body.at(-1)[0].content, "SKU-0180");
+  assert.ok(calls[3].body.every((row) => row.length === 4 && row[3].content === "1"));
+  assert.equal(calls[4].body[0][0].content, "#181");
+  assert.equal(calls[4].body.at(-1)[0].content, "#360");
+  assert.ok(calls[4].body.every((row) => row.length === 6));
   assert.ok(continuedTables.has(2), "Combined variations must span pages without truncation");
-  assert.ok(continuedTables.has(3), "Canceled-only rows must span pages without truncation");
+  assert.ok(continuedTables.has(3), "Canceled SKU summary must span pages without truncation");
+  assert.ok(continuedTables.has(4), "Canceled-only rows must span pages without truncation");
   const pages = Buffer.from(bytes).toString("latin1").match(/\/Type \/Page\b/g) ?? [];
   assert.ok(pages.length > 6, `Expected multiple pages, received ${pages.length}`);
 });
@@ -219,8 +304,16 @@ test("browser PDF generation fetches only bundled local fonts and reuses them fo
     btoa(value) { return Buffer.from(value, "binary").toString("base64"); },
   };
   vm.runInNewContext(source, context);
-  await context.TikTokLiveTrackerReportPdf.generateReportPdf(makePdfRecord(), { autoTable });
-  await context.TikTokLiveTrackerReportPdf.generateReportPdf(makePdfRecord(), { autoTable });
+  const tableHeaders = [];
+  const options = { autoTable(document, settings) {
+    tableHeaders.push(settings.head[0]);
+    autoTable(document, settings);
+  } };
+  await context.TikTokLiveTrackerReportPdf.generateReportPdf(makePdfRecord(), options);
+  await context.TikTokLiveTrackerReportPdf.generateReportPdf(makePdfRecord(), options);
+  assert.equal(tableHeaders.length, 10, "Every report in a batch must include all five tables");
+  assert.deepEqual(Array.from(tableHeaders[3]), ["SKU", "Item", "Style", "Canceled"]);
+  assert.deepEqual(Array.from(tableHeaders[8]), ["SKU", "Item", "Style", "Canceled"]);
   assert.deepEqual(fetched.sort(), [
     "chrome-extension://synthetic/vendor/fonts/DejaVuSans-Bold.ttf",
     "chrome-extension://synthetic/vendor/fonts/DejaVuSans.ttf",

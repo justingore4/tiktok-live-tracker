@@ -788,6 +788,49 @@
         : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
+    function renderCanceledSkuSummary(document, orders) {
+      const groups = new Map();
+      // Saved report validation guarantees one row per canceled variation. Count
+      // those references only; no inventory or completed-sale totals are involved.
+      for (const order of orders) {
+        const sku = typeof order?.sku === "string" && order.sku !== ""
+          ? order.sku
+          : null;
+        if (!groups.has(sku)) {
+          groups.set(sku, {
+            sku,
+            item: sku === null ? "Not selected" : order.item,
+            style: sku === null ? "—" : order.style,
+            count: 0,
+          });
+        }
+        groups.get(sku).count += 1;
+      }
+      const rows = [...groups.values()]
+        .sort((left, right) => {
+          if (left.sku === right.sku) return 0;
+          if (left.sku === null) return 1;
+          if (right.sku === null) return -1;
+          return left.sku < right.sku ? -1 : 1;
+        })
+        .map((group) => {
+          const row = document.createElement("tr");
+          row.append(
+            createTableCell(document, group.sku ?? "Unmapped", {
+              className: group.sku === null ? "warning-cell" : "sku-cell",
+            }),
+            createTableCell(document, group.item),
+            createTableCell(document, group.style, {
+              className: group.sku === null ? "muted-cell" : "",
+            }),
+            createTableCell(document, group.count, { className: "number-cell" }),
+          );
+          return row;
+        });
+      replaceChildren(document.querySelector("#canceled-sku-summary-rows"), rows);
+      document.querySelector("#canceled-sku-summary").hidden = rows.length === 0;
+    }
+
     function renderCanceledOrders(document, report) {
       const body = document.querySelector("#canceled-orders-rows");
       const empty = document.querySelector("#canceled-orders-empty");
@@ -795,6 +838,7 @@
       const detailsNote = document.querySelector("#canceled-orders-note");
       const detailsAvailable = Array.isArray(report?.canceledOrders);
       const orders = detailsAvailable ? report.canceledOrders : [];
+      renderCanceledSkuSummary(document, orders);
       const canceledCount = Number.isSafeInteger(report?.totals?.canceledOrderCount)
         ? report.totals.canceledOrderCount
         : orders.length;

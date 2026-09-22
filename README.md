@@ -203,10 +203,13 @@ the **tracking-start time**. Rename current reports in **STREAM REPORT RECORDS**
 edit the name at the top of the report. Restore an archived report to the recent
 list before renaming it.
 
-Below **Stream Variations**, expand **Canceled orders** to review just the canceled
-variations, with their status, SKU, item, style, and size. This reference-only list
-has no price, cost, or profit columns and does not change inventory or totals.
-Older reports without individual cancellation details show an explanatory notice.
+Below **Stream Variations**, expand **Canceled orders** to see cancellation totals
+per exact SKU, with item and style, followed by the individual canceled variations.
+Different size-specific SKUs stay separate; cancellations without a selected SKU
+share an **Unmapped** summary row only when needed. Both tables are reference-only:
+no price, cost, or profit columns, and no changes to inventory or accounting totals.
+Print and PDF exports include the summary above the details. Older reports without
+individual cancellation details show an explanatory notice instead of guessed SKU totals.
 
 ### Library and downloads
 

@@ -38,6 +38,13 @@
       widths: [51, 49, 63, 94, 58, 31, 57, 51, 58],
     },
     {
+      key: "canceledSummary", selector: "#canceled-sku-summary-rows",
+      sectionSelector: "#canceled-sku-summary",
+      eyebrow: "Canceled variations", title: "Canceled orders by SKU",
+      headers: ["SKU", "Item", "Style", "Canceled"],
+      widths: [120, 170, 160, 66],
+    },
+    {
       key: "canceled", selector: "#canceled-orders-rows",
       eyebrow: "Canceled variations", title: "Canceled orders",
       count: "#canceled-orders-count", note: "#canceled-orders-note",
@@ -87,7 +94,8 @@
     const document = createTextDocument();
     reportPage.renderReport(document, record);
     const node = (selector) => document.querySelector(selector);
-    const tables = TABLES.map((definition) => ({
+    const tables = TABLES.filter((definition) => !definition.sectionSelector
+      || !node(definition.sectionSelector).hidden).map((definition) => ({
       ...definition,
       headers: [...definition.headers], widths: [...definition.widths],
       count: definition.count ? node(definition.count).textContent : "",
@@ -411,9 +419,7 @@
         y += rowHeight + 20;
       } while (pair.some((card) => card.offset < card.lines.length));
     }
-    drawTable(model.tables[1]);
-    drawTable(model.tables[2]);
-    drawTable(model.tables[3]);
+    model.tables.slice(1).forEach(drawTable);
     for (const line of model.footer) paragraph(line, 7);
     const pageCount = doc.getNumberOfPages();
     for (let page = 1; page <= pageCount; page += 1) {

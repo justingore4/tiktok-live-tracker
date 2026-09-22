@@ -709,6 +709,15 @@ button:disabled {
   margin-top: 16px;
 }
 
+#canceled-sku-summary {
+  margin-bottom: 16px;
+}
+
+.canceled-sku-summary-table th,
+.canceled-sku-summary-table td {
+  overflow-wrap: anywhere;
+}
+
 .section-intro {
   max-width: 78ch;
   margin: -3px 0 17px;

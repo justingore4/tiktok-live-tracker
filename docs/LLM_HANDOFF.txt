@@ -1,23 +1,23 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 20, 2026
+Snapshot date: September 22, 2026
 Repository branch at this update: main
-Latest implementation commit at this snapshot: b7b818926edb9259e7e822cb4680373180a8a569
-Commit subject: Refine preset planning, navigation, and startup locks
+Latest commit at this snapshot: ae69a515509a28066eb4eb4e4d2ef3c6a9cb8b5f
+Commit subject: version reupdated to 1.0.0
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
-unlock, and strict yellow editing lock are committed. The latest local changes add
-the canceled-only report disclosure, full variation/cancellation print/PDF output,
-and report-name-based browser PDF filenames
-described in section 11; they are not committed.
+unlock, and strict yellow editing lock are committed. The canceled-only disclosure,
+full variation/cancellation print/PDF output, and report-name PDF filenames were
+committed in 21ec5fc. The latest local changes add the canceled-orders-per-SKU summary
+described in section 11; this summary implementation is not committed.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,805 passed, 0 failed
+Latest full synthetic test run: 1,814 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -40,7 +40,7 @@ For the receiving assistant:
 - Read the root AGENTS.md and any applicable overrides or skill instructions.
   AGENTS.md holds durable working rules; this handoff holds implementation context.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before the canceled-order disclosure implementation.
+- The worktree was clean on main before the canceled-orders-per-SKU summary implementation.
   Existing committed work is preserved. No commit or push was performed for this update.
 
 1. PRODUCT, OWNER, AND SCOPE
@@ -759,10 +759,19 @@ Failure behavior matters:
 
 11. REPORT LIBRARY, CAPACITY, AND CORRECTIONS
 ------------------------------------------
-Canceled-order report display (September 20, 2026, local implementation):
+Canceled-order report display (updated September 22, 2026):
 - An initially collapsed Canceled orders section sits directly below Stream Variations.
 - Uses saved report.canceledOrders only, sorted by variation number, with six columns:
   Variation, Status, SKU, Item, Style, Size. No sold-price, unit-cost, or profit columns.
+- Above those details, renderCanceledSkuSummary creates four safe-text columns: SKU,
+  Item, Style, Canceled. Groups use exact SKU, one count per saved canceled variation,
+  in deterministic SKU order. Different sizes stay separate. Saved blank styles stay
+  blank, matching the existing detail table. A single Unmapped / Not selected / — row
+  appears last only when actual cancellation detail rows have no SKU. Report hydration
+  already validates unique variation numbers and mapped item/style consistency.
+- The summary wrapper is hidden for empty or missing legacy details. Legacy aggregate
+  counts are never guessed into SKU/Unmapped groups. Rendering creates only local groups;
+  payment/mapping correction refreshes recompute them without resetting disclosure state.
 - Shares safe-text reference-cell rendering/unmapped fallbacks with the existing
   combined variation table; that table and all accounting/inventory-export behavior
   are unchanged.
@@ -775,9 +784,11 @@ Canceled-order report display (September 20, 2026, local implementation):
   including cancel/error handling. beforeprint/afterprint also cover native shortcuts;
   repeated beforeprint events do not overwrite the original state snapshot. The report
   button retains its save-name/stale-view guards and restores after synchronous print.
-- Direct downloaded PDFs include a fourth, canceled-only six-column table after the
-  unchanged combined variation table. All available rows are included regardless of
-  screen state, with existing empty/legacy-detail notices and pagination behavior.
+- Print includes the summary within the temporarily expanded cancellation disclosure.
+  Direct/bulk PDFs reuse the rendered summary as canceledSummary before the six-column
+  canceled detail table; no summary heading is drawn when it is hidden. All available
+  rows are included regardless of screen state, with existing empty/legacy-detail notices,
+  automatic pagination, and repeated table headers. PDF filenames remain unchanged.
 - Presentation-only: no storage/report schema, capture, permissions, or manifest changes.
 
 Exact limits in shared/stream-report-storage.js:
@@ -994,11 +1005,17 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,805 tests passed, 0 failed, on Windows (September 20, 2026).
+Latest full verification: 1,814 tests passed, 0 failed, on Windows (September 22, 2026).
+Canceled-SKU summary coverage adds six report-page tests and three PDF tests, expanding
+existing correction/print/legacy tests too. Focused results: report-page 131/131, PDF
+15/15; PDF plus download tests 49/49. Covers exact SKU/size grouping, Unmapped last,
+saved labels, empty/legacy hiding, noncanceled exclusions, immutable report data,
+mounted payment/mapping refreshes, print-state preservation, and full multi-page/batch
+PDF output. git diff --check passed. No browser checks, real data, commits, or pushes.
 Canceled-order disclosure added seven report-page regressions (106/106 at that step).
 Expanded print/PDF output added nine further tests (report-page 113/113 at that step).
-Report-name print filenames add twelve more: the report-page suite is now 125/125,
-and the direct-PDF suite remains 12/12. The related download/side-panel/PDF group passed
+Report-name print filenames added twelve more (report-page 125/125 and PDF 12/12 at
+that step). The related download/side-panel/PDF group passed
 91/91. git diff --check passed. Filename coverage includes sanitization parity, legacy
 fallbacks, native print, confirmed renames, failures, and stale/navigation guards.
 Coverage includes placement, native disclosure markup, exact six-column safe-text rows,
@@ -1150,6 +1167,10 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  ae69a51  version reupdated to 1.0.0
+  16fff2c  update version number
+  21ec5fc  Improve report cancellation details and PDF exports
+  2784191  add agents file
   4f9ecff  doc updates
   b7b8189  Refine preset planning, navigation, and startup locks
   c666fba  fix top scrolling
@@ -1206,6 +1227,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed implementation is preserved. The canceled-order disclosure and
-its tests/documentation are local changes; no commit or push was performed.
+Previously committed implementation is preserved. The canceled-orders-per-SKU summary
+and its tests/documentation are local changes; no commit or push was performed.
 There is no approved pending functional change to start automatically.

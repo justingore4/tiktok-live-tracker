@@ -577,11 +577,20 @@ A separate, initially collapsed **Canceled orders** disclosure directly below St
 variations filters the same saved `canceledOrders` collection into six reference-only
 columns: Variation, Status, SKU, Item, Style, and Size. Rows are sorted by variation
 number, and use the same safe-text rendering and unmapped fallbacks as the combined
-table, which remains unchanged. Its count retains legacy aggregate cancellations;
+table, which remains unchanged. Above those details, a four-column summary shows
+**SKU, Item, Style, Canceled**, grouping only the saved canceled-order references by
+exact SKU. Each unique canceled variation contributes one count; saved report validation
+already rejects duplicate variation numbers. SKU ordering is deterministic, with one
+**Unmapped / Not selected / —** group last only when needed. Saved item/style text is
+preserved, including blank styles; size-specific SKUs are never merged by product name.
+The summary is hidden when no detail rows exist, including legacy reports; unavailable
+historical detail is not treated as unmapped. The disclosure's header count retains legacy
+aggregate cancellations;
 missing legacy details produce a notice, never invented rows. Zero cancellations show
 an empty-state message. Report refreshes after payment or mapping corrections update
-the rows without resetting either disclosure's open state. Direct downloaded PDFs include
-both the combined variation table and the six-column canceled-only table in full,
+both tables without resetting either disclosure's open state. Direct downloaded PDFs include
+the combined variation table, the per-SKU cancellation summary when available, and the
+six-column canceled-only table in that order,
 independent of on-screen expansion. Both disclosures start collapsed on screen. This is presentation
 only and adds no report schema, storage, accounting, or inventory-export changes.
 

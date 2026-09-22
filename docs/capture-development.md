@@ -249,10 +249,16 @@ combined count. Its **Status** column identifies the outcome. Completed rows kee
 and unmapped sale detail; canceled rows keep only mapped or unmapped reference identity,
 show no price, unit cost, or gross profit, and never affect inventory or any metric.
 The separate **Canceled orders** disclosure below it lists only cancellations, with
-Variation, Status, SKU, Item, Style, and Size columns. Both disclosures start collapsed
+an exact-SKU count summary (SKU, Item, Style, Canceled) above the existing Variation,
+Status, SKU, Item, Style, and Size details. Size-specific SKUs stay separate. One
+Unmapped summary row appears last only for detail rows lacking a SKU; missing legacy
+details never become an invented Unmapped count. Empty/legacy reports hide the summary
+and retain their existing message/count. Both disclosures start collapsed
 on screen. Browser Print / Save as PDF temporarily expands both and restores their
 previous states afterward, including canceling the dialog. Direct PDF downloads include
-both tables in full without requiring the employee to open **Show details** first.
+the summary and both detail tables in full without requiring the employee to open
+**Show details** first. Payment/mapping correction refreshes rebuild the summary without
+changing disclosure state, inventory, or accounting.
 Exact-SKU analytics sum mapped completed units, revenue, saved unit cost, and gross profit
 by SKU, include only mapped SKUs with completed sales in this report stream, and sort rows
 from highest gross profit to largest loss. The final **Gross profit/loss** column uses
@@ -693,6 +699,10 @@ distribution; reassess Google's requirements before expanding the audience.
     both return to their prior screen states. Repeat with one section open, including
     Chrome's print shortcut, and confirm neither screen choice is lost. **Download PDF**
     must also include both full tables. These browser/PDF appearance checks are manual.
+    Check that the four-column cancellation summary appears above cancellation details
+    in the report, print preview, and direct/bulk PDFs. Verify per-SKU counts and an
+    optional Unmapped row; test matching item/style across different SKU sizes, empty
+    and legacy reports, mapping/payment corrections, and a long multi-page summary.
     Confirm Save as PDF suggests the saved report name (with filename-unsafe characters
     cleaned up), including after renaming in the report. Cancel and retry without changing
     the report name; the suggested filename should remain the same. CSV naming is unchanged.

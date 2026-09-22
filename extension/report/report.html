@@ -427,6 +427,28 @@
             </summary>
             <div id="canceled-orders-content" class="completed-sales-content">
               <div
+                id="canceled-sku-summary"
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="canceled-sku-summary-caption"
+                hidden
+              >
+                <table class="data-table canceled-sku-summary-table">
+                  <caption id="canceled-sku-summary-caption">
+                    Canceled orders by SKU. Unmapped cancellations are grouped separately.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Item</th>
+                      <th scope="col">Style</th>
+                      <th scope="col" class="number-cell">Canceled</th>
+                    </tr>
+                  </thead>
+                  <tbody id="canceled-sku-summary-rows"></tbody>
+                </table>
+              </div>
+              <div
                 class="table-scroll screen-scroll"
                 tabindex="0"
                 aria-labelledby="canceled-orders-title"
