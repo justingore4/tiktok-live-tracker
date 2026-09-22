@@ -1404,6 +1404,7 @@ test("compact order box appears only in history and preserves live rendering and
   let variationFocusCount = 0;
   const sandbox = {
     getActiveView: () => activeView,
+    reconcileQueuedPreviewSelection: () => false,
     mappedVariation: { textContent: "" },
     mappedItem: { textContent: "" },
     pendingMapping: { hidden: true, dataset: {} },
@@ -1704,6 +1705,9 @@ function createInventoryCardBadgeHarness() {
     panelSource.indexOf("function getObservedPaymentStatusLabel("),
   );
   const viewModel = require("../extension/tagger/inventory-view-model.js");
+  const queuePresentationStart = panelSource.indexOf("function getQueuedItemPresentation(");
+  const queuePresentationSource = panelSource.slice(queuePresentationStart,
+    panelSource.indexOf("\n  }", queuePresentationStart) + 4);
 
   assert.ok(templateSource, "use the actual inventory card template");
   assert.ok(cardSource.length > 0, "execute the actual inventory card renderer");
@@ -1745,6 +1749,11 @@ function createInventoryCardBadgeHarness() {
   const sandbox = {
     cardTemplate: { content: { firstElementChild: { cloneNode: cloneTemplate } } },
     queuedNextItemSku: null,
+    queuedNextItemToken: null,
+    mountedStreamId: "synthetic-stream",
+    streamSnapshot: { resumed: true, activeSession: { streamId: "synthetic-stream" } },
+    variationPresetsSnapshot: null,
+    variationPresetsView: require("../extension/tagger/variation-presets-view.js"),
     viewModel: {
       getPreferredInventoryGroupEntry: viewModel.getPreferredInventoryGroupEntry,
       getInventoryGroupStockDisplay: () => ({ state: "in_stock", label: "3 left" }),
@@ -1756,7 +1765,7 @@ function createInventoryCardBadgeHarness() {
     getFuturePresetContext: (view) => ({ variationNumber: view.selectedVariationNumber }),
   };
   vm.createContext(sandbox);
-  vm.runInContext(`${currentMappingSource}\n${cardSource}`, sandbox);
+  vm.runInContext(`${currentMappingSource}\n${queuePresentationSource}\n${cardSource}`, sandbox);
 
   return {
     render({
@@ -1768,6 +1777,9 @@ function createInventoryCardBadgeHarness() {
       status = "pending",
       paymentStatus = "payment_processing",
       sizes = ["M"],
+      presetAssignments = null,
+      prestream = false,
+      manualPreview = false,
     } = {}) {
       const group = {
         key: "test-tee-black",
@@ -1781,19 +1793,36 @@ function createInventoryCardBadgeHarness() {
         })),
       };
       const view = {
+        streamId: "synthetic-stream", inventoryBaselineId: "synthetic-baseline",
         variationNumber: reviewingHistory ? 100 : 115,
         selectedVariationNumber: reviewingHistory ? 100 : 115,
         currentVariationNumber: 115,
+        activeBiddingVariationNumber: 115,
         isReviewingHistory: reviewingHistory,
         isReviewingPreset: reviewingPreset,
         auction: { sku: selectedSku, status, paymentStatus },
         activeAuctionMapping: { variationNumber: 115, sku: liveSku },
-        variations: [],
+        variations: [{ variationNumber: 115, recorded: true }],
+        inventory: group.entries,
       };
+      if (prestream) {
+        Object.assign(view, { currentVariationNumber: 203, selectedVariationNumber: 203,
+          variationNumber: 203, activeBiddingVariationNumber: null, variations: [], auction: null });
+      }
       const originalGroup = JSON.stringify(group);
       const originalView = JSON.stringify(view);
       sandbox.queuedNextItemSku = queuedSku;
-      const wrapper = sandbox.createInventoryCard(group, view);
+      sandbox.variationPresetsSnapshot = presetAssignments === null ? null : {
+        streamId: "synthetic-stream", baselineId: "synthetic-baseline", revision: "r1",
+        total: 120, assignments: presetAssignments,
+      };
+      let displayedView = prestream
+        ? sandbox.variationPresetsView.project(view, sandbox.variationPresetsSnapshot, 1) : view;
+      if (manualPreview) displayedView = sandbox.variationPresetsView.projectQueuedItem(view, {
+        queuedSku, queueToken: "synthetic-queue", streamId: "synthetic-stream", baselineId: "synthetic-baseline", armedAfterVariationNumber: 115,
+      }, 116);
+      const displayedGroup = prestream || manualPreview ? { ...group, entries: displayedView.inventory } : group;
+      const wrapper = sandbox.createInventoryCard(displayedGroup, displayedView);
       assert.equal(JSON.stringify(group), originalGroup, "badges must not change inventory");
       assert.equal(JSON.stringify(view), originalView, "badges must not change mappings");
       return {
@@ -1807,6 +1836,75 @@ function createInventoryCardBadgeHarness() {
     },
   };
 }
+
+test("live upcoming preset uses the existing selected-plus-queued card state and exact queued-size description", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const selectedSku of [null, "TEE-S", "TEE-L"]) {
+    const card = harness.render({
+      sizes: ["S", "M", "L"], selectedSku, liveSku: selectedSku,
+      reviewingHistory: false, paymentStatus: "bidding",
+      presetAssignments: [{ variationNumber: 116, sku: "TEE-L" }, { variationNumber: 118, sku: "TEE-M" }],
+    });
+    assert.equal(card.queued.hidden, false);
+    assert.equal(card.queued.textContent, "Queued: L");
+    assert.equal(card.button.dataset.queued, "true");
+    assert.equal(card.button.dataset.selected, String(selectedSku !== null));
+    assert.equal(card.selected.hidden, selectedSku === null);
+    assert.equal(card.button.dataset.sku, undefined, "A grouped item remains an exact-size picker");
+    assert.match(card.button.getAttribute("aria-label"), /preset.*116|116.*preset/i);
+    assert.match(card.button.getAttribute("aria-label"), /size L/i);
+    assert.doesNotMatch(card.button.getAttribute("aria-label"), /Right-click to remove it from the next variation queue/);
+  }
+});
+
+test("upcoming preset card badge does not skip later assignments or leak into historical/future views", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const options of [
+    { reviewingHistory: false, presetAssignments: [{ variationNumber: 117, sku: "TEE-M" }] },
+    { reviewingHistory: true, presetAssignments: [{ variationNumber: 116, sku: "TEE-M" }] },
+    { reviewingHistory: false, reviewingPreset: true, presetAssignments: [{ variationNumber: 116, sku: "TEE-M" }] },
+  ]) {
+    const card = harness.render(options);
+    assert.equal(card.queued.hidden, true);
+    assert.equal(card.button.dataset.queued, "false");
+  }
+});
+
+test("pre-stream future card keeps planning gestures while showing exact-size next-preset and selected-plus-queued styling", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const selectedSku of ["TEE-S", "TEE-L"]) {
+    const card = harness.render({ prestream: true, selectedSku, sizes: ["S", "M", "L"],
+      presetAssignments: [{ variationNumber: 1, sku: selectedSku }, { variationNumber: 2, sku: "TEE-L" }] });
+    assert.equal(card.button.dataset.queued, "true");
+    assert.equal(card.button.dataset.queuedSource, "preset");
+    assert.equal(card.button.dataset.selected, "true");
+    assert.equal(card.queued.hidden, false);
+    assert.equal(card.queued.textContent, "Queued: L");
+    assert.equal(card.selected.hidden, false);
+    assert.equal(card.button.dataset.sku, undefined);
+    const label = card.button.getAttribute("aria-label");
+    assert.match(label, /Left-click to fill this future preset if empty, otherwise fill and open the next empty future preset/);
+    assert.match(label, /Right-click to change the viewed preset, or unselect the same item and size/);
+    assert.match(label, /size L/i);
+    assert.match(label, /preset.*2|2.*preset/i);
+    assert.match(label, /No inventory is reserved/);
+    assert.doesNotMatch(label, /Right-click to remove it from the next variation queue/);
+  }
+});
+
+test("manual queued-preview cards preserve exact queued size but are disabled with readonly origin and accessible copy", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const sizes of [["L"], ["S", "M", "L"]]) {
+    const card = harness.render({ manualPreview: true, queuedSku: "TEE-L", sizes, reviewingHistory: false });
+    assert.equal(card.button.disabled, true);
+    assert.equal(card.button.queuedPreviewReadOnly, true);
+    assert.equal(card.button.dataset.queued, "true");
+    assert.equal(card.button.dataset.selected, "true");
+    assert.equal(card.size.textContent, "L");
+    assert.match(card.button.getAttribute("aria-label"), /read.only/i);
+    assert.doesNotMatch(card.button.getAttribute("aria-label"), /Right-click to (?:map|unmap|remap|queue|remove)|Left-click to fill/);
+  }
+});
 
 test("future preset card accessibility explains the swapped buttons and exact-size choice without live-mapping instructions", () => {
   const harness = createInventoryCardBadgeHarness();
@@ -2230,7 +2328,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
   );
   assert.match(
     cardSource,
-    /const queuedEntry = group\.entries\.find\([\s\S]*?entry\.sku === queuedNextItemSku/,
+    /const queuedEntry = group\.entries\.find\([\s\S]*?entry\.sku === queuedPresentation\?\.sku/,
   );
   assert.match(
     cardSource,

@@ -820,12 +820,17 @@ test("clearForStream is scoped and never turns cleanup storage failure into an e
 
 test("queue snapshots expose a stable ephemeral token without changing saved schema 1", async () => {
   const harness = createCoordinatorHarness();
-  assert.deepEqual(await snapshotQueue(harness), { queuedSku: null, queueToken: null });
+  assert.deepEqual(await snapshotQueue(harness), {
+    queuedSku: null, queueToken: null, streamId: null, baselineId: null, armedAfterVariationNumber: null,
+  });
   await harness.coordinator.dispatch(toggleCommand());
   const persistedBefore = clone(harness.memory.values);
   const writesBefore = harness.memory.calls.set.length;
   const first = await snapshotQueue(harness);
   assert.equal(first.queuedSku, "TEE-L");
+  assert.equal(first.streamId, STREAM_ONE);
+  assert.equal(first.baselineId, harness.getState().streams[0].inventoryBaselineId);
+  assert.equal(first.armedAfterVariationNumber, 203);
   assert.match(first.queueToken, protocol.QUEUE_TOKEN_PATTERN);
   assert.deepEqual(await snapshotQueue(harness), first);
   assert.deepEqual(await harness.coordinator.dispatch({ type: "get_queue" }), {
@@ -840,6 +845,64 @@ test("queue snapshots expose a stable ephemeral token without changing saved sch
   ]);
   first.queueToken = "changed-locally";
   assert.notEqual((await snapshotQueue(harness)).queueToken, first.queueToken);
+});
+
+test("queue preview metadata retains its original anchor through backfill, skipped capture, and worker restart", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const first = await snapshotQueue(harness);
+  const state = harness.getState();
+  reconciliation.observeVariations(state, { streamId: STREAM_ONE, variationNumbers: [400] });
+  harness.setState(state);
+  assert.deepEqual(await snapshotQueue(harness), first, "a higher historical row never retargets the manual queue");
+  addBiddingVariation(state, 205);
+  harness.setState(state);
+  assert.deepEqual(await snapshotQueue(harness), first, "unconsumed queue metadata cannot slide from #204 to #206");
+  const restarted = createCoordinatorHarness({ memory: harness.memory, state: harness.getState() });
+  const reopened = await snapshotQueue(restarted);
+  assert.equal(reopened.armedAfterVariationNumber, 203);
+  assert.equal(reopened.streamId, first.streamId);
+  assert.equal(reopened.baselineId, first.baselineId);
+  assert.notEqual(reopened.queueToken, first.queueToken);
+  const captured = await restarted.coordinator.applyToObservedBiddingVariation({
+    state: restarted.getState(), streamId: STREAM_ONE, variationNumber: 205,
+  });
+  assert.equal(captured.status, "mapped");
+  assert.equal(findAuction(captured.state, 205).sku, "TEE-L");
+  assert.equal(findAuction(captured.state, 204), undefined, "the preview number never creates a canonical order");
+  assert.equal((await snapshotQueue(restarted)).armedAfterVariationNumber, null);
+});
+
+test("queue snapshot metadata reads the pinned baseline, not an unrelated active inventory baseline", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const first = await snapshotQueue(harness);
+  const state = harness.getState();
+  reconciliation.createInventoryBaseline(state, {
+    baselineId: "inventory-baseline:33333333-3333-4333-8333-333333333333",
+    sourceFingerprint: "fnv1a64:3333333333333333",
+    inventory: [{ sku: "OTHER", item: "Other", style: "", size: "OS", quantityOnHandAtImport: 3, unitCostCents: 400 }],
+  });
+  harness.setState(state);
+  const persisted = clone(harness.memory.values);
+  const snapshot = await snapshotQueue(harness);
+  assert.deepEqual(snapshot, first);
+  assert.notEqual(snapshot.baselineId, state.activeInventoryBaselineId);
+  assert.deepEqual(harness.getState(), state);
+  assert.deepEqual(harness.memory.values, persisted);
+});
+
+test("queue snapshot fails closed when its canonical pin is unavailable without clearing saved queue state", async () => {
+  const harness = createCoordinatorHarness();
+  await harness.coordinator.dispatch(toggleCommand());
+  const saved = clone(harness.memory.values);
+  const state = reconciliation.createReconciliationState(createInventory());
+  harness.setState(state);
+  await assert.rejects(snapshotQueue(harness), { code: "QUEUE_SNAPSHOT_UNAVAILABLE" });
+  assert.deepEqual(harness.memory.values, saved);
+  assert.deepEqual(harness.getState(), state);
+  assert.deepEqual(await harness.coordinator.dispatch({ type: "get_queue" }), { queuedSku: "TEE-L" },
+    "legacy queue read contract remains unchanged");
 });
 
 test("explicit clear removes only the queued item even when the live auction becomes unmapped or advances", async () => {
@@ -863,7 +926,9 @@ test("explicit clear removes only the queued item even when the live auction bec
     assert.deepEqual(harness.getState(), state);
     assert.deepEqual(harness.stateCalls, callsBefore);
     assert.equal(harness.memory.calls.set.length, writesBefore);
-    assert.deepEqual(await snapshotQueue(harness), { queuedSku: null, queueToken: null });
+    assert.deepEqual(await snapshotQueue(harness), {
+      queuedSku: null, queueToken: null, streamId: null, baselineId: null, armedAfterVariationNumber: null,
+    });
   }
 });
 

@@ -392,9 +392,11 @@
         activeBiddingVariationNumber,
         currentVariationNumber,
         activeAuctionMapping,
+        inventoryBaselineId,
       ) {
         return {
           ...candidateView,
+          inventoryBaselineId,
           activeBiddingVariationNumber,
           activeAuctionMapping:
             activeAuctionMapping === null
@@ -510,9 +512,11 @@
           activeBiddingVariationNumber,
           currentCanonicalVariationNumber,
           activeAuctionMapping,
+          canonicalStream.inventoryBaselineId,
         );
 
         return {
+          inventoryBaselineId: canonicalStream.inventoryBaselineId,
           activeAuctionMapping,
           activeBiddingVariationNumber,
           currentCanonicalVariationNumber,
@@ -568,6 +572,7 @@
             activeBiddingVariationNumber,
             currentCanonicalVariationNumber,
             projection.activeAuctionMapping,
+            projection.inventoryBaselineId,
           );
         }
 
@@ -789,6 +794,7 @@
           view?.activeBiddingVariationNumber ?? null,
           latestVariationNumber,
           view?.activeAuctionMapping ?? null,
+          view.inventoryBaselineId,
         );
         publish();
         return createSnapshot();

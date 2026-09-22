@@ -2827,6 +2827,9 @@ test("queue snapshots and explicit clears accept only the exact side-panel sende
       ? {
         queuedSku: "TEST-SKU",
         queueToken: "11111111-1111-4111-8111-111111111111",
+        streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+        baselineId: "inventory-baseline:11111111-1111-4111-8111-111111111111",
+        armedAfterVariationNumber: 203,
       }
       : { status: "cleared", queuedSku: null };
     const harness = createWorkerHarness({ nextItemQueueDispatchResult: expected });

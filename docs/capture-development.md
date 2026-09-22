@@ -1085,6 +1085,42 @@ variation must preserve captured mappings, remove uncaptured assignments, and re
 to live. Verify startup planning uses manual opt-in or the 1.3-second blue delay and save/error locks still apply. Do not
 use real seller reports or existing Chrome profiles for automated QA.
 
+Upcoming-preset queued indicators are covered by `upcoming-preset-projection`,
+`queued-item-badge`, controller/card tests, and real worker/preset integration tests.
+For manual Chrome verification, view live bidding #10 with a preset on #11: its
+card and Inventory-header badge should be red/Queued, including the exact size.
+Search away its card; the header must stay visible. Verify selected-plus-queued
+styling when #10 and #11 share an item, then capture #11 and check #12. An empty
+#11 must never show a later #12 plan instead. After capture starts, history/future
+browsing hides preset-only indicators without changing manual-queue indicators.
+Clear with the header ×: only that future assignment disappears, its empty placeholder
+remains, and normal queuing becomes available. Loading/save/error states keep ×
+visible but disabled. Check tooltip and keyboard labeling, normal/narrow widths,
+capture or replacement during a clear, refresh/reopening, and unchanged stock.
+Before any capture, select future #10: only #11's assigned item should show as
+queued, whether #10 is empty or assigned. Move to #11 and check #12. The final
+preset, an empty immediate-next preset, and no selected preset show no upcoming
+indicator. Clearing must preserve the viewed assignment and target placeholder.
+Exercise exact sizes, selected-plus-queued cards, search, and normal sequential
+planning; neither displaying nor clearing a plan reserves stock. Start capture
+while a clear is pending, including an unrelated variation arriving first. The
+old pre-stream action must not clear a replacement/new target or steal selection.
+After capture, stop bidding: this must not restore pre-stream indicators. Blue
+planning opt-in still does not enable × while capture editing remains locked.
+These browser checks are performed manually by the user; do not launch automated browsers.
+
+Manual queue dropdown previews have synthetic projection, UI/client/worker, navigation,
+and race coverage. For manual Chrome checks, queue an exact SKU while live #10 is
+mapped and no preset is assigned to #11. Confirm #11-untracked-item appears once
+whether presets are disabled, enabled with an empty #11, or end at #10. Select it
+using dropdown, Var #, and arrows; inventory cards/size/keyboard actions must not
+edit it, and live bid/current mapping stay unchanged. Return to live to replace the
+queue, or clear with header ×. A temporary row disappears; an overlaid empty preset
+remains editable. Capture #11 or skip to #13 and verify the old preview is not moved
+to #14, fabricated as an order, or resurrected after refresh/reopening. Check queue
+clear failures, normal/narrow dropdown layout, accessible read-only guidance, focus,
+and retained loading/save/error restrictions. No automated browser checks are required.
+
 Also start/resume a local tracker with confirmed synthetic inventory before any
 auction is captured. Once the existing Loading/Connecting state finishes, **Preset
 items** must work even when the badge says **Reload Site**. Successfully creating an

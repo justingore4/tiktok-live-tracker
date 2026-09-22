@@ -156,6 +156,48 @@ test("invalid totals and identities fail before sending a request", async () => 
   assert.equal(h.memory.writes.length, 0);
 });
 
+test("queued-preset clear protocol accepts only an exact next target and a live-only clear guard", () => {
+  const command = {
+    type: "set_preset_item", expectedStreamId: STREAM, expectedBaselineId: "base",
+    expectedRevision: REVISION, variationNumber: 4, sku: null,
+    expectedActiveBiddingVariationNumber: 3,
+  };
+  assert.deepEqual(protocol.validateMessage(protocol.createMessage(command)), command);
+  const { expectedActiveBiddingVariationNumber: _live, ...ordinary } = command;
+  assert.deepEqual(protocol.validateCommand(ordinary), ordinary, "ordinary preset edits retain their original command shape");
+  for (const invalid of [
+    { ...command, sku: "LA-M" },
+    { ...command, type: "assign_next_preset_item", sku: "LA-M" },
+    { ...command, variationNumber: 5 },
+    { ...command, extra: true },
+    ...[null, undefined, 0, -1, 2.5, "3", Infinity, Number.MAX_SAFE_INTEGER + 1]
+      .map((value) => ({ ...command, expectedActiveBiddingVariationNumber: value })),
+  ]) {
+    assert.throws(() => protocol.validateCommand(invalid), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
+  }
+});
+
+test("pre-stream queued-preset clear protocol requires one exclusive clear-only source guard", () => {
+  const command = {
+    type: "set_preset_item", expectedStreamId: STREAM, expectedBaselineId: "base",
+    expectedRevision: REVISION, variationNumber: 4, sku: null,
+    expectedPrestreamVariationNumber: 3,
+  };
+  assert.deepEqual(protocol.validateMessage(protocol.createMessage(command)), command);
+  for (const invalid of [
+    { ...command, sku: "LA-M" },
+    { ...command, type: "assign_next_preset_item", sku: "LA-M" },
+    { ...command, expectedActiveBiddingVariationNumber: 3 },
+    { ...command, variationNumber: 5 },
+    { ...command, variationNumber: 1001, expectedPrestreamVariationNumber: 1000 },
+    ...[null, undefined, 0, -1, 2.5, "3", Infinity, Number.MAX_SAFE_INTEGER + 1, 1001]
+      .map((value) => ({ ...command, expectedPrestreamVariationNumber: value })),
+  ]) assert.throws(() => protocol.validateCommand(invalid), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
+  for (const type of ["get_presets", "create_presets", "reset_presets"]) {
+    assert.throws(() => protocol.validateCommand({ ...command, type }), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
+  }
+});
+
 test("strict preset snapshots reject duplicate, unordered, out-of-range and disabled assignments", () => {
   protocol.validateSnapshot(inactive);
   protocol.validateSnapshot(storedRecord({ total: null }));
@@ -325,6 +367,132 @@ test("next assignment clears a preexisting queue but farther plans do not", asyn
   await h.assign(4);
   assert.equal(h.getQueue(), null);
   assert.deepEqual(h.queueClears, [STREAM]);
+});
+
+test("guarded upcoming-preset clear removes only its assignment and rejects duplicate delivery", async () => {
+  const h = harness();
+  await h.create(20);
+  await h.assign(4);
+  const displayed = await h.assign(5, "TEE-OS");
+  const canonical = h.getState();
+  const beforeReport = report(canonical);
+  const command = {
+    ...h.expected(displayed), variationNumber: 4, sku: null,
+    expectedActiveBiddingVariationNumber: 3,
+  };
+  const cleared = await h.client.setPresetItem(command);
+  assert.equal(cleared.total, 20, "the empty #4 placeholder remains in the range");
+  assert.deepEqual(cleared.assignments, [{ variationNumber: 5, sku: "TEE-OS" }]);
+  assert.notEqual(cleared.revision, displayed.revision);
+  assert.deepEqual(h.getState(), canonical);
+  assert.deepEqual(report(h.getState()), beforeReport);
+  assert.equal(h.canonicalWrites.length, 0);
+  await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await h.snapshot(), cleared);
+});
+
+test("queued-preset clear rejects live advancement or completion even if its revision and target remain uncaptured", async () => {
+  for (const status of ["skip", "payment_processing", "payment_complete", "canceled"]) {
+    const h = harness();
+    await h.create();
+    const displayed = await h.assign(4);
+    if (status === "skip") await h.capture(8);
+    else await h.capture(3, status);
+    assert.equal(h.getState().streams[0].variations.some((entry) => entry.variationNumber === 4), false);
+    assert.notEqual(h.getState().streams[0].activeBiddingVariationNumber, 3);
+    const writes = h.memory.writes.length;
+    await assert.rejects(h.client.setPresetItem({
+      ...h.expected(displayed), variationNumber: 4, sku: null,
+      expectedActiveBiddingVariationNumber: 3,
+    }), { code: "PRESET_LIVE_VARIATION_CHANGED" }, status);
+    assert.deepEqual(await h.snapshot(), displayed, "no fallback to highest captured number can authorize the clear");
+    assert.equal(h.memory.writes.length, writes);
+  }
+});
+
+test("guarded clear retains the saved assignment after persistence failure and replacement rejects the stale click", async () => {
+  const h = harness();
+  await h.create();
+  const displayed = await h.assign(4);
+  const command = {
+    ...h.expected(displayed), variationNumber: 4, sku: null,
+    expectedActiveBiddingVariationNumber: 3,
+  };
+  h.memory.failNext("set");
+  await assert.rejects(h.client.setPresetItem(command), /Could not save variation presets/);
+  assert.deepEqual(await h.snapshot(), displayed);
+  const replacement = await h.assign(4, "TEE-OS");
+  await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await h.snapshot(), replacement);
+  assert.equal(h.getState().streams[0].variations.some((entry) => entry.variationNumber === 4), false);
+});
+
+test("pre-stream clear preserves its source, all other plans, range, canonical accounting, and unrelated queue", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(20);
+  await h.assign(3);
+  await h.assign(4, "TEE-OS");
+  const displayed = await h.assign(8);
+  const canonical = h.getState();
+  const beforeReport = report(canonical);
+  const queue = h.getQueue();
+  const command = {
+    ...h.expected(displayed), variationNumber: 4, sku: null, expectedPrestreamVariationNumber: 3,
+  };
+  const cleared = await h.client.setPresetItem(command);
+  assert.equal(cleared.total, 20);
+  assert.deepEqual(cleared.assignments, [{ variationNumber: 3, sku: "LA-M" }, { variationNumber: 8, sku: "LA-M" }]);
+  assert.deepEqual(h.getState(), canonical);
+  assert.deepEqual(report(h.getState()), beforeReport);
+  assert.equal(h.getQueue(), queue);
+  assert.equal(h.canonicalWrites.length, 0);
+  await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  h.restart();
+  assert.deepEqual(await h.snapshot(), cleared);
+});
+
+test("pre-stream clear requires zero actual captures even after bidding stops or capture arrives elsewhere", async () => {
+  for (const status of ["bidding", "payment_processing", "payment_complete", "canceled", "completed-after-bidding"]) {
+    const h = harness({ noCapture: true });
+    await h.create();
+    const displayed = await h.assign(4);
+    if (status === "completed-after-bidding") {
+      await h.capture(9);
+      await h.capture(9, "payment_complete");
+    } else await h.capture(9, status);
+    assert.notEqual(h.getState().streams[0].variations.length, 0);
+    if (status !== "bidding") assert.equal(h.getState().streams[0].activeBiddingVariationNumber, null);
+    const canonical = h.getState();
+    const writes = h.memory.writes.length;
+    await assert.rejects(h.client.setPresetItem({
+      ...h.expected(displayed), variationNumber: 4, sku: null, expectedPrestreamVariationNumber: 3,
+    }), { code: "PRESET_PRESTREAM_CONTEXT_CHANGED" }, status);
+    assert.deepEqual(await h.snapshot(), displayed);
+    assert.deepEqual(h.getState(), canonical);
+    assert.equal(h.memory.writes.length, writes);
+  }
+});
+
+test("pre-stream clear revalidates enabled source/target range and preserves plans after save failure or replacement", async () => {
+  const h = harness({ noCapture: true });
+  const enabled = await h.create(3);
+  await assert.rejects(h.client.setPresetItem({
+    ...h.expected(enabled), variationNumber: 4, sku: null, expectedPrestreamVariationNumber: 3,
+  }), { code: "PRESET_PRESTREAM_CONTEXT_CHANGED" });
+  const displayed = await h.assign(2);
+  const command = {
+    ...h.expected(displayed), variationNumber: 2, sku: null, expectedPrestreamVariationNumber: 1,
+  };
+  h.memory.failNext("set");
+  await assert.rejects(h.client.setPresetItem(command), /Could not save variation presets/);
+  assert.deepEqual(await h.snapshot(), displayed);
+  const replacement = await h.assign(2, "TEE-OS");
+  await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await h.snapshot(), replacement);
+  const disabled = await h.reset();
+  await assert.rejects(h.client.setPresetItem({ ...command, ...h.expected(disabled) }),
+    { code: "PRESET_PRESTREAM_CONTEXT_CHANGED" });
+  assert.deepEqual(await h.snapshot(), disabled);
 });
 
 test("live advancement to a planned next item and a skipped captured target clear conflicting queues", async () => {

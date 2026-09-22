@@ -162,6 +162,21 @@
       if (command.expectedRevision !== context.snapshot.revision) {
         fail("PRESETS_CHANGED", "The presets changed before this request completed. Review the current presets and try again.");
       }
+      if (Object.prototype.hasOwnProperty.call(command, "expectedActiveBiddingVariationNumber") &&
+          command.expectedActiveBiddingVariationNumber !== context.stream.activeBiddingVariationNumber) {
+        // A queued-preset clear belongs to the exact live auction that exposed
+        // it. Skipping ahead or finishing bidding may leave the plan/revision
+        // unchanged, so the ordinary configuration guard alone is insufficient.
+        fail("PRESET_LIVE_VARIATION_CHANGED", "The live variation changed. Review the upcoming item and try again.");
+      }
+      if (Object.prototype.hasOwnProperty.call(command, "expectedPrestreamVariationNumber") &&
+          (context.stream.variations.length !== 0 || context.stream.activeBiddingVariationNumber !== null ||
+            context.snapshot.total === null || command.expectedPrestreamVariationNumber > context.snapshot.total ||
+            command.variationNumber > context.snapshot.total)) {
+        // Pre-stream presentation is valid only before the first real capture,
+        // even if bidding has already ended or capture arrived elsewhere.
+        fail("PRESET_PRESTREAM_CONTEXT_CHANGED", "Pre-stream planning changed or capture began. Review the upcoming item and try again.");
+      }
     }
     async function execute(command) {
       let context = await readContext();

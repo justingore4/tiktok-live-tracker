@@ -323,7 +323,7 @@
         }
       }
 
-      async function getQueue() {
+      async function getActiveQueue() {
         const [activeStreamId, queue] = await Promise.all([
           resolveActiveStreamId(),
           loadQueue(),
@@ -331,17 +331,29 @@
 
         if (activeStreamId === null || queue?.streamId !== activeStreamId) {
           await clearLoadedQueue(queue);
-          return { queuedSku: null };
+          return null;
         }
 
-        return { queuedSku: queue.sku };
+        return queue;
+      }
+
+      async function getQueue() {
+        const queue = await getActiveQueue();
+        return { queuedSku: queue?.sku ?? null };
       }
 
       async function getQueueSnapshot() {
-        const { queuedSku } = await getQueue();
+        const queue = await getActiveQueue();
 
-        if (queuedSku === null) {
-          return { queuedSku: null, queueToken: null };
+        if (queue === null) {
+          return { queuedSku: null, queueToken: null, streamId: null, baselineId: null, armedAfterVariationNumber: null };
+        }
+
+        const state = await loadCanonicalState();
+        const stream = findStream(state, queue.streamId);
+        const baseline = stream === null ? null : findBaseline(state, stream);
+        if (baseline === null) {
+          fail("QUEUE_SNAPSHOT_UNAVAILABLE", "The queued item's inventory baseline could not be verified.");
         }
 
         if (queueToken === null) {
@@ -371,7 +383,13 @@
           queueToken = candidate;
         }
 
-        return { queuedSku, queueToken };
+        // Preview metadata is read-only. Keep the original queue anchor even if
+        // capture has advanced and mapping/clearing is still waiting for retry.
+        return {
+          queuedSku: queue.sku, queueToken, streamId: queue.streamId,
+          baselineId: baseline.baselineId,
+          armedAfterVariationNumber: queue.armedAfterVariationNumber,
+        };
       }
 
       async function clearQueue(command) {

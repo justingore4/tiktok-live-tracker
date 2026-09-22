@@ -106,6 +106,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     variationPresetsEntryContext: null,
     variationPresetsGeneration: 0, variationPresetsReadGeneration: 0,
     selectedPresetVariationNumber: null, variationNavigationGeneration: 0,
+    queuedNextItemSnapshot: null, selectedQueuedVariationNumber: null,
     pendingPresetResumeSelection: null,
     captureStateNotificationGeneration: 0,
     capturePlanningOverride: null, capturePlanningLoad: null, capturePlanningCycleGeneration: 0,
@@ -126,7 +127,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     savedSnapshot: { phase: "ready", busy: false, view: rawView },
     pendingSavedAction: null, endConfirmationOpen: false, nextItemQueueMutationBusy: false,
     activeStreamInventoryUpdateBusy: false, archivedReportsViewOpen: false, inventorySizeMenuState: null,
-    updateQueuedItemBadgeAvailability() {}, scheduleNextItemQueueRefresh() {},
+    updateQueuedItemBadgeAvailability() { context.updateVariationPresetsAvailability(); }, scheduleNextItemQueueRefresh() {},
     setWorkspaceBusy() {},
     scheduleCaptureRefresh() {}, scheduleVariationPresetsRefresh() {},
     getFocusedInventorySku: () => null, formatItemName: (entry) => entry.item,
@@ -177,7 +178,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
   context.captureHealthBadge.dataset.phase = "active";
   vm.createContext(context);
   vm.runInContext([
-    "getActiveView", "getRecordedVariations", "getSelectableVariations", "hasSelectedRecordedVariation", "hasSelectedEditableVariation",
+    "getActiveView", "getRecordedVariations", "getSelectableVariations", "hasSelectedRecordedVariation", "hasSelectedEditableVariation", "isQueuePreviewInteraction", "reconcileQueuedPreviewSelection",
     "findVariationOption", "isCaptureInteractionLocked", "guardCaptureInteraction", "isCurrentVariationMapped", "getCurrentVariationMappedSku",
     "canUseVariationPresetData", "hasCapturePlanningScope", "isCapturePlanningEnabled", "isCapturePlanningLocked", "isCapturePlanningTarget", "handleCapturePlanningLoad", "syncCapturePlanningScope",
     "resetConnectingPlanningDelay", "isConnectingPlanningContextCurrent", "syncConnectingPlanningDelay", "hasConnectingPlanningScope",
@@ -2511,6 +2512,44 @@ test("left-click fills an empty current future preset and then fills and advance
   assert.equal(JSON.stringify(f.rawView), canonicalBefore, "No real orders, accounting, inventory, or live marker changed");
   assert.deepEqual(f.selections, []);
   assert.equal(f.context.variationSelector.focused, undefined, "Sequential assignment does not move keyboard focus to the dropdown");
+});
+
+test("pre-stream sequential clicks and exact-number navigation refresh the upcoming preset projection without canonical mutations", async () => {
+  const view = baselineView();
+  Object.assign(view, { inventoryBaselineId: "synthetic-baseline", variations: [],
+    currentVariationNumber: 203, selectedVariationNumber: 203, variationNumber: 203,
+    activeBiddingVariationNumber: null, auction: null, mapping: null, activeAuctionMapping: null });
+  view.inventory.push({ ...view.inventory[0], sku: "B", item: "Jeans", selected: false });
+  const f = fixture({ total: 20, view }), c = f.context;
+  c.variationPresetsSnapshot.assignments = [{ variationNumber: 1, sku: "A" }, { variationNumber: 3, sku: "A" }, { variationNumber: 5, sku: "B" }];
+  c.queuedNextItemSku = null;
+  c.queuedNextItemToken = null;
+  vm.runInContext(declaration("getQueuedItemPresentation"), c);
+  const presentations = [];
+  const renderAll = c.renderAll;
+  c.renderAll = () => {
+    const rendered = renderAll();
+    presentations.push(clone(c.getQueuedItemPresentation(rendered)));
+    return rendered;
+  };
+  const before = JSON.stringify(f.rawView);
+  c.selectVariationFromPicker(1);
+  assert.equal(c.getQueuedItemPresentation(c.getActiveView()), null, "Immediate #2 is empty");
+  await leftClick(f, "B");
+  assert.equal(c.selectedPresetVariationNumber, 2);
+  assert.equal(c.getQueuedItemPresentation(c.getActiveView()).variationNumber, 3);
+  assert.equal(presentations.at(-1).sku, "A");
+  await leftClick(f, "B");
+  assert.equal(c.selectedPresetVariationNumber, 4, "Sequence skips assigned #3");
+  assert.equal(presentations.at(-1).variationNumber, 5);
+  assert.equal(presentations.at(-1).sku, "B");
+  c.variationSearchInput.value = "1";
+  await c.variationSearchForm.dispatch("submit");
+  assert.equal(c.selectedPresetVariationNumber, 1);
+  assert.equal(c.getQueuedItemPresentation(c.getActiveView()).variationNumber, 2);
+  assert.equal(c.getQueuedItemPresentation(c.getActiveView()).sku, "B");
+  assert.equal(JSON.stringify(f.rawView), before, "Planning has no capture, stock, mapping or accounting effect");
+  assert.equal(c.queuedNextItemSku, null);
 });
 
 test("sequential UI uses the worker-returned target, skipping assigned and captured future numbers without replacing either", async () => {

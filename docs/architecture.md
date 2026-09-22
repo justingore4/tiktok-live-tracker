@@ -1313,6 +1313,71 @@ after a successful End, and is naturally discarded by an extension reload or ano
 session-storage reset. Queue-change notices contain no stream, variation, SKU, inventory,
 or DOM data and only tell the panel to refetch.
 
+Manual queue snapshots additionally expose the existing stored
+`armedAfterVariationNumber`, queue `streamId`, and the canonical stream's pinned
+`baselineId`, alongside `queuedSku` and ephemeral `queueToken`. Empty snapshots have
+all five fields null. These are read-only response metadata; queue storage, toggle,
+mapping, and consumption contracts remain unchanged. A missing canonical pin fails
+the snapshot read rather than inventing a target from the current UI.
+An append-only import can repin that stream without changing its queue; the panel
+refetches queue metadata once on the ready canonical baseline transition, not by polling.
+
+`variation-presets-view.projectQueuedItem` composes after the preset projection and
+adds one `queuedPreview` row at the original queue anchor + 1. It requires matching
+stream/baseline, a recorded anchor that is still current, an uncaptured target, and
+an exact inventory SKU. An assigned preset wins; an empty preset is overlaid rather
+than duplicated. Rows are untracked, not recorded or editable presets, and temporary
+rows do not enable or extend a preset range. The preview never moves forward just
+because an old queue survived a newer capture or failed consumption.
+
+`selectedQueuedVariationNumber` is panel-only navigation state. Selecting a preview
+through the dropdown, exact search, or arrows marks its SKU for display only and
+disables all inventory assignment routes, including stale cards and size/keyboard
+events. Actual live identity/bid and accounting remain unchanged. Return to live
+clears that selection and the Var # input normally. Existing `clearQueue` handles ×.
+Queue refreshes re-render the selector; clearing restores an underlying empty preset
+or removes the temporary row. Only a still-selected obsolete preview returns to live;
+if its number was captured it becomes normal held-history selection instead. Later
+navigation is never reversed by the old preview's disappearance. Failed reads retain
+the last-known preview but invalidate clear permission until a successful refresh.
+Preview rows are never persisted or passed to canonical reconciliation or reports.
+
+The inventory queued presentation can also project an upcoming preset without
+writing it into manual queue state. `variation-presets-view.getUpcomingAssignment`
+requires matching stream and canonical `view.inventoryBaselineId`. During live
+tracking, the selected recorded variation must be the actual active bidding variation,
+with an assignment on exactly `activeBiddingVariationNumber + 1` that remains uncaptured.
+Before any captures, a resumed local tracker can instead project the viewed future
+preset's exact next placeholder. Both placeholders must exist in the enabled range,
+and the next one must have an assignment. No selection means no implicit target.
+Any recorded variation disables this pre-stream branch, even after bidding stops.
+It never skips empty numbers. That projection drives the existing header/card/size-option red
+states, including combined selected/queued styling; filtering cards does not hide
+the header. A source discriminator and preset-specific tooltip/accessible labels
+keep this distinct from a manual queue. After first capture, history/future views
+retain the manual queue presentation only. Pre-stream labels explicitly describe
+planning without reservations; future-card mouse gestures remain unchanged.
+
+For a preset, the header clear control uses existing `set_preset_item` with null SKU,
+expected stream/baseline/revision, and optional `expectedActiveBiddingVariationNumber`.
+The protocol permits that extra field only for an exact immediate-next clear. The
+coordinator verifies the actual active marker before and after repair inside the
+worker FIFO, rejecting advances, skipped captures, or ended bidding even when the
+preset revision has not changed. Clearing leaves the placeholder and every captured
+mapping intact. The pre-stream projection instead returns `prestreamVariationNumber`
+and sends `expectedPrestreamVariationNumber` with the existing null-SKU command.
+That optional field is mutually exclusive with the live guard, clear-only, and
+requires target = source + 1 within the preset range. The worker checks zero
+canonical variations and no active bidding marker before/after repair. It cannot
+be used to clear after capture starts, including a backfill elsewhere in the range.
+The UI binds the source/target and navigation generation, ignores superseded replies
+after capture notifications or canonical/baseline changes, and refreshes without
+moving selection or focus. Manual clears still use `clearQueue` and its ephemeral token. The UI
+validates rendered source/target/revision identities, applies strict capture editing
+locks even during blue planning opt-in, serializes through existing preset busy
+state, and refreshes authoritative state on failure or a superseded acknowledgement.
+No new storage contract, inventory allocation, polling, or capture path is involved.
+
 The tagger runtime client deliberately exposes no payment-complete command. The capture
 runtime client has the inverse narrow authority: it may submit
 only Sold Items variation numbers, one current bidding variation number, sanitized

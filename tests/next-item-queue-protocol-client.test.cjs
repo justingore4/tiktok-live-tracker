@@ -10,6 +10,16 @@ const clientModule = require(
 
 const STREAM_ID = "local-stream:11111111-1111-4111-8111-111111111111";
 const QUEUE_TOKEN = "11111111-1111-4111-8111-111111111111";
+const BASELINE_ID = "inventory-baseline:11111111-1111-4111-8111-111111111111";
+
+function queueSnapshot(overrides = {}) {
+  return { queuedSku: "TEE-L", queueToken: QUEUE_TOKEN, streamId: STREAM_ID,
+    baselineId: BASELINE_ID, armedAfterVariationNumber: 203, ...overrides };
+}
+
+const EMPTY_QUEUE_SNAPSHOT = {
+  queuedSku: null, queueToken: null, streamId: null, baselineId: null, armedAfterVariationNumber: null,
+};
 
 function clearOptions(overrides = {}) {
   return {
@@ -129,15 +139,13 @@ test("queue client reads strict generation snapshots and sends a detached explic
         return {
           ok: true,
           data: message.command.type === "get_queue_snapshot"
-            ? { queuedSku: "TEE-L", queueToken: QUEUE_TOKEN }
+            ? queueSnapshot()
             : { status: "cleared", queuedSku: null },
         };
       },
     },
   });
-  assert.deepEqual(await client.getQueueSnapshot(), {
-    queuedSku: "TEE-L", queueToken: QUEUE_TOKEN,
-  });
+  assert.deepEqual(await client.getQueueSnapshot(), queueSnapshot());
   const options = clearOptions();
   const clear = client.clearQueue(options);
   options.sku = "OTHER";
@@ -147,6 +155,25 @@ test("queue client reads strict generation snapshots and sends a detached explic
     protocol.createNextItemQueueMessage({ type: "get_queue_snapshot" }),
     protocol.createNextItemQueueMessage({ type: "clear_queue", ...clearOptions() }),
   ]);
+});
+
+test("queue preview anchor metadata is detached read-only response data, never accepted as mutation input", async () => {
+  const response = queueSnapshot();
+  const calls = [];
+  const client = clientModule.createNextItemQueueClient({
+    protocol,
+    runtime: { async sendMessage(message) { calls.push(message); return { ok: true, data: response }; } },
+  });
+  const snapshot = await client.getQueueSnapshot();
+  snapshot.armedAfterVariationNumber = 300;
+  snapshot.baselineId = "changed-locally";
+  assert.deepEqual(await client.getQueueSnapshot(), queueSnapshot());
+  for (const field of ["streamId", "baselineId", "armedAfterVariationNumber"]) {
+    assert.throws(() => protocol.createNextItemQueueMessage({ type: "get_queue_snapshot", [field]: response[field] }),
+      { code: "INVALID_NEXT_ITEM_QUEUE_MESSAGE" });
+    await assert.rejects(client.clearQueue({ ...clearOptions(), [field]: response[field] }), { code: "INVALID_CLIENT_COMMAND" });
+  }
+  assert.equal(calls.length, 2);
 });
 
 test("queue client rejects malformed snapshot pairs and malformed clear acknowledgements", async () => {
@@ -162,6 +189,18 @@ test("queue client rejects malformed snapshot pairs and malformed clear acknowle
     { queuedSku: " TEE-L", queueToken: QUEUE_TOKEN },
     { queuedSku: null, queueToken: null, extra: true },
     { queuedSku: "TEE-L", queueToken: QUEUE_TOKEN, streamId: STREAM_ID },
+    ...[null, "", " bad-stream", 1].map((streamId) => queueSnapshot({ streamId })),
+    ...[null, "", " bad-baseline", 1].map((baselineId) => queueSnapshot({ baselineId })),
+    ...[null, 0, -1, 2.5, "203", Infinity, Number.MAX_SAFE_INTEGER + 1]
+      .map((armedAfterVariationNumber) => queueSnapshot({ armedAfterVariationNumber })),
+    queueSnapshot({ queuedSku: null }),
+    queueSnapshot({ queueToken: null }),
+    queueSnapshot({ queueToken: "not-a-token" }),
+    queueSnapshot({ queuedSku: " TEE-L" }),
+    queueSnapshot({ extra: true }),
+    { ...EMPTY_QUEUE_SNAPSHOT, armedAfterVariationNumber: 203 },
+    { ...EMPTY_QUEUE_SNAPSHOT, streamId: STREAM_ID },
+    { ...EMPTY_QUEUE_SNAPSHOT, baselineId: BASELINE_ID },
   ];
   const invalidClearResults = [
     {},
@@ -188,9 +227,9 @@ test("queue client rejects malformed snapshot pairs and malformed clear acknowle
   }
   const emptyClient = clientModule.createNextItemQueueClient({
     protocol,
-    runtime: { async sendMessage() { return { ok: true, data: { queuedSku: null, queueToken: null } }; } },
+    runtime: { async sendMessage() { return { ok: true, data: EMPTY_QUEUE_SNAPSHOT }; } },
   });
-  assert.deepEqual(await emptyClient.getQueueSnapshot(), { queuedSku: null, queueToken: null });
+  assert.deepEqual(await emptyClient.getQueueSnapshot(), EMPTY_QUEUE_SNAPSHOT);
 });
 
 test("queue client rejects invalid clear options locally and never falls back to toggle or mapping", async () => {
@@ -226,7 +265,7 @@ test("queue client preserves stale-clear errors and does not automatically retry
         if (message.command.type === "clear_queue") {
           return { ok: false, error: { code: "QUEUE_CHANGED", message: "Review the current queue." } };
         }
-        return { ok: true, data: { queuedSku: "TEE-M", queueToken: QUEUE_TOKEN } };
+        return { ok: true, data: queueSnapshot({ queuedSku: "TEE-M" }) };
       },
     },
   });
@@ -235,7 +274,7 @@ test("queue client preserves stale-clear errors and does not automatically retry
     (error) => error.code === "QUEUE_CHANGED" && error.message === "Review the current queue.",
   );
   assert.equal(calls.length, 1);
-  assert.deepEqual(await client.getQueueSnapshot(), { queuedSku: "TEE-M", queueToken: QUEUE_TOKEN });
+  assert.deepEqual(await client.getQueueSnapshot(), queueSnapshot({ queuedSku: "TEE-M" }));
   assert.deepEqual(calls.map((command) => command.type), ["clear_queue", "get_queue_snapshot"]);
 });
 

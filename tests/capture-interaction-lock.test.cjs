@@ -144,6 +144,7 @@ function fixture() {
     },
   };
   const names = [
+    "isQueuePreviewInteraction",
     "isCaptureInteractionLocked", "isTrackerInteractionTarget", "guardCaptureInteraction",
     "syncCaptureInteractionLock", "syncCaptureInventoryLock", "setWorkspaceBusy", "snapshotIsBackgroundRefresh",
   ];
@@ -458,7 +459,7 @@ test("an already-started queue delivery completes and refreshes normally after c
     nextItemQueueMutationBusy: false, mountedStreamId: "synthetic-stream", nextItemQueueMutationGeneration: 0,
     nextItemQueueRefreshGeneration: 0, queuedNextItemToken: null,
     nextItemQueueClient: { toggleQueue() { requests++; return reply; } },
-    getActiveView: () => view, renderInventory() { renders++; }, getFocusedInventorySku: () => null,
+    getActiveView: () => view, renderInventory() { renders++; }, renderAll() { renders++; }, getFocusedInventorySku: () => null,
     mappingAnnouncement: {}, formatItemName: () => "Synthetic item", scheduleNextItemQueueRefresh() { refreshes++; },
   });
   vm.runInContext(declaration("toggleNextItemQueue"), f.context);

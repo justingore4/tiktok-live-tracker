@@ -13,6 +13,8 @@ const presetProtocol = require("../extension/shared/variation-presets-protocol.j
 const presetStorage = require("../extension/shared/variation-presets-storage.js");
 const presetClientModule = require("../extension/tagger/variation-presets-client.js");
 const queueStorage = require("../extension/shared/next-item-queue-storage.js");
+const queueProtocol = require("../extension/shared/next-item-queue-protocol.js");
+const queueClientModule = require("../extension/tagger/next-item-queue-client.js");
 const captureHealth = require("../extension/shared/capture-health.js");
 
 const STREAM = "local-stream:11111111-1111-4111-8111-111111111111";
@@ -172,8 +174,12 @@ function createHarness({ active = true, pinned = active, inventory = "confirmed"
       protocol: presetProtocol,
       runtime: { sendMessage: (message) => raw("presets", message.command) },
     });
+    const queueClient = queueClientModule.createNextItemQueueClient({
+      protocol: queueProtocol,
+      runtime: { sendMessage: (message) => raw("queue", message.command) },
+    });
     return {
-      raw, send, presets, mutate, presetClient,
+      raw, send, presets, mutate, presetClient, queueClient,
       async sequential(variationNumber, sku = "SYNTH-A", snapshot = null) {
         return presetClient.assignNextPresetItem({
           ...expected(snapshot ?? await presetClient.getPresets()), variationNumber, sku,
@@ -1075,6 +1081,293 @@ test("next-preset assignment clears the existing queue, rejects requeue, but all
   assert.equal(auction(await worker.state(), 3).sku, null, "cleared queue must not leak into a later variation");
 });
 
+test("client clears only the displayed upcoming preset and restores manual queueing with unchanged token safeguards", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.bid(1);
+  await worker.map(1);
+  await worker.create(20);
+  await worker.assign(2);
+  const displayed = await worker.assign(3, "SYNTH-B");
+  const canonical = await worker.state();
+  const command = {
+    ...expected(displayed), variationNumber: 2, sku: null,
+    expectedActiveBiddingVariationNumber: 1,
+  };
+  const cleared = await worker.presetClient.setPresetItem(command);
+  assert.equal(cleared.total, 20);
+  assert.deepEqual(cleared.assignments, [{ variationNumber: 3, sku: "SYNTH-B" }]);
+  assert.deepEqual(await worker.state(), canonical, "clearing a plan cannot alter reservations or the live mapping");
+  assert.ok(h.notifications.some((message) => presetProtocol.isPresetsChangedNotification(message)));
+  assert.deepEqual(await h.open().presets(), cleared, "clearing survives worker restart without removing the range");
+
+  await worker.queue("toggle_queue", 1, "SYNTH-A");
+  const manual = await worker.send("queue", { type: "get_queue_snapshot" });
+  assert.equal(manual.queuedSku, "SYNTH-A");
+  await assert.rejects(worker.presetClient.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await worker.send("queue", { type: "get_queue_snapshot" }), manual,
+    "a duplicate preset clear must not clear the newly created manual queue");
+  await worker.queue("toggle_queue", 1, "SYNTH-B");
+  const replacement = await worker.send("queue", { type: "get_queue_snapshot" });
+  const oldClear = await worker.raw("queue", {
+    type: "clear_queue", expectedStreamId: STREAM, expectedQueueToken: manual.queueToken, sku: manual.queuedSku,
+  });
+  assert.equal(oldClear.ok, false);
+  assert.deepEqual(await worker.send("queue", { type: "get_queue_snapshot" }), replacement);
+  await worker.send("queue", {
+    type: "clear_queue", expectedStreamId: STREAM, expectedQueueToken: replacement.queueToken, sku: replacement.queuedSku,
+  });
+  assert.equal((await worker.send("queue", { type: "get_queue" })).queuedSku, null);
+  assert.deepEqual(await worker.presets(), cleared, "manual clears cannot remove a more distant preset");
+  assert.deepEqual(await worker.state(), canonical);
+});
+
+test("queued-preset clear and actual capture serialize without clearing captured mappings or the newly upcoming plan", async () => {
+  for (const captureFirst of [true, false]) {
+    const h = createHarness(), worker = h.open();
+    await worker.bid(1);
+    await worker.map(1);
+    await worker.create();
+    await worker.assign(2);
+    const displayed = await worker.assign(3, "SYNTH-B");
+    const capture = () => worker.raw("capture", { type: "observe_bidding_variation", variationNumber: 2 }, DASHBOARD);
+    const clear = () => worker.raw("presets", {
+      type: "set_preset_item", ...expected(displayed), variationNumber: 2, sku: null,
+      expectedActiveBiddingVariationNumber: 1,
+    });
+    const responses = await Promise.all(captureFirst ? [capture(), clear()] : [clear(), capture()]);
+    assert.equal(responses[captureFirst ? 0 : 1].ok, true);
+    assert.equal(responses[captureFirst ? 1 : 0].ok, !captureFirst);
+    const state = await worker.state();
+    assert.equal(auction(state, 1).sku, "SYNTH-A");
+    assert.equal(auction(state, 2).sku, captureFirst ? "SYNTH-A" : null);
+    assert.deepEqual((await worker.presets()).assignments, [{ variationNumber: 3, sku: "SYNTH-B" }]);
+    await worker.bid(3);
+    assert.equal(auction(await worker.state(), 3).sku, "SYNTH-B");
+  }
+});
+
+test("queued-preset clear rejects a skipped or ended live auction even when no preset revision changed", async () => {
+  for (const capture of [
+    { type: "observe_bidding_variation", variationNumber: 5 },
+    { type: "payment_complete", variationNumber: 1, soldPriceCents: 2300 },
+    { type: "observe_payment_statuses", statuses: [{ variationNumber: 1, observedPaymentStatus: "payment_processing" }] },
+  ]) {
+    const h = createHarness(), worker = h.open();
+    await worker.bid(1);
+    await worker.create();
+    const displayed = await worker.assign(2);
+    const captured = await worker.raw("capture", capture, DASHBOARD);
+    assert.equal(captured.ok, true);
+    const canonical = await worker.state();
+    assert.deepEqual(await worker.presets(), displayed);
+    await assert.rejects(worker.presetClient.setPresetItem({
+      ...expected(displayed), variationNumber: 2, sku: null,
+      expectedActiveBiddingVariationNumber: 1,
+    }), { code: "PRESET_LIVE_VARIATION_CHANGED" });
+    assert.deepEqual(await worker.presets(), displayed);
+    assert.deepEqual(await worker.state(), canonical);
+  }
+});
+
+test("queued-preset clear preserves an authoritative plan on failed save and after replacement or reset", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.bid(1);
+  await worker.create();
+  const displayed = await worker.assign(2);
+  const command = {
+    ...expected(displayed), variationNumber: 2, sku: null,
+    expectedActiveBiddingVariationNumber: 1,
+  };
+  const canonical = await worker.state();
+  h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
+  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save variation presets/);
+  assert.equal(h.failedWrites.length, 1);
+  assert.deepEqual(await worker.presets(), displayed);
+  const replacement = await worker.assign(2, "SYNTH-B");
+  await assert.rejects(worker.presetClient.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await worker.presets(), replacement);
+  const beforeReset = { ...command, ...expected(replacement) };
+  await worker.reset();
+  await worker.create(30);
+  const newerRange = await worker.assign(2);
+  await assert.rejects(worker.presetClient.setPresetItem(beforeReset), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await worker.presets(), newerRange);
+  assert.deepEqual(await worker.state(), canonical);
+});
+
+test("queued-preset clear validates sender, stream, and baseline and cannot target a new session", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.bid(1);
+  await worker.create();
+  const displayed = await worker.assign(2);
+  const command = {
+    type: "set_preset_item", ...expected(displayed), variationNumber: 2, sku: null,
+    expectedActiveBiddingVariationNumber: 1,
+  };
+  for (const override of [{ expectedStreamId: "wrong-stream" }, { expectedBaselineId: "wrong-baseline" }]) {
+    const response = await worker.raw("presets", { ...command, ...override });
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "PRESET_CONTEXT_CHANGED");
+  }
+  assert.equal((await worker.raw("presets", command, DASHBOARD)).ok, false);
+  assert.deepEqual(await worker.presets(), displayed);
+  await worker.end();
+  await worker.send("session", { type: "start_stream" });
+  await worker.bid(1);
+  await worker.create();
+  const current = await worker.assign(2, "SYNTH-B");
+  const stale = await worker.raw("presets", command);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error.code, "PRESET_CONTEXT_CHANGED");
+  assert.deepEqual(await worker.presets(), current);
+});
+
+test("pre-stream client clears only the immediately upcoming plan without reserving stock or creating a manual queue", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.create(20);
+  await worker.assign(1, "SYNTH-B");
+  await worker.assign(2);
+  const displayed = await worker.assign(5);
+  const canonical = await worker.state();
+  const queued = await worker.send("queue", { type: "get_queue_snapshot" });
+  const command = {
+    ...expected(displayed), variationNumber: 2, sku: null, expectedPrestreamVariationNumber: 1,
+  };
+  const cleared = await worker.presetClient.setPresetItem(command);
+  assert.equal(cleared.total, 20, "cleared variation #2 remains an empty placeholder");
+  assert.deepEqual(cleared.assignments, [
+    { variationNumber: 1, sku: "SYNTH-B" }, { variationNumber: 5, sku: "SYNTH-A" },
+  ]);
+  assert.deepEqual(await worker.state(), canonical);
+  assert.equal(summary(canonical).totals.auctionCount, 0);
+  assert.ok(summary(canonical).inventory.every((entry) => entry.reservedQuantity === 0 && entry.soldQuantity === 0));
+  assert.deepEqual(await worker.send("queue", { type: "get_queue_snapshot" }), queued);
+  await assert.rejects(worker.presetClient.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await h.open().presets(), cleared);
+  await worker.bid(1);
+  assert.equal(auction(await worker.state(), 1).sku, "SYNTH-B", "the source plan still promotes normally");
+  await worker.queue("toggle_queue", 1, "SYNTH-A");
+  await worker.bid(2);
+  assert.equal(auction(await worker.state(), 2).sku, "SYNTH-A", "the cleared placeholder permits ordinary manual queue consumption");
+});
+
+test("pre-stream clear and capture serialize safely for target capture, other bidding, and completed historical-only capture", async () => {
+  const captures = [
+    { type: "observe_bidding_variation", variationNumber: 2 },
+    { type: "observe_bidding_variation", variationNumber: 9 },
+    { type: "payment_complete", variationNumber: 9, soldPriceCents: 2100 },
+  ];
+  for (const event of captures) {
+    for (const captureFirst of [true, false]) {
+      const h = createHarness(), worker = h.open();
+      await worker.create();
+      await worker.assign(1, "SYNTH-B");
+      await worker.assign(2);
+      const displayed = await worker.assign(3, "SYNTH-B");
+      const capture = () => worker.raw("capture", event, DASHBOARD);
+      const clear = () => worker.raw("presets", {
+        type: "set_preset_item", ...expected(displayed), variationNumber: 2, sku: null,
+        expectedPrestreamVariationNumber: 1,
+      });
+      const responses = await Promise.all(captureFirst ? [capture(), clear()] : [clear(), capture()]);
+      assert.equal(responses[captureFirst ? 0 : 1].ok, true);
+      assert.equal(responses[captureFirst ? 1 : 0].ok, !captureFirst);
+      const state = await worker.state();
+      if (event.variationNumber === 2) assert.equal(auction(state, 2).sku, captureFirst ? "SYNTH-A" : null);
+      else assert.equal(auction(state, 9).sku, null);
+      const assignments = (await worker.presets()).assignments;
+      assert.deepEqual(assignments.filter((entry) => entry.variationNumber !== 2), [
+        { variationNumber: 1, sku: "SYNTH-B" }, { variationNumber: 3, sku: "SYNTH-B" },
+      ]);
+      assert.equal(assignments.some((entry) => entry.variationNumber === 2), captureFirst && event.variationNumber !== 2);
+      if (event.type === "payment_complete") assert.equal(state.streams[0].activeBiddingVariationNumber, null);
+      assert.equal((await worker.send("queue", { type: "get_queue" })).queuedSku, null);
+    }
+  }
+});
+
+test("pre-stream clear fails after any prior capture even when its target, revision, and inactive bidding marker are unchanged", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.create();
+  const displayed = await worker.assign(2);
+  await worker.bid(8);
+  await worker.capture("payment_complete", { variationNumber: 8, soldPriceCents: 2100 });
+  const canonical = await worker.state();
+  assert.equal(canonical.streams[0].activeBiddingVariationNumber, null);
+  assert.deepEqual(await worker.presets(), displayed);
+  await assert.rejects(worker.presetClient.setPresetItem({
+    ...expected(displayed), variationNumber: 2, sku: null, expectedPrestreamVariationNumber: 1,
+  }), { code: "PRESET_PRESTREAM_CONTEXT_CHANGED" });
+  assert.deepEqual(await worker.presets(), displayed);
+  assert.deepEqual(await worker.state(), canonical);
+});
+
+test("pre-stream clear rejects out-of-range sources and preserves authoritative assignments on failure, replacement, and reset", async () => {
+  const h = createHarness(), worker = h.open();
+  const enabled = await worker.create(3);
+  await assert.rejects(worker.presetClient.setPresetItem({
+    ...expected(enabled), variationNumber: 4, sku: null, expectedPrestreamVariationNumber: 3,
+  }), { code: "PRESET_PRESTREAM_CONTEXT_CHANGED" });
+  const displayed = await worker.assign(2);
+  const command = {
+    ...expected(displayed), variationNumber: 2, sku: null, expectedPrestreamVariationNumber: 1,
+  };
+  const canonical = await worker.state();
+  h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
+  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save variation presets/);
+  assert.deepEqual(await worker.presets(), displayed);
+  assert.equal(h.failedWrites.length, 1);
+  const replacement = await worker.assign(2, "SYNTH-B");
+  await assert.rejects(worker.presetClient.setPresetItem(command), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await worker.presets(), replacement);
+  const oldReset = { ...command, ...expected(replacement) };
+  await worker.reset();
+  await worker.create(30);
+  const newer = await worker.assign(2);
+  await assert.rejects(worker.presetClient.setPresetItem(oldReset), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await worker.presets(), newer);
+  assert.deepEqual(await worker.state(), canonical);
+  assert.equal((await worker.send("queue", { type: "get_queue" })).queuedSku, null);
+});
+
+test("pre-stream clear rejects unauthorized senders and stale session or actual baseline replacement", async () => {
+  for (const replacement of ["session", "baseline"]) {
+    const h = createHarness();
+    let worker = h.open();
+    await worker.create();
+    const displayed = await worker.assign(2);
+    const command = {
+      type: "set_preset_item", ...expected(displayed), variationNumber: 2, sku: null,
+      expectedPrestreamVariationNumber: 1,
+    };
+    assert.equal((await worker.raw("presets", command, DASHBOARD)).ok, false);
+    if (replacement === "session") {
+      await worker.end();
+      await worker.send("session", { type: "start_stream" });
+    } else {
+      const state = clone(h.values[reconciliationStorage.STORAGE_KEY].reconciliationState);
+      reconciliation.extendStreamInventoryBaseline(state, {
+        streamId: STREAM, expectedBaselineId: BASELINE,
+        baselineId: "inventory-baseline:22222222-2222-4222-8222-222222222222",
+        sourceFingerprint: "fnv1a64:2222222222222222",
+        inventory: [...state.inventoryBaselines[0].inventory, {
+          sku: "SYNTH-C", item: "Synthetic", style: "Cap", size: "OS", quantityOnHandAtImport: 2, unitCostCents: 300,
+        }],
+      });
+      h.values[reconciliationStorage.STORAGE_KEY].reconciliationState = state;
+      worker = h.open();
+    }
+    await worker.create();
+    const current = await worker.assign(2, "SYNTH-B");
+    const state = await worker.state();
+    const response = await worker.raw("presets", command);
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "PRESET_CONTEXT_CHANGED", replacement);
+    assert.deepEqual(await worker.presets(), current);
+    assert.deepEqual(await worker.state(), state);
+  }
+});
+
 test("an assigned skipped capture target takes priority over a generic queue and future range alone does not block queueing", async () => {
   const h = createHarness();
   const worker = h.open();
@@ -1403,4 +1696,138 @@ test("a changed inventory baseline cannot adopt old preset assignments or author
   })).ok, false);
   await reopened.bid(80);
   assert.equal(auction(await reopened.state(), 80).sku, null);
+});
+
+test("manual queue preview snapshots expose detached identity and anchor through the real client without changing presets or accounting", async () => {
+  const h = createHarness(), worker = h.open();
+  const empty = { queuedSku: null, queueToken: null, streamId: null, baselineId: null, armedAfterVariationNumber: null };
+  assert.deepEqual(await worker.queueClient.getQueueSnapshot(), empty);
+  await worker.bid(10);
+  await worker.map(10);
+  await worker.create(20);
+  const presets = await worker.assign(15);
+  const canonical = await worker.state();
+  assert.deepEqual(await worker.queueClient.toggleQueue({
+    expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-B",
+  }), { status: "queued", queuedSku: "SYNTH-B" }, "the toggle response contract is unchanged");
+  const saved = clone(h.values);
+  const session = clone(h.sessionValues);
+  const writes = h.writes.length;
+  const first = await worker.queueClient.getQueueSnapshot();
+  assert.equal(first.streamId, STREAM);
+  assert.equal(first.baselineId, BASELINE);
+  assert.equal(first.armedAfterVariationNumber, 10);
+  assert.equal(first.queuedSku, "SYNTH-B");
+  assert.deepEqual(await worker.queueClient.getQueueSnapshot(), first);
+  assert.deepEqual(await worker.state(), canonical);
+  assert.deepEqual(await worker.presets(), presets);
+  assert.deepEqual(h.values, saved);
+  assert.deepEqual(h.sessionValues, session);
+  assert.equal(h.writes.length, writes, "reading preview metadata performs no persistence");
+  await worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-A" });
+  const replacement = await worker.queueClient.getQueueSnapshot();
+  assert.equal(replacement.armedAfterVariationNumber, 10);
+  assert.equal(replacement.queuedSku, "SYNTH-A");
+  assert.notEqual(replacement.queueToken, first.queueToken);
+  await assert.rejects(worker.queueClient.clearQueue({
+    expectedStreamId: STREAM, expectedQueueToken: first.queueToken, sku: first.queuedSku,
+  }), { code: "QUEUE_CHANGED" });
+  assert.deepEqual(await worker.queueClient.getQueueSnapshot(), replacement);
+  const clear = { expectedStreamId: STREAM, expectedQueueToken: replacement.queueToken, sku: replacement.queuedSku };
+  await worker.queueClient.clearQueue(clear);
+  await assert.rejects(worker.queueClient.clearQueue(clear), { code: "QUEUE_CHANGED" });
+  assert.deepEqual(await worker.queueClient.getQueueSnapshot(), empty);
+  assert.deepEqual(await worker.presets(), presets);
+  assert.deepEqual(await worker.state(), canonical);
+});
+
+test("manual preview metadata does not retarget from historical backfill and normal or skipped capture keeps original consumption rules", async () => {
+  for (const target of [11, 15]) {
+    const h = createHarness(), worker = h.open();
+    await worker.bid(10);
+    await worker.map(10);
+    await worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-B" });
+    const displayed = await worker.queueClient.getQueueSnapshot();
+    await worker.capture("observe_payment_statuses", { statuses: [{ variationNumber: 30, observedPaymentStatus: "canceled" }] });
+    assert.deepEqual(await worker.queueClient.getQueueSnapshot(), displayed);
+    await worker.bid(target);
+    const state = await worker.state();
+    assert.equal(auction(state, target).sku, "SYNTH-B");
+    if (target !== 11) assert.equal(state.streams[0].variations.some((entry) => entry.variationNumber === 11), false);
+    assert.equal((await worker.queueClient.getQueueSnapshot()).queuedSku, null);
+    assert.equal((await worker.queueClient.getQueueSnapshot()).armedAfterVariationNumber, null);
+    await worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: target, sku: "SYNTH-A" });
+    assert.equal((await worker.queueClient.getQueueSnapshot()).armedAfterVariationNumber, target);
+  }
+});
+
+test("failed queue capture mapping or cleanup retains the original preview anchor through restart until normal capture retry", async () => {
+  for (const failStage of ["mapping", "cleanup"]) {
+    const h = createHarness();
+    let worker = h.open();
+    await worker.bid(10);
+    await worker.map(10);
+    await worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-B" });
+    const displayed = await worker.queueClient.getQueueSnapshot();
+    h.failNext(({ items, operation, keys }) => failStage === "mapping"
+      ? items?.[reconciliationStorage.STORAGE_KEY]?.reconciliationState?.streams[0].variations
+        .some((entry) => entry.variationNumber === 11 && entry.sku === "SYNTH-B")
+      : operation === "remove" && keys.includes(queueStorage.STORAGE_KEY));
+    assert.equal((await worker.raw("capture", { type: "observe_bidding_variation", variationNumber: 11 }, DASHBOARD)).ok, false);
+    assert.equal(h.failedWrites.length, 1);
+    const state = await worker.state();
+    assert.equal(state.streams[0].activeBiddingVariationNumber, 11);
+    assert.equal(auction(state, 11).sku, failStage === "mapping" ? null : "SYNTH-B");
+    assert.equal((await worker.queueClient.getQueueSnapshot()).armedAfterVariationNumber, 10,
+      "queue waiting for #11 recovery must not be previewed as #12");
+    worker = h.open();
+    const reopened = await worker.queueClient.getQueueSnapshot();
+    assert.equal(reopened.armedAfterVariationNumber, 10);
+    assert.equal(reopened.streamId, STREAM);
+    assert.equal(reopened.baselineId, BASELINE);
+    assert.notEqual(reopened.queueToken, displayed.queueToken);
+    await worker.bid(11);
+    assert.equal((await worker.queueClient.getQueueSnapshot()).queuedSku, null);
+    assert.equal(auction(await worker.state(), 11).sku, "SYNTH-B");
+    assert.equal(summary(await worker.state()).inventory.find((entry) => entry.sku === "SYNTH-B").reservedQuantity, 1);
+  }
+});
+
+test("failed manual queue changes keep original anchor and refreshed baseline metadata never changes stored queue schema", async () => {
+  const h = createHarness();
+  let worker = h.open();
+  await worker.bid(10);
+  await worker.map(10);
+  await worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-B" });
+  const original = await worker.queueClient.getQueueSnapshot();
+  h.failNext(({ items }) => Object.hasOwn(items ?? {}, queueStorage.STORAGE_KEY));
+  await assert.rejects(worker.queueClient.toggleQueue({ expectedStreamId: STREAM, expectedVariationNumber: 10, sku: "SYNTH-A" }));
+  const afterFailedSave = await worker.queueClient.getQueueSnapshot();
+  assert.equal(afterFailedSave.queuedSku, original.queuedSku);
+  assert.equal(afterFailedSave.armedAfterVariationNumber, 10);
+  assert.notEqual(afterFailedSave.queueToken, original.queueToken);
+  h.failNext(({ operation, keys }) => operation === "remove" && keys.includes(queueStorage.STORAGE_KEY));
+  await assert.rejects(worker.queueClient.clearQueue({
+    expectedStreamId: STREAM, expectedQueueToken: afterFailedSave.queueToken, sku: afterFailedSave.queuedSku,
+  }));
+  const canonical = await worker.state();
+  const newBaseline = "inventory-baseline:33333333-3333-4333-8333-333333333333";
+  reconciliation.extendStreamInventoryBaseline(canonical, {
+    streamId: STREAM, expectedBaselineId: BASELINE, baselineId: newBaseline,
+    sourceFingerprint: "fnv1a64:3333333333333333",
+    inventory: [...canonical.inventoryBaselines[0].inventory, {
+      sku: "SYNTH-C", item: "Synthetic", style: "Cap", size: "OS", quantityOnHandAtImport: 2, unitCostCents: 300,
+    }],
+  });
+  h.values[reconciliationStorage.STORAGE_KEY].reconciliationState = canonical;
+  const saved = clone(h.sessionValues);
+  worker = h.open();
+  const refreshed = await worker.queueClient.getQueueSnapshot();
+  assert.equal(refreshed.baselineId, newBaseline);
+  assert.equal(refreshed.armedAfterVariationNumber, 10);
+  assert.equal(refreshed.queuedSku, "SYNTH-B");
+  assert.deepEqual(h.sessionValues, saved);
+  assert.equal(saved[queueStorage.STORAGE_KEY].schemaVersion, 1);
+  assert.deepEqual(Object.keys(saved[queueStorage.STORAGE_KEY].queue).sort(), ["armedAfterVariationNumber", "sku", "streamId"]);
+  assert.deepEqual(await worker.state(), canonical);
 });

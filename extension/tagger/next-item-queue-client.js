@@ -180,7 +180,7 @@
       }
 
       if (commandType === protocol.COMMAND_TYPES.GET_QUEUE_SNAPSHOT) {
-        if (!hasExactKeys(response.data, ["queuedSku", "queueToken"])) {
+        if (!hasExactKeys(response.data, ["queuedSku", "queueToken", "streamId", "baselineId", "armedAfterVariationNumber"])) {
           fail(
             "INVALID_RESPONSE",
             "The next-item queue service returned an invalid snapshot.",
@@ -189,14 +189,18 @@
 
         const queuedSku = requireQueuedSku(response.data.queuedSku);
         const queueToken = response.data.queueToken;
+        const { streamId, baselineId, armedAfterVariationNumber } = response.data;
 
         if (
-          (queuedSku === null && queueToken !== null) ||
+          (queuedSku === null && [queueToken, streamId, baselineId, armedAfterVariationNumber].some((value) => value !== null)) ||
           (
             queuedSku !== null &&
             (
               typeof queueToken !== "string" ||
-              !protocol.QUEUE_TOKEN_PATTERN.test(queueToken)
+              !protocol.QUEUE_TOKEN_PATTERN.test(queueToken) ||
+              typeof streamId !== "string" || streamId === "" || streamId !== streamId.trim() ||
+              typeof baselineId !== "string" || baselineId === "" || baselineId !== baselineId.trim() ||
+              !Number.isSafeInteger(armedAfterVariationNumber) || armedAfterVariationNumber < 1
             )
           )
         ) {
@@ -206,7 +210,7 @@
           );
         }
 
-        return { queuedSku, queueToken };
+        return { queuedSku, queueToken, streamId, baselineId, armedAfterVariationNumber };
       }
 
       if (commandType === protocol.COMMAND_TYPES.CLEAR_QUEUE) {

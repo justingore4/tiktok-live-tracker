@@ -293,6 +293,74 @@ test("resume fails closed instead of falling back to the active baseline", async
   assert.deepEqual(memory.calls, [{ method: "getState" }]);
 });
 
+test("projected baseline identity comes from the canonical stream pin and survives historical navigation", async () => {
+  const state = createState();
+  const pinnedBaselineId = state.streams[0].inventoryBaselineId;
+  reconciliation.observeVariations(state, { streamId: STREAM_ID, variationNumbers: [201, 202, 203] });
+  reconciliation.createInventoryBaseline(state, {
+    baselineId: "inventory-baseline:33333333-3333-4333-8333-333333333333",
+    sourceFingerprint: "fnv1a64:abcdef1234567890",
+    inventory: CANONICAL_INVENTORY,
+  });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  const loaded = await controller.start();
+  assert.equal(loaded.view.inventoryBaselineId, pinnedBaselineId);
+  assert.notEqual(loaded.view.inventoryBaselineId, state.activeInventoryBaselineId);
+  assert.equal(controller.selectVariation(201).view.inventoryBaselineId, pinnedBaselineId);
+  assert.equal(controller.selectVariation(203).view.inventoryBaselineId, pinnedBaselineId);
+  loaded.view.inventoryBaselineId = "tampered-detached-view";
+  assert.equal(controller.getSnapshot().view.inventoryBaselineId, pinnedBaselineId);
+  assert.deepEqual(memory.getState(), state);
+  assert.deepEqual(memory.calls, [{ method: "getState" }]);
+});
+
+test("projected baseline identity survives following capture, saved mappings, and held-selection refresh", async () => {
+  const state = createState();
+  const baselineId = state.streams[0].inventoryBaselineId;
+  reconciliation.observeVariations(state, { streamId: STREAM_ID, variationNumbers: [201, 203] });
+  reconciliation.observeBiddingVariation(state, { streamId: STREAM_ID, variationNumber: 203 });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  assert.equal((await controller.start()).view.inventoryBaselineId, baselineId);
+  reconciliation.observeBiddingVariation(state, { streamId: STREAM_ID, variationNumber: 204 });
+  memory.setState(state);
+  const advanced = await controller.refresh();
+  assert.equal(advanced.view.selectedVariationNumber, 204);
+  assert.equal(advanced.view.inventoryBaselineId, baselineId);
+  assert.equal((await controller.mapSelectedSku("BLACK-TEE-L")).view.inventoryBaselineId, baselineId);
+  assert.equal((await controller.unmapSelectedVariation()).view.inventoryBaselineId, baselineId);
+  controller.selectVariation(201, { holdSelection: true });
+  const refreshed = await controller.refresh();
+  assert.equal(refreshed.view.selectedVariationNumber, 201);
+  assert.equal(refreshed.view.inventoryBaselineId, baselineId);
+});
+
+test("canonical append-only inventory refresh updates the projected baseline without stale identity reuse", async () => {
+  const state = createState();
+  const oldBaselineId = state.streams[0].inventoryBaselineId;
+  reconciliation.observeVariations(state, { streamId: STREAM_ID, variationNumbers: [201, 203] });
+  const memory = createMemoryClient(state);
+  const controller = createController(memory.client);
+  assert.equal((await controller.start()).view.inventoryBaselineId, oldBaselineId);
+  const baselineId = "inventory-baseline:44444444-4444-4444-8444-444444444444";
+  reconciliation.extendStreamInventoryBaseline(state, {
+    streamId: STREAM_ID, expectedBaselineId: oldBaselineId, baselineId,
+    sourceFingerprint: "fnv1a64:abcdef1234567890",
+    inventory: [...CANONICAL_INVENTORY, {
+      sku: "NEW-TEE-S", item: "New tee", style: "", size: "S",
+      quantityOnHandAtImport: 2, unitCostCents: 400,
+    }],
+  });
+  memory.setState(state);
+  const refreshed = await controller.refresh();
+  assert.equal(refreshed.view.inventoryBaselineId, baselineId);
+  assert.equal(controller.selectVariation(201).view.inventoryBaselineId, baselineId);
+  assert.equal(controller.selectVariation(203).view.inventoryBaselineId, baselineId);
+  assert.deepEqual(memory.getState(), state, "exposing identity never modifies saved state");
+  assert.ok(memory.calls.every((call) => call.method === "getState"));
+});
+
 test("Sold Items fallback returns to the newest recorded variation and resumes following without a mutation", async () => {
   const state = createState();
 

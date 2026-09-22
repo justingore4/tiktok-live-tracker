@@ -99,6 +99,7 @@ function fixture({ kind = "empty", phase = "active", ready = false, entry = "res
     captureRefreshHadVariationFocus: false, captureRefreshDirty: false,
     variationPresetsBusy: false, activeStreamInventoryUpdateBusy: false,
     selectedPresetVariationNumber: kind === "preset" ? 2 : null,
+    queuedNextItemSnapshot: null, selectedQueuedVariationNumber: null,
     variationPresetsSnapshot: kind === "preset" ? {
       streamId: SESSION.streamId, baselineId: "synthetic-baseline", revision: "r1", total: 5, assignments: [],
     } : null,
@@ -167,7 +168,7 @@ function fixture({ kind = "empty", phase = "active", ready = false, entry = "res
   vm.createContext(context);
   vm.runInContext([
     "restoreTrackerEntryViewport", "renderSavedSnapshot", "getRecordedVariations", "hasSelectedRecordedVariation",
-    "restoreResumedPresetSelection", "findVariationOption",
+    "restoreResumedPresetSelection", "findVariationOption", "reconcileQueuedPreviewSelection",
     "createSavedVariationSignatures", "getActiveView", "setTrackerWorkspaceVisible", "setWorkspaceBusy",
     "syncCaptureInteractionLock", "syncCaptureInventoryLock", "snapshotIsBackgroundRefresh", "isCaptureInteractionLocked",
     "isTrackerInteractionTarget", "openArchivedReportsDashboard",

@@ -87,7 +87,14 @@ unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
 - The queue holds one SKU for the next genuinely newer bidding variation and does
   not overwrite an existing mapping.
 - The red inventory-header badge shows that queued item even when search hides
-  its card. Its **×** clears only the queue, not an item mapping.
+  its card. Its **×** clears only the manual queue, not an item mapping.
+- A manual queue also appears as **#N-untracked-item** in the Variation dropdown.
+  It reuses an empty next preset or adds one temporary entry without enabling presets.
+  You can view it through the dropdown, Var #, or arrows, but it is read-only:
+  use **Return to live item** to change the queue, or the header **×** to clear it.
+  Unqueuing removes the temporary entry or restores the empty preset. If you were
+  viewing a removed temporary entry, the tracker returns to live. No stock is
+  reserved by the preview; real capture still uses the existing queue rules.
 - **Return to live item** resumes following the newest variation.
 - Pins move cards to the front. Otherwise cards retain their original order;
   completing a sale does not reorder them.
@@ -148,6 +155,22 @@ views retain their existing click behavior.
 A preset on the next variation disables next-item queuing and clears an existing
 conflicting queue. It does not disable right-click mapping of the live variation.
 An empty preset range alone does not disable queuing.
+
+While viewing the current live bidding variation, its immediately next preset item
+also appears red and **Queued**, including the Inventory-header badge. It never skips
+an empty next preset to show a later one. Multi-size cards identify the queued size.
+Use the header **×** to clear just that future assignment; its empty preset stays,
+and ordinary queuing becomes available again. Preset indicators hide while browsing
+history or future presets after capture has begun.
+
+Before the first capture, the same indicators follow the preset you are viewing:
+viewing **#10** shows **#11's assigned item**. An empty next preset, the final preset,
+or no selected preset shows nothing; later assignments are never skipped to.
+The header **×** clears only that next assignment, leaving both the viewed item's
+assignment and the next empty placeholder intact. This is planning only, with no
+stock reserved. Once capture begins, the live-only rules above apply—even if bidding
+later stops. The clear control respects loading, saving, and error locks; it never
+changes a captured mapping or stock.
 
 The bubble becomes **Reset presets** after saving. Reset removes all uncaptured
 placeholders and their planned assignments, preserves captured variations and

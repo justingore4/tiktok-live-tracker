@@ -86,6 +86,7 @@ function fixture({ numbers = [500, 1, 25, 212], selected = 500, total = null } =
     },
     variationPresetsReady: true, variationPresetsBusy: false,
     variationPresetsEditing: false, selectedPresetVariationNumber: null,
+    queuedNextItemSnapshot: null, selectedQueuedVariationNumber: null,
     variationNavigationGeneration: 0, nextItemQueueMutationBusy: false,
     pendingSavedAction: null, activeStreamInventoryUpdateBusy: false,
     mountedStreamId: view.streamId,
@@ -123,7 +124,7 @@ function fixture({ numbers = [500, 1, 25, 212], selected = 500, total = null } =
   context.captureHealthBadge.dataset.phase = "active";
   vm.createContext(context);
   vm.runInContext([
-    "getActiveView", "getRecordedVariations", "getSelectableVariations", "findVariationOption",
+    "getActiveView", "getRecordedVariations", "getSelectableVariations", "findVariationOption", "isQueuePreviewInteraction",
     "isCaptureInteractionLocked", "guardCaptureInteraction", "canChangeVariationPresets", "canUseVariationPresetData",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "updateVariationPresetsAvailability",
     "canStepVariation", "getAdjacentVariationNumber", "updateVariationStepAvailability", "stepVariation",

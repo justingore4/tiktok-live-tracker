@@ -54,7 +54,15 @@
   }
   function validateCommand(command) {
     const keys = command && Object.prototype.hasOwnProperty.call(COMMAND_KEYS, command.type) && COMMAND_KEYS[command.type];
-    if (!keys || !hasExactKeys(command, keys)) fail("The preset command has an invalid shape or type.");
+    const hasLiveGuard = command?.type === COMMAND_TYPES.SET_PRESET_ITEM &&
+      Object.prototype.hasOwnProperty.call(command, "expectedActiveBiddingVariationNumber");
+    const hasPrestreamGuard = command?.type === COMMAND_TYPES.SET_PRESET_ITEM &&
+      Object.prototype.hasOwnProperty.call(command, "expectedPrestreamVariationNumber");
+    const guardedKeys = hasLiveGuard ? [...(keys || []), "expectedActiveBiddingVariationNumber"]
+      : hasPrestreamGuard ? [...(keys || []), "expectedPrestreamVariationNumber"] : keys;
+    if (!keys || (hasLiveGuard && hasPrestreamGuard) || !hasExactKeys(command, guardedKeys)) {
+      fail("The preset command has an invalid shape or type.");
+    }
     if (command.type === COMMAND_TYPES.GET_PRESETS) return command;
     if (!isIdentity(command.expectedStreamId) || !isIdentity(command.expectedBaselineId)) {
       fail("Preset commands must identify the displayed stream and inventory baseline.");
@@ -70,6 +78,17 @@
       if (command.sku !== null && !isIdentity(command.sku)) fail("The preset item must be an exact SKU or null.");
       if (command.type === COMMAND_TYPES.ASSIGN_NEXT_PRESET_ITEM && command.sku === null) {
         fail("Sequential preset assignment requires an exact SKU.");
+      }
+      if (hasLiveGuard && (command.sku !== null ||
+          !Number.isSafeInteger(command.expectedActiveBiddingVariationNumber) ||
+          command.expectedActiveBiddingVariationNumber < 1 ||
+          command.variationNumber !== command.expectedActiveBiddingVariationNumber + 1)) {
+        fail("Clearing an upcoming preset requires its exact preceding live bidding variation.");
+      }
+      if (hasPrestreamGuard && (command.sku !== null ||
+          !isTotal(command.expectedPrestreamVariationNumber) ||
+          command.variationNumber !== command.expectedPrestreamVariationNumber + 1)) {
+        fail("Clearing an upcoming pre-stream preset requires its exact preceding preset variation.");
       }
     }
     return command;

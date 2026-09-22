@@ -3,21 +3,23 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 22, 2026
 Repository branch at this update: main
-Latest commit at this snapshot: ae69a515509a28066eb4eb4e4d2ef3c6a9cb8b5f
-Commit subject: version reupdated to 1.0.0
+Latest commit at this snapshot: 7e79447dae516cf716603d9955b4ec9722dc2f96
+Commit subject: total cancels in report
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
 unlock, and strict yellow editing lock are committed. The canceled-only disclosure,
 full variation/cancellation print/PDF output, and report-name PDF filenames were
-committed in 21ec5fc. The latest local changes add the canceled-orders-per-SKU summary
-described in section 11; this summary implementation is not committed.
+committed in 21ec5fc. The canceled-orders-per-SKU summary described in section 11 is
+committed in 7e79447. The current uncommitted changes add upcoming-preset queued
+indicators and guarded header clearing, including pre-stream viewed-preset previews,
+plus read-only dropdown previews of manual queues, described in section 9 below.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,814 passed, 0 failed
+Latest full synthetic test run: 1,918 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -40,8 +42,8 @@ For the receiving assistant:
 - Read the root AGENTS.md and any applicable overrides or skill instructions.
   AGENTS.md holds durable working rules; this handoff holds implementation context.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before the canceled-orders-per-SKU summary implementation.
-  Existing committed work is preserved. No commit or push was performed for this update.
+- The pre-stream extension began on main with the live upcoming-preset implementation
+  already uncommitted. That work is preserved; no commit or push was performed.
 
 1. PRODUCT, OWNER, AND SCOPE
 ---------------------------
@@ -524,11 +526,33 @@ oversold replacement quantity clamps to zero and needs a physical recount.
 - Queue holds one SKU for the next genuinely newer bidding variation and does not
   replace existing mapping. It is not a multi-item backlog.
 - The red inventory-header badge shows the queued item/style and size (OS/n/a
-  omitted). Its X uses clearQueue, never toggleQueue or mapping commands.
+  omitted). For a manual queue, its X uses clearQueue, never toggleQueue or mapping
+  commands. Upcoming-preset presentation and clearing are separate (below).
 - getQueueSnapshot returns an ephemeral queueToken alongside queuedSku. Clear
   checks that token, stream, and SKU inside the serialized coordinator; stale
   requests are rejected. Tokens rotate on queue writes and worker restarts and
   are not persisted. Queue storage remains schema 1.
+- Manual queue dropdown preview: getQueueSnapshot also returns the stored original
+  armedAfterVariationNumber, streamId, and canonical pinned baselineId. All five
+  response fields are null for no queue; missing canonical pin fails closed. These
+  are read-only metadata, not queue storage/schema or consumption changes. Toggle
+  replies remain unchanged; the panel invalidates its preview snapshot and uses
+  the existing scheduled read rather than inferring an anchor from current selection.
+  A ready canonical baseline change also refetches once, covering append-only imports
+  that repin the same stream without changing the queue. No polling is added.
+  projectQueuedItem composes after presets, validates stream/baseline/current recorded
+  anchor, and adds exact anchor+1 as an untracked queuedPreview (not recorded/preset).
+  Assigned presets win. Empty presets are overlaid without duplicate entries or
+  saved assignments; outside the range a single temporary row is used with no new
+  preset total. A late queue after capture advances never relocates to a new target.
+  selectedQueuedVariationNumber is navigation-only. Dropdown/Var #/arrows can inspect
+  it; left/right/size/keyboard assignment paths reject read-only views and stale
+  preview-origin cards. The header uses ordinary token-protected clearQueue, never
+  preset clearing. Return to live preserves search clearing and live-follow rules.
+  Queue removal restores an empty preset or drops the temporary entry. Only a still-
+  selected removed preview returns to current; a captured target becomes a normal
+  held selection. Capture/skipped-number consumption and all accounting are unchanged.
+  Preview state stays out of canonical history/reports and is rebuilt on reopening.
 - Return to live item resumes follow-newest. Pins move cards to front; otherwise
   preserve original order. Completed sales do not cause reordering.
 - Compact previous/next arrows beside Var # navigate the nearest lower/higher
@@ -687,6 +711,42 @@ Current compact visual decisions:
   retained bid identity/cost after interrupted preset promotion, within the worker
   FIFO, so subsequent prices are not rejected against an old cached variation.
   No polling is added.
+- Upcoming-preset queued presentation: while viewing the actual captured live
+  bidding variation, getUpcomingAssignment projects only its exact immediate-next
+  uncaptured assigned preset. No skipping empty numbers or showing preset indicators
+  in history/future browsing after first capture. Before any capture, the resumed
+  tracker instead projects selected future N -> assigned existing N+1. Source may
+  be empty or assigned; no selection, final preset, or empty N+1 shows nothing.
+  Any recorded entry disables this branch even if bidding later stops. It is not
+  a dashboard-connectivity check. Existing sequential assignment/navigation is unchanged.
+  The controller exposes the
+  canonical stream's inventoryBaselineId in its UI view; the helper and panel check
+  stream/baseline identity rather than trusting the preset snapshot alone.
+  getQueuedItemPresentation keeps source: preset distinct from source: manual and
+  never copies planned SKUs into queuedNextItemSku/queue storage. Existing red card,
+  selected-plus-queued, header badge, and size-option styles are reused. The header
+  remains visible through inventory filtering; multi-size preset badges identify
+  the queued size, with preset-specific tooltip and accessible clear labeling.
+  The preset X calls setPresetItem with sku: null, exact target, expected stream,
+  baseline, revision, and expectedActiveBiddingVariationNumber. That optional field
+  is accepted only for clearing the exact live+1 target. Worker FIFO checks active
+  bidding before/after repair; advances/skips/ended bidding reject even if revision
+  stayed unchanged. The pre-stream return instead uses prestreamVariationNumber
+  and clear command expectedPrestreamVariationNumber. Live/pre-stream guards are
+  mutually exclusive and clear-only. The worker requires enabled source/next range,
+  zero canonical variations, and no active marker before/after repair, preserving
+  the existing stream/baseline/revision checks. UI dataset/navigation guards reject
+  stale rendered actions; capture-notification generations also invalidate delayed
+  pre-stream replies before the debounced canonical view arrives. Failures refetch
+  without changing selection. Pre-stream tooltip/ARIA describe planning, not reserved
+  stock. Clearing preserves the empty placeholder, captured mappings,
+  stock, and other plans, and restores ordinary queuing. Existing strict capture
+  locks (no blue planning bypass), save/error/session/inert guards remain. Pending
+  clears are not optimistic; duplicate/stale requests cannot clear replacements or
+  a newly upcoming item. Delayed replies cannot replace newer baseline/live state;
+  failures retain the saved display and refetch through existing notifications and
+  refreshes. No saved schemas, accounting, capture promotion, or queue consumption
+  changes. Native Chrome checks remain user-performed only.
 - Main T logo/title are hidden inside active tracker; variations start near the top
   with a slim centered startup row above. Keep its gap and Var # placement for all labels.
 - Setup/Resume retain T logo and title left, local session badge far right.
@@ -1005,7 +1065,37 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,814 tests passed, 0 failed, on Windows (September 22, 2026).
+Latest full verification: 1,918 tests passed, 0 failed, on Windows (September 22, 2026).
+Manual queue dropdown previews add 39 regressions over the 1,879-test baseline:
+12 projection, 18 UI/handler/navigation/refresh, one read-only card-render test,
+and eight client/worker/queue cases. The new UI suite passes 18/18; projection plus
+earlier upcoming-preset projection tests pass 29/29, and queue/client/worker-focused
+coverage including service-worker tests passes 227/227. Covers original-anchor
+metadata, temporary/empty-preset previews, exact SKU formatting, read-only input
+guards, clear/replacement/failure, consumption/skips/restart, stale responses and
+navigation, baseline repinning, and unchanged presets/accounting/storage contracts.
+git diff --check passed. Dropdown layout, focus/keyboard, size display, and live
+capture transitions remain user-performed manual Chrome checks. No browser checks,
+real-data access, commit, or push occurred.
+The pre-stream extension added 26 synthetic regressions over the 1,853-test live-only
+baseline: seven projection, nine protocol/real-worker, and ten UI/card/navigation
+tests. Focused results at that step: UI/card/preset-UI 214/214, protocol/worker 133/133,
+upcoming projection 17/17. Covers viewed source -> exact next target, empty/final/no
+selection, zero-capture proof, sizes/search/overlap, sequential/navigation updates,
+guarded clear/failure/duplicates, source/target and session/baseline/reset races,
+capture before write and before delayed acknowledgement, strict startup locks, and
+unchanged manual queues/stock/accounting. Native pre-stream-to-live transition,
+layout, tooltip/keyboard interaction, and clearing remain user-performed Chrome checks.
+Initial live-only upcoming-preset presentation/clearing added 39 regressions over the
+1,814-test baseline. Focused UI/card/preset-UI tests: 204/204. Worker protocol/core and
+real client/worker integration tests: 124/124. Controller/projection tests: 47/47.
+Coverage includes immediate-next versus later assignments, live advancement and
+navigation, exact sizes/combined card states/search, clear persistence/failure,
+duplicate clicks, captured/replacement/reset/session/baseline races, notification
+refreshes/reopening, strict loading/error locks, manual tokens, and unchanged stock
+and mappings. git diff --check passed. Browser layout, tooltip/keyboard interaction,
+and native capture-driven advancement remain manual checks for the user; no browser
+or real tracker data was accessed. No commit or push was performed for this change.
 Canceled-SKU summary coverage adds six report-page tests and three PDF tests, expanding
 existing correction/print/legacy tests too. Focused results: report-page 131/131, PDF
 15/15; PDF plus download tests 49/49. Covers exact SKU/size grouping, Unmapped last,
@@ -1167,6 +1257,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  7e79447  total cancels in report
   ae69a51  version reupdated to 1.0.0
   16fff2c  update version number
   21ec5fc  Improve report cancellation details and PDF exports
@@ -1227,6 +1318,7 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed implementation is preserved. The canceled-orders-per-SKU summary
-and its tests/documentation are local changes; no commit or push was performed.
+Previously committed implementation is preserved. Upcoming-preset queued indicators,
+including the pre-stream extension, manual queue dropdown previews, and their tests/docs remain uncommitted.
+No commit or push was performed.
 There is no approved pending functional change to start automatically.
