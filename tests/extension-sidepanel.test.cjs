@@ -326,9 +326,9 @@ test("side panel keeps every script and stylesheet inside the extension", () => 
     "../report/stream-report-client.js",
     "../vendor/jspdf/jspdf.umd.min.js",
     "../vendor/jspdf-autotable/jspdf.plugin.autotable.min.js",
+    "../report/report-downloads.js",
     "../report/report-page.js",
     "../report/report-pdf.js",
-    "../report/report-downloads.js",
     "sidepanel.js",
   ]);
   assert.ok(

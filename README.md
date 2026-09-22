@@ -203,6 +203,11 @@ the **tracking-start time**. Rename current reports in **STREAM REPORT RECORDS**
 edit the name at the top of the report. Restore an archived report to the recent
 list before renaming it.
 
+Below **Stream Variations**, expand **Canceled orders** to review just the canceled
+variations, with their status, SKU, item, style, and size. This reference-only list
+has no price, cost, or profit columns and does not change inventory or totals.
+Older reports without individual cancellation details show an explanatory notice.
+
 ### Library and downloads
 
 - **STREAM REPORT RECORDS** holds up to **5** recent reports; **Archived Reports** holds
@@ -235,8 +240,11 @@ list before renaming it.
   Individual reports can be downloaded again; existing files are not overwritten.
 - Direct PDFs are generated locally with bundled libraries and include all report
   tables and variation rows. No report data is uploaded for PDF generation.
-- **Print / Save as PDF** remains available through Chrome's print dialog. For that
-  path, open **Show details** first if the collapsed variation table should be printed.
+- **Print / Save as PDF** automatically expands **Stream Variations** and **Canceled
+  orders** for printing, then restores their previous screen state. Both start collapsed
+  in the normal report. **Download PDF** also includes both sections in full.
+  Chrome's **Save as PDF** suggests the saved report name, using the same filename
+  cleanup as **Download PDF**. You can still change the name in Chrome's save dialog.
   Use browser printing when the bundled PDF fonts cannot represent a report's text.
 
 ### Report corrections

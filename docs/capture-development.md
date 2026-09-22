@@ -248,8 +248,11 @@ eyebrow, combines completed and canceled rows in variation-number order and show
 combined count. Its **Status** column identifies the outcome. Completed rows keep mapped
 and unmapped sale detail; canceled rows keep only mapped or unmapped reference identity,
 show no price, unit cost, or gross profit, and never affect inventory or any metric.
-Print/PDF preserves this disclosure's current state: collapsed rows remain omitted unless
-the employee opens **Show details** before printing.
+The separate **Canceled orders** disclosure below it lists only cancellations, with
+Variation, Status, SKU, Item, Style, and Size columns. Both disclosures start collapsed
+on screen. Browser Print / Save as PDF temporarily expands both and restores their
+previous states afterward, including canceling the dialog. Direct PDF downloads include
+both tables in full without requiring the employee to open **Show details** first.
 Exact-SKU analytics sum mapped completed units, revenue, saved unit cost, and gross profit
 by SKU, include only mapped SKUs with completed sales in this report stream, and sort rows
 from highest gross profit to largest loss. The final **Gross profit/loss** column uses
@@ -684,10 +687,15 @@ distribution; reassess Google's requirements before expanding the audience.
     values. Pending, canceled, unmapped, and unsold entries must not appear in that table.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension while **Item variations this stream** is collapsed. Verify its summary stays
-    visible but its variation rows are omitted, while the SKU performance table prints
-    normally. Open **Show details**, print again, and verify every available
-    completed/canceled variation row is included.
+    extension while both **Item variations this stream** and **Canceled orders** are
+    collapsed. Verify both sections include all available rows, with only the six
+    reference columns in the canceled-only section. After printing or canceling, verify
+    both return to their prior screen states. Repeat with one section open, including
+    Chrome's print shortcut, and confirm neither screen choice is lost. **Download PDF**
+    must also include both full tables. These browser/PDF appearance checks are manual.
+    Confirm Save as PDF suggests the saved report name (with filename-unsafe characters
+    cleaned up), including after renaming in the report. Cancel and retry without changing
+    the report name; the suggested filename should remain the same. CSV naming is unchanged.
     End a synthetic test stream with one mapped processing, fixing, or legacy unresolved
     `payment_failed` order (not a newly captured terminal failure). In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing

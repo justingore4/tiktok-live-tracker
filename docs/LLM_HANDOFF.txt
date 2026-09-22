@@ -1,20 +1,23 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 16, 2026
+Snapshot date: September 20, 2026
 Repository branch at this update: main
 Latest implementation commit at this snapshot: b7b818926edb9259e7e822cb4680373180a8a569
 Commit subject: Refine preset planning, navigation, and startup locks
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
-unlock, and strict yellow editing lock are committed. This refresh changes only
-documentation; inspect current git status before staging anything.
+unlock, and strict yellow editing lock are committed. The latest local changes add
+the canceled-only report disclosure, full variation/cancellation print/PDF output,
+and report-name-based browser PDF filenames
+described in section 11; they are not committed.
+Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,777 passed, 0 failed
+Latest full synthetic test run: 1,805 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -37,7 +40,7 @@ For the receiving assistant:
 - Read the root AGENTS.md and any applicable overrides or skill instructions.
   AGENTS.md holds durable working rules; this handoff holds implementation context.
 - Paths below are repository-relative and work on both Mac and Windows.
-- The worktree was clean on main before this documentation cleanup.
+- The worktree was clean on main before the canceled-order disclosure implementation.
   Existing committed work is preserved. No commit or push was performed for this update.
 
 1. PRODUCT, OWNER, AND SCOPE
@@ -86,6 +89,9 @@ and separate computers have separate tracker data.
   reduced-motion behavior, and existing busy/error safeguards.
 - Run node --test after code changes. Add focused regression tests when changing
   behavior. Distinguish synthetic test evidence from real browser/live evidence.
+- The user now handles browser, layout, keyboard, and PDF appearance checks manually.
+  Do not launch isolated browser checks unless specifically requested again. Continue
+  focused/full Node regression tests; do not imply they verify native appearance.
 - Communicate simply. Explain what is confirmed versus suspected; do not present
   a guessed TikTok UI change as an established cause.
 
@@ -753,6 +759,27 @@ Failure behavior matters:
 
 11. REPORT LIBRARY, CAPACITY, AND CORRECTIONS
 ------------------------------------------
+Canceled-order report display (September 20, 2026, local implementation):
+- An initially collapsed Canceled orders section sits directly below Stream Variations.
+- Uses saved report.canceledOrders only, sorted by variation number, with six columns:
+  Variation, Status, SKU, Item, Style, Size. No sold-price, unit-cost, or profit columns.
+- Shares safe-text reference-cell rendering/unmapped fallbacks with the existing
+  combined variation table; that table and all accounting/inventory-export behavior
+  are unchanged.
+- The count preserves legacy aggregate cancellations. Missing old row details show
+  an explanatory notice; no canceled orders produces an explicit empty state.
+- Uses native details/summary and existing responsive disclosure/table styling.
+  Report correction refreshes update contents without changing open/closed state.
+- Both disclosures default to collapsed on screen. Browser Print / Save as PDF
+  temporarily expands both and restores their prior independent states afterward,
+  including cancel/error handling. beforeprint/afterprint also cover native shortcuts;
+  repeated beforeprint events do not overwrite the original state snapshot. The report
+  button retains its save-name/stale-view guards and restores after synchronous print.
+- Direct downloaded PDFs include a fourth, canceled-only six-column table after the
+  unchanged combined variation table. All available rows are included regardless of
+  screen state, with existing empty/legacy-detail notices and pagination behavior.
+- Presentation-only: no storage/report schema, capture, permissions, or manifest changes.
+
 Exact limits in shared/stream-report-storage.js:
 - MAX_ACTIVE_REPORTS = 5 recent finalized records.
 - MAX_ARCHIVED_REPORTS = 25 archived finalized records.
@@ -844,7 +871,15 @@ Do not bypass those guards or propagate report-only costs globally.
 ------------------------------
 Direct PDFs are generated locally, including full report tables and variation rows.
 No CDN/runtime network PDF service or upload of reports. Browser Print / Save as PDF
-remains separate; expanding Show details affects that browser-print path.
+remains separate; it expands both variation disclosures automatically for output, then
+restores their screen state. Direct PDF downloads always include both tables too.
+Browser Save as PDF now suggests the saved report name, sharing report-downloads.js's
+createPdfFilename sanitizer through the report-page document title (without .pdf).
+Initial rendering and a confirmed rename update the title, including default-name
+restoration; drafts, failed saves, and stale rename responses do not. The report button
+still waits for its existing guarded rename before printing. Native print shortcuts use
+the last saved name. Chrome's save dialog can override the suggested filename. Inventory
+CSV naming, direct downloads, report contents, and storage contracts are unchanged.
 
 Bundled runtime dependencies (retain exact files and licenses):
 - jsPDF 4.2.1, MIT.
@@ -959,7 +994,24 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,777 tests passed, 0 failed, on Windows (September 15, 2026).
+Latest full verification: 1,805 tests passed, 0 failed, on Windows (September 20, 2026).
+Canceled-order disclosure added seven report-page regressions (106/106 at that step).
+Expanded print/PDF output added nine further tests (report-page 113/113 at that step).
+Report-name print filenames add twelve more: the report-page suite is now 125/125,
+and the direct-PDF suite remains 12/12. The related download/side-panel/PDF group passed
+91/91. git diff --check passed. Filename coverage includes sanitization parity, legacy
+fallbacks, native print, confirmed renames, failures, and stale/navigation guards.
+Coverage includes placement, native disclosure markup, exact six-column safe-text rows,
+mapped/unmapped references, numeric sorting, no pending/legacy-failed leakage, empty and
+legacy-detail states, unchanged combined table and data, independent open state, and
+mounted manual-cancellation/inline-mapping refreshes. Follow-up print regressions cover
+temporary expansion, independent restoration, native print/cancel events, repeated
+events, unrelated disclosures, pre-load safety, and print errors. Direct PDF tests cover
+both full variation tables, legacy/empty handling, unchanged data, and pagination.
+The initial disclosure's earlier isolated Chrome renderer crashed before rendering;
+that invocation's synthetic fixture/profile were cleaned up. The user subsequently
+requested manual browser checks only. No browser checks were attempted for the print
+change; no real reports, existing Chrome profiles, or live tracker state were accessed.
 This includes 244 preset tests (61 core, 54 real-worker integration, 129 UI).
 The future-preset mouse swap updates existing sequential/toggle regressions and adds
 seven tests over the 1,743-test baseline: six UI cases plus a card-label regression.
@@ -1154,6 +1206,6 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed implementation is preserved. This update is documentation-only;
-no commit or push was performed for this update.
+Previously committed implementation is preserved. The canceled-order disclosure and
+its tests/documentation are local changes; no commit or push was performed.
 There is no approved pending functional change to start automatically.

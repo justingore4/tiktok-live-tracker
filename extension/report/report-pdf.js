@@ -37,6 +37,15 @@
       headers: ["Variation", "Status", "SKU", "Item", "Style", "Size", "Sold price", "Unit cost", "Gross profit"],
       widths: [51, 49, 63, 94, 58, 31, 57, 51, 58],
     },
+    {
+      key: "canceled", selector: "#canceled-orders-rows",
+      eyebrow: "Canceled variations", title: "Canceled orders",
+      count: "#canceled-orders-count", note: "#canceled-orders-note",
+      empty: "No canceled orders were captured for this stream.",
+      emptySelector: "#canceled-orders-empty",
+      headers: ["Variation", "Status", "SKU", "Item", "Style", "Size"],
+      widths: [58, 64, 99, 139, 110, 46],
+    },
   ]);
   const COLORS = Object.freeze({
     section: [31, 38, 46], cover: [18, 57, 88], text: [17, 24, 32],
@@ -83,6 +92,7 @@
       headers: [...definition.headers], widths: [...definition.widths],
       count: definition.count ? node(definition.count).textContent : "",
       note: definition.note && !node(definition.note).hidden ? node(definition.note).textContent : "",
+      emptyHidden: definition.emptySelector ? node(definition.emptySelector).hidden : false,
       rows: node(definition.selector).children.map((row) => row.children.map((cell) => ({
         text: cell.textContent, className: cell.className,
       }))),
@@ -316,7 +326,7 @@
       heading(start, table.eyebrow, table.title, table.count);
       if (!table.rows.length) {
         y += 50;
-        paragraph(table.empty || "No inventory rows were saved in this report.");
+        if (!table.emptyHidden) paragraph(table.empty || "No inventory rows were saved in this report.");
         y += 12;
         if (table.note) paragraph(table.note);
         return;
@@ -403,6 +413,7 @@
     }
     drawTable(model.tables[1]);
     drawTable(model.tables[2]);
+    drawTable(model.tables[3]);
     for (const line of model.footer) paragraph(line, 7);
     const pageCount = doc.getNumberOfPages();
     for (let page = 1; page <= pageCount; page += 1) {

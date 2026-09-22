@@ -407,6 +407,54 @@
         </section>
 
         <section
+          id="canceled-orders-section"
+          class="report-section"
+          aria-labelledby="canceled-orders-title"
+        >
+          <details id="canceled-orders-disclosure">
+            <summary
+              id="canceled-orders-toggle"
+              class="completed-sales-toggle"
+              aria-controls="canceled-orders-content"
+            >
+              <h2 id="canceled-orders-title" class="completed-sales-summary-heading">
+                <span class="completed-sales-title-copy">
+                  <span class="eyebrow">Canceled variations</span>
+                  <span class="completed-sales-title">Canceled orders</span>
+                </span>
+                <span id="canceled-orders-count" class="section-count">0 canceled orders</span>
+              </h2>
+            </summary>
+            <div id="canceled-orders-content" class="completed-sales-content">
+              <div
+                class="table-scroll screen-scroll"
+                tabindex="0"
+                aria-labelledby="canceled-orders-title"
+              >
+                <table class="data-table canceled-orders-table">
+                  <caption>
+                    Canceled variations from this saved report. Item mappings are reference-only and do not affect inventory or metrics.
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Variation</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Item</th>
+                      <th scope="col">Style</th>
+                      <th scope="col">Size</th>
+                    </tr>
+                  </thead>
+                  <tbody id="canceled-orders-rows"></tbody>
+                </table>
+              </div>
+              <p id="canceled-orders-empty" class="empty-copy" hidden>No canceled orders were captured for this stream.</p>
+              <p id="canceled-orders-note" class="empty-copy" hidden></p>
+            </div>
+          </details>
+        </section>
+
+        <section
           id="unit-cost-correction-section"
           class="report-section unit-cost-correction-section screen-only"
           aria-labelledby="unit-cost-correction-title"
@@ -481,6 +529,7 @@
     <script src="stream-report-client.js"></script>
     <script src="offline-report-editor-client.js"></script>
     <script src="inline-report-correction.js"></script>
+    <script src="report-downloads.js"></script>
     <script src="report-page.js"></script>
   </body>
 </html>

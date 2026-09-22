@@ -3,7 +3,11 @@
     typeof module === "object" && module.exports
       ? require("../shared/tiktok-fee-calculator.js")
       : root.TikTokLiveTrackerTikTokFeeCalculator;
-  const streamReportPage = factory(feeCalculator);
+  const reportDownloads =
+    typeof module === "object" && module.exports
+      ? require("./report-downloads.js")
+      : root.TikTokLiveTrackerReportDownloads;
+  const streamReportPage = factory(feeCalculator, reportDownloads);
 
   if (typeof module === "object" && module.exports) {
     module.exports = streamReportPage;
@@ -33,6 +37,7 @@
           root.TikTokLiveTrackerInlineReportCorrection,
         confirm: root.confirm.bind(root),
         print: () => root.print(),
+        printEventTarget: root,
         Blob: root.Blob,
         URL: root.URL,
         setTimeout: root.setTimeout.bind(root),
@@ -48,7 +53,7 @@
   }
 })(
   typeof globalThis === "undefined" ? this : globalThis,
-  function createStreamReportPageModule(feeCalculator) {
+  function createStreamReportPageModule(feeCalculator, reportDownloads) {
     "use strict";
 
     const SHEET_HEADERS = Object.freeze([
@@ -706,6 +711,24 @@
       return controls;
     }
 
+    function createVariationReferenceCells(document, order, status) {
+      const mapped = typeof order?.sku === "string" && order.sku !== "";
+      return [
+        createTableCell(document, `#${safeInteger(order?.variationNumber)}`),
+        createTableCell(document, status),
+        createTableCell(document, mapped ? order.sku : "Unmapped", {
+          className: mapped ? "sku-cell" : "warning-cell",
+        }),
+        createTableCell(document, mapped ? order?.item : "Not selected"),
+        createTableCell(document, mapped ? order?.style : "—", {
+          className: mapped ? "" : "muted-cell",
+        }),
+        createTableCell(document, mapped ? order?.size : "—", {
+          className: mapped ? "" : "muted-cell",
+        }),
+      ];
+    }
+
     function renderItemVariations(document, report) {
       const body = document.querySelector("#completed-sales-rows");
       const empty = document.querySelector("#sales-empty");
@@ -732,20 +755,8 @@
       const rows = variations.map(({ order, status }) => {
         const row = document.createElement("tr");
         const canceled = status === "Canceled";
-        const mapped = typeof order?.sku === "string" && order.sku !== "";
         row.append(
-          createTableCell(document, `#${safeInteger(order?.variationNumber)}`),
-          createTableCell(document, status),
-          createTableCell(document, mapped ? order.sku : "Unmapped", {
-            className: mapped ? "sku-cell" : "warning-cell",
-          }),
-          createTableCell(document, mapped ? order?.item : "Not selected"),
-          createTableCell(document, mapped ? order?.style : "—", {
-            className: mapped ? "" : "muted-cell",
-          }),
-          createTableCell(document, mapped ? order?.size : "—", {
-            className: mapped ? "" : "muted-cell",
-          }),
+          ...createVariationReferenceCells(document, order, status),
           createTableCell(document, canceled
             ? "—"
             : formatUsdCents(order?.soldPriceCents), {
@@ -775,6 +786,35 @@
       detailsNote.textContent = unavailableCanceledCount === 0
         ? ""
         : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
+    }
+
+    function renderCanceledOrders(document, report) {
+      const body = document.querySelector("#canceled-orders-rows");
+      const empty = document.querySelector("#canceled-orders-empty");
+      const count = document.querySelector("#canceled-orders-count");
+      const detailsNote = document.querySelector("#canceled-orders-note");
+      const detailsAvailable = Array.isArray(report?.canceledOrders);
+      const orders = detailsAvailable ? report.canceledOrders : [];
+      const canceledCount = Number.isSafeInteger(report?.totals?.canceledOrderCount)
+        ? report.totals.canceledOrderCount
+        : orders.length;
+      const rows = [...orders]
+        .sort((left, right) =>
+          safeInteger(left?.variationNumber) - safeInteger(right?.variationNumber))
+        .map((order) => {
+          const row = document.createElement("tr");
+          row.append(...createVariationReferenceCells(document, order, "Canceled"));
+          return row;
+        });
+
+      replaceChildren(body, rows);
+      count.textContent = `${canceledCount} canceled order${canceledCount === 1 ? "" : "s"}`;
+      empty.hidden = canceledCount !== 0;
+      const unavailableCount = detailsAvailable ? 0 : canceledCount;
+      detailsNote.hidden = unavailableCount === 0;
+      detailsNote.textContent = unavailableCount === 0
+        ? ""
+        : `Individual item details for ${unavailableCount} canceled variation${unavailableCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
     function formatPercentage(numerator, denominator) {
@@ -1079,6 +1119,12 @@
         : formatDefaultReportName(record.report?.metadata?.startedAt);
     }
 
+    function updateReportTitle(document, record) {
+      // Chrome suggests this title for Save as PDF; share direct-download cleanup.
+      document.title = reportDownloads.createPdfFilename(getReportDisplayName(record))
+        .replace(/\.pdf$/i, "");
+    }
+
     function renderReport(document, record) {
       const report = record.report;
       const metadata = isPlainRecord(report?.metadata) ? report.metadata : {};
@@ -1130,11 +1176,11 @@
         "#most-profitable-products-card",
       );
       renderItemVariations(document, report);
+      renderCanceledOrders(document, report);
       renderSkuPerformance(document, report);
       renderInventory(document, report);
 
-      document.title = createReportFilename(report, "Stream-Report", "pdf")
-        .replace(/\.pdf$/i, "");
+      updateReportTitle(document, record);
       document.querySelector("#report-loading").hidden = true;
       document.querySelector("#report-error").hidden = true;
       document.querySelector("#report-content").hidden = false;
@@ -1295,6 +1341,33 @@
       let reportNameDraftId = null;
       let reportNameDirty = false;
       let reportNameSave = null;
+      let printDisclosureState = null;
+
+      const expandVariationsForPrint = () => {
+        if (printDisclosureState !== null || !currentRecord ||
+            document.querySelector("#report-content").hidden) {
+          return;
+        }
+        printDisclosureState = [
+          "#completed-sales-disclosure",
+          "#canceled-orders-disclosure",
+        ].map((selector) => document.querySelector(selector))
+          .filter(Boolean)
+          .map((element) => ({ element, open: element.open }));
+        printDisclosureState.forEach(({ element }) => { element.open = true; });
+      };
+
+      const restoreVariationsAfterPrint = () => {
+        const previousState = printDisclosureState;
+        printDisclosureState = null;
+        previousState?.forEach(({ element, open }) => { element.open = open; });
+      };
+
+      // Native browser printing (including Ctrl/Cmd+P) uses the same temporary
+      // expansion as the report button, without changing normal disclosure state.
+      const printEventTarget = dependencies.printEventTarget ?? document.defaultView;
+      printEventTarget?.addEventListener("beforeprint", expandVariationsForPrint);
+      printEventTarget?.addEventListener("afterprint", restoreVariationsAfterPrint);
 
       const showReportNameFeedback = (message, isError = false) => {
         if (reportNameFeedback) {
@@ -1957,6 +2030,7 @@
           reportNameDirty = false;
           document.querySelector("#report-name").textContent =
             getReportDisplayName(currentRecord);
+          updateReportTitle(document, currentRecord);
           showReportNameFeedback(displayName === null
             ? "Default report name restored."
             : "Report name saved.");
@@ -2148,7 +2222,16 @@
         const sequence = loadSequence;
         await saveReportName();
         if (isCurrentReportView(reportId, sequence) && !reportNameDirty) {
-          dependencies.print();
+          expandVariationsForPrint();
+          try {
+            dependencies.print();
+          } catch (error) {
+            feedback(error?.message ?? "The print dialog could not be opened.");
+          } finally {
+            // Chrome's print dialog is synchronous. Also restore if it is
+            // canceled or throws before an afterprint event can arrive.
+            restoreVariationsAfterPrint();
+          }
         }
       });
       document.querySelector("#copy-inventory").addEventListener("click", async () => {
@@ -2201,6 +2284,7 @@
       mountStreamReportPage,
       parseNonnegativeUsdCents,
       parsePositiveUsdCents,
+      renderCanceledOrders,
       renderItemVariations,
       renderPaymentFixingOrders,
       renderReport,

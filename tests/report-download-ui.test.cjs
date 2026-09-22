@@ -131,7 +131,7 @@ test("progress exposes conflicts, per-file failures, and keep-open guidance as p
 
 test("bundled local scripts load in dependency order and no extra host permissions are added", () => {
   let previous = -1;
-  for (const script of ["tiktok-fee-calculator.js", "jspdf.umd.min.js", "jspdf.plugin.autotable.min.js", "report-page.js", "report-pdf.js", "report-downloads.js", "sidepanel.js"]) {
+  for (const script of ["tiktok-fee-calculator.js", "jspdf.umd.min.js", "jspdf.plugin.autotable.min.js", "report-downloads.js", "report-page.js", "report-pdf.js", "sidepanel.js"]) {
     const offset = html.indexOf(script);
     assert.ok(offset > previous, `${script} dependency order`);
     previous = offset;

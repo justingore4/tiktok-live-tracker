@@ -568,8 +568,22 @@ eyebrow. Its count is completed plus canceled variations, including legacy aggre
 cancellations whose row details are unavailable, and a **Status** column distinguishes the
 two outcomes. Canceled rows expose reference identity only: sold price, unit cost, and
 gross profit are unavailable, and the rows do not contribute to inventory or any metric.
-Print/PDF preserves the disclosure's user-selected state, so a collapsed variation table
-stays collapsed and an explicitly opened table prints in full.
+Browser Print / Save as PDF temporarily expands the stream-variations and canceled-order
+disclosures so all available rows print, then restores their independent screen states.
+The report button and native browser print shortcuts share beforeprint/afterprint handling;
+canceling or failing to open the print dialog does not leave the sections expanded.
+
+A separate, initially collapsed **Canceled orders** disclosure directly below Stream
+variations filters the same saved `canceledOrders` collection into six reference-only
+columns: Variation, Status, SKU, Item, Style, and Size. Rows are sorted by variation
+number, and use the same safe-text rendering and unmapped fallbacks as the combined
+table, which remains unchanged. Its count retains legacy aggregate cancellations;
+missing legacy details produce a notice, never invented rows. Zero cancellations show
+an empty-state message. Report refreshes after payment or mapping corrections update
+the rows without resetting either disclosure's open state. Direct downloaded PDFs include
+both the combined variation table and the six-column canceled-only table in full,
+independent of on-screen expansion. Both disclosures start collapsed on screen. This is presentation
+only and adds no report schema, storage, accounting, or inventory-export changes.
 
 Exact-SKU performance groups mapped completions by SKU, includes only mapped SKUs with
 completed sales in that report stream, and sorts rows from highest gross profit to largest
@@ -631,9 +645,9 @@ reference, lifecycle, and archive tier. Cost correction updates
 completed-sale costs/profits, COGS, gross profit, margins, estimated profit after fees,
 top-profit rankings, exact-SKU/product totals, and the six-column handoff; it does not
 change payment facts, prices, quantities, GMV, AOV, fee estimates, canonical inventory,
-other reports, the live tracker, or future streams. The stream-variations disclosure starts
-collapsed on screen. Printing preserves its state and includes its rows only when the
-employee opened **Show details**. The SKU performance table is part of the normal screen
+other reports, the live tracker, or future streams. The stream-variations and canceled-order
+disclosures start collapsed on screen. Printing temporarily expands both, includes all
+their available rows, and restores the previous screen states afterward. The SKU performance table is part of the normal screen
 and printed report output, and printed tables retain repeated column headers. The
 screen-only unit-cost correction disclosure is the final report section. These are
 employee-initiated local outputs, not Google API writes.
@@ -700,7 +714,14 @@ sanitizes final filenames, then rejects the whole batch on case-insensitive coll
 `report/report-pdf.js` reuses report-page presentation and summary calculations to
 render a local, selectable-text PDF with bundled jsPDF/AutoTable and embedded DejaVu Sans.
 All printed tables are included in direct exports, with repeated headings and no editing
-controls; browser print still preserves the on-screen variation disclosure state.
+controls. Browser print temporarily expands both variation disclosures and restores their
+on-screen state after printing or canceling.
+The report page's document title uses the saved display name and the shared direct-PDF
+filename sanitizer (without the `.pdf` suffix), so Chrome's Save as PDF suggests the
+same base filename. Initial renders and confirmed renames update the title; unsaved
+drafts, failed saves, and stale rename responses cannot replace it. The report button
+still waits for name persistence before printing. Default names retain the tracking-start
+fallback; inventory CSV filenames remain timestamp-based.
 Dependency versions, official sources, hashes, and licenses are in `extension/vendor/`.
 Unsupported font glyphs cause a visible per-report failure rather than dropped content.
 

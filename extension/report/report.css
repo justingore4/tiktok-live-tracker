@@ -622,7 +622,8 @@ button:disabled {
   background: rgb(255 255 255 / 6%);
 }
 
-#completed-sales-disclosure[open] > .completed-sales-toggle::after {
+#completed-sales-disclosure[open] > .completed-sales-toggle::after,
+#canceled-orders-disclosure[open] > .completed-sales-toggle::after {
   content: "Hide details -";
 }
 
@@ -1338,10 +1339,12 @@ button:disabled {
     display: inline;
   }
 
+  #canceled-orders-toggle,
   #completed-sales-toggle {
     cursor: default;
   }
 
+  #canceled-orders-toggle::after,
   #completed-sales-toggle::after {
     display: none !important;
   }

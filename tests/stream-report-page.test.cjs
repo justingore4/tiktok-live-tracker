@@ -9,6 +9,7 @@ const inlineCorrection = require(
   "../extension/report/inline-report-correction.js",
 );
 const reportPage = require("../extension/report/report-page.js");
+const reportDownloads = require("../extension/report/report-downloads.js");
 
 const REPORT_ID = "stream-report:11111111-1111-4111-8111-111111111111";
 const SECOND_REPORT_ID = "stream-report:22222222-2222-4222-8222-222222222222";
@@ -81,6 +82,11 @@ class FakeElement {
 
 const REPORT_SELECTORS = [
   "#action-feedback",
+  "#canceled-orders-count",
+  "#canceled-orders-disclosure",
+  "#canceled-orders-empty",
+  "#canceled-orders-note",
+  "#canceled-orders-rows",
   "#completed-sales-rows",
   "#completed-sales-disclosure",
   "#copy-inventory",
@@ -385,6 +391,7 @@ function mountReportNameEditor(options = {}) {
     clientModule: { createStreamReportClient: () => client },
     inlineCorrectionModule: options.inlineCorrectionModule,
     print: options.print ?? (() => {}),
+    printEventTarget: options.printEventTarget,
   });
 
   return {
@@ -420,12 +427,8 @@ test("packaged report surface is local, printable, and exposes the required acti
   assert.match(html, /Download Updated Inventory CSV/);
   assert.match(html, /Finish unresolved payments/);
   assert.match(html, /Correct SKU Unit Cost/);
-  assert.doesNotMatch(
-    html,
-    /canceled-orders-disclosure|Canceled order references/,
-  );
-  assert.doesNotMatch(source, /renderCanceledOrders|#canceled-orders-/);
-  assert.doesNotMatch(css, /\.canceled-orders-/);
+  assert.match(html, /id="canceled-orders-disclosure"/);
+  assert.match(source, /renderCanceledOrders/);
   assert.match(
     html,
     /Correct a cost in this saved report[\s\S]*live tracker, other reports, and future streams are unaffected/,
@@ -455,6 +458,10 @@ test("packaged report surface is local, printable, and exposes the required acti
       '<script src="inline-report-correction\\.js"><\\/script>',
       '[\\s\\S]*?<script src="report-page\\.js"><\\/script>',
     ].join("")),
+  );
+  assert.match(
+    html,
+    /<script src="report-downloads\.js"><\/script>[\s\S]*?<script src="report-page\.js"><\/script>/,
   );
   assert.doesNotMatch(html, /https?:\/\//i);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
@@ -552,13 +559,10 @@ test("compact Post Stream Report cover contains all stream metadata", () => {
   );
 });
 
-test("report name replaces the header reference while the footer and filename retain stream identity", () => {
+test("report name supplies the print filename while the footer retains stream identity", () => {
   const report = createReport();
   const original = structuredClone(report);
   assert.notEqual(report.metadata.startedAt, report.metadata.endedAt);
-  const expectedDocumentTitle = reportPage
-    .createReportFilename(report, "Stream-Report", "pdf")
-    .replace(/\.pdf$/i, "");
   const customDocument = new FakeDocument();
 
   reportPage.renderReport(customDocument, {
@@ -576,7 +580,7 @@ test("report name replaces the header reference while the footer and filename re
     customDocument.querySelector("#stream-reference").textContent,
     `Stream reference: ${report.metadata.streamId}`,
   );
-  assert.equal(customDocument.title, expectedDocumentTitle);
+  assert.equal(customDocument.title, "Sunday evening stream");
 
   const defaultDocument = new FakeDocument();
   reportPage.renderReport(defaultDocument, {
@@ -590,7 +594,9 @@ test("report name replaces the header reference while the footer and filename re
     defaultDocument.querySelector("#report-name").textContent,
     reportPage.formatTimestamp(report.metadata.startedAt),
   );
-  assert.equal(defaultDocument.title, expectedDocumentTitle);
+  assert.equal(defaultDocument.title, reportDownloads
+    .createPdfFilename(reportDownloads.getReportDisplayName({ report }))
+    .replace(/\.pdf$/i, ""));
   assert.equal(
     defaultDocument.querySelector("#stream-started").textContent,
     reportPage.formatTimestamp(report.metadata.startedAt),
@@ -600,6 +606,59 @@ test("report name replaces the header reference while the footer and filename re
     reportPage.formatTimestamp(report.metadata.endedAt),
   );
   assert.deepEqual(report, original, "Default naming must not rewrite the saved report");
+});
+
+test("print filename uses direct-download sanitization without changing the saved display name", async (t) => {
+  const cases = [
+    ["Friday / Night: Sale?.pdf", "Friday - Night- Sale-"],
+    ["CON", "_CON"],
+    ["Summer Sale.PDF", "Summer Sale"],
+    ["..", "Saved stream"],
+    ["Cafe\u0301 \u202eSale", "Café Sale"],
+  ];
+  for (const [displayName, expectedTitle] of cases) {
+    await t.test(displayName, async () => {
+      const printedTitles = [];
+      const report = createReport();
+      const before = structuredClone(report);
+      const surface = mountReportNameEditor({
+        displayName,
+        report,
+        print: () => printedTitles.push(surface.document.title),
+      });
+      await surface.ready;
+      assert.equal(surface.document.title, expectedTitle);
+      assert.equal(`${surface.document.title}.pdf`, reportDownloads.createPdfFilename(displayName));
+      assert.equal(surface.printName.textContent, displayName);
+      await surface.document.querySelector("#print-report").click();
+      assert.deepEqual(printedTitles, [expectedTitle]);
+      assert.deepEqual(surface.renameRequests, []);
+      assert.deepEqual(report, before);
+    });
+  }
+});
+
+test("unnamed and legacy reports share the direct-download default print filename", async (t) => {
+  for (const displayName of [undefined, null, "", "   "]) {
+    await t.test(JSON.stringify(displayName) ?? "missing name", () => {
+      const document = new FakeDocument();
+      const record = {
+        reportId: REPORT_ID,
+        lifecycleStatus: "finalized",
+        displayName,
+        report: createReport(),
+      };
+      reportPage.renderReport(document, record);
+      assert.equal(`${document.title}.pdf`, reportDownloads.createPdfFilename(
+        reportDownloads.getReportDisplayName(record),
+      ));
+    });
+  }
+  const document = new FakeDocument();
+  const report = createReport();
+  delete report.metadata.startedAt;
+  reportPage.renderReport(document, { reportId: REPORT_ID, report });
+  assert.equal(document.title, "Saved stream");
 });
 
 test("report name editor is labeled and screen-only while the saved name prints", () => {
@@ -686,6 +745,7 @@ test("Enter saves a trimmed report name once and keeps drafts out of print and r
   surface.input.value = "  Friday night sale  ";
   await surface.input.dispatch("input");
   assert.equal(surface.printName.textContent, "Previously saved name");
+  assert.equal(surface.document.title, originalTitle);
   const submitted = surface.input.dispatch("keydown", {
     key: "Enter",
     preventDefault() { prevented = true; },
@@ -695,6 +755,7 @@ test("Enter saves a trimmed report name once and keeps drafts out of print and r
   assert.equal(prevented, true);
   assert.equal(surface.input.disabled, true);
   assert.equal(surface.printName.textContent, "Previously saved name");
+  assert.equal(surface.document.title, originalTitle);
   assert.match(surface.feedback.textContent, /saving/i);
   const duplicateBlur = surface.input.dispatch("blur");
   await surface.input.dispatch("keydown", { key: "Enter", preventDefault() {} });
@@ -716,16 +777,20 @@ test("Enter saves a trimmed report name once and keeps drafts out of print and r
     unchangedSelectors.map((selector) => allText(surface.document.querySelector(selector))),
     originalText,
   );
-  assert.equal(surface.document.title, originalTitle);
+  assert.equal(surface.document.title, "Friday night sale");
 });
 
 test("Print waits for an in-flight blur rename and prints the saved name without a second request", async () => {
   const save = createDeferred();
   const printedNames = [];
+  const printedTitles = [];
   const surface = mountReportNameEditor({
     displayName: "Original name",
     renameReport: () => save.promise,
-    print: () => printedNames.push(surface.printName.textContent),
+    print() {
+      printedNames.push(surface.printName.textContent);
+      printedTitles.push(surface.document.title);
+    },
   });
   await surface.ready;
   surface.input.value = "Name to print";
@@ -735,6 +800,7 @@ test("Print waits for an in-flight blur rename and prints the saved name without
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(printedNames, []);
   assert.equal(surface.printName.textContent, "Original name");
+  assert.equal(surface.document.title, "Original name");
   assert.deepEqual(surface.renameRequests, [{
     reportId: REPORT_ID,
     displayName: "Name to print",
@@ -743,6 +809,7 @@ test("Print waits for an in-flight blur rename and prints the saved name without
   save.resolve({ reportId: REPORT_ID, displayName: "Name to print" });
   await Promise.all([pendingSave, pendingPrint]);
   assert.deepEqual(printedNames, ["Name to print"]);
+  assert.deepEqual(printedTitles, ["Name to print"]);
   assert.equal(surface.input.value, "Name to print");
   assert.equal(surface.input.disabled, false);
   assert.equal(surface.renameRequests.length, 1);
@@ -750,9 +817,13 @@ test("Print waits for an in-flight blur rename and prints the saved name without
 
 test("Print saves a dirty report name before opening the print dialog", async () => {
   const printedNames = [];
+  const printedTitles = [];
   const surface = mountReportNameEditor({
     displayName: "Original name",
-    print: () => printedNames.push(surface.printName.textContent),
+    print() {
+      printedNames.push(surface.printName.textContent);
+      printedTitles.push(surface.document.title);
+    },
   });
   await surface.ready;
   surface.input.value = "  New PDF report name  ";
@@ -763,6 +834,7 @@ test("Print saves a dirty report name before opening the print dialog", async ()
     displayName: "New PDF report name",
   }]);
   assert.deepEqual(printedNames, ["New PDF report name"]);
+  assert.deepEqual(printedTitles, ["New PDF report name"]);
 });
 
 test("Print does not open when the report name cannot be validated or saved", async (t) => {
@@ -785,6 +857,7 @@ test("Print does not open when the report name cannot be validated or saved", as
       assert.equal(surface.renameRequests.length, failure === "validation" ? 0 : 1);
       assert.equal(surface.input.value, draft);
       assert.equal(surface.printName.textContent, "Original name");
+      assert.equal(surface.document.title, "Original name");
       assert.equal(surface.input.disabled, false);
       assert.match(surface.feedback.className, /is-error/);
     });
@@ -820,6 +893,7 @@ test("Print waiting for a report rename never prints a different report after na
   assert.deepEqual(printedNames, []);
   assert.equal(surface.input.value, "Second report name");
   assert.equal(surface.printName.textContent, "Second report name");
+  assert.equal(surface.document.title, "Second report name");
 
   await surface.document.querySelector("#print-report").click();
   assert.deepEqual(printedNames, ["Second report name"]);
@@ -834,6 +908,7 @@ test("blur persists a report name and clearing it restores the default date", as
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(surface.input.value, "Updated on blur");
   assert.equal(surface.printName.textContent, "Updated on blur");
+  assert.equal(surface.document.title, "Updated on blur");
 
   surface.input.value = "   ";
   await surface.input.dispatch("input");
@@ -845,8 +920,13 @@ test("blur persists a report name and clearing it restores the default date", as
   ]);
   assert.equal(surface.input.value, reportPage.formatTimestamp(STARTED_AT));
   assert.equal(surface.printName.textContent, reportPage.formatTimestamp(STARTED_AT));
+  const expectedTitle = reportDownloads.createPdfFilename(
+    reportDownloads.getReportDisplayName({ report: createReport() }),
+  ).replace(/\.pdf$/i, "");
+  assert.equal(surface.document.title, expectedTitle);
   await surface.mounted.load();
   assert.equal(surface.input.value, reportPage.formatTimestamp(STARTED_AT));
+  assert.equal(surface.document.title, expectedTitle);
 });
 
 test("unchanged report names and Escape do not send rename requests", async (t) => {
@@ -932,6 +1012,7 @@ test("failed report rename keeps its draft and saved print name and allows retry
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(surface.input.value, "Retry this name");
   assert.equal(surface.printName.textContent, "Saved name");
+  assert.equal(surface.document.title, "Saved name");
   assert.equal(surface.input.disabled, false);
   assert.match(surface.feedback.textContent, /could not be saved|try again/i);
   assert.match(surface.feedback.className, /is-error/);
@@ -943,6 +1024,7 @@ test("failed report rename keeps its draft and saved print name and allows retry
   assert.equal(attempts, 2);
   assert.equal(surface.input.value, "Retry this name");
   assert.equal(surface.printName.textContent, "Retry this name");
+  assert.equal(surface.document.title, "Retry this name");
   assert.doesNotMatch(surface.feedback.className, /is-error/);
 });
 
@@ -965,6 +1047,7 @@ test("report name only accepts a matching persisted rename echo", async (t) => {
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(surface.input.value, "Requested name");
       assert.equal(surface.printName.textContent, "Saved name");
+      assert.equal(surface.document.title, "Saved name");
       assert.equal(surface.input.disabled, false);
       assert.match(surface.feedback.className, /is-error/);
       assert.notEqual(surface.feedback.textContent, "");
@@ -1020,6 +1103,7 @@ test("stale rename success or failure cannot overwrite a newly loaded report", a
           : "Newly loaded name";
         assert.equal(surface.input.value, expectedInput);
         assert.equal(surface.printName.textContent, "Newly loaded name");
+        assert.equal(surface.document.title, "Newly loaded name");
         assert.equal(surface.input.disabled, false);
         const feedbackBefore = surface.feedback.textContent;
 
@@ -1032,6 +1116,7 @@ test("stale rename success or failure cannot overwrite a newly loaded report", a
         await new Promise((resolve) => setImmediate(resolve));
         assert.equal(surface.input.value, expectedInput);
         assert.equal(surface.printName.textContent, "Newly loaded name");
+        assert.equal(surface.document.title, "Newly loaded name");
         assert.equal(surface.input.disabled, false);
         assert.equal(surface.feedback.textContent, feedbackBefore);
       });
@@ -1069,6 +1154,7 @@ test("same-report correction refresh preserves a dirty name draft and refreshes 
   await onMappingSaved({ reportId: REPORT_ID });
   assert.equal(surface.input.value, "Keep my unsaved name");
   assert.equal(surface.printName.textContent, "Latest saved name");
+  assert.equal(surface.document.title, "Latest saved name");
   assert.deepEqual(surface.renameRequests, []);
   assert.match(allText(surface.document.querySelector("#summary-grid")), /Gross profit[\s\S]*\$7\.00/);
 
@@ -1264,7 +1350,7 @@ test("print keeps compact Report notices to the right of Stream summary without 
   );
 });
 
-test("completed and canceled item variations print only when the user expands their disclosure", () => {
+test("stream variations start collapsed on screen and retain their printable heading and table", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -1321,6 +1407,59 @@ test("completed and canceled item variations print only when the user expands th
   );
 });
 
+test("canceled orders disclosure follows stream variations and exposes only the six requested columns", () => {
+  const directory = path.join(__dirname, "..", "extension", "report");
+  const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
+  const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
+  const variationsStart = html.indexOf('id="completed-sales-disclosure"');
+  const variationsEnd = html.indexOf("</section>", variationsStart) + "</section>".length;
+  const canceledStart = html.indexOf('id="canceled-orders-section"');
+  const canceledSectionStart = html.lastIndexOf("<section", canceledStart);
+  const canceledEnd = html.indexOf("</section>", canceledStart) + "</section>".length;
+  const canceledSection = html.slice(canceledSectionStart, canceledEnd);
+  const nextSection = html.indexOf('<section', canceledEnd);
+  const detailsTag = canceledSection.match(/<details\b[^>]*id="canceled-orders-disclosure"[^>]*>/)?.[0];
+  const summary = canceledSection.match(/<summary\b[\s\S]*?<\/summary>/)?.[0];
+  const table = canceledSection.match(/<table\b[\s\S]*?<\/table>/)?.[0];
+  const printCss = css.slice(css.indexOf("@media print"));
+
+  assert.ok(canceledStart > variationsStart);
+  assert.equal(html.slice(variationsEnd, canceledSectionStart).trim(), "");
+  assert.ok(html.indexOf('id="unit-cost-correction-section"', nextSection) > canceledEnd);
+  assert.ok(detailsTag);
+  assert.doesNotMatch(detailsTag, /\sopen(?:\s|=|>)/);
+  assert.ok(summary);
+  assert.match(summary, /id="canceled-orders-toggle"/);
+  assert.match(summary, /class="completed-sales-toggle"/);
+  assert.match(summary, /aria-controls="canceled-orders-content"/);
+  assert.match(summary, /id="canceled-orders-title"[^>]*class="completed-sales-summary-heading"/);
+  assert.match(summary, /Canceled orders/);
+  assert.match(summary, /id="canceled-orders-count"/);
+  assert.match(canceledSection, /id="canceled-orders-content"[^>]*class="completed-sales-content"/);
+  assert.match(canceledSection, /id="canceled-orders-empty"[^>]*hidden>No canceled orders were captured for this stream\.<\/p>/);
+  assert.match(canceledSection, /class="table-scroll screen-scroll"[\s\S]*?tabindex="0"[\s\S]*?aria-labelledby="canceled-orders-title"/);
+  assert.match(table, /class="data-table canceled-orders-table"/);
+  assert.deepEqual(
+    [...table.matchAll(/<th\b[^>]*scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]),
+    ["Variation", "Status", "SKU", "Item", "Style", "Size"],
+  );
+  assert.doesNotMatch(canceledSection, /Sold price|Unit cost|Gross profit|<button|<input|<select/i);
+  for (const id of [
+    "canceled-orders-section", "canceled-orders-disclosure", "canceled-orders-toggle",
+    "canceled-orders-title", "canceled-orders-count", "canceled-orders-content",
+    "canceled-orders-rows", "canceled-orders-empty", "canceled-orders-note",
+  ]) {
+    assert.equal((html.match(new RegExp(`id="${id}"`, "g")) ?? []).length, 1);
+  }
+  assert.match(css, /\.completed-sales-toggle:focus-visible/);
+  assert.match(css, /\.completed-sales-toggle::after/);
+  assert.doesNotMatch(
+    printCss,
+    /#canceled-orders-disclosure:not\(\[open\]\)[^{]*\{[^}]*display:\s*block\s*!important;/,
+  );
+  assert.doesNotMatch(canceledSection, /class="[^"]*screen-only/);
+});
+
 test("print uses white dark-section headings without recoloring metric cards or tables", () => {
   const css = fs.readFileSync(
     path.join(__dirname, "..", "extension", "report", "report.css"),
@@ -1367,8 +1506,9 @@ test("all report tables use high-contrast zebra rows on screen and in print", ()
   const screenCss = css.slice(0, printIndex);
   const printCss = css.slice(printIndex);
 
-  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 3);
+  assert.equal((html.match(/<table class="data-table /g) ?? []).length, 4);
   assert.match(html, /<table class="data-table sales-table">/);
+  assert.match(html, /<table class="data-table canceled-orders-table">/);
   assert.doesNotMatch(html, /sku-profit|Profit\/Loss by SKU/);
   assert.match(html, /<table class="data-table performance-table">/);
   assert.match(html, /<table class="data-table inventory-table">/);
@@ -1654,9 +1794,10 @@ test("mapping correction sits between Sheets handoff and stream variations", () 
   assert.doesNotMatch(css, /\.definitions-|\.definition-list|#definitions-/);
 });
 
-test("Print preserves item-variation screen state without handoff instructions", async () => {
+test("Print expands both variation sections and restores their independent screen states", async () => {
   const document = new FakeDocument();
   const completedSales = document.querySelector("#completed-sales-disclosure");
+  const canceledOrders = document.querySelector("#canceled-orders-disclosure");
   const printedStates = [];
 
   assert.equal(document.querySelector("#inventory-instructions"), null);
@@ -1687,7 +1828,7 @@ test("Print preserves item-variation screen state without handoff instructions",
       },
     },
     print() {
-      printedStates.push(completedSales.open);
+      printedStates.push([completedSales.open, canceledOrders.open]);
     },
   });
 
@@ -1697,13 +1838,136 @@ test("Print preserves item-variation screen state without handoff instructions",
   assert.equal(document.querySelector("#download-inventory").disabled, false);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
   await document.querySelector("#print-report").click();
-  assert.deepEqual(printedStates, [false]);
+  assert.deepEqual(printedStates, [[true, true]]);
   assert.equal(completedSales.open, false);
+  assert.equal(canceledOrders.open, false);
 
   completedSales.open = true;
   await document.querySelector("#print-report").click();
-  assert.deepEqual(printedStates, [false, true]);
+  assert.deepEqual(printedStates, [[true, true], [true, true]]);
   assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, false);
+
+  completedSales.open = false;
+  canceledOrders.open = true;
+  await document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [[true, true], [true, true], [true, true]]);
+  assert.equal(completedSales.open, false);
+  assert.equal(canceledOrders.open, true);
+
+  completedSales.open = true;
+  await document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, Array.from({ length: 4 }, () => [true, true]));
+  assert.equal(completedSales.open, true);
+  assert.equal(canceledOrders.open, true);
+});
+
+test("native printing uses the saved PDF filename without accepting an unsaved or pending rename", async () => {
+  const printEventTarget = new FakeElement();
+  const save = createDeferred();
+  const surface = mountReportNameEditor({
+    printEventTarget,
+    displayName: "Saved / stream.pdf",
+    renameReport: () => save.promise,
+  });
+  await surface.ready;
+  surface.input.value = "Next: stream.pdf";
+  await surface.input.dispatch("input");
+  await printEventTarget.dispatch("beforeprint");
+  assert.equal(surface.document.title, "Saved - stream");
+  assert.deepEqual(surface.renameRequests, []);
+  await printEventTarget.dispatch("afterprint");
+
+  const pendingSave = surface.input.dispatch("blur");
+  await printEventTarget.dispatch("beforeprint");
+  assert.equal(surface.document.title, "Saved - stream");
+  assert.equal(surface.renameRequests.length, 1);
+  await printEventTarget.dispatch("afterprint");
+  save.resolve({ reportId: REPORT_ID, displayName: "Next: stream.pdf" });
+  await pendingSave;
+
+  await printEventTarget.dispatch("beforeprint");
+  assert.equal(surface.document.title, "Next- stream");
+  assert.equal(surface.printName.textContent, "Next: stream.pdf");
+  await printEventTarget.dispatch("afterprint");
+  assert.equal(surface.document.title, "Next- stream");
+});
+
+test("native print events expand both sections once and restore screen states after print or cancel", async (t) => {
+  for (const initialStates of [[false, false], [true, false], [false, true], [true, true]]) {
+    await t.test(`initial open states ${initialStates.join(", ")}`, async () => {
+      const printEventTarget = new FakeElement();
+      const surface = mountReportNameEditor({ printEventTarget });
+      await surface.ready;
+      const variations = surface.document.querySelector("#completed-sales-disclosure");
+      const canceled = surface.document.querySelector("#canceled-orders-disclosure");
+      const mapping = surface.document.querySelector("#mapping-correction-disclosure");
+      const costs = surface.document.querySelector("#unit-cost-correction-disclosure");
+      [variations.open, canceled.open] = initialStates;
+      mapping.open = false;
+      costs.open = true;
+
+      await printEventTarget.dispatch("beforeprint");
+      assert.deepEqual([variations.open, canceled.open], [true, true]);
+      assert.deepEqual([mapping.open, costs.open], [false, true]);
+      await printEventTarget.dispatch("beforeprint");
+      await printEventTarget.dispatch("afterprint");
+      assert.deepEqual([variations.open, canceled.open], initialStates);
+      assert.deepEqual([mapping.open, costs.open], [false, true]);
+
+      // A duplicate afterprint must not restore a stale snapshot over later user changes.
+      variations.open = !initialStates[0];
+      canceled.open = !initialStates[1];
+      await printEventTarget.dispatch("afterprint");
+      const changedStates = [!initialStates[0], !initialStates[1]];
+      assert.deepEqual([variations.open, canceled.open], changedStates);
+      await printEventTarget.dispatch("beforeprint");
+      assert.deepEqual([variations.open, canceled.open], [true, true]);
+      await printEventTarget.dispatch("afterprint");
+      assert.deepEqual([variations.open, canceled.open], changedStates);
+    });
+  }
+});
+
+test("native printing defaults to the document window and does nothing before the report loads", async () => {
+  const document = new FakeDocument();
+  document.defaultView = new FakeElement();
+  const load = createDeferred();
+  const surface = mountReportNameEditor({ document, getReport: () => load.promise });
+  const variations = document.querySelector("#completed-sales-disclosure");
+  const canceled = document.querySelector("#canceled-orders-disclosure");
+  await document.defaultView.dispatch("beforeprint");
+  assert.deepEqual([variations.open, canceled.open], [false, false]);
+  await document.defaultView.dispatch("afterprint");
+
+  load.resolve({ reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport() });
+  await surface.ready;
+  await document.defaultView.dispatch("beforeprint");
+  assert.deepEqual([variations.open, canceled.open], [true, true]);
+  await document.defaultView.dispatch("afterprint");
+  assert.deepEqual([variations.open, canceled.open], [false, false]);
+});
+
+test("a thrown print request restores disclosures and reports the error without changing saved data", async () => {
+  let printedStates;
+  const surface = mountReportNameEditor({
+    print() {
+      printedStates = [
+        surface.document.querySelector("#completed-sales-disclosure").open,
+        surface.document.querySelector("#canceled-orders-disclosure").open,
+      ];
+      throw new Error("Print dialog could not open.");
+    },
+  });
+  await surface.ready;
+  const variations = surface.document.querySelector("#completed-sales-disclosure");
+  const canceled = surface.document.querySelector("#canceled-orders-disclosure");
+  canceled.open = true;
+  await surface.document.querySelector("#print-report").click();
+  assert.deepEqual(printedStates, [true, true]);
+  assert.deepEqual([variations.open, canceled.open], [false, true]);
+  assert.equal(surface.document.querySelector("#action-feedback").textContent, "Print dialog could not open.");
+  assert.deepEqual(surface.renameRequests, []);
 });
 
 test("inline mapping correction loads and rerenders the same durable report", async () => {
@@ -1881,6 +2145,106 @@ test("inline mapping correction loads and rerenders the same durable report", as
       .children[2].textContent,
     "Unmapped",
   );
+});
+
+test("saving a canceled reference correction refreshes both tables without affecting the inventory export", async () => {
+  const document = new FakeDocument();
+  const originalReport = createReport();
+  const correctedReport = createReport({
+    canceledOrders: originalReport.canceledOrders.map((order) => ({
+      ...order,
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    })),
+  });
+  const editorData = {
+    reportId: REPORT_ID,
+    displayName: "Synthetic stream",
+    endedAt: ENDED_AT,
+    eligibility: { status: "editable", code: null, reason: null },
+    canceledDetailsAvailable: true,
+    completedVariations: [],
+    canceledVariations: [{
+      variationNumber: 14,
+      expectedStatus: "canceled",
+      expectedSku: "SKU-A",
+    }],
+    inventory: originalReport.inventory,
+  };
+  const requests = [];
+  let loadCount = 0;
+
+  reportPage.mountStreamReportPage({
+    document,
+    location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
+    navigator: {},
+    runtime: {},
+    protocol,
+    reportModule: { hydrateStreamReport: (report) => report },
+    clientModule: {
+      createStreamReportClient: () => ({
+        async getReport() {
+          loadCount += 1;
+          return {
+            reportId: REPORT_ID,
+            lifecycleStatus: "finalized",
+            report: loadCount === 1 ? originalReport : correctedReport,
+          };
+        },
+      }),
+    },
+    correctionClientModule: {
+      createOfflineReportEditorClient: () => ({
+        async loadEditorData() { return editorData; },
+        async saveMappingCorrections(input) {
+          requests.push(structuredClone(input));
+          return {
+            ...editorData,
+            canceledVariations: [{
+              ...editorData.canceledVariations[0],
+              expectedSku: null,
+            }],
+          };
+        },
+      }),
+    },
+    inlineCorrectionModule: inlineCorrection,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const canceledDisclosure = document.querySelector("#canceled-orders-disclosure");
+  canceledDisclosure.open = true;
+  const inventoryBefore = allText(document.querySelector("#inventory-rows"));
+  const totalsBefore = allText(document.querySelector("#summary-grid"));
+  assert.equal(document.querySelector("#canceled-orders-rows").children[0].children[2].textContent, "SKU-A");
+
+  const group = document.querySelector("#mapping-item-group");
+  group.value = inlineCorrection.UNMAPPED_GROUP_VALUE;
+  await group.dispatch("change");
+  await document.querySelector("#save-mapping-correction").click();
+
+  assert.deepEqual(requests, [{
+    reportId: REPORT_ID,
+    changes: [{
+      variationNumber: 14,
+      expectedStatus: "canceled",
+      expectedSku: "SKU-A",
+      sku: null,
+    }],
+  }]);
+  assert.equal(loadCount, 2);
+  assert.deepEqual(
+    document.querySelector("#canceled-orders-rows").children[0].children.map((cell) => cell.textContent),
+    ["#14", "Canceled", "Unmapped", "Not selected", "—", "—"],
+  );
+  assert.equal(document.querySelector("#completed-sales-rows").children.at(-1).children[2].textContent, "Unmapped");
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
+  assert.equal(canceledDisclosure.open, true);
+  assert.equal(allText(document.querySelector("#inventory-rows")), inventoryBefore);
+  assert.equal(allText(document.querySelector("#summary-grid")), totalsBefore);
+  assert.deepEqual(correctedReport.sheetRows, originalReport.sheetRows);
 });
 
 test("mapping refresh failure disables stale unit-cost controls until recovery", async () => {
@@ -2555,6 +2919,182 @@ test("legacy reports retain canceled totals and explain unavailable row details"
   assert.equal(canceledOnlyDocument.querySelector("#sales-count").textContent, "1 variation");
   assert.equal(canceledOnlyDocument.querySelector("#sales-empty").hidden, true);
   assert.equal(canceledOnlyDocument.querySelector("#variation-details-note").hidden, false);
+});
+
+test("canceled-only rows are sorted references with no payment amounts or report mutation", () => {
+  const document = new FakeDocument();
+  const unsafeText = '<img src=x onerror="stealOAuthToken()">';
+  const base = createReport();
+  const report = createReport({
+    totals: { ...base.totals, canceledOrderCount: 3 },
+    canceledOrders: [
+      {
+        variationNumber: 100,
+        mapped: false,
+        sku: null,
+        item: null,
+        style: null,
+        size: null,
+        soldPriceCents: 987654321,
+        unitCostCents: 111111,
+        grossProfitCents: 222222,
+      },
+      {
+        variationNumber: 2,
+        mapped: true,
+        sku: "SKU-REF",
+        item: unsafeText,
+        style: "black",
+        size: "L",
+      },
+      {
+        variationNumber: 20,
+        mapped: true,
+        sku: "SKU-OS",
+        item: "Example hat",
+        style: "",
+        size: "OS",
+      },
+    ],
+    paymentFixingOrders: [
+      { variationNumber: 50, observedPaymentStatus: "payment_failed" },
+      { variationNumber: 51, observedPaymentStatus: "payment_processing" },
+    ],
+  });
+  const original = structuredClone(report);
+
+  reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  const rows = document.querySelector("#canceled-orders-rows").children;
+  assert.deepEqual(rows.map((row) => row.children.map((cell) => cell.textContent)), [
+    ["#2", "Canceled", "SKU-REF", unsafeText, "black", "L"],
+    ["#20", "Canceled", "SKU-OS", "Example hat", "", "OS"],
+    ["#100", "Canceled", "Unmapped", "Not selected", "—", "—"],
+  ]);
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "3 canceled orders");
+  assert.equal(document.querySelector("#canceled-orders-empty").hidden, true);
+  assert.equal(document.querySelector("#canceled-orders-note").hidden, true);
+  assert.equal(document.querySelector("#canceled-orders-note").textContent, "");
+  assert.equal(document.createdTags.includes("img"), false);
+  assert.doesNotMatch(allText(document.querySelector("#canceled-orders-rows")), /\$|#50|#51|Completed|Processing/);
+  const combinedRows = document.querySelector("#completed-sales-rows").children;
+  assert.equal(combinedRows.length, 5);
+  assert.ok(combinedRows.every((row) => row.children.length === 9));
+  assert.deepEqual(report, original, "Rendering must not alter references, accounting, or export data");
+});
+
+test("canceled-only rendering has a truthful empty state and singular count", () => {
+  const document = new FakeDocument();
+  const base = createReport();
+
+  reportPage.renderCanceledOrders(document, base);
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 1);
+
+  for (const canceledOrders of [[], null, undefined]) {
+    reportPage.renderCanceledOrders(document, createReport({
+      totals: { ...base.totals, canceledOrderCount: 0 },
+      canceledOrders,
+    }));
+    assert.equal(document.querySelector("#canceled-orders-count").textContent, "0 canceled orders");
+    assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+    assert.equal(document.querySelector("#canceled-orders-empty").hidden, false);
+    assert.equal(document.querySelector("#canceled-orders-note").hidden, true);
+    assert.equal(document.querySelector("#canceled-orders-note").textContent, "");
+  }
+});
+
+test("canceled-only rendering falls back to saved row counts when the total is unavailable", () => {
+  const base = createReport();
+  const document = new FakeDocument();
+  for (const canceledOrderCount of [undefined, null, NaN, "10", Number.MAX_SAFE_INTEGER + 1]) {
+    reportPage.renderCanceledOrders(document, createReport({
+      totals: { ...base.totals, canceledOrderCount },
+    }));
+    assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
+    assert.equal(document.querySelector("#canceled-orders-empty").hidden, true);
+  }
+  reportPage.renderCanceledOrders(document, createReport({ totals: undefined }));
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
+});
+
+test("legacy canceled-only rendering preserves saved totals without inventing order details", () => {
+  const base = createReport();
+  for (const canceledOrders of [null, undefined]) {
+    for (const count of [1, 3]) {
+      const document = new FakeDocument();
+      const report = createReport({
+        totals: { ...base.totals, canceledOrderCount: count },
+        canceledOrders,
+      });
+      const original = structuredClone(report);
+      reportPage.renderCanceledOrders(document, report);
+
+      assert.equal(
+        document.querySelector("#canceled-orders-count").textContent,
+        `${count} canceled order${count === 1 ? "" : "s"}`,
+      );
+      assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+      assert.equal(document.querySelector("#canceled-orders-empty").hidden, true);
+      assert.equal(document.querySelector("#canceled-orders-note").hidden, false);
+      assert.match(
+        document.querySelector("#canceled-orders-note").textContent,
+        new RegExp(`${count} canceled variation${count === 1 ? "" : "s"}[\\s\\S]*not saved[\\s\\S]*still included above`),
+      );
+      assert.deepEqual(report, original);
+    }
+  }
+});
+
+test("canceled-order rerenders replace rows without duplicates and preserve both disclosure states", () => {
+  const document = new FakeDocument();
+  const base = createReport();
+  const canceledDisclosure = document.querySelector("#canceled-orders-disclosure");
+  const combinedDisclosure = document.querySelector("#completed-sales-disclosure");
+  const render = (report) => reportPage.renderReport(document, {
+    reportId: REPORT_ID,
+    lifecycleStatus: "finalized",
+    report,
+  });
+
+  render(base);
+  assert.equal(canceledDisclosure.open, false);
+  canceledDisclosure.open = true;
+  combinedDisclosure.open = false;
+  render(base);
+  render(base);
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 1);
+  assert.equal(canceledDisclosure.open, true);
+  assert.equal(combinedDisclosure.open, false);
+
+  const corrected = createReport({
+    canceledOrders: base.canceledOrders.map((order) => ({
+      ...order,
+      sku: "SKU-CORRECTED",
+      item: "Corrected reference",
+      style: "",
+      size: "M",
+    })),
+  });
+  render(corrected);
+  assert.equal(document.querySelector("#canceled-orders-rows").children[0].children[2].textContent, "SKU-CORRECTED");
+  assert.equal(document.querySelector("#completed-sales-rows").children.at(-1).children[2].textContent, "SKU-CORRECTED");
+  assert.equal(canceledDisclosure.open, true);
+
+  canceledDisclosure.open = false;
+  combinedDisclosure.open = true;
+  render(createReport({
+    totals: { ...base.totals, canceledOrderCount: 0 },
+    canceledOrders: [],
+  }));
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 0);
+  assert.equal(document.querySelector("#canceled-orders-empty").hidden, false);
+  assert.equal(canceledDisclosure.open, false);
+  assert.equal(combinedDisclosure.open, true);
 });
 
 test("SKU performance sorts sold SKUs by profit with signed color-coded profit/loss values", () => {
@@ -3415,6 +3955,10 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
 
   await new Promise((resolve) => setImmediate(resolve));
   const row = document.querySelector("#payment-resolution-orders").children[0];
+  const canceledDisclosure = document.querySelector("#canceled-orders-disclosure");
+  canceledDisclosure.open = true;
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "1 canceled order");
+  assert.equal(document.querySelector("#canceled-orders-rows").children.length, 1);
   row.children[3].click();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
@@ -3446,6 +3990,14 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
     variationRows.at(-1).children.map((cell) => cell.textContent),
     ["#220", "Canceled", "SKU-A", "Example tee", "black", "L", "—", "—", "—"],
   );
+  assert.equal(document.querySelector("#canceled-orders-count").textContent, "2 canceled orders");
+  const canceledRows = document.querySelector("#canceled-orders-rows").children;
+  assert.equal(canceledRows.length, 2);
+  assert.deepEqual(
+    canceledRows.at(-1).children.map((cell) => cell.textContent),
+    ["#220", "Canceled", "SKU-A", "Example tee", "black", "L"],
+  );
+  assert.equal(canceledDisclosure.open, true);
 });
 
 test("failed report payment correction preserves the row and input for retry", async () => {
