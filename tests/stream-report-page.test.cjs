@@ -68,7 +68,11 @@ class FakeElement {
     }));
   }
 
-  focus() {}
+  focus() { this.focused = true; }
+
+  contains(target) {
+    return this === target || this.children.some((child) => child?.contains?.(target));
+  }
 
   click() {
     this.clicked = true;
@@ -93,7 +97,18 @@ const REPORT_SELECTORS = [
   "#completed-sales-rows",
   "#completed-sales-disclosure",
   "#copy-inventory",
+  "#copy-quantities",
+  "#check-quantity-sheet",
+  "#quantity-handoff-form",
+  "#quantity-handoff-panel",
+  "#quantity-sheet-reference",
+  "#quantity-handoff-target",
+  "#quantity-handoff-feedback",
   "#download-inventory",
+  "#inventory-other-options",
+  "#inventory-other-options-panel",
+  "#inventory-other-options-container",
+  "#copy-inventory-unformatted",
   "#inventory-rows",
   "#mapping-correction-availability",
   "#mapping-correction-disclosure",
@@ -158,8 +173,17 @@ class FakeDocument {
       REPORT_SELECTORS.map((selector) => [selector, new FakeElement()]),
     );
     this.createdTags = [];
+    this.listeners = new Map();
     this.body = new FakeElement("body");
     this.title = "";
+    this.querySelector("#inventory-other-options-container").append(
+      this.querySelector("#inventory-other-options"),
+      this.querySelector("#inventory-other-options-panel"),
+    );
+    this.querySelector("#inventory-other-options-panel").append(
+      this.querySelector("#download-inventory"),
+      this.querySelector("#copy-inventory-unformatted"),
+    );
   }
 
   querySelector(selector) {
@@ -169,6 +193,12 @@ class FakeDocument {
   createElement(tagName) {
     this.createdTags.push(tagName.toLocaleLowerCase("en-US"));
     return new FakeElement(tagName);
+  }
+
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+
+  dispatch(name, event = {}) {
+    return Promise.resolve(this.listeners.get(name)?.({ currentTarget: this, target: this, ...event }));
   }
 }
 
@@ -399,8 +429,16 @@ function mountReportNameEditor(options = {}) {
     reportModule: { hydrateStreamReport: (report) => report },
     clientModule: { createStreamReportClient: () => client },
     inlineCorrectionModule: options.inlineCorrectionModule,
+    correctionClientModule: options.correctionClientModule,
+    confirm: options.confirm,
     print: options.print ?? (() => {}),
     printEventTarget: options.printEventTarget,
+    lifecycleEventTarget: options.lifecycleEventTarget,
+    ClipboardItem: options.ClipboardItem,
+    Blob: options.Blob,
+    URL: options.URL,
+    setTimeout: options.setTimeout,
+    clearTimeout: options.clearTimeout,
   });
 
   return {
@@ -414,6 +452,976 @@ function mountReportNameEditor(options = {}) {
     ready: new Promise((resolve) => setImmediate(resolve)),
   };
 }
+
+const QUANTITY_SHEET_ID = "synthetic-sheet-12345678901234567890";
+const QUANTITY_PREPARATION = {
+  reportId: REPORT_ID,
+  token: "synthetic-quantity-preparation-token",
+  spreadsheetId: QUANTITY_SHEET_ID,
+  sheetTitle: "Inventory",
+  startCell: "C2",
+  range: "Inventory!C2:C6",
+  rowCount: 5,
+  itemCount: 2,
+  alreadyApplied: false,
+};
+
+function mountQuantityHandoff(options = {}) {
+  const prepareRequests = [];
+  const copyRequests = [];
+  const clipboardCalls = [];
+  const clipboardTexts = [];
+  const preparation = { ...QUANTITY_PREPARATION, ...options.preparation };
+  const client = {
+    async prepareQuantityHandoff(request) {
+      prepareRequests.push(request);
+      return options.prepare ? options.prepare(request) : preparation;
+    },
+    async copyQuantityHandoff(request) {
+      copyRequests.push(request);
+      return options.copy ? options.copy(request) : { ...preparation, text: "\n9\n\n\n0" };
+    },
+    ...options.client,
+  };
+  class SyntheticClipboardItem {
+    constructor(types) { this.types = types; }
+  }
+  const navigator = options.navigator ?? {
+    clipboard: {
+      write(items) {
+        clipboardCalls.push(items);
+        return items[0].types["text/plain"].then(async (blob) => {
+          if (options.clipboardError) throw new Error(options.clipboardError);
+          clipboardTexts.push(await blob.text());
+        });
+      },
+    },
+  };
+  const surface = mountReportNameEditor({
+    ...options, client, navigator,
+    ClipboardItem: SyntheticClipboardItem, Blob,
+  });
+  surface.sheet = surface.document.querySelector("#quantity-sheet-reference");
+  surface.sheet.value = `https://docs.google.com/spreadsheets/d/${QUANTITY_SHEET_ID}/edit`;
+  return {
+    ...surface, preparation, prepareRequests, copyRequests, clipboardCalls, clipboardTexts,
+    quantityFeedback: surface.document.querySelector("#quantity-handoff-feedback"),
+    target: surface.document.querySelector("#quantity-handoff-target"),
+    checkButton: surface.document.querySelector("#check-quantity-sheet"),
+    copyButton: surface.document.querySelector("#copy-quantities"),
+    panel: surface.document.querySelector("#quantity-handoff-panel"),
+    toggleButton: surface.document.querySelector("#copy-inventory"),
+    toggle() { return surface.document.querySelector("#copy-inventory").click(); },
+    check() {
+      if (surface.document.querySelector("#quantity-handoff-panel").hidden) {
+        surface.document.querySelector("#copy-inventory").click();
+      }
+      return surface.document.querySelector("#quantity-handoff-form").dispatch("submit", { preventDefault() {} });
+    },
+    copy() { return surface.document.querySelector("#copy-quantities").click(); },
+  };
+}
+
+function mountInventoryOtherOptions(options = {}) {
+  const fullWriteCalls = [];
+  const fullTexts = [];
+  const quantityTexts = [];
+  const downloadBlobs = [];
+  const revokedUrls = [];
+  const navigator = options.navigator ?? { clipboard: {
+    async writeText(text) {
+      fullWriteCalls.push(text);
+      if (options.copyText) await options.copyText(text);
+      fullTexts.push(text);
+    },
+    async write(items) {
+      const blob = await items[0].types["text/plain"];
+      if (options.quantityDelivery) await options.quantityDelivery();
+      quantityTexts.push(await blob.text());
+    },
+  } };
+  const surface = mountQuantityHandoff({
+    ...options, navigator,
+    URL: options.URL ?? {
+      createObjectURL(blob) { downloadBlobs.push(blob); return "blob:synthetic-other-options-csv"; },
+      revokeObjectURL(url) { revokedUrls.push(url); },
+    },
+    setTimeout(callback, milliseconds) { if (milliseconds === 0) callback(); return 1; },
+    clearTimeout() {},
+  });
+  return {
+    ...surface, fullWriteCalls, fullTexts, quantityTexts, downloadBlobs, revokedUrls,
+    optionsButton: surface.document.querySelector("#inventory-other-options"),
+    optionsPanel: surface.document.querySelector("#inventory-other-options-panel"),
+    unformattedButton: surface.document.querySelector("#copy-inventory-unformatted"),
+    downloadButton: surface.document.querySelector("#download-inventory"),
+    actionFeedback: surface.document.querySelector("#action-feedback"),
+    openOptions() { return surface.document.querySelector("#inventory-other-options").click(); },
+    fullCopy() { return surface.document.querySelector("#copy-inventory-unformatted").click(); },
+    download() { return surface.document.querySelector("#download-inventory").click(); },
+  };
+}
+
+test("Other options starts hidden and opens without reading Sheets, downloading, or copying", async () => {
+  const surface = mountInventoryOtherOptions();
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.disabled, true);
+  assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
+  await surface.openOptions();
+  await surface.fullCopy();
+  await surface.download();
+  assert.equal(surface.optionsPanel.hidden, true);
+  await surface.ready;
+  assert.equal(surface.optionsButton.disabled, false);
+  assert.equal(surface.unformattedButton.disabled, true);
+  assert.equal(surface.downloadButton.disabled, true);
+  await surface.openOptions();
+  assert.equal(surface.optionsPanel.hidden, false);
+  assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "true");
+  assert.equal(surface.unformattedButton.disabled, false);
+  assert.equal(surface.downloadButton.disabled, false);
+  await surface.openOptions();
+  assert.equal(surface.optionsPanel.hidden, true);
+  await surface.fullCopy();
+  await surface.download();
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.quantityTexts, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+  assert.deepEqual(surface.prepareRequests, []);
+  assert.deepEqual(surface.copyRequests, []);
+});
+
+test("Other options full copy closes the popup and copies unchanged six-column TSV for A1", async () => {
+  const report = createReport();
+  const original = structuredClone(report);
+  const surface = mountInventoryOtherOptions({ report });
+  await surface.ready;
+  await surface.openOptions();
+  await surface.fullCopy();
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
+  assert.deepEqual(surface.fullTexts, [reportPage.serializeInventoryTsv(report)]);
+  assert.equal(surface.fullTexts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost");
+  assert.equal(surface.actionFeedback.textContent, "Inventory copied. Paste into spreadsheet cell A1.");
+  assert.deepEqual(report, original);
+  assert.deepEqual(surface.prepareRequests, []);
+  assert.deepEqual(surface.copyRequests, []);
+  assert.deepEqual(surface.quantityTexts, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+});
+
+test("Other options full-table copy remains available without quantity-check client methods", async () => {
+  const texts = [];
+  const surface = mountReportNameEditor({ navigator: { clipboard: { async writeText(text) { texts.push(text); } } } });
+  await surface.ready;
+  assert.equal(surface.document.querySelector("#copy-inventory").disabled, true);
+  assert.equal(surface.document.querySelector("#inventory-other-options").disabled, false);
+  await surface.document.querySelector("#inventory-other-options").click();
+  await surface.document.querySelector("#copy-inventory-unformatted").click();
+  assert.deepEqual(texts, [reportPage.serializeInventoryTsv(createReport())]);
+});
+
+test("Other options CSV retains its bytes, filename, download cleanup, and no clipboard effects", async () => {
+  const report = createReport();
+  const surface = mountInventoryOtherOptions({ report });
+  await surface.ready;
+  await surface.openOptions();
+  await surface.download();
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
+  assert.equal(surface.optionsButton.focused, true);
+  assert.equal(surface.downloadBlobs.length, 1);
+  assert.equal(await surface.downloadBlobs[0].text(), reportPage.serializeInventoryCsv(report));
+  const anchor = surface.document.body.children.find((child) => child.tagName === "a");
+  assert.equal(anchor.download, reportPage.createReportFilename(report, "Updated-Inventory", "csv"));
+  assert.equal(anchor.clicked, true);
+  assert.equal(anchor.removed, true);
+  assert.deepEqual(surface.revokedUrls, ["blob:synthetic-other-options-csv"]);
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.prepareRequests, []);
+  assert.deepEqual(surface.copyRequests, []);
+});
+
+test("Other options Escape closes with opener focus and outside clicks close without action", async () => {
+  const surface = mountInventoryOtherOptions();
+  await surface.ready;
+  await surface.openOptions();
+  let prevented = false;
+  await surface.document.dispatch("keydown", { key: "Escape", target: surface.downloadButton, preventDefault() { prevented = true; } });
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
+  assert.equal(surface.optionsButton.focused, true);
+  assert.equal(prevented, true);
+  surface.optionsButton.focused = false;
+  await surface.openOptions();
+  await surface.document.dispatch("click", { target: surface.downloadButton });
+  assert.equal(surface.optionsPanel.hidden, false);
+  await surface.document.dispatch("click", { target: surface.document.querySelector("#inventory-rows") });
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.focused, false);
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+});
+
+test("Other options resets closed on reload, report navigation, and disposal", async (t) => {
+  for (const action of ["reload", "navigate", "dispose", "pagehide"]) {
+    await t.test(action, async () => {
+      const lifecycle = new FakeElement();
+      const surface = mountInventoryOtherOptions({ lifecycleEventTarget: lifecycle });
+      await surface.ready;
+      await surface.openOptions();
+      if (action === "dispose") surface.mounted.dispose();
+      else if (action === "pagehide") await lifecycle.dispatch("pagehide");
+      else {
+        if (action === "navigate") surface.location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+        await surface.mounted.load();
+      }
+      assert.equal(surface.optionsPanel.hidden, true);
+      assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
+      await surface.fullCopy();
+      await surface.download();
+      assert.deepEqual(surface.fullWriteCalls, []);
+      assert.deepEqual(surface.downloadBlobs, []);
+    });
+  }
+});
+
+test("Other options stale URL, pending report, and failed-load handlers cannot export", async (t) => {
+  for (const state of ["wrong report", "invalid report", "pending", "failed"]) {
+    await t.test(state, async () => {
+      const surface = mountInventoryOtherOptions(state === "pending" ? { lifecycleStatus: "pending" }
+        : state === "failed" ? { getReport: async () => { throw new Error("Report unavailable"); } } : {});
+      await surface.ready;
+      if (state === "wrong report" || state === "invalid report") {
+        await surface.openOptions();
+        surface.location.search = state === "wrong report" ? `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}` : "?reportId=invalid";
+      }
+      await surface.openOptions();
+      await surface.fullCopy();
+      await surface.download();
+      assert.deepEqual(surface.fullWriteCalls, []);
+      assert.deepEqual(surface.downloadBlobs, []);
+      assert.deepEqual(surface.prepareRequests, []);
+    });
+  }
+});
+
+test("Other options full-copy failures show feedback, close the popup, and release their busy lock", async (t) => {
+  for (const unsupported of [false, true]) {
+    await t.test(unsupported ? "unsupported clipboard" : "clipboard rejection", async () => {
+      const surface = mountInventoryOtherOptions(unsupported ? { navigator: {} }
+        : { copyText: async () => { throw new Error("Copy denied."); } });
+      await surface.ready;
+      await surface.openOptions();
+      await surface.fullCopy();
+      assert.equal(surface.optionsPanel.hidden, true);
+      assert.equal(surface.optionsButton.disabled, false);
+      assert.equal(surface.toggleButton.disabled, false);
+      assert.deepEqual(surface.fullTexts, []);
+      assert.doesNotMatch(surface.actionFeedback.textContent, /^Inventory copied/);
+      assert.match(surface.actionFeedback.textContent, unsupported ? /Clipboard access is unavailable/ : /Copy denied/);
+      await surface.openOptions();
+      assert.equal(surface.unformattedButton.disabled, false);
+    });
+  }
+});
+
+test("Other options prevents overlapping full copies and quantity copying until clipboard delivery settles", async () => {
+  const delivery = createDeferred();
+  const surface = mountInventoryOtherOptions({ copyText: () => delivery.promise });
+  await surface.ready;
+  await surface.check();
+  await surface.openOptions();
+  const copying = surface.fullCopy();
+  assert.equal(surface.fullWriteCalls.length, 1);
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.equal(surface.optionsButton.disabled, true);
+  assert.equal(surface.toggleButton.disabled, true);
+  assert.equal(surface.input.disabled, true);
+  const originalName = surface.input.value;
+  surface.input.value = "Unrequested in-flight rename";
+  await surface.input.dispatch("input");
+  await surface.input.dispatch("blur");
+  assert.equal(surface.input.value, originalName);
+  assert.deepEqual(surface.renameRequests, []);
+  await surface.openOptions();
+  await surface.fullCopy();
+  await surface.download();
+  await surface.copy();
+  await surface.check();
+  assert.equal(surface.fullWriteCalls.length, 1);
+  assert.deepEqual(surface.copyRequests, []);
+  assert.equal(surface.prepareRequests.length, 1);
+  assert.deepEqual(surface.downloadBlobs, []);
+  delivery.resolve();
+  await copying;
+  assert.equal(surface.optionsButton.disabled, false);
+  assert.equal(surface.toggleButton.disabled, false);
+  assert.equal(surface.input.disabled, false);
+  assert.equal(surface.fullTexts.length, 1);
+});
+
+test("Other options cannot export or open while a quantity Sheet check is pending", async () => {
+  const prepare = createDeferred();
+  const surface = mountInventoryOtherOptions({ prepare: () => prepare.promise });
+  await surface.ready;
+  const checking = surface.check();
+  assert.equal(surface.optionsButton.disabled, true);
+  await surface.openOptions();
+  await surface.fullCopy();
+  await surface.download();
+  assert.equal(surface.optionsPanel.hidden, true);
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+  prepare.resolve(surface.preparation);
+  await checking;
+  assert.equal(surface.optionsButton.disabled, false);
+});
+
+test("quantity clipboard delivery blocks Other options and stale full-copy/CSV events", async () => {
+  const delivery = createDeferred();
+  const blobReady = createDeferred();
+  const surface = mountInventoryOtherOptions({ quantityDelivery() { blobReady.resolve(); return delivery.promise; } });
+  await surface.ready;
+  await surface.check();
+  await surface.openOptions();
+  const copying = surface.copy();
+  await blobReady.promise;
+  assert.equal(surface.optionsButton.disabled, true);
+  await surface.openOptions();
+  await surface.fullCopy();
+  await surface.download();
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+  delivery.resolve();
+  await copying;
+  assert.equal(surface.optionsButton.disabled, false);
+  assert.deepEqual(surface.quantityTexts, ["\n9\n\n\n0"]);
+});
+
+test("Other options cannot export while a report rename is saving", async () => {
+  const rename = createDeferred();
+  const surface = mountInventoryOtherOptions({ renameReport: () => rename.promise });
+  await surface.ready;
+  await surface.openOptions();
+  surface.input.value = "Renamed report";
+  await surface.input.dispatch("input");
+  const saving = surface.input.dispatch("blur");
+  assert.equal(surface.optionsButton.disabled, true);
+  assert.equal(surface.unformattedButton.disabled, true);
+  assert.equal(surface.downloadButton.disabled, true);
+  await surface.fullCopy();
+  await surface.download();
+  assert.deepEqual(surface.fullWriteCalls, []);
+  assert.deepEqual(surface.downloadBlobs, []);
+  rename.resolve({ reportId: REPORT_ID, displayName: "Renamed report" });
+  await saving;
+  assert.equal(surface.optionsButton.disabled, false);
+});
+
+test("top Copy Updated Inventory only toggles the initially hidden quantity form", async () => {
+  let fullCopies = 0;
+  const surface = mountQuantityHandoff({ navigator: { clipboard: { writeText() { fullCopies += 1; } } } });
+  assert.equal(surface.panel.hidden, true);
+  assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "false");
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, true);
+  await surface.ready;
+  assert.equal(surface.toggleButton.disabled, false);
+  assert.equal(surface.checkButton.disabled, true);
+  assert.equal(surface.copyButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "true");
+  assert.equal(surface.checkButton.disabled, false);
+  assert.equal(surface.copyButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, true);
+  assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "false");
+  assert.equal(surface.checkButton.disabled, true);
+  await surface.document.querySelector("#quantity-handoff-form").dispatch("submit", { preventDefault() {} });
+  await surface.copy();
+  assert.deepEqual(surface.prepareRequests, []);
+  assert.deepEqual(surface.copyRequests, []);
+  assert.equal(fullCopies, 0);
+  assert.deepEqual(surface.clipboardCalls, []);
+});
+
+test("closing and reopening the quantity form retains a valid preparation without another read", async () => {
+  const surface = mountQuantityHandoff();
+  await surface.ready;
+  await surface.check();
+  const target = surface.target.children.map((child) => child.textContent).join("");
+  const link = surface.sheet.value;
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, true);
+  assert.equal(surface.copyButton.disabled, true);
+  await surface.copy();
+  assert.deepEqual(surface.copyRequests, []);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.copyButton.disabled, false);
+  assert.equal(surface.sheet.value, link);
+  assert.equal(surface.target.children.map((child) => child.textContent).join(""), target);
+  assert.equal(surface.prepareRequests.length, 1);
+  assert.deepEqual(surface.clipboardCalls, []);
+  await surface.copy();
+  assert.deepEqual(surface.clipboardTexts, ["\n9\n\n\n0"]);
+});
+
+test("report reload and navigation close the quantity form and invalidate preparation", async (t) => {
+  for (const reportId of [REPORT_ID, SECOND_REPORT_ID]) {
+    await t.test(reportId, async () => {
+      const surface = mountQuantityHandoff();
+      await surface.ready;
+      await surface.check();
+      surface.location.search = `?reportId=${encodeURIComponent(reportId)}`;
+      await surface.mounted.load();
+      assert.equal(surface.panel.hidden, true);
+      assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "false");
+      assert.equal(surface.target.hidden, true);
+      await surface.toggle();
+      assert.equal(surface.panel.hidden, false);
+      assert.equal(surface.copyButton.disabled, true);
+      await surface.copy();
+      assert.deepEqual(surface.copyRequests, []);
+      assert.equal(surface.prepareRequests.length, 1);
+    });
+  }
+});
+
+test("top quantity toggle rejects pending read and clipboard clicks without hiding its form", async () => {
+  const prepare = createDeferred();
+  const copy = createDeferred();
+  const surface = mountQuantityHandoff({ prepare: () => prepare.promise, copy: () => copy.promise });
+  await surface.ready;
+  const checking = surface.check();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "true");
+  prepare.resolve(surface.preparation);
+  await checking;
+  assert.equal(surface.toggleButton.disabled, false);
+  const copying = surface.copy();
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  copy.resolve({ ...surface.preparation, text: "9" });
+  await copying;
+  assert.equal(surface.toggleButton.disabled, false);
+  assert.equal(surface.prepareRequests.length, 1);
+  assert.equal(surface.copyRequests.length, 1);
+});
+
+test("top quantity toggle rejects wrong-report URL, failed loads, pending reports, and disposed views", async (t) => {
+  for (const state of ["wrong report", "invalid report", "failed", "pending", "disposed"]) {
+    await t.test(state, async () => {
+      const surface = mountQuantityHandoff(state === "failed"
+        ? { getReport: async () => { throw new Error("Report unavailable."); } }
+        : state === "pending" ? { lifecycleStatus: "pending" } : {});
+      await surface.ready;
+      if (state === "wrong report") surface.location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+      if (state === "invalid report") surface.location.search = "?reportId=not-a-report";
+      if (state === "disposed") surface.mounted.dispose();
+      await surface.toggle();
+      assert.equal(surface.panel.hidden, true);
+      assert.equal(surface.toggleButton.getAttribute("aria-expanded"), "false");
+      assert.deepEqual(surface.prepareRequests, []);
+      assert.deepEqual(surface.copyRequests, []);
+      assert.deepEqual(surface.clipboardCalls, []);
+    });
+  }
+});
+
+test("top quantity toggle respects an in-flight report rename and re-enables after it settles", async () => {
+  const rename = createDeferred();
+  const surface = mountQuantityHandoff({ renameReport: () => rename.promise });
+  await surface.ready;
+  surface.input.value = "Saved new report name";
+  await surface.input.dispatch("input");
+  const renaming = surface.input.dispatch("blur");
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, true);
+  rename.resolve({ reportId: REPORT_ID, displayName: "Saved new report name" });
+  await renaming;
+  assert.equal(surface.toggleButton.disabled, false);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.deepEqual(surface.prepareRequests, []);
+});
+
+test("full-table clipboard helper copies the unchanged six-column TSV independently of its UI", async () => {
+  const report = createReport();
+  const original = structuredClone(report);
+  const texts = [];
+  await reportPage.copyUpdatedInventory({ clipboard: { async writeText(text) { texts.push(text); } } }, report);
+  assert.deepEqual(texts, [reportPage.serializeInventoryTsv(report)]);
+  assert.equal(texts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost");
+  assert.doesNotMatch(texts[0], /secret-oauth-token|private-buyer/);
+  assert.deepEqual(report, original);
+  await reportPage.copyUpdatedInventory({ clipboard: { async writeText(text) { texts.push(text); } } }, report, {
+    serializeInventoryTsv(value) { assert.equal(value, report); return "synthetic-module-TSV"; },
+  });
+  assert.equal(texts[1], "synthetic-module-TSV");
+});
+
+test("retained full-table clipboard helper preserves unsupported and write failure errors", async () => {
+  await assert.rejects(reportPage.copyUpdatedInventory({}, createReport()), /Clipboard access is unavailable/);
+  const failure = new Error("Clipboard denied");
+  await assert.rejects(reportPage.copyUpdatedInventory({ clipboard: { async writeText() { throw failure; } } }, createReport()), (error) => error === failure);
+});
+
+test("quantity handoff checks an explicit destination then copies only its fresh worker text", async () => {
+  const surface = mountQuantityHandoff();
+  assert.equal(surface.checkButton.disabled, true);
+  assert.equal(surface.copyButton.disabled, true);
+  await surface.ready;
+  await surface.toggle();
+  assert.equal(surface.checkButton.disabled, false);
+  await surface.check();
+  assert.deepEqual(surface.prepareRequests, [{ reportId: REPORT_ID, spreadsheetId: QUANTITY_SHEET_ID }]);
+  assert.equal(surface.clipboardCalls.length, 0);
+  assert.equal(surface.copyButton.disabled, false);
+  const guidance = "\nNot A1 to preserve order and formatting of google sheet. Make sure edits were not made during tracking or before pasting.";
+  const expectedInstructions = `Paste into inventory cell C2${guidance}`;
+  assert.equal(surface.target.children.length, 2);
+  assert.equal(surface.target.children[0].tagName, "strong");
+  assert.equal(surface.target.children[0].className, "quantity-handoff-cell");
+  assert.equal(surface.target.children[0].textContent, "Paste into inventory cell C2");
+  assert.equal(surface.target.children[1].tagName, "span");
+  assert.equal(surface.target.children[1].textContent, guidance);
+  assert.equal(surface.target.children.map((child) => child.textContent).join(""), expectedInstructions);
+  const instructionNodes = [...surface.target.children];
+  await surface.copy();
+  assert.deepEqual(surface.copyRequests, [{ reportId: REPORT_ID, token: QUANTITY_PREPARATION.token }]);
+  assert.deepEqual(surface.clipboardTexts, ["\n9\n\n\n0"]);
+  assert.equal(surface.quantityFeedback.textContent, "");
+  assert.deepEqual(surface.target.children, instructionNodes);
+  assert.equal(surface.target.children.map((child) => child.textContent).join(""), expectedInstructions);
+  assert.equal(surface.target.hidden, false);
+});
+
+test("quantity Copy starts the clipboard gesture synchronously but waits for worker revalidation", async () => {
+  const pending = createDeferred();
+  const surface = mountQuantityHandoff({ copy: () => pending.promise });
+  await surface.ready;
+  await surface.check();
+  const copying = surface.copy();
+  assert.equal(surface.clipboardCalls.length, 1);
+  assert.equal(surface.copyRequests.length, 0);
+  assert.deepEqual(surface.clipboardTexts, []);
+  await Promise.resolve();
+  assert.equal(surface.copyRequests.length, 1);
+  assert.equal(surface.copyButton.disabled, true);
+  pending.resolve({ ...surface.preparation, text: "5\n0" });
+  await copying;
+  assert.deepEqual(surface.clipboardTexts, ["5\n0"]);
+});
+
+test("quantity handoff does not overlap duplicate prepare or copy submissions", async () => {
+  const prepare = createDeferred();
+  const copy = createDeferred();
+  const surface = mountQuantityHandoff({ prepare: () => prepare.promise, copy: () => copy.promise });
+  await surface.ready;
+  const checking = surface.check();
+  await surface.check();
+  assert.equal(surface.prepareRequests.length, 1);
+  assert.equal(surface.checkButton.disabled, true);
+  prepare.resolve(surface.preparation);
+  await checking;
+  const copying = surface.copy();
+  await surface.copy();
+  await surface.check();
+  assert.equal(surface.copyRequests.length, 1);
+  assert.equal(surface.prepareRequests.length, 1);
+  copy.resolve({ ...surface.preparation, text: "9" });
+  await copying;
+  assert.deepEqual(surface.clipboardTexts, ["9"]);
+});
+
+test("quantity handoff rejects invalid Sheet links before messaging and never auto-copies", async () => {
+  const surface = mountQuantityHandoff();
+  await surface.ready;
+  surface.sheet.value = "https://example.com/not-a-sheet";
+  await surface.check();
+  await surface.copy();
+  assert.deepEqual(surface.prepareRequests, []);
+  assert.deepEqual(surface.copyRequests, []);
+  assert.deepEqual(surface.clipboardCalls, []);
+  assert.equal(surface.copyButton.disabled, true);
+  assert.match(surface.quantityFeedback.className, /is-error/);
+});
+
+test("quantity handoff accepts a Sheet ID and explicitly reports already-applied quantities", async () => {
+  const surface = mountQuantityHandoff({ preparation: { alreadyApplied: true } });
+  await surface.ready;
+  surface.sheet.value = QUANTITY_SHEET_ID;
+  await surface.check();
+  assert.equal(surface.prepareRequests[0].spreadsheetId, QUANTITY_SHEET_ID);
+  assert.match(surface.quantityFeedback.textContent, /already match/);
+  assert.match(surface.quantityFeedback.textContent, /not deduct stock again/);
+});
+
+test("quantity check failures retain the report, quantity opener, and unchanged CSV export", async () => {
+  const surface = mountQuantityHandoff({ prepare: async () => { throw new Error("SKU rows no longer match."); } });
+  await surface.ready;
+  const before = surface.document.querySelector("#inventory-rows").children;
+  await surface.check();
+  assert.match(surface.quantityFeedback.textContent, /SKU rows no longer match/);
+  assert.equal(surface.copyButton.disabled, true);
+  assert.equal(surface.target.hidden, true);
+  assert.equal(surface.document.querySelector("#copy-inventory").disabled, false);
+  assert.equal(surface.document.querySelector("#download-inventory").disabled, true);
+  await surface.document.querySelector("#inventory-other-options").click();
+  assert.equal(surface.document.querySelector("#download-inventory").disabled, false);
+  assert.equal(surface.document.querySelector("#inventory-rows").children, before);
+  assert.deepEqual(surface.clipboardTexts, []);
+});
+
+test("quantity copy worker and clipboard failures never claim success or retain a stale preparation", async (t) => {
+  for (const failure of ["worker", "clipboard", "unsupported"]) {
+    await t.test(failure, async () => {
+      const surface = mountQuantityHandoff(failure === "worker"
+        ? { copy: async () => { throw new Error("Report is no longer eligible."); } }
+        : failure === "clipboard" ? { clipboardError: "Clipboard permission denied." }
+          : { navigator: { clipboard: { writeText() { throw new Error("Must not use late writeText"); } } } });
+      await surface.ready;
+      await surface.check();
+      await surface.copy();
+      assert.deepEqual(surface.clipboardTexts, []);
+      assert.doesNotMatch(surface.quantityFeedback.textContent, /Quantities copied/);
+      assert.match(surface.quantityFeedback.className, /is-error/);
+      if (failure !== "unsupported") assert.equal(surface.copyButton.disabled, true);
+    });
+  }
+});
+
+test("quantity preparation rejects mismatched worker destinations and report identifiers", async (t) => {
+  for (const changed of [{ reportId: SECOND_REPORT_ID }, { spreadsheetId: "other-sheet-12345678901234567890" }]) {
+    await t.test(JSON.stringify(changed), async () => {
+      const surface = mountQuantityHandoff({ prepare: async () => ({ ...QUANTITY_PREPARATION, ...changed }) });
+      await surface.ready;
+      await surface.check();
+      assert.equal(surface.copyButton.disabled, true);
+      assert.match(surface.quantityFeedback.className, /is-error/);
+      assert.deepEqual(surface.clipboardTexts, []);
+    });
+  }
+});
+
+test("quantity copy rejects altered token, destination, and report echoes before releasing bytes", async (t) => {
+  for (const changed of [{ token: "other" }, { reportId: SECOND_REPORT_ID }, { startCell: "E2" }, { range: "Inventory!C2:C7" }, { spreadsheetId: "other-sheet" }, { sheetTitle: "Other" }]) {
+    await t.test(JSON.stringify(changed), async () => {
+      const surface = mountQuantityHandoff({ copy: async () => ({ ...QUANTITY_PREPARATION, text: "9", ...changed }) });
+      await surface.ready;
+      await surface.check();
+      await surface.copy();
+      assert.deepEqual(surface.clipboardTexts, []);
+      assert.equal(surface.copyButton.disabled, true);
+      assert.match(surface.quantityFeedback.className, /is-error/);
+    });
+  }
+});
+
+test("quantity link edits invalidate preparation and guard both pending stages without input events", async (t) => {
+  for (const stage of ["prepare", "prepared", "copy"]) {
+    for (const dispatchInput of [false, true]) {
+      await t.test(`${stage}, input event ${dispatchInput}`, async () => {
+        const pending = createDeferred();
+        const surface = mountQuantityHandoff(stage === "prepare"
+          ? { prepare: () => pending.promise } : stage === "copy" ? { copy: () => pending.promise } : {});
+        await surface.ready;
+        let action = surface.check();
+        if (stage !== "prepare") await action;
+        if (stage === "copy") { action = surface.copy(); await Promise.resolve(); }
+        surface.sheet.value = "changed-sheet-12345678901234567890";
+        if (dispatchInput) await surface.sheet.dispatch("input");
+        if (stage === "prepared") await surface.copy();
+        else {
+          pending.resolve({ ...QUANTITY_PREPARATION, text: "9" });
+          await action;
+        }
+        if (stage === "copy" && dispatchInput) {
+          assert.equal(surface.sheet.value, `https://docs.google.com/spreadsheets/d/${QUANTITY_SHEET_ID}/edit`);
+          assert.deepEqual(surface.clipboardTexts, ["9"]);
+        } else {
+          assert.deepEqual(surface.clipboardTexts, []);
+          assert.doesNotMatch(surface.quantityFeedback.textContent, /Quantities copied/);
+          if (dispatchInput || stage !== "prepare") assert.equal(surface.copyButton.disabled, true);
+        }
+      });
+    }
+  }
+});
+
+test("quantity report reload, navigation, and disposal discard delayed preparation and clipboard payloads", async (t) => {
+  for (const stage of ["prepare", "copy"]) {
+    for (const change of ["reload", "navigate", "dispose", "pagehide"]) {
+      await t.test(`${stage}: ${change}`, async () => {
+        const pending = createDeferred();
+        const lifecycle = new FakeElement();
+        const surface = mountQuantityHandoff({ lifecycleEventTarget: lifecycle,
+          ...(stage === "prepare" ? { prepare: () => pending.promise } : { copy: () => pending.promise }) });
+        await surface.ready;
+        let action = surface.check();
+        if (stage === "copy") { await action; action = surface.copy(); await Promise.resolve(); }
+        if (change === "dispose") surface.mounted.dispose();
+        else if (change === "pagehide") await lifecycle.dispatch("pagehide");
+        else {
+          if (change === "navigate") surface.location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+          await surface.mounted.load();
+        }
+        pending.resolve({ ...QUANTITY_PREPARATION, text: "9" });
+        await action;
+        if (stage === "copy" && change === "reload") {
+          // A local Reload action is locked while clipboard delivery settles.
+          assert.deepEqual(surface.clipboardTexts, ["9"]);
+        } else {
+          assert.deepEqual(surface.clipboardTexts, []);
+          assert.equal(surface.copyButton.disabled, true);
+          assert.doesNotMatch(surface.quantityFeedback.textContent, /Quantities copied/);
+        }
+        if (change === "dispose" || change === "pagehide") assert.equal(surface.checkButton.disabled, true);
+      });
+    }
+  }
+});
+
+test("quantity handoff guards report and mapping edits during validation", async () => {
+  let correctionOptions;
+  let mappingBusy = false;
+  const pending = createDeferred();
+  const surface = mountQuantityHandoff({ copy: () => pending.promise,
+    inlineCorrectionModule: { createInlineReportCorrectionController(options) {
+      correctionOptions = options;
+      return { load() {}, getState() { return { busy: mappingBusy }; } };
+    } },
+  });
+  await surface.ready;
+  await surface.check();
+  mappingBusy = true;
+  await surface.copy();
+  assert.deepEqual(surface.copyRequests, []);
+  mappingBusy = false;
+  const copying = surface.copy();
+  await Promise.resolve();
+  await correctionOptions.onSaved({ reportId: REPORT_ID });
+  pending.resolve({ ...QUANTITY_PREPARATION, text: "9" });
+  await copying;
+  assert.deepEqual(surface.clipboardTexts, []);
+  assert.equal(surface.copyButton.disabled, true);
+});
+
+test("quantity handoff stays unavailable on pending or failed report loads", async (t) => {
+  for (const options of [{ lifecycleStatus: "pending" }, { getReport: async () => { throw new Error("Report unavailable."); } }]) {
+    await t.test(options.lifecycleStatus ?? "failure", async () => {
+      const surface = mountQuantityHandoff(options);
+      await surface.ready;
+      await surface.check();
+      await surface.copy();
+      assert.deepEqual(surface.prepareRequests, []);
+      assert.deepEqual(surface.copyRequests, []);
+      assert.equal(surface.checkButton.disabled, true);
+      assert.equal(surface.toggleButton.disabled, true);
+      assert.equal(surface.copyButton.disabled, true);
+    });
+  }
+});
+
+function quantityEditorData() {
+  return {
+    reportId: REPORT_ID,
+    eligibility: { status: "editable", code: null, reason: null },
+    completedVariations: [],
+    canceledVariations: [{ variationNumber: 14, expectedStatus: "canceled", expectedSku: "SKU-A" }],
+    inventory: createReport().inventory,
+  };
+}
+
+test("quantity controls follow actual asynchronous mapping-controller loading and save completion", async (t) => {
+  for (const fail of [false, true]) {
+    await t.test(fail ? "failed mapping save" : "successful mapping save", async () => {
+      const loading = createDeferred();
+      const saving = createDeferred();
+      let saveRequests = 0;
+      const data = quantityEditorData();
+      const surface = mountQuantityHandoff({ inlineCorrectionModule: inlineCorrection,
+        correctionClientModule: { createOfflineReportEditorClient: () => ({
+          loadEditorData: () => loading.promise,
+          saveMappingCorrections() { saveRequests += 1; return saving.promise; },
+        }) },
+      });
+      await surface.ready;
+      assert.equal(surface.checkButton.disabled, true);
+      loading.resolve(data);
+      await new Promise((resolve) => setImmediate(resolve));
+      await surface.toggle();
+      assert.equal(surface.checkButton.disabled, false);
+      assert.equal(surface.toggleButton.disabled, false);
+      await surface.check();
+      const group = surface.document.querySelector("#mapping-item-group");
+      group.value = inlineCorrection.UNMAPPED_GROUP_VALUE;
+      await group.dispatch("change");
+      const savingAction = surface.document.querySelector("#save-mapping-correction").click();
+      assert.equal(saveRequests, 1);
+      assert.equal(surface.checkButton.disabled, true);
+      assert.equal(surface.copyButton.disabled, true);
+      await surface.copy();
+      assert.deepEqual(surface.copyRequests, []);
+      if (fail) saving.reject(new Error("Save did not persist."));
+      else saving.resolve({ ...data, canceledVariations: [{ ...data.canceledVariations[0], expectedSku: null }] });
+      await savingAction;
+      assert.equal(surface.checkButton.disabled, false);
+      assert.equal(surface.copyButton.disabled, true);
+      await surface.check();
+      assert.equal(surface.copyButton.disabled, false);
+    });
+  }
+});
+
+test("quantity preparation is invalidated by actual report-only unit-cost correction", async () => {
+  const saving = createDeferred();
+  const original = createReport();
+  const corrected = createReport({ inventory: original.inventory.map((entry) => ({ ...entry, unitCostCents: 800 })) });
+  const surface = mountQuantityHandoff({ confirm: () => true, client: {
+    async listReportUnitCosts() { return { reportId: REPORT_ID, skus: [{ sku: "SKU-A", item: "Tee", style: "", size: "L", unitCostCents: 600, completedSaleCount: 1 }] }; },
+    updateReportUnitCost: () => saving.promise,
+  } });
+  await surface.ready;
+  await surface.check();
+  surface.document.querySelector("#unit-cost-value").value = "8.00";
+  const updating = surface.document.querySelector("#update-unit-cost").click();
+  assert.equal(surface.checkButton.disabled, true);
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.copyButton.disabled, true);
+  saving.resolve({ reportId: REPORT_ID, lifecycleStatus: "finalized", report: corrected });
+  await updating;
+  assert.equal(surface.checkButton.disabled, false);
+  assert.equal(surface.copyButton.disabled, true);
+  await surface.check();
+  await surface.copy();
+  assert.deepEqual(surface.clipboardTexts, ["\n9\n\n\n0"]);
+  assert.doesNotMatch(surface.clipboardTexts[0], /8\.00|unit_cost|SKU-A/);
+});
+
+test("quantity preparation is invalidated by actual manual payment resolution", async () => {
+  const saving = createDeferred();
+  const orders = [{ variationNumber: 220, observedPaymentStatus: "payment_processing", mapped: false, sku: null }];
+  let saved = false;
+  const surface = mountQuantityHandoff({ confirm: () => true, client: {
+    async listPaymentFixingOrders() { return { reportId: REPORT_ID, orders: saved ? [] : orders }; },
+    resolvePaymentFixingOrder: () => saving.promise,
+  } });
+  await surface.ready;
+  await surface.check();
+  const row = surface.document.querySelector("#payment-resolution-orders").children[0];
+  const resolving = row.children[3].click();
+  assert.equal(surface.checkButton.disabled, true);
+  assert.equal(surface.toggleButton.disabled, true);
+  await surface.toggle();
+  assert.equal(surface.panel.hidden, false);
+  assert.equal(surface.copyButton.disabled, true);
+  saved = true;
+  saving.resolve({ reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport() });
+  await resolving;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(surface.checkButton.disabled, false);
+  assert.equal(surface.copyButton.disabled, true);
+  assert.equal(surface.document.querySelector("#payment-resolution-section").hidden, true);
+});
+
+test("quantity clipboard delivery holds all local destination and correction locks until settling", async () => {
+  const blobReady = createDeferred();
+  const delivery = createDeferred();
+  const requests = [];
+  const texts = [];
+  const surface = mountQuantityHandoff({ confirm: () => true,
+    navigator: { clipboard: {
+      async write(items) {
+        const blob = await items[0].types["text/plain"];
+        blobReady.resolve();
+        await delivery.promise;
+        texts.push(await blob.text());
+      },
+      async writeText() { requests.push("full export"); },
+    } },
+    inlineCorrectionModule: inlineCorrection,
+    correctionClientModule: { createOfflineReportEditorClient: () => ({
+      async loadEditorData() { return quantityEditorData(); },
+      async saveMappingCorrections() { requests.push("mapping"); throw new Error("Must stay locked"); },
+    }) },
+    client: {
+      async listPaymentFixingOrders() { return { reportId: REPORT_ID, orders: [{ variationNumber: 220, observedPaymentStatus: "payment_processing", mapped: false, sku: null }] }; },
+      async listReportUnitCosts() { return { reportId: REPORT_ID, skus: [{ sku: "SKU-A", item: "Tee", style: "", size: "L", unitCostCents: 600, completedSaleCount: 1 }] }; },
+      async resolvePaymentFixingOrder() { requests.push("payment"); },
+      async updateReportUnitCost() { requests.push("cost"); },
+      async renameReport() { requests.push("name"); },
+    },
+  });
+  await surface.ready;
+  const group = surface.document.querySelector("#mapping-item-group");
+  group.value = inlineCorrection.UNMAPPED_GROUP_VALUE;
+  await group.dispatch("change");
+  assert.equal(surface.document.querySelector("#save-mapping-correction").disabled, false);
+  await surface.check();
+  const copying = surface.copy();
+  await blobReady.promise;
+  const originalLink = surface.sheet.value;
+  const originalName = surface.input.value;
+  const row = surface.document.querySelector("#payment-resolution-orders").children[0];
+  for (const selector of ["#quantity-sheet-reference", "#report-name-input", "#unit-cost-value", "#update-unit-cost", "#mapping-correction-fields", "#save-mapping-correction", "#copy-inventory", "#retry-report"]) {
+    assert.equal(surface.document.querySelector(selector).disabled, true, selector);
+  }
+  assert.equal(row.children[3].disabled, true);
+  surface.sheet.value = "changed-sheet-12345678901234567890";
+  await surface.sheet.dispatch("input");
+  surface.input.value = "changed report name";
+  await surface.input.dispatch("input");
+  await surface.input.dispatch("blur");
+  surface.document.querySelector("#unit-cost-value").value = "8.00";
+  await surface.document.querySelector("#update-unit-cost").click();
+  await surface.document.querySelector("#save-mapping-correction").click();
+  await row.children[3].click();
+  await surface.document.querySelector("#copy-inventory").click();
+  await surface.mounted.load();
+  assert.equal(surface.sheet.value, originalLink);
+  assert.equal(surface.input.value, originalName);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(texts, []);
+  delivery.resolve();
+  await copying;
+  assert.deepEqual(texts, ["\n9\n\n\n0"]);
+  assert.equal(surface.quantityFeedback.textContent, "");
+  for (const selector of ["#quantity-sheet-reference", "#report-name-input", "#unit-cost-value", "#update-unit-cost", "#mapping-correction-fields", "#save-mapping-correction", "#copy-inventory", "#retry-report"]) {
+    assert.equal(surface.document.querySelector(selector).disabled, false, selector);
+  }
+  assert.equal(row.children[3].disabled, false);
+});
+
+test("quantity clipboard rejection lifts only its own temporary edit restriction", async () => {
+  const surface = mountQuantityHandoff({ clipboardError: "Permission denied", inlineCorrectionModule: inlineCorrection,
+    correctionClientModule: { createOfflineReportEditorClient: () => ({
+      async loadEditorData() { return { ...quantityEditorData(), eligibility: { status: "read_only", reason: "Archived" } }; },
+      async saveMappingCorrections() {},
+    }) },
+  });
+  await surface.ready;
+  await surface.check();
+  await surface.copy();
+  assert.equal(surface.sheet.disabled, false);
+  assert.equal(surface.checkButton.disabled, false);
+  assert.equal(surface.copyButton.disabled, true);
+  assert.equal(surface.document.querySelector("#mapping-correction-fields").disabled, true);
+  assert.equal(surface.document.querySelector("#save-mapping-correction").disabled, true);
+  assert.equal(surface.document.querySelector("#update-unit-cost").disabled, true);
+  assert.match(surface.quantityFeedback.textContent, /Permission denied/);
+});
 
 test("packaged report surface is local, printable, and exposes the required actions", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
@@ -1754,7 +2762,7 @@ test("updated inventory shows every SKU unit cost with a compact accessible Sold
   assert.equal(rows[1].children[4].className, "number-cell");
 });
 
-test("Google Sheets handoff retains its actions and table without instructions", () => {
+test("Google Sheets toolbar keeps quantity copying and places normal export buttons under Other options", () => {
   const directory = path.join(__dirname, "..", "extension", "report");
   const html = fs.readFileSync(path.join(directory, "report.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "report.css"), "utf8");
@@ -1764,23 +2772,45 @@ test("Google Sheets handoff retains its actions and table without instructions",
   const section = html.slice(sectionStart, sectionEnd);
   const copyIndex = section.indexOf('id="copy-inventory"');
   const downloadIndex = section.indexOf('id="download-inventory"');
+  const otherIndex = section.indexOf('id="inventory-other-options"');
+  const otherPanelIndex = section.indexOf('id="inventory-other-options-panel"');
+  const unformattedIndex = section.indexOf('id="copy-inventory-unformatted"');
   const tableIndex = section.indexOf('<table class="data-table inventory-table">');
 
   assert.ok(sectionStart >= 0);
   assert.ok(copyIndex >= 0);
-  assert.ok(downloadIndex > copyIndex);
+  assert.ok(otherIndex > copyIndex);
+  assert.ok(otherPanelIndex > otherIndex);
+  assert.ok(downloadIndex > otherPanelIndex);
+  assert.ok(unformattedIndex > otherPanelIndex);
   assert.ok(tableIndex > downloadIndex);
   assert.match(section, /Google Sheets handoff/);
   assert.match(section, /<h2 id="inventory-title">Updated inventory<\/h2>/);
   assert.match(
     section,
-    /id="copy-inventory"[^>]*type="button">\s*Copy Updated Inventory\s*<\/button>/,
+    /id="copy-inventory"[^>]*type="button"[^>]*>\s*Copy Updated Inventory\s*<\/button>/,
   );
   assert.match(
     section,
-    /id="download-inventory"[^>]*type="button">\s*Download Updated Inventory CSV\s*<\/button>/,
+    /id="download-inventory"[^>]*type="button"[^>]*>\s*Download Updated Inventory CSV\s*<\/button>/,
   );
+  assert.match(section, /id="inventory-other-options"[^>]*aria-controls="inventory-other-options-panel"[^>]*aria-expanded="false"/);
+  assert.match(section, /id="inventory-other-options-panel"[^>]*hidden/);
+  assert.match(section, /id="inventory-other-options"[^>]*>\s*Other options\s*<\/button>/);
+  assert.match(section, /id="copy-inventory-unformatted"[^>]*type="button"[^>]*>\s*Copy Inventory No Formatting\s*<\/button>/);
+  assert.doesNotMatch(section, /role="menu(?:item)?"|aria-haspopup="menu"/);
   assert.match(section, /<tbody id="inventory-rows"><\/tbody>/);
+  assert.doesNotMatch(section, /inventory-export-note|full-table replacements|Spreadsheet cell A1|<details|<summary|Copy Updated Quantities to a Formatted Sheet/);
+  assert.match(section, /id="copy-inventory"[^>]*aria-controls="quantity-handoff-panel"[^>]*aria-expanded="false"/);
+  assert.match(section, /id="quantity-handoff-panel"[^>]*class="quantity-handoff screen-only"[^>]*hidden/);
+  assert.match(section, /<label for="quantity-sheet-reference">Paste Google Sheet Link<\/label>/);
+  assert.doesNotMatch(section, /Destination Google Sheet link or ID|Keep your Sheet['’]s row order, blank spacer rows, other columns, and formatting\.|Check its current Inventory tab before copying quantities only\./);
+  assert.match(section, /id="check-quantity-sheet"[^>]*type="submit"/);
+  assert.match(section, /id="copy-quantities"[\s\S]*?type="button"/);
+  assert.match(section, /id="quantity-handoff-feedback"[\s\S]*?role="status"[\s\S]*?aria-live="polite"/);
+  assert.match(html, /src="\.\.\/tagger\/inventory-import-client.js"/);
+  assert.match(css, /\.quantity-handoff-controls\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.match(css, /\.quantity-handoff-cell\s*\{[^}]*display:\s*block;[^}]*color:\s*var\(--cyan\);[^}]*font-weight:\s*750;/);
   assert.doesNotMatch(
     html,
     /inventory-instructions|inventory-workflow|(?:Show|Hide) instructions|Google Sheets handoff instructions/,
@@ -1880,8 +2910,8 @@ test("Print expands both variation sections and restores their independent scree
 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(document.querySelector("#report-content").hidden, false);
-  assert.equal(document.querySelector("#copy-inventory").disabled, false);
-  assert.equal(document.querySelector("#download-inventory").disabled, false);
+  assert.equal(document.querySelector("#copy-inventory").disabled, true);
+  assert.equal(document.querySelector("#download-inventory").disabled, true);
   assert.equal(document.querySelector("#inventory-rows").children.length, 1);
   await document.querySelector("#print-report").click();
   assert.deepEqual(printedStates, [[true, true]]);
@@ -3421,21 +4451,19 @@ test("report action notifications dismiss after four seconds and newer messages 
   const timers = [];
   const clearedTimerIds = [];
   let nextTimerId = 1;
-  let copyAttempts = 0;
+  let downloadAttempts = 0;
 
   reportPage.mountStreamReportPage({
     document,
     location: { search: `?reportId=${encodeURIComponent(REPORT_ID)}` },
-    navigator: {
-      clipboard: {
-        async writeText() {
-          copyAttempts += 1;
-
-          if (copyAttempts === 2) {
-            throw new Error("Copy failed.");
-          }
-        },
+    Blob,
+    URL: {
+      createObjectURL() {
+        downloadAttempts += 1;
+        if (downloadAttempts === 2) throw new Error("Download failed.");
+        return "blob:synthetic-inventory-download";
       },
+      revokeObjectURL() {},
     },
     runtime: {},
     protocol,
@@ -3458,6 +4486,7 @@ test("report action notifications dismiss after four seconds and newer messages 
       },
     },
     setTimeout(callback, milliseconds) {
+      if (milliseconds === 0) { callback(); return null; }
       const timer = { id: nextTimerId, callback, milliseconds };
       nextTimerId += 1;
       timers.push(timer);
@@ -3471,27 +4500,29 @@ test("report action notifications dismiss after four seconds and newer messages 
   await new Promise((resolve) => setImmediate(resolve));
   const actionFeedback = document.querySelector("#action-feedback");
   const inlineFeedback = document.querySelector("#unit-cost-feedback");
-  const copyButton = document.querySelector("#copy-inventory");
+  const downloadButton = document.querySelector("#download-inventory");
 
-  copyButton.click();
+  await document.querySelector("#inventory-other-options").click();
+  downloadButton.click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(
     actionFeedback.textContent,
-    "Updated six-column inventory copied. Paste it into Google Sheets.",
+    `Downloaded ${reportPage.createReportFilename(createReport(), "Updated-Inventory", "csv")}`,
   );
   assert.equal(timers.length, 1);
   assert.equal(timers[0].milliseconds, 4_000);
 
   inlineFeedback.textContent = "Inline details stay visible.";
-  copyButton.click();
+  await document.querySelector("#inventory-other-options").click();
+  downloadButton.click();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(clearedTimerIds, [timers[0].id]);
   assert.equal(timers.length, 2);
   assert.equal(timers[1].milliseconds, 4_000);
-  assert.equal(actionFeedback.textContent, "Copy failed.");
+  assert.equal(actionFeedback.textContent, "Download failed.");
 
   timers[0].callback();
-  assert.equal(actionFeedback.textContent, "Copy failed.");
+  assert.equal(actionFeedback.textContent, "Download failed.");
   assert.equal(inlineFeedback.textContent, "Inline details stay visible.");
 
   timers[1].callback();
@@ -3827,8 +4858,7 @@ test("report unit-cost correction confirms impact, stays busy, and rerenders the
     /this report[\s\S]*metrics and Google Sheets handoff were updated[\s\S]*other reports and future streams were not changed/,
   );
 
-  document.querySelector("#copy-inventory").click();
-  await new Promise((resolve) => setImmediate(resolve));
+  await reportPage.copyUpdatedInventory({ clipboard: { async writeText(value) { copied.push(value); } } }, updatedReport);
   assert.match(copied[0], /SKU-A\t.*\t8\.00/);
 });
 

@@ -214,13 +214,36 @@
               <h2 id="inventory-title">Updated inventory</h2>
             </div>
             <div class="section-actions screen-only">
-              <button id="copy-inventory" class="secondary-action" type="button">
+              <button id="copy-inventory" class="secondary-action" type="button"
+                aria-controls="quantity-handoff-panel" aria-expanded="false" disabled>
                 Copy Updated Inventory
               </button>
-              <button id="download-inventory" class="secondary-action" type="button">
-                Download Updated Inventory CSV
-              </button>
+              <div id="inventory-other-options-container" class="inventory-other-options">
+                <button id="inventory-other-options" class="secondary-action" type="button"
+                  aria-controls="inventory-other-options-panel" aria-expanded="false" disabled>Other options</button>
+                <div id="inventory-other-options-panel" class="inventory-other-options-panel"
+                  role="group" aria-labelledby="inventory-other-options" hidden>
+                  <button id="download-inventory" class="secondary-action" type="button" disabled>Download Updated Inventory CSV</button>
+                  <button id="copy-inventory-unformatted" class="secondary-action" type="button" disabled>Copy Inventory No Formatting</button>
+                </div>
+              </div>
             </div>
+          </div>
+          <div id="quantity-handoff-panel" class="quantity-handoff screen-only"
+            role="region" aria-labelledby="copy-inventory" hidden>
+            <form id="quantity-handoff-form" class="quantity-handoff-form" aria-busy="false">
+              <label for="quantity-sheet-reference">Paste Google Sheet Link</label>
+              <div class="quantity-handoff-controls">
+                <input id="quantity-sheet-reference" type="text" autocomplete="off" spellcheck="false"
+                  aria-describedby="quantity-handoff-target quantity-handoff-feedback" disabled>
+                <button id="check-quantity-sheet" class="secondary-action" type="submit" disabled>Check Sheet</button>
+                <button id="copy-quantities" class="secondary-action" type="button"
+                  aria-describedby="quantity-handoff-target quantity-handoff-feedback" disabled>Copy quantities</button>
+              </div>
+              <p id="quantity-handoff-target" class="quantity-handoff-target" hidden></p>
+              <p id="quantity-handoff-feedback" class="quantity-handoff-feedback"
+                role="status" aria-live="polite" aria-atomic="true"></p>
+            </form>
           </div>
           <div class="table-scroll screen-scroll" tabindex="0">
             <table class="data-table inventory-table">
@@ -552,6 +575,7 @@
     <script src="offline-report-editor-client.js"></script>
     <script src="inline-report-correction.js"></script>
     <script src="report-downloads.js"></script>
+    <script src="../tagger/inventory-import-client.js"></script>
     <script src="report-page.js"></script>
   </body>
 </html>

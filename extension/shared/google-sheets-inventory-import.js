@@ -16,6 +16,8 @@
     const SHEETS_API_ROOT = "https://sheets.googleapis.com/v4/spreadsheets";
     const GRID_FIELDS =
       "sheets(properties(title),data(startRow,startColumn,rowData.values.userEnteredValue))";
+    const LAYOUT_GRID_FIELDS =
+      "spreadsheetId,sheets(properties(title,sheetType,gridProperties(rowCount,columnCount)),merges,data(startRow,startColumn,rowData.values.userEnteredValue))";
     const PREVIEW_TTL_MS = 10 * 60 * 1000;
     const MAX_RESPONSE_CHARACTERS = 4 * 1024 * 1024;
     const MAX_SHEET_ROWS = 1_001;
@@ -64,10 +66,10 @@
       return JSON.parse(JSON.stringify(value));
     }
 
-    function createSheetsUrl(spreadsheetId) {
+    function createSheetsUrl(spreadsheetId, fields = GRID_FIELDS) {
       return `${SHEETS_API_ROOT}/${encodeURIComponent(spreadsheetId)}` +
         `?includeGridData=true&ranges=${encodeURIComponent(INVENTORY_RANGE)}` +
-        `&fields=${encodeURIComponent(GRID_FIELDS)}`;
+        `&fields=${encodeURIComponent(fields)}`;
     }
 
     async function readBoundedResponseText(response) {
@@ -631,8 +633,8 @@
         }
       }
 
-      async function requestGridPayload(spreadsheetId, interactive) {
-        const url = createSheetsUrl(spreadsheetId);
+      async function requestGridPayload(spreadsheetId, interactive, fields = GRID_FIELDS) {
+        const url = createSheetsUrl(spreadsheetId, fields);
         let token = await getAccessToken(interactive);
         let refreshedToken = false;
         let transientRetryUsed = false;
@@ -922,6 +924,53 @@
         record.snapshot = null;
 
         return cloneSerializable(record.confirmedResult);
+      }
+
+      async function readInventoryLayout(spreadsheetId) {
+        if (typeof spreadsheetId !== "string" || !/^[A-Za-z0-9_-]{20,200}$/.test(spreadsheetId)) {
+          fail("INVALID_SPREADSHEET_ID", "Enter a valid Google Sheet link or spreadsheet ID.");
+        }
+        // Read the whole named tab, never a capped A1 range. The existing
+        // response/row/cell limits reject oversized data instead of truncating it.
+        const payload = await requestGridPayload(spreadsheetId, true, LAYOUT_GRID_FIELDS);
+        const sheet = payload?.sheets?.[0];
+        const grid = sheet?.data?.[0];
+        const properties = sheet?.properties?.gridProperties;
+        if (!isPlainRecord(payload) || payload.spreadsheetId !== spreadsheetId ||
+            !Array.isArray(payload.sheets) || payload.sheets.length !== 1 ||
+            sheet?.properties?.title !== "Inventory" ||
+            ![undefined, "GRID"].includes(sheet?.properties?.sheetType) ||
+            !isPlainRecord(properties) || !Number.isSafeInteger(properties.rowCount) || properties.rowCount < 1 ||
+            !Number.isSafeInteger(properties.columnCount) || properties.columnCount < 1 ||
+            properties.columnCount > MAX_SHEET_COLUMNS ||
+            !Array.isArray(sheet.data) || sheet.data.length !== 1 || !isPlainRecord(grid) ||
+            (grid.startRow ?? 0) !== 0 || (grid.startColumn ?? 0) !== 0 ||
+            !Array.isArray(grid.rowData) || grid.rowData.length > properties.rowCount ||
+            (sheet.merges !== undefined && (!Array.isArray(sheet.merges) || sheet.merges.length > 0)) ||
+            grid.rowData.some((row) => Array.isArray(row?.values) && row.values.length > properties.columnCount)) {
+          fail("UNSUPPORTED_INVENTORY_LAYOUT", "The complete, unmerged Inventory tab could not be verified. Check the Sheet layout and try again.");
+        }
+        const values = gridResponseToValues(payload);
+        // Reuse the full import contract (including formulas, duplicates, extra
+        // columns and integer bounds), but retain the physical grid separately.
+        try {
+          dependencies.inventorySheetImport.parseInventorySheet(values);
+        } catch (error) {
+          if (!(error instanceof dependencies.inventorySheetImport.InventorySheetImportError)) throw error;
+          const issue = sanitizeIssues(error.issues)[0];
+          const location = issue.rowNumber === null ? "Inventory" : `Inventory row ${issue.rowNumber}`;
+          const column = issue.column ? ` (${issue.column})` : "";
+          const additional = error.issues.length > 1 ? ` ${error.issues.length - 1} additional validation issue(s) must also be fixed.` : "";
+          fail("INVALID_INVENTORY_SHEET", `${location}${column}: ${issue.message}${additional}`);
+        }
+        const isBlank = (value) => value === undefined || value === null ||
+          (typeof value === "string" && value.trim() === "");
+        const headerIndex = values.findIndex((row) => row.some((value) => !isBlank(value)));
+        return {
+          spreadsheetId, sheetTitle: "Inventory", values: cloneSerializable(values),
+          headerRowNumber: headerIndex + 1,
+          quantityColumnNumber: values[headerIndex].indexOf("quantity_on_hand_at_import") + 1,
+        };
       }
 
       function inventoriesMatchBySku(first, second) {
@@ -1219,11 +1268,13 @@
         getImportStatus,
         invalidatePreviews,
         previewGoogleSheet,
+        readInventoryLayout,
       });
     }
 
     return Object.freeze({
       GRID_FIELDS,
+      LAYOUT_GRID_FIELDS,
       INVENTORY_RANGE,
       MAX_CELL_SLOTS,
       MAX_PREVIEW_ISSUES,

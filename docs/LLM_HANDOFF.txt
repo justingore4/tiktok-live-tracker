@@ -3,23 +3,24 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 22, 2026
 Repository branch at this update: main
-Latest commit at this snapshot: 7e79447dae516cf716603d9955b4ec9722dc2f96
-Commit subject: total cancels in report
+Latest commit at this snapshot: 9fc595c
+Commit subject: Add queued preset indicators and read-only queue previews
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
 unlock, and strict yellow editing lock are committed. The canceled-only disclosure,
 full variation/cancellation print/PDF output, and report-name PDF filenames were
 committed in 21ec5fc. The canceled-orders-per-SKU summary described in section 11 is
-committed in 7e79447. The current uncommitted changes add upcoming-preset queued
-indicators and guarded header clearing, including pre-stream viewed-preset previews,
-plus read-only dropdown previews of manual queues, described in section 9 below.
+committed in 7e79447. Upcoming-preset queued indicators and guarded header clearing,
+pre-stream viewed-preset previews, and manual queue dropdown previews are committed
+in 9fc595c. The current uncommitted work adds the quantity-only clipboard
+handoff and the Other options full-table exports described in sections 8 and 12 below.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 1,918 passed, 0 failed
+Latest full synthetic test run: 2,042 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -514,6 +515,48 @@ Paste is positional, not a SKU-aware merge. Avoid overwriting newer stock with a
 report. Export quantity excludes completed mapped sales, not merely reservations;
 oversold replacement quantity clamps to zero and needs a physical recount.
 
+The quantity-only handoff is an explicit read-only workflow, not a new import:
+- The employee supplies the intended Sheet link/ID in the report and checks it.
+- The worker reuses OAuth/whole-Inventory reads, with unchanged response/row/cell
+  limits. Blank physical rows count toward the existing 1,001-row grid bound.
+- A transient layout keeps the header row, quantity column, and exact SKU row order.
+  Leading/consecutive spacers below the header become blank clipboard lines; trailing
+  blank rows are left outside the output. No header or other column is copied.
+- Source quantities must form a coherent known inventory snapshot, not a per-SKU
+  mix that could hide restocks: the whole baseline-opening vector OR the whole current
+  report replacement vector. An intermediate report's already-pasted quantities on a
+  reused baseline are deliberately not inferred; reconcile manually rather than
+  restoring obsolete opening values just to pass validation. Exact SKU sets and
+  item/style/size identity must match.
+  Sheet costs remain format-validated but may differ after report-only corrections;
+  this action never copies costs. Replacement quantities use saved report values,
+  including zero/oversold clamping, never sales subtracted from current Sheet stock.
+- Missing/extra/duplicate SKUs, formulas, invalid/oversized layouts, conflicting stock,
+  active streams, known newer streams/baselines/reports, and unverifiable lineage fail
+  closed. No automatic cleanup of duplicated old Sheet rows or inferred mappings.
+- Prepared Sheet identity/layout/output live only in bounded worker memory. Opaque
+  tokens expire after ten minutes or worker restart (at most five preparations);
+  nothing is added to report,
+  baseline, or storage schemas. Copy revalidates the saved report and local context;
+  changed links/report corrections invalidate the page's preparation.
+- One values-only paste starts at the displayed quantity cell (usually E2, not A1).
+  Back up Inventory first; do not edit/reorder it between checking and pasting. The
+  extension cannot verify the user's paste destination or protect against later Sheet
+  edits. "Copied" is not "Sheet updated." Exact formatting/blank-line behavior remains
+  user-performed native Chrome/Sheets QA, not a synthetic-test claim.
+- Normal imports still discard blank rows; saved report inventory remains sorted by
+  SKU. Other options exposes the unchanged six-column CSV and Copy Inventory No
+  Formatting, using the original full-table clipboard helper for an A1 paste.
+- Strict report-page-only prepare_quantity_handoff/copy_quantity_handoff commands
+  use existing worker serialization and read-only authorization. Prepare's new client
+  deadline is 90 seconds to cover the reader's existing retry/auth path; ordinary
+  report requests remain 10 seconds and individual Sheets requests remain 20 seconds.
+  No capture/heartbeat/poll/retry timing or OAuth scope changed.
+- Worker eligibility also compares canonical payment statuses, variation identities,
+  and prices with the saved report, independently of intentionally report-only
+  mapping/cost corrections. A canonical payment save followed by failed report rebuild
+  must not establish a fresh but stale quantity preparation.
+
 9. TRACKER CONTROLS AND UI DECISIONS TO PRESERVE
 ---------------------------------------------
 - Cards group normalized item+style; sizes select exact SKUs. Single-row groups map
@@ -965,9 +1008,30 @@ and completion/failure/progress are handled. Keep panel open until finished; it 
 not a resumable service-worker export job. Do not overwrite existing downloads.
 Unsupported glyphs may require browser printing rather than silently corrupting text.
 
-Copy Updated Inventory and Download Updated Inventory CSV hand off the full six
-columns; they are not a full restorable backup of editable tracker state.
+Download Updated Inventory CSV hands off the full six columns; it is not a full
+restorable backup of editable tracker state.
 No full-data backup/restore feature exists.
+Copy Updated Inventory now toggles the screen-only quantity form: Sheet link -> Check Sheet
+-> verified target/range -> Copy -> one values-only paste into the quantity column.
+The form is collapsed by default and uses the top button's aria-controls/aria-expanded,
+not a second dropdown heading. Opening/closing makes no request or clipboard write;
+the verified destination appears on its own bold green line (dynamic cell, usually E2),
+with the unchanged Not A1/order/formatting/edit warning on the next line.
+Closing keeps a valid preparation, while report reload/error/disposal closes it and
+invalidates stale work. Loading/correction/copy locks are rechecked in handlers.
+The old full-table explanatory paragraph remains removed. The former CSV toolbar
+button is now Other options, an initially hidden group of two real buttons:
+Download Updated Inventory CSV and Copy Inventory No Formatting. The latter uses
+exported copyUpdatedInventory(navigator, report, reportModule), copying the original
+six-column TSV with A1 feedback. CSV bytes/filenames and both serializers are unchanged.
+Neither full-table action preserves Sheet row layout or contacts Google. Opening the
+group has no side effects; outside click, Escape, selection, reload/error/disposal close
+it. Hidden/stale/busy actions are guarded. Clipboard delivery shares the existing
+report-edit lock across both workflows; failed copies show the existing action feedback.
+The separate quantity-only payload preserves freshly read physical row spacing.
+It makes an explicit Sheets GET during verification, never a Google write. Its promised text/plain ClipboardItem
+starts on the user's Copy click while the worker revalidates, preserving the gesture
+without returning stale quantities. Clipboard failures never report a completed update.
 
 13. EXTENSION IDENTITY, AUTHORIZATION, AND PRIVATE DISTRIBUTION
 ------------------------------------------------------------
@@ -1065,7 +1129,40 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 1,918 tests passed, 0 failed, on Windows (September 22, 2026).
+Latest full verification: 2,042 tests passed, 0 failed, on Windows (September 22, 2026).
+Other options adds 22 regressions over 2,020, covering its initially hidden state,
+opening without I/O, Escape/outside dismissal, focus, reload/navigation/disposal,
+stale URL and load/save/check locks, exact CSV/TSV output, copy errors, and prevention
+of overlapping full-table/quantity clipboard writes. The report-page focused suite
+passes 215/215; the full 2,042-test suite and git diff --check pass. Native Chrome
+menu layout/keyboard behavior and clipboard/paste checks remain user-performed.
+The Copy Updated Inventory entry-point change adds 15 regressions over 2,005: the
+top button toggles the initially hidden quantity form with matching ARIA state, no
+automatic Sheet read/copy, preserved preparations on close/reopen, and guarded hidden,
+busy, error, navigation, reload, and disposal events. Full-table clipboard code is
+tested directly through its helper, including failure/serializer behavior;
+CSV feedback/download behavior remains tested unchanged. Report-page focused tests:
+193/193. The obsolete paragraph and duplicate disclosure heading are absent. The full
+2,020-test suite and git diff --check pass; native UI checks remain user-performed.
+
+Copy Updated Quantities adds 87 synthetic regressions over the 1,918-test baseline:
+16 layout/helper, 24 protocol/client/real-worker integration, and 47 mounted report UI
+cases. Focused layout/helper plus normal import: 43/43; worker/protocol/client group:
+148/148; report UI plus actual inline mapping controller: 200/200. Covers physical
+spacers/order/header positions, exact SKU matching, malformed/merged/bounded layouts,
+stock vectors, repeated copies, report-only cost/mapping changes, canonical-report
+payment divergence, stale tokens/links/sessions/baselines, authorized read-only GET,
+authentication failures, and clipboard failures/late responses. The actual client and
+worker use a mocked Sheets transport and in-memory synthetic storage, never real data.
+During clipboard delivery, a separate UI copy lock disables destination/name edits,
+payment/cost/mapping saves, competing clipboard writes, and local reload. The inline
+mapping controller exposes an optional state callback/external-busy flag so async
+loading/save completion refreshes quantity controls without polling or weakening its
+own guards. Failure removes only the copy restriction. Both direct and promised-Blob
+clipboard timing are tested synthetically; native Chrome/Sheets alignment, formatting,
+focus, authorization prompts, and paste behavior remain user-performed manual checks.
+git diff --check passed. No browser checks, real-data access, commit, or push occurred.
+
 Manual queue dropdown previews add 39 regressions over the 1,879-test baseline:
 12 projection, 18 UI/handler/navigation/refresh, one read-only card-render test,
 and eight client/worker/queue cases. The new UI suite passes 18/18; projection plus
@@ -1257,6 +1354,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  9fc595c  Add queued preset indicators and read-only queue previews
   7e79447  total cancels in report
   ae69a51  version reupdated to 1.0.0
   16fff2c  update version number
@@ -1318,7 +1416,7 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed implementation is preserved. Upcoming-preset queued indicators,
-including the pre-stream extension, manual queue dropdown previews, and their tests/docs remain uncommitted.
+Previously committed implementation is preserved. The quantity-only clipboard handoff and its
+tests/documentation are the current uncommitted changes.
 No commit or push was performed.
 There is no approved pending functional change to start automatically.

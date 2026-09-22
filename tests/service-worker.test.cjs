@@ -1547,6 +1547,7 @@ test("loads state dependencies and wires the canonical coordinator", () => {
     "shared/inventory-sheet-import.js",
     "shared/inventory-import-protocol.js",
     "shared/google-sheets-inventory-import.js",
+    "shared/report-quantity-handoff.js",
   ]);
   assert.ok(
     harness.imports.every((relativePath) =>

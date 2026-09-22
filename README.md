@@ -291,13 +291,37 @@ These actions have different effects:
 
 ### Update inventory in Google Sheets
 
-1. Review report notices and corrections. Duplicate the Google Sheet's **Inventory**
-   tab as a backup.
-2. In the report, choose **Copy Updated Inventory**.
-3. Return to the original **Inventory** tab, click **A1**, and paste with **Ctrl+V**
-   on Windows or **Cmd+V** on macOS.
-4. Keep the complete six-column export in its exported order. Alternatively use
-   **Download Updated Inventory CSV** for a full-table replacement.
+To keep your Sheet's item order, blank spacer rows, and other columns:
+
+1. Finish report corrections and duplicate the Sheet's **Inventory** tab as a backup.
+2. Click **Copy Updated Inventory**, enter the intended Google Sheet link or ID, and
+   check the Sheet. This reads the current layout; it does not change the Sheet.
+3. After verification, copy the quantities. In the original **Inventory** tab, select
+   the exact starting cell shown by the tracker (usually **E2**, not A1), then use
+   **values-only paste** once.
+
+The copied column follows the Sheet's exact SKU order, including blank spacer rows.
+Only quantities are included; item names, sizes, styles, costs, and other columns are
+not copied. Do not edit or rearrange the Sheet between checking, copying, and pasting.
+Copying is not confirmation that the Sheet was updated. A failed check requires fixing
+the mismatch and checking again; the tracker never guesses a SKU or silently skips rows.
+This action requires the latest eligible report and matching current inventory baseline,
+with no active tracker or unresolved report issues. The entire Sheet's quantities must
+match either that report's opening stock or its already-updated quantities. Restocks,
+partial pastes, or an intermediate report's quantities require manual reconciliation;
+do not replace valid newer stock with old opening numbers just to pass the check.
+The existing read limit includes spacer rows (1,001 physical rows total); merged layouts
+are not supported by this quantity-only workflow.
+
+**Copy Updated Inventory** opens/closes the quantity-only form; opening it does not
+copy anything or contact Google. **Other options** offers two full-table alternatives:
+
+- **Download Updated Inventory CSV** downloads the existing six-column CSV.
+- **Copy Inventory No Formatting** copies all six columns as plain text for pasting
+  into **Inventory!A1**.
+
+Both use SKU order without blank spacer rows; they do not preserve the Sheet's row
+layout. Use the main quantity-only workflow above to preserve order and formatting.
 
 Pasting replaces cells by position; it does not merge or look up rows by SKU.
 Do not apply an older report over newer stock changes without reconciling them.

@@ -237,6 +237,8 @@
       let selectedSku = null;
       let busy = false;
       let loading = false;
+      let externalBusy = false;
+      let reportedControlState = null;
       let unavailableReason = null;
       let loadSequence = 0;
       let saveSequence = 0;
@@ -299,6 +301,7 @@
 
         return !destroyed &&
           !busy &&
+          !externalBusy &&
           !loading &&
           editorData?.eligibility?.status === "editable" &&
           variation !== null &&
@@ -313,6 +316,7 @@
 
         return !destroyed &&
           !busy &&
+          !externalBusy &&
           !loading &&
           editorData?.eligibility?.status === "editable" &&
           variation !== null &&
@@ -327,6 +331,8 @@
 
       function saveUnavailableReason() {
         const variation = currentVariation();
+
+        if (externalBusy) return "Wait for quantity copying to finish.";
 
         if (busy) {
           return "Saving the mapping correction.";
@@ -392,10 +398,10 @@
         const reason = eligibilityReason();
         const editable = reason === null &&
           editorData?.eligibility?.status === "editable";
-        const unavailable = busy || loading || !editable;
+        const unavailable = busy || externalBusy || loading || !editable;
         const group = currentGroup();
 
-        elements.section.setAttribute("aria-busy", String(busy || loading));
+        elements.section.setAttribute("aria-busy", String(busy || externalBusy || loading));
         elements.fields.disabled = unavailable;
         elements.variation.disabled = unavailable || variations.length === 0;
         elements.itemGroup.disabled = unavailable || currentVariation() === null;
@@ -415,6 +421,13 @@
             control.title = controlTitle;
           });
         elements.save.title = saveUnavailableReason();
+        const controlState = `${reportId}:${busy}:${loading}`;
+        if (reportedControlState !== controlState) {
+          reportedControlState = controlState;
+          if (typeof options.onStateChange === "function") {
+            options.onStateChange({ reportId, busy, loading });
+          }
+        }
       }
 
       function renderVariationOptions() {
@@ -598,7 +611,7 @@
       function handleVariationChange(event) {
         if (
           destroyed ||
-          busy ||
+          busy || externalBusy ||
           editorData?.eligibility?.status !== "editable"
         ) {
           return;
@@ -624,7 +637,7 @@
       function handleItemGroupChange(event) {
         if (
           destroyed ||
-          busy ||
+          busy || externalBusy ||
           editorData?.eligibility?.status !== "editable"
         ) {
           return;
@@ -650,7 +663,7 @@
       function handleSkuChange(event) {
         if (
           destroyed ||
-          busy ||
+          busy || externalBusy ||
           editorData?.eligibility?.status !== "editable"
         ) {
           return;
@@ -904,6 +917,10 @@
         destroy,
         load,
         save,
+        setExternalBusy(value) {
+          externalBusy = value === true;
+          renderControlState();
+        },
         getState() {
           return {
             reportId,

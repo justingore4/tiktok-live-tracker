@@ -22,11 +22,15 @@
     const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
     const REPORT_ID_PATTERN =
       /^stream-report:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const QUANTITY_HANDOFF_TOKEN_PATTERN =
+      /^quantity-handoff:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const COMMAND_TYPES = Object.freeze({
       LIST_REPORTS: "list_reports",
       LIST_ARCHIVED_REPORTS: "list_archived_reports",
       GET_LIBRARY_CAPACITY: "get_library_capacity",
       GET_REPORT: "get_report",
+      PREPARE_QUANTITY_HANDOFF: "prepare_quantity_handoff",
+      COPY_QUANTITY_HANDOFF: "copy_quantity_handoff",
       LIST_PAYMENT_FIXING_ORDERS: "list_payment_fixing_orders",
       RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
       LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",
@@ -44,6 +48,8 @@
       [COMMAND_TYPES.LIST_ARCHIVED_REPORTS]: ["type"],
       [COMMAND_TYPES.GET_LIBRARY_CAPACITY]: ["type"],
       [COMMAND_TYPES.GET_REPORT]: ["reportId", "type"],
+      [COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF]: ["reportId", "spreadsheetId", "type"],
+      [COMMAND_TYPES.COPY_QUANTITY_HANDOFF]: ["reportId", "token", "type"],
       [COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS]: ["reportId", "type"],
       [COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER]: [
         "reportId",
@@ -191,6 +197,8 @@
       if (
         [
           COMMAND_TYPES.GET_REPORT,
+          COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF,
+          COMMAND_TYPES.COPY_QUANTITY_HANDOFF,
           COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
           COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
           COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
@@ -205,6 +213,18 @@
         )
       ) {
         fail("INVALID_REPORT_ID", "The stream report ID is invalid.");
+      }
+
+      if (command.type === COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF &&
+          (typeof command.spreadsheetId !== "string" ||
+           !/^[A-Za-z0-9_-]{20,200}$/.test(command.spreadsheetId))) {
+        fail("INVALID_SPREADSHEET_ID", "Enter a valid Google Sheet link or ID.");
+      }
+
+      if (command.type === COMMAND_TYPES.COPY_QUANTITY_HANDOFF &&
+          (typeof command.token !== "string" ||
+           !QUANTITY_HANDOFF_TOKEN_PATTERN.test(command.token))) {
+        fail("INVALID_QUANTITY_HANDOFF_TOKEN", "Verify the Sheet again before copying quantities.");
       }
 
       if (command.type === COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER) {
@@ -408,6 +428,7 @@
       MESSAGE_CHANNEL,
       MESSAGE_VERSION,
       NOTIFICATION_TYPES,
+      QUANTITY_HANDOFF_TOKEN_PATTERN,
       REPORT_ID_PATTERN,
       StreamReportProtocolError,
       createStreamReportMessage,

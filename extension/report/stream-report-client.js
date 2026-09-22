@@ -20,6 +20,7 @@
     "use strict";
 
     const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+    const QUANTITY_PREPARATION_TIMEOUT_MS = 90_000;
     const ATTRIBUTED_GMV_PATTERN =
       /^\$(?:(?:0|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}|(?:0|[1-9]\d*)(?:\.\d{1,2})?[KMB])$/;
 
@@ -28,6 +29,8 @@
       "LIST_ARCHIVED_REPORTS",
       "GET_LIBRARY_CAPACITY",
       "GET_REPORT",
+      "PREPARE_QUANTITY_HANDOFF",
+      "COPY_QUANTITY_HANDOFF",
       "LIST_PAYMENT_FIXING_ORDERS",
       "RESOLVE_PAYMENT_FIXING_ORDER",
       "LIST_REPORT_UNIT_COSTS",
@@ -129,6 +132,10 @@
         typeof protocol.createStreamReportMessage !== "function"
       ) {
         throw new TypeError("A valid stream-report message protocol is required.");
+      }
+
+      if (!(protocol.QUANTITY_HANDOFF_TOKEN_PATTERN instanceof RegExp)) {
+        throw new TypeError("A valid quantity-handoff token protocol is required.");
       }
 
       const commandValues = REQUIRED_COMMAND_TYPES.map(
@@ -793,6 +800,40 @@
       return { ...data };
     }
 
+    function parseQuantityHandoffData(data, protocol, requested, copying) {
+      const keys = ["reportId", "token", "spreadsheetId", "sheetTitle", "startCell",
+        "range", "rowCount", "itemCount", "alreadyApplied"];
+      if (copying) keys.push("text");
+      const range = typeof data?.range === "string"
+        ? /^([A-F])([1-9]\d*):([A-F])([1-9]\d*)$/.exec(data.range) : null;
+      if (!hasExactKeys(data, keys) || data.reportId !== requested.reportId ||
+          typeof data.token !== "string" || !protocol.QUANTITY_HANDOFF_TOKEN_PATTERN.test(data.token) ||
+          (copying && data.token !== requested.token) ||
+          typeof data.spreadsheetId !== "string" || !/^[A-Za-z0-9_-]{20,200}$/.test(data.spreadsheetId) ||
+          (!copying && data.spreadsheetId !== requested.spreadsheetId) ||
+          data.sheetTitle !== "Inventory" || !range || range[1] !== range[3] ||
+          data.startCell !== `${range[1]}${range[2]}` ||
+          !Number.isSafeInteger(data.rowCount) || data.rowCount < 1 || data.rowCount > 1000 ||
+          !Number.isSafeInteger(Number(range[2])) || Number(range[2]) < 2 ||
+          !Number.isSafeInteger(Number(range[4])) ||
+          Number(range[4]) > 1001 ||
+          Number(range[4]) - Number(range[2]) + 1 !== data.rowCount ||
+          !Number.isSafeInteger(data.itemCount) || data.itemCount < 1 || data.itemCount > data.rowCount ||
+          typeof data.alreadyApplied !== "boolean") {
+        fail("INVALID_RESPONSE", "The report service returned an invalid quantity preparation.");
+      }
+      if (copying) {
+        const rows = typeof data.text === "string" ? data.text.split(/\r?\n/) : [];
+        if (rows.length !== data.rowCount || rows.at(-1) === "" ||
+            rows.filter((row) => row !== "").length !== data.itemCount ||
+            rows.some((row) => row !== "" &&
+              (!/^(?:0|[1-9]\d*)$/.test(row) || !Number.isSafeInteger(Number(row))))) {
+          fail("INVALID_RESPONSE", "The report service returned invalid quantity clipboard data.");
+        }
+      }
+      return { ...data };
+    }
+
     function createStreamReportClient(options) {
       const {
         runtime,
@@ -816,7 +857,9 @@
           const timeout = new Promise((resolve) => {
             timeoutId = setTimeoutImpl(
               () => resolve(timeoutMarker),
-              requestTimeoutMs,
+              command.type === protocol.COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF
+                ? Math.max(requestTimeoutMs, QUANTITY_PREPARATION_TIMEOUT_MS)
+                : requestTimeoutMs,
             );
           });
           response = await Promise.race([delivery, timeout]);
@@ -900,6 +943,21 @@
           (data) =>
             parseGetData(data, protocol, streamReport, requestedReportId),
         );
+      }
+
+      function createQuantityHandoffMethod(copying) {
+        return function quantityHandoff(optionsValue) {
+          let requested;
+          return enqueueCommand(() => {
+            if (!hasExactKeys(optionsValue, copying
+              ? ["reportId", "token"] : ["reportId", "spreadsheetId"])) {
+              fail("INVALID_CLIENT_COMMAND", "Quantity handoff options are invalid.");
+            }
+            requested = { ...optionsValue };
+            return { type: copying ? protocol.COMMAND_TYPES.COPY_QUANTITY_HANDOFF
+              : protocol.COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF, ...requested };
+          }, (data) => parseQuantityHandoffData(data, protocol, requested, copying));
+        };
       }
 
       function renameReport(optionsValue) {
@@ -1078,6 +1136,8 @@
         deleteArchivedReports,
         getLibraryCapacity,
         getReport,
+        prepareQuantityHandoff: createQuantityHandoffMethod(false),
+        copyQuantityHandoff: createQuantityHandoffMethod(true),
         listArchivedReports,
         listPaymentFixingOrders,
         listReportUnitCosts,
@@ -1092,6 +1152,7 @@
     return Object.freeze({
       StreamReportClientError,
       DEFAULT_REQUEST_TIMEOUT_MS,
+      QUANTITY_PREPARATION_TIMEOUT_MS,
       createStreamReportClient,
     });
   },

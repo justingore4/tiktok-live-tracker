@@ -26,6 +26,7 @@ importScripts(
   "shared/inventory-sheet-import.js",
   "shared/inventory-import-protocol.js",
   "shared/google-sheets-inventory-import.js",
+  "shared/report-quantity-handoff.js",
 );
 
 const reconciliation = globalThis.TikTokLiveTrackerReconciliation;
@@ -67,6 +68,7 @@ const inventoryImportProtocol =
   globalThis.TikTokLiveTrackerInventoryImportProtocol;
 const googleSheetsInventoryImport =
   globalThis.TikTokLiveTrackerGoogleSheetsInventoryImport;
+const reportQuantityHandoff = globalThis.TikTokLiveTrackerReportQuantityHandoff;
 let storageAccessError = null;
 const storageAccessReady = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }),
@@ -218,6 +220,8 @@ const reportReadCommandTypes = new Set([
   streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
 ]);
 const reportPageOnlyCommandTypes = new Set([
+  streamReportProtocol.COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF,
+  streamReportProtocol.COMMAND_TYPES.COPY_QUANTITY_HANDOFF,
   streamReportProtocol.COMMAND_TYPES.LIST_PAYMENT_FIXING_ORDERS,
   streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
   streamReportProtocol.COMMAND_TYPES.LIST_REPORT_UNIT_COSTS,
@@ -250,6 +254,10 @@ const reportLibraryChangedNotification = Object.freeze(
   streamReportProtocol.createReportLibraryChangedNotification(),
 );
 let messageTail = Promise.resolve();
+// Deliberately ephemeral: no Sheet identity, physical layout, token, or clipboard
+// output is written into canonical inventory or saved report storage.
+const quantityHandoffs = new Map();
+const MAX_QUANTITY_HANDOFFS = 5;
 const captureHealthStore = captureHealth?.createCaptureHealthStore({
   now: () => Date.now(),
   createContextId: () => globalThis.crypto.randomUUID(),
@@ -544,6 +552,8 @@ function validateSender(sender, command, boundary) {
         streamReportProtocol.COMMAND_TYPES.RENAME_REPORT,
         streamReportProtocol.COMMAND_TYPES.RESOLVE_PAYMENT_FIXING_ORDER,
         streamReportProtocol.COMMAND_TYPES.UPDATE_REPORT_UNIT_COST,
+        streamReportProtocol.COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF,
+        streamReportProtocol.COMMAND_TYPES.COPY_QUANTITY_HANDOFF,
       ].includes(command.type)
     ) {
       failBoundary(
@@ -1187,6 +1197,129 @@ async function getCanonicalReconciliationState() {
   return hydrateReconciliationResponse(response);
 }
 
+async function getQuantityHandoffContext(reportId, sessionState) {
+  if (sessionState.activeSession !== null) {
+    failBoundary(streamReportProtocol, "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before verifying quantities.");
+  }
+  const record = await requireFinalizedReport(reportId);
+  const latest = await reportCoordinator.getLatestFinalizedReport();
+  if (latest.reportId !== reportId) {
+    failBoundary(streamReportProtocol, "QUANTITY_REPORT_STALE",
+      "Use the latest finalized report to copy quantities.");
+  }
+  const canonical = await getCanonicalReconciliationState();
+  const guard = getReportCorrectionGuard(record, canonical);
+  if (guard) {
+    failBoundary(streamReportProtocol, "QUANTITY_REPORT_STALE",
+      "A newer stream or inventory baseline exists. Reconcile stock before copying this report's quantities.");
+  }
+  const report = record.report;
+  if (report.metadata.activeBiddingVariationNumber !== null ||
+      ["unresolvedOrderCount", "pendingMappedCount", "paymentFixingCount",
+        "unmappedCompletedCount", "conflictCount"].some((key) => report.totals[key] !== 0)) {
+    failBoundary(streamReportProtocol, "QUANTITY_REPORT_NOT_READY",
+      "Resolve unfinished payments, unmapped sales, and reconciliation conflicts before copying quantities.");
+  }
+  const stream = canonical.streams.at(-1);
+  const baseline = canonical.inventoryBaselines.find(
+    (entry) => entry.baselineId === report.metadata.inventoryBaselineId,
+  );
+  const reportItems = new Map(report.inventory.map((item) => [item.sku, item]));
+  if (!baseline?.sourceFingerprint ||
+      stream?.inventoryBaselineId !== baseline.baselineId ||
+      baseline.inventory.length !== report.inventory.length ||
+      baseline.inventory.some((item) => {
+        const saved = reportItems.get(item.sku);
+        return !saved || saved.openingQuantity !== item.quantityOnHandAtImport ||
+          saved.item !== item.item || saved.style !== item.style || saved.size !== item.size;
+      })) {
+    failBoundary(streamReportProtocol, "QUANTITY_LINEAGE_UNAVAILABLE",
+      "This report's inventory baseline cannot be verified. Reconcile stock before copying quantities.");
+  }
+  const summary = reconciliation.calculateSummary(canonical, { streamId: stream.streamId });
+  const canonicalSales = summary.auctions.filter((order) => order.paymentStatus === "payment_complete")
+    .map((order) => [order.variationNumber, order.soldPriceCents])
+    .sort((left, right) => left[0] - right[0]);
+  const canonicalCanceled = summary.auctions.filter((order) => order.paymentStatus === "canceled")
+    .map((order) => order.variationNumber).sort((left, right) => left - right);
+  if (summary.activeBiddingVariationNumber !== report.metadata.activeBiddingVariationNumber ||
+      summary.totals.conflictCount !== 0 ||
+      summary.auctions.length !== report.totals.auctionCount ||
+      summary.auctions.some((order) => !["payment_complete", "canceled"].includes(order.paymentStatus)) ||
+      JSON.stringify(canonicalSales) !== JSON.stringify(report.completedSales.map(
+        (sale) => [sale.variationNumber, sale.soldPriceCents])) ||
+      JSON.stringify(canonicalCanceled) !== JSON.stringify((report.canceledOrders ?? [])
+        .map((order) => order.variationNumber))) {
+    failBoundary(streamReportProtocol, "QUANTITY_REPORT_STALE",
+      "The saved report does not match its latest captured payment state. Reload and resolve the report before copying quantities.");
+  }
+  // Costs and mappings may legitimately differ after report-only corrections.
+  // Capture the exact saved report AND canonical context, rather than rebuilding
+  // a report and thereby undoing those corrections.
+  return { record, signature: JSON.stringify({ record, canonical, sessionState }) };
+}
+
+function pruneQuantityHandoffs() {
+  const now = Date.now();
+  for (const [token, prepared] of quantityHandoffs) {
+    if (now < prepared.createdAt || now >= prepared.expiresAt) {
+      quantityHandoffs.delete(token);
+    }
+  }
+}
+
+async function prepareQuantityHandoff(command, sessionState) {
+  pruneQuantityHandoffs();
+  // A new verification replaces this report's old preparations, even if the new
+  // authentication/read fails. Never let failure expose a previous Sheet's data.
+  for (const [token, prepared] of quantityHandoffs) {
+    if (prepared.preview.reportId === command.reportId) quantityHandoffs.delete(token);
+  }
+  const before = await getQuantityHandoffContext(command.reportId, sessionState);
+  const layout = await inventoryImportService.readInventoryLayout(command.spreadsheetId);
+  const { state: currentSession } = await getStreamSessionResponse();
+  const after = await getQuantityHandoffContext(command.reportId, currentSession);
+  if (after.signature !== before.signature) {
+    failBoundary(streamReportProtocol, "QUANTITY_HANDOFF_STALE",
+      "The report or inventory changed. Verify the Sheet again.");
+  }
+  const handoff = reportQuantityHandoff.createQuantityHandoff(after.record.report, layout);
+  const token = `quantity-handoff:${globalThis.crypto.randomUUID()}`;
+  const preview = {
+    reportId: command.reportId, token, spreadsheetId: command.spreadsheetId,
+    sheetTitle: handoff.sheetTitle, startCell: handoff.startCell,
+    range: `${handoff.startCell}:${handoff.endCell}`,
+    rowCount: handoff.rowCount, itemCount: handoff.itemCount,
+    alreadyApplied: handoff.alreadyApplied,
+  };
+  while (quantityHandoffs.size >= MAX_QUANTITY_HANDOFFS) {
+    quantityHandoffs.delete(quantityHandoffs.keys().next().value);
+  }
+  const createdAt = Date.now();
+  quantityHandoffs.set(token, {
+    preview, text: handoff.text, signature: after.signature, createdAt,
+    expiresAt: createdAt + googleSheetsInventoryImport.PREVIEW_TTL_MS,
+  });
+  return { ...preview };
+}
+
+async function copyQuantityHandoff(command, sessionState) {
+  pruneQuantityHandoffs();
+  const prepared = quantityHandoffs.get(command.token);
+  if (!prepared || prepared.preview.reportId !== command.reportId) {
+    failBoundary(streamReportProtocol, "QUANTITY_HANDOFF_EXPIRED",
+      "The quantity preparation expired or is no longer available. Verify the Sheet again.");
+  }
+  const current = await getQuantityHandoffContext(command.reportId, sessionState);
+  if (current.signature !== prepared.signature) {
+    quantityHandoffs.delete(command.token);
+    failBoundary(streamReportProtocol, "QUANTITY_HANDOFF_STALE",
+      "The report or inventory changed. Verify the Sheet again before copying.");
+  }
+  return { ...prepared.preview, text: prepared.text };
+}
+
 function getReportCorrectionGuard(reportRecord, reconciliationState) {
   const report = reportRecord.report;
   const lastStream = reconciliationState.streams.at(-1) ?? null;
@@ -1420,6 +1553,12 @@ function dispatchBoundaryCommand(boundary, command) {
     }
 
     return getStreamSessionResponse().then(async ({ state }) => {
+      if (command.type === streamReportProtocol.COMMAND_TYPES.PREPARE_QUANTITY_HANDOFF) {
+        return prepareQuantityHandoff(command, state);
+      }
+      if (command.type === streamReportProtocol.COMMAND_TYPES.COPY_QUANTITY_HANDOFF) {
+        return copyQuantityHandoff(command, state);
+      }
       if (
         command.type ===
           streamReportProtocol.COMMAND_TYPES.GET_OFFLINE_EDITOR_DATA
@@ -1536,8 +1675,11 @@ function serializeError(error, boundary) {
     error instanceof variationPresetsStorage.VariationPresetsStorageError ||
     error instanceof variationPresetsCoordinatorModule.VariationPresetsCoordinatorError ||
     error instanceof inventoryImportProtocol.InventoryImportProtocolError ||
+    (typeof inventorySheetImport.InventorySheetImportError === "function" &&
+      error instanceof inventorySheetImport.InventorySheetImportError) ||
     error instanceof
-      googleSheetsInventoryImport.GoogleSheetsInventoryImportError;
+      googleSheetsInventoryImport.GoogleSheetsInventoryImportError ||
+    (reportQuantityHandoff && error instanceof reportQuantityHandoff.ReportQuantityHandoffError);
 
   if (knownError) {
     return { code: error.code, message: error.message };

@@ -451,8 +451,13 @@ and style share a card, but each size retains its exact Sheet SKU, count, and un
 mapping, queueing, reconciliation, reports, and the Sheet handoff. Search can match any
 group item, style, size, or underlying SKU and keeps the whole matched group available.
 
-After End, the local report can copy or download an exact six-column replacement
-table for an employee to paste/import manually. A new physical recount is another
+After End, the local report's **Other options** offers a six-column replacement CSV
+and **Copy Inventory No Formatting** for a full-table paste at A1. Neither preserves
+the original Sheet row layout. **Copy Updated Inventory** opens the quantity-only
+form. Its **Check Sheet** action explicitly re-reads the selected Sheet, matches exact SKUs, and prepares a
+quantity-only column in the current physical row order, including blank spacers. The
+employee pastes values only into the indicated starting cell, not A1. Other columns
+and costs are outside this handoff; no automatic Sheet write occurs. A new physical recount is another
 pre-stream import after End. It may rename SKU or item/style/size values for future
 streams, but it cannot alter the opening quantity, identifiers, or pin of an active or
 historical stream. Complete the prior report's handoff before renaming so its older
@@ -734,21 +739,32 @@ distribution; reassess Google's requirements before expanding the audience.
     is active. Confirm canonical inventory, other reports, and future streams retain the
     original cost. The payment-resolution section retains its stricter eligibility guards.
 16. For the novice Google Sheets handoff, duplicate the current `Inventory` tab as a
-    backup. Confirm **Copy Updated Inventory** and **Download Updated Inventory CSV**
-    are available with the inventory table, with no instructions toggle or instruction
-    block on screen or in print.
-    In the report select **Copy Updated Inventory**, return to the original
-    `Inventory` tab, click cell **A1**, and press **Ctrl+V** on Windows or **Cmd+V** on
-    macOS. Before copying, verify the report table shows the saved unit cost for every SKU,
+    backup. Confirm **Other options** opens two buttons: **Download Updated Inventory CSV**
+    and **Copy Inventory No Formatting**. Verify Escape closes it and focuses its opener;
+    outside click and either action also close it. Check normal/narrow layout and keyboard
+    access manually. The copy action must put the six-column table on the clipboard and
+    direct the user to A1; failures must not announce success. Both actions must respect
+    loading/save/copy locks. **Copy Updated Inventory** opens/closes the quantity-only form below
+    the buttons. The old explanatory paragraph and second dropdown heading are absent.
+    Opening the form must not copy or read the Sheet. Before exporting, verify the report
+    table shows the saved unit cost for every SKU,
     including `$0.00`; its visible **Sold** header means completed mapped sales since the
     inventory baseline. On a narrow window, verify the table scrolls horizontally, and in
     print preview verify all columns remain visible with repeating headers. Then verify the
-    copied/downloaded handoff still has the exact six headers and all rows. **Copy Updated
-    Inventory** provides the complete six-column A1 paste table. Alternatively, download
-    the matching CSV and use **File -> Import -> Upload -> Replace current sheet** only
+    downloaded CSV still has the exact six headers and all rows. Use
+    **File -> Import -> Upload -> Replace current sheet** only
     after making the backup. If a row is oversold, the exported count is zero but its raw
     shortage/recount warning remains; physically recount it. Review every attention notice
     before using the replacement counts.
+    Test the quantity form against a synthetic Sheet whose rows
+    are not alphabetical, with a blank row below the header and consecutive spacers.
+    Check the Sheet link, copy, and values-only paste once at the displayed starting
+    cell. Confirm exact quantity alignment and unchanged row spacing, formatting,
+    item/style/size/cost cells, and trailing blank rows. Try a reordered quantity column.
+    Verify mismatch/authentication/clipboard failures do not report success; changed
+    links, corrections, or stale reports require another check. Do not change the Sheet
+    between verification and paste. Its screen-only controls must not enter printed/PDF
+    output. Native clipboard and Sheet formatting are manual checks, not Node-test claims.
 17. Reopen the side panel and confirm **STREAM REPORT RECORDS** lists the new report with its
     date, completed/total count, and Gross Item Sales. Open it, retry a simulated list failure, and
     restart Chrome/the worker to verify local recovery. Create six isolated test reports:
@@ -1271,9 +1287,10 @@ immutable baseline creation, active-stream append-only extension, and stream bas
 association are implemented. This
 inventory-only boundary does not expand capture authority: the content script still must
 not read Sheet data, buyer identity, inventory mappings, or credentials, and it cannot
-contact Google. Only the worker performs a selected pre-stream or explicit active-stream
-read. The report's local clipboard/CSV handoff performs no Google request; automatic
-outbound Sheets writes remain intentionally absent.
+contact Google. Only the worker performs a selected pre-stream import, explicit active-stream
+read, or employee-requested quantity-handoff layout check. The two **Other options**
+full-table exports perform no Google request; the quantity-only workflow reads before copying.
+Automatic outbound Sheets writes remain intentionally absent.
 
 ## Current limitations
 
@@ -1337,4 +1354,5 @@ outbound Sheets writes remain intentionally absent.
   Its only analytics-derived value is the sanitized Attributed GMV display.
   The separate worker-owned importer reads the Sheets API for pre-stream imports and
   explicit **Add new SKUs from updated Sheet → Check and add** actions during active
-  tracking; it does not automatically sync with Google Sheets.
+  tracking, plus explicit post-stream **Copy Updated Inventory → Check Sheet** actions. It does not
+  automatically sync with Google Sheets.

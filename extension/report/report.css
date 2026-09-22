@@ -118,6 +118,101 @@ button:focus-visible,
   justify-content: flex-end;
 }
 
+.quantity-handoff {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.inventory-other-options {
+  position: relative;
+}
+
+.inventory-other-options-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 8px;
+  width: min(300px, calc(100vw - 64px));
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+}
+
+.inventory-other-options-panel button {
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.quantity-handoff {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+}
+
+.quantity-handoff p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.quantity-handoff-form {
+  margin-top: 10px;
+}
+
+.quantity-handoff-form label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 700;
+}
+
+.quantity-handoff-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quantity-handoff-controls input {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--surface-subtle);
+  font: inherit;
+}
+
+.quantity-handoff-controls input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.quantity-handoff-feedback {
+  color: #b7f8ec;
+}
+
+.quantity-handoff-cell {
+  display: block;
+  color: var(--cyan);
+  font-weight: 750;
+}
+
+.quantity-handoff-feedback:empty {
+  display: none;
+}
+
+.quantity-handoff-feedback.is-error {
+  color: #ffc1c8;
+}
+
 .primary-action,
 .secondary-action {
   min-height: 38px;

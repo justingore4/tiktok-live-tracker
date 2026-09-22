@@ -17,6 +17,8 @@ test("creates strict read and archive-management stream-report messages", () => 
     LIST_ARCHIVED_REPORTS: "list_archived_reports",
     GET_LIBRARY_CAPACITY: "get_library_capacity",
     GET_REPORT: "get_report",
+    PREPARE_QUANTITY_HANDOFF: "prepare_quantity_handoff",
+    COPY_QUANTITY_HANDOFF: "copy_quantity_handoff",
     LIST_PAYMENT_FIXING_ORDERS: "list_payment_fixing_orders",
     RESOLVE_PAYMENT_FIXING_ORDER: "resolve_payment_fixing_order",
     LIST_REPORT_UNIT_COSTS: "list_report_unit_costs",

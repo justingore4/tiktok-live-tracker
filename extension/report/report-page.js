@@ -7,7 +7,9 @@
     typeof module === "object" && module.exports
       ? require("./report-downloads.js")
       : root.TikTokLiveTrackerReportDownloads;
-  const streamReportPage = factory(feeCalculator, reportDownloads);
+  const inventoryImportClient = typeof module === "object" && module.exports
+    ? require("../tagger/inventory-import-client.js") : root.TikTokLiveTrackerInventoryImportClient;
+  const streamReportPage = factory(feeCalculator, reportDownloads, inventoryImportClient);
 
   if (typeof module === "object" && module.exports) {
     module.exports = streamReportPage;
@@ -39,6 +41,8 @@
         print: () => root.print(),
         printEventTarget: root,
         Blob: root.Blob,
+        ClipboardItem: root.ClipboardItem,
+        lifecycleEventTarget: root,
         URL: root.URL,
         setTimeout: root.setTimeout.bind(root),
         clearTimeout: root.clearTimeout.bind(root),
@@ -53,7 +57,7 @@
   }
 })(
   typeof globalThis === "undefined" ? this : globalThis,
-  function createStreamReportPageModule(feeCalculator, reportDownloads) {
+  function createStreamReportPageModule(feeCalculator, reportDownloads, inventoryImportClient) {
     "use strict";
 
     const SHEET_HEADERS = Object.freeze([
@@ -1239,6 +1243,12 @@
       await navigator.clipboard.writeText(text);
     }
 
+    // Other options uses the original six-column copy. The main Copy Updated
+    // Inventory button opens the separate, verified quantity-only handoff.
+    async function copyUpdatedInventory(navigator, report, reportModule) {
+      await writeClipboard(navigator, serializeInventoryTsv(report, reportModule));
+    }
+
     function downloadCsv(document, dependencies, report, csvText) {
       if (
         typeof dependencies.Blob !== "function" ||
@@ -1386,6 +1396,201 @@
       let reportNameDirty = false;
       let reportNameSave = null;
       let printDisclosureState = null;
+      let disposed = false;
+      let quantityLoading = true;
+      let quantitySequence = 0;
+      let quantityBusy = false;
+      let inventoryCopying = false;
+      let quantityCopyReference = null;
+      let quantityCopyNameDraft = null;
+      let preparedQuantities = null;
+      let renderedQuantityReport = null;
+      const quantityPanel = document.querySelector("#quantity-handoff-panel");
+      const inventoryCopyButton = document.querySelector("#copy-inventory");
+      const inventoryOptionsContainer = document.querySelector("#inventory-other-options-container");
+      const inventoryOptionsButton = document.querySelector("#inventory-other-options");
+      const inventoryOptionsPanel = document.querySelector("#inventory-other-options-panel");
+      const inventoryCsvButton = document.querySelector("#download-inventory");
+      const inventoryUnformattedButton = document.querySelector("#copy-inventory-unformatted");
+      const quantityForm = document.querySelector("#quantity-handoff-form");
+      const quantitySheetInput = document.querySelector("#quantity-sheet-reference");
+      const checkQuantityButton = document.querySelector("#check-quantity-sheet");
+      const copyQuantityButton = document.querySelector("#copy-quantities");
+      const quantityTarget = document.querySelector("#quantity-handoff-target");
+      const quantityFeedback = document.querySelector("#quantity-handoff-feedback");
+
+      const quantityMessage = (message, isError = false) => {
+        if (!quantityFeedback) return;
+        quantityFeedback.textContent = message;
+        quantityFeedback.className = `quantity-handoff-feedback${isError ? " is-error" : ""}`;
+      };
+      const quantityReportKey = () => currentRecord
+        ? JSON.stringify([currentRecord.reportId, currentRecord.report]) : null;
+      const isQuantityReportLocationCurrent = () => {
+        try {
+          const requestedReportId = getRequestedReportId(location, protocol);
+          return requestedReportId === null || requestedReportId === currentRecord?.reportId;
+        } catch (_error) {
+          return false;
+        }
+      };
+      const canUseQuantities = () => !disposed && !quantityLoading && currentRecord !== null &&
+        currentRecord.lifecycleStatus === "finalized" && !document.querySelector("#report-content").hidden &&
+        isQuantityReportLocationCurrent() &&
+        !paymentResolutionBusy && !unitCostCorrectionBusy && !unitCostRefreshFailure && !reportNameSave &&
+        !mappingCorrectionController?.getState()?.busy && !mappingCorrectionController?.getState()?.loading &&
+        typeof client.prepareQuantityHandoff === "function" && typeof client.copyQuantityHandoff === "function";
+      // Full-table exports do not require the quantity-check worker APIs or a
+      // prepared Sheet destination. They still respect report/save/copy locks.
+      const canUseInventoryExports = () => !disposed && !quantityLoading && currentRecord !== null &&
+        currentRecord.lifecycleStatus === "finalized" && !document.querySelector("#report-content").hidden &&
+        isQuantityReportLocationCurrent() && !inventoryCopying && !quantityBusy &&
+        !paymentResolutionBusy && !unitCostCorrectionBusy && !unitCostRefreshFailure && !reportNameSave &&
+        !mappingCorrectionController?.getState()?.busy && !mappingCorrectionController?.getState()?.loading;
+      const syncInventoryOptions = () => {
+        const unavailable = !canUseInventoryExports();
+        if (inventoryOptionsButton) inventoryOptionsButton.disabled = unavailable;
+        const actionsUnavailable = unavailable || inventoryOptionsPanel?.hidden !== false;
+        if (inventoryCsvButton) inventoryCsvButton.disabled = actionsUnavailable;
+        if (inventoryUnformattedButton) inventoryUnformattedButton.disabled = actionsUnavailable;
+      };
+      const setInventoryOptionsOpen = (open, restoreFocus = false) => {
+        if (inventoryOptionsPanel) inventoryOptionsPanel.hidden = !open;
+        inventoryOptionsButton?.setAttribute("aria-expanded", String(open));
+        syncInventoryOptions();
+        if (restoreFocus) inventoryOptionsButton?.focus();
+      };
+      const syncQuantityControls = () => {
+        const unavailable = !canUseQuantities() || inventoryCopying;
+        const preparationCurrent = preparedQuantities &&
+          preparedQuantities.reportKey === quantityReportKey() &&
+          preparedQuantities.reference === quantitySheetInput?.value &&
+          preparedQuantities.locationSearch === location?.search;
+        quantityForm?.setAttribute("aria-busy", String(quantityBusy));
+        if (inventoryCopyButton) inventoryCopyButton.disabled = unavailable || quantityBusy;
+        const panelClosed = quantityPanel?.hidden !== false;
+        if (checkQuantityButton) checkQuantityButton.disabled = panelClosed || unavailable || quantityBusy;
+        if (copyQuantityButton) copyQuantityButton.disabled = panelClosed || unavailable || quantityBusy || !preparationCurrent;
+        // Keep the link editable during Check so destination changes invalidate
+        // that read. Clipboard delivery temporarily locks all local edits.
+        if (quantitySheetInput) quantitySheetInput.disabled = panelClosed || disposed || quantityLoading || inventoryCopying;
+        syncInventoryOptions();
+      };
+      const setQuantityPanelOpen = (open) => {
+        if (quantityPanel) quantityPanel.hidden = !open;
+        inventoryCopyButton?.setAttribute("aria-expanded", String(open));
+        syncQuantityControls();
+      };
+      const invalidateQuantities = (message = "") => {
+        quantitySequence += 1;
+        preparedQuantities = null;
+        if (quantityTarget) { quantityTarget.hidden = true; quantityTarget.textContent = ""; }
+        quantityMessage(message);
+        syncQuantityControls();
+      };
+      const quantityContext = () => ({
+        sequence: ++quantitySequence, loadSequence, reportId: currentRecord.reportId,
+        reportKey: quantityReportKey(), reference: quantitySheetInput.value, locationSearch: location?.search,
+      });
+      const isQuantityContextCurrent = (context) => !disposed && context.sequence === quantitySequence &&
+        context.loadSequence === loadSequence && context.reportId === currentRecord?.reportId &&
+        context.reportKey === quantityReportKey() && context.reference === quantitySheetInput?.value &&
+        context.locationSearch === location?.search;
+      const setInventoryCopying = (copying) => {
+        inventoryCopying = copying;
+        quantityCopyReference = copying ? quantitySheetInput?.value : null;
+        quantityCopyNameDraft = copying ? reportNameInput?.value : null;
+        syncReportNameInput();
+        setResolutionBusy(paymentResolutionBusy);
+        setUnitCostBusy(unitCostCorrectionBusy);
+        mappingCorrectionController?.setExternalBusy?.(copying);
+        document.querySelector("#retry-report").disabled = copying;
+        syncQuantityControls();
+      };
+      const prepareQuantities = async (event) => {
+        event.preventDefault();
+        if (!canUseQuantities() || quantityBusy || inventoryCopying || quantityPanel?.hidden !== false) return;
+        invalidateQuantities();
+        let spreadsheetId;
+        try {
+          spreadsheetId = inventoryImportClient.parseGoogleSheetReference(quantitySheetInput.value);
+        } catch (error) { quantityMessage(error.message, true); return; }
+        const context = quantityContext();
+        quantityBusy = true;
+        syncQuantityControls();
+        quantityMessage("Checking the Inventory tab and saved report...");
+        try {
+          const result = await client.prepareQuantityHandoff({ reportId: context.reportId, spreadsheetId });
+          if (!isQuantityContextCurrent(context)) return;
+          if (!canUseQuantities() || result.reportId !== context.reportId || result.spreadsheetId !== spreadsheetId) {
+            throw new Error("The report changed while checking. Finish any corrections, then check the Sheet again.");
+          }
+          preparedQuantities = { ...result, reportKey: context.reportKey, reference: context.reference, locationSearch: context.locationSearch };
+          const cellLine = document.createElement("strong");
+          cellLine.className = "quantity-handoff-cell";
+          cellLine.textContent = `Paste into inventory cell ${result.startCell}`;
+          const guidance = document.createElement("span");
+          guidance.textContent = "\nNot A1 to preserve order and formatting of google sheet. Make sure edits were not made during tracking or before pasting.";
+          quantityTarget.replaceChildren(cellLine, guidance);
+          quantityTarget.hidden = false;
+          quantityMessage(result.alreadyApplied
+            ? "These quantities already match the Sheet. Copying them again will not deduct stock again."
+            : "Sheet verified. Copy quantities when ready; other columns and formatting are not included.");
+        } catch (error) {
+          if (isQuantityContextCurrent(context)) {
+            preparedQuantities = null;
+            quantityMessage(error?.message ?? "The Sheet could not be checked. No quantities were copied.", true);
+          }
+        } finally {
+          quantityBusy = false;
+          syncQuantityControls();
+        }
+      };
+      const copyQuantities = async () => {
+        if (!canUseQuantities() || quantityBusy || inventoryCopying || quantityPanel?.hidden !== false || !preparedQuantities) return;
+        const prepared = preparedQuantities;
+        if (prepared.reportKey !== quantityReportKey() || prepared.reference !== quantitySheetInput.value ||
+            prepared.locationSearch !== location?.search) {
+          invalidateQuantities("The report or Sheet link changed. Check the Sheet again.");
+          return;
+        }
+        if (typeof navigator?.clipboard?.write !== "function" ||
+            typeof dependencies.ClipboardItem !== "function" || typeof dependencies.Blob !== "function") {
+          quantityMessage("Quantity copying is unavailable in this browser. Use current desktop Chrome, or the separate full-table export.", true);
+          return;
+        }
+        const context = quantityContext();
+        quantityBusy = true;
+        setInventoryCopying(true);
+        quantityMessage("Rechecking the saved report before copying...");
+        // Start clipboard.write during this explicit click. Its promised Blob
+        // resolves only after the worker confirms the report and preparation
+        // token are still current; async validation never copies stale text.
+        const payload = Promise.resolve().then(async () => {
+          const result = await client.copyQuantityHandoff({ reportId: context.reportId, token: prepared.token });
+          if (!isQuantityContextCurrent(context) || !canUseQuantities() ||
+              result.reportId !== context.reportId || result.token !== prepared.token ||
+              result.spreadsheetId !== prepared.spreadsheetId || result.range !== prepared.range ||
+              result.startCell !== prepared.startCell || result.sheetTitle !== prepared.sheetTitle) {
+            throw new Error("The report or destination changed. Check the Sheet again before copying.");
+          }
+          return new dependencies.Blob([result.text], { type: "text/plain" });
+        });
+        payload.catch(() => {}); // A synchronous clipboard rejection may never consume its payload.
+        try {
+          await navigator.clipboard.write([new dependencies.ClipboardItem({ "text/plain": payload })]);
+          if (!isQuantityContextCurrent(context)) return;
+          quantityMessage("");
+        } catch (error) {
+          if (isQuantityContextCurrent(context)) {
+            invalidateQuantities();
+            quantityMessage(error?.message ?? "Quantities could not be copied. Check the Sheet again to retry.", true);
+          }
+        } finally {
+          quantityBusy = false;
+          setInventoryCopying(false);
+        }
+      };
 
       const expandVariationsForPrint = () => {
         if (printDisclosureState !== null || !currentRecord ||
@@ -1437,15 +1642,21 @@
         if (!reportNameDirty) {
           reportNameInput.value = getReportDisplayName(currentRecord);
         }
-        reportNameInput.disabled = reportNameSave !== null ||
+        reportNameInput.disabled = reportNameSave !== null || inventoryCopying ||
           currentRecord.lifecycleStatus !== "finalized" ||
           typeof client.renameReport !== "function";
         reportNameInput.setAttribute("aria-busy", String(reportNameSave !== null));
       };
 
       const renderCurrentReport = () => {
+        const key = quantityReportKey();
+        if (renderedQuantityReport !== key) {
+          invalidateQuantities(renderedQuantityReport === null ? "" : "The report changed. Check the Sheet again before copying quantities.");
+          renderedQuantityReport = key;
+        }
         renderReport(document, currentRecord);
         syncReportNameInput();
+        syncQuantityControls();
       };
 
       const feedback = (message) => {
@@ -1513,9 +1724,11 @@
         const section = document.querySelector("#payment-resolution-section");
 
         paymentResolutionBusy = busy;
+        if (busy) invalidateQuantities("Finish the payment correction, then check the Sheet again.");
+        syncQuantityControls();
         section?.setAttribute("aria-busy", busy ? "true" : "false");
         paymentResolutionControls.forEach((control) => {
-          control.disabled = busy;
+          control.disabled = busy || inventoryCopying;
         });
       };
 
@@ -1538,9 +1751,11 @@
         ].filter(Boolean);
 
         unitCostCorrectionBusy = busy;
+        if (busy) invalidateQuantities("Finish the report correction, then check the Sheet again.");
+        syncQuantityControls();
         section?.setAttribute("aria-busy", busy ? "true" : "false");
         controls.forEach((control) => {
-          control.disabled = busy || currentUnitCostEntries.length === 0;
+          control.disabled = busy || inventoryCopying || currentUnitCostEntries.length === 0;
         });
       };
 
@@ -1617,12 +1832,17 @@
       };
 
       const showError = (message) => {
+        quantityLoading = false;
+        setInventoryOptionsOpen(false);
+        setQuantityPanelOpen(false);
+        invalidateQuantities();
         document.querySelector("#report-loading").hidden = true;
         document.querySelector("#report-loading").setAttribute("aria-busy", "false");
         document.querySelector("#report-content").hidden = true;
         document.querySelector("#report-error").hidden = false;
         document.querySelector("#report-error-message").textContent = message;
         document.querySelector("#print-report").disabled = true;
+        syncQuantityControls();
       };
 
       const hydrateRecord = (response) => {
@@ -1689,7 +1909,7 @@
         }
       };
       const isCurrentReportView = (reportId, sequence) =>
-        loadSequence === sequence && currentRecord?.reportId === reportId;
+        !disposed && loadSequence === sequence && currentRecord?.reportId === reportId;
 
       let mappingCorrectionController = null;
 
@@ -1703,14 +1923,20 @@
               document,
               client: correctionClient,
               onStatus: feedback,
+              onStateChange: ({ reportId, busy }) => {
+                if (disposed || currentRecord?.reportId !== reportId) return;
+                if (busy) invalidateQuantities("Finish the mapping correction, then check the Sheet again.");
+                else syncQuantityControls();
+              },
               onSaved: async ({ reportId }) => {
                 const refreshSequence = loadSequence;
 
-                if (currentRecord?.reportId !== reportId) {
+                if (disposed || currentRecord?.reportId !== reportId) {
                   throw new Error(
                     "The viewed report changed before it could be refreshed.",
                   );
                 }
+                invalidateQuantities("The report correction was saved. Check the Sheet again before copying quantities.");
 
                 const response = await client.getReport({ reportId });
 
@@ -1811,7 +2037,7 @@
         resolution,
         soldPriceText,
       }) => {
-        if (!currentRecord || typeof client.resolvePaymentFixingOrder !== "function") {
+        if (disposed || inventoryCopying || !currentRecord || typeof client.resolvePaymentFixingOrder !== "function") {
           return;
         }
 
@@ -1925,7 +2151,7 @@
 
       const updateSelectedUnitCost = async () => {
         if (
-          !currentRecord ||
+          disposed || inventoryCopying || !currentRecord ||
           unitCostCorrectionBusy ||
           typeof client.updateReportUnitCost !== "function"
         ) {
@@ -2015,6 +2241,7 @@
       };
 
       const saveReportName = async () => {
+        if (disposed || inventoryCopying) return;
         if (reportNameSave) {
           return reportNameSave.done;
         }
@@ -2057,6 +2284,7 @@
           done: new Promise((resolve) => { finishSave = resolve; }),
         };
         reportNameSave = save;
+        invalidateQuantities("Finish saving the report name, then check the Sheet again.");
         reportNameDirty = true;
         showReportNameFeedback("Saving report name...");
         syncReportNameInput();
@@ -2089,12 +2317,18 @@
           if (reportNameSave === save) {
             reportNameSave = null;
             syncReportNameInput();
+            syncQuantityControls();
           }
           finishSave();
         }
       };
 
       const load = async () => {
+        if (disposed || inventoryCopying) return;
+        setInventoryOptionsOpen(false);
+        quantityLoading = true;
+        setQuantityPanelOpen(false);
+        invalidateQuantities();
         const sequence = ++loadSequence;
         reportNameSave = null;
         showReportNameFeedback("");
@@ -2205,6 +2439,8 @@
           }
 
           document.querySelector("#report-loading").setAttribute("aria-busy", "false");
+          quantityLoading = false;
+          syncQuantityControls();
           document.querySelector("#report-content").focus();
         } catch (error) {
           if (sequence !== loadSequence) {
@@ -2219,12 +2455,16 @@
       };
 
       reportNameInput?.addEventListener("input", () => {
+        if (inventoryCopying) {
+          reportNameInput.value = quantityCopyNameDraft;
+          return;
+        }
         reportNameDirty = true;
         showReportNameFeedback("");
       });
       reportNameInput?.addEventListener("blur", saveReportName);
       reportNameInput?.addEventListener("keydown", (event) => {
-        if (event.isComposing || reportNameSave) {
+        if (event.isComposing || reportNameSave || inventoryCopying) {
           return;
         }
         if (event.key === "Enter") {
@@ -2240,6 +2480,15 @@
       });
 
       document.querySelector("#retry-report").addEventListener("click", load);
+      quantityForm?.addEventListener("submit", prepareQuantities);
+      quantitySheetInput?.addEventListener("input", () => {
+        if (inventoryCopying) {
+          quantitySheetInput.value = quantityCopyReference;
+          return;
+        }
+        invalidateQuantities("Sheet link changed. Check the Sheet again.");
+      });
+      copyQuantityButton?.addEventListener("click", copyQuantities);
       document.querySelector("#unit-cost-sku")?.addEventListener("change", () => {
         const entry = getSelectedUnitCostEntry();
         const input = document.querySelector("#unit-cost-value");
@@ -2278,25 +2527,29 @@
           }
         }
       });
-      document.querySelector("#copy-inventory").addEventListener("click", async () => {
-        if (!currentRecord) {
-          return;
-        }
-
-        try {
-          await writeClipboard(
-            navigator,
-            serializeInventoryTsv(currentRecord.report, reportModule),
-          );
-          feedback("Updated six-column inventory copied. Paste it into Google Sheets.");
-        } catch (error) {
-          feedback(error?.message ?? "Updated inventory could not be copied.");
-        }
+      inventoryCopyButton?.addEventListener("click", () => {
+        if (!canUseQuantities() || quantityBusy || inventoryCopying || !quantityPanel) return;
+        setInventoryOptionsOpen(false);
+        setQuantityPanelOpen(quantityPanel.hidden);
       });
-      document.querySelector("#download-inventory").addEventListener("click", () => {
-        if (!currentRecord) {
-          return;
-        }
+      inventoryOptionsButton?.addEventListener("click", () => {
+        if (!canUseInventoryExports() || !inventoryOptionsPanel) return;
+        setInventoryOptionsOpen(inventoryOptionsPanel.hidden);
+      });
+      const dismissInventoryOptions = (event) => {
+        if (inventoryOptionsPanel?.hidden !== false) return;
+        if (!inventoryOptionsContainer?.contains(event.target)) setInventoryOptionsOpen(false);
+      };
+      const handleInventoryOptionsKey = (event) => {
+        if (event.key !== "Escape" || inventoryOptionsPanel?.hidden !== false) return;
+        event.preventDefault();
+        setInventoryOptionsOpen(false, true);
+      };
+      document.addEventListener?.("click", dismissInventoryOptions);
+      document.addEventListener?.("keydown", handleInventoryOptionsKey);
+      inventoryCsvButton?.addEventListener("click", () => {
+        if (!canUseInventoryExports() || inventoryOptionsPanel?.hidden !== false) return;
+        setInventoryOptionsOpen(false, true);
 
         try {
           const filename = downloadCsv(
@@ -2310,13 +2563,43 @@
           feedback(error?.message ?? "The updated inventory CSV could not be downloaded.");
         }
       });
+      inventoryUnformattedButton?.addEventListener("click", async () => {
+        if (!canUseInventoryExports() || inventoryOptionsPanel?.hidden !== false) return;
+        const reportKey = quantityReportKey();
+        const sequence = loadSequence;
+        const locationSearch = location?.search;
+        const isCurrent = () => !disposed && sequence === loadSequence &&
+          reportKey === quantityReportKey() && locationSearch === location?.search;
+        setInventoryOptionsOpen(false, true);
+        setInventoryCopying(true);
+        try {
+          await copyUpdatedInventory(navigator, currentRecord.report, reportModule);
+          if (isCurrent()) feedback("Inventory copied. Paste into spreadsheet cell A1.");
+        } catch (error) {
+          if (isCurrent()) feedback(error?.message ?? "The updated inventory could not be copied.");
+        } finally {
+          setInventoryCopying(false);
+        }
+      });
 
+      const dispose = () => {
+        disposed = true;
+        loadSequence += 1;
+        setInventoryOptionsOpen(false);
+        setQuantityPanelOpen(false);
+        invalidateQuantities();
+        document.removeEventListener?.("click", dismissInventoryOptions);
+        document.removeEventListener?.("keydown", handleInventoryOptionsKey);
+        mappingCorrectionController?.destroy?.();
+      };
+      (dependencies.lifecycleEventTarget ?? document.defaultView)?.addEventListener("pagehide", dispose);
       load();
-      return Object.freeze({ load });
+      return Object.freeze({ load, dispose });
     }
 
     return Object.freeze({
       SHEET_HEADERS,
+      copyUpdatedInventory,
       createFileStamp,
       createReportFilename,
       createSummaryMetrics,

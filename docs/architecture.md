@@ -628,11 +628,20 @@ still a complete six-column table with the original `sku,item,style,size,unit_co
 the replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
 serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet values.
 
-The extension-owned report page loads only the local saved record. It supports native
-Chrome Print / Save as PDF, a Google Sheets-ready six-column CSV download, and a matching
-full-table clipboard copy for pasting at A1. There is no handoff-instructions toggle or
-instruction block in the report or its printed output; the README documents the backup
-and full-table replacement workflow. The three screen-only correction sections have
+The extension-owned report page initially loads only the local saved record. It supports native
+Chrome Print / Save as PDF and a Google Sheets-ready six-column CSV download. The
+**Copy Updated Inventory** button now opens/closes the screen-only quantity handoff
+form; it does not immediately copy or read a Sheet. **Check Sheet** explicitly reads
+the chosen Sheet through the worker and the subsequent **Copy quantities** action builds
+a single-column clipboard handoff in its current physical row order. It retains blank
+spacers and reports the quantity-column starting cell for one values-only paste, leaving
+other columns outside the operation. **Other options** opens a compact button group
+with the unchanged six-column CSV download and **Copy Inventory No Formatting**, which
+uses the existing full-table TSV clipboard helper for pasting at A1. Opening the group
+does no I/O; Escape/outside click/actions close it. Hidden or busy actions are guarded,
+and both clipboard paths share the report-edit/copy lock to prevent overlapping writes.
+The redundant quantity dropdown heading and full-table explanation were removed.
+The three screen-only correction sections have
 different authority boundaries.
 **Finish unresolved payments** exposes canonical-unresolved `payment_processing`,
 `order_processing`, `payment_fixing`, or legacy `payment_failed` orders. Newly captured
@@ -1384,9 +1393,10 @@ only Sold Items variation numbers, one current bidding variation number, sanitiz
 payment-status codes, completed variation/price facts, and the sanitized Attributed GMV
 display, never mappings, stream
 lifecycle commands, raw badge or analytics text, or arbitrary state. The Sheets reader
-is a separate worker-owned boundary used for pre-stream confirmation and explicit
-active-stream SKU additions. The local report may serialize a
-six-column clipboard/CSV replacement table; outbound Google Sheets API writes are not
+is a separate worker-owned boundary used for pre-stream confirmation, explicit
+active-stream SKU additions, and employee-requested report quantity-handoff checks.
+The local report may serialize a six-column clipboard/CSV replacement table or a
+verified row-aligned quantity column; outbound Google Sheets API writes are not
 supported.
 
 Captured pre-completion terminal cancellation is authoritative for allocation;
@@ -1598,13 +1608,46 @@ Google Sheets is not the live transactional source of truth. Once confirmed, the
 baseline scope drives tagging, inventory, and basic profit without automatic Google
 requests. An employee may explicitly re-read the same full `Inventory` tab during an
 active stream to append new SKU rows under the strict rules below. At End, the tracker
-saves its report locally first and can copy or download a
-Google Sheets-ready six-column replacement table. It does not call the Sheets write API.
+saves its report locally first and offers a checked quantity-only clipboard handoff or
+a Google Sheets-ready six-column replacement CSV. It does not call the Sheets write API.
 
-The novice handoff is position-based, not a SKU lookup or merge: duplicate the current
-`Inventory` tab as a backup, use **Copy Updated Inventory**, click the original tab's A1
-cell, and paste the full six-column rectangle. The matching CSV alternative is imported
-with **Replace current sheet** only after that backup.
+The full-table actions under **Other options** are position-based, not a SKU lookup or
+merge: duplicate the current `Inventory` tab as a backup before importing CSV with
+**Replace current sheet** or pasting the six-column clipboard table at A1. The
+**Copy Inventory No Formatting** button reuses exported
+`report-page.js::copyUpdatedInventory(navigator, report, reportModule)` without changing
+its TSV output. Neither action reads Google or preserves the original row layout.
+
+The **Copy Updated Inventory** button opens the quantity-only workflow, which verifies the chosen Sheet by exact
+SKU before preparing a positional single-column paste. Its fresh read retains the
+first nonblank header's physical row, the quantity column, and blank spacers through
+the last inventory row. Nothing is inserted into canonical inventory or saved reports;
+report inventory remains SKU-sorted. The source Sheet ID/layout and prepared output
+are transient, not new saved-data fields. Copying revalidates the report/context before
+returning quantities, and a changed link or report invalidates the page's preparation.
+The user must paste into the indicated cell using values-only paste and must not change
+the Sheet between reading and pasting. Clipboard success cannot verify the destination
+or protect against later Sheet edits. This is not automatic Google Sheets write-back.
+
+Preparation and copy use strict report-page-only commands in the worker FIFO. A bounded
+in-memory token expires after ten minutes (or restart), and retains an exact saved-report
+and local-state signature. Copy rechecks it instead of trusting the rendered report.
+The reader requests the whole Inventory tab, validates physical grid identity, rejects
+unsupported/merged layouts, and retains the existing response/row/cell limits; it never
+clips a large Sheet into a valid-looking partial handoff. Matching is an exact SKU set
+with saved item/style/size identity. Costs may differ but remain import-format-valid.
+The quantity handoff changes neither those costs nor saved report-only corrections.
+Only the latest finalized report on the current verified imported baseline/latest
+stream is eligible, with no active tracker or blocking unfinished/reconciliation issues.
+The complete Sheet quantity vector must match either the report's baseline-opening
+vector or its complete replacement vector. Mixed states, restocks, and intermediate
+stream exports on a reused baseline require manual reconciliation; there is no
+per-row guess or blind subtraction. An oversold report retains its recount warning
+and existing zero-clamped replacement values.
+Prepared output is plain numeric text with blank spacer lines and no formulas/header.
+The clipboard write starts in the explicit user gesture with a promised text/plain
+payload, released only after worker and page validation. Browser clipboard failure is
+not reported as successful copying, and successful copying is not a confirmed paste.
 
 ## 7. Google Sheets inventory import contract
 
@@ -1797,8 +1840,9 @@ tokens, and raw DOM text. Native Print / Save as PDF and CSV download create fil
 employee's computer. Removing the extension or clearing its storage deletes the bounded
 in-extension archive, so required reports must be saved externally before either action.
 
-The tracker does not export a `Sales` tab. Its Google Sheets handoff contains only the
-six-column inventory replacement table. Buyer fields are not part of the capture event.
+The tracker does not export a `Sales` tab. Its Google Sheets handoffs contain either the
+six-column inventory replacement table or a checked quantity-only clipboard column.
+Buyer fields are not part of the capture event.
 
 Gross profit is the mapped completed sale price minus its pinned Google Sheets unit-cost
 snapshot. It excludes platform fees, refunds, shipping, discounts, taxes, and other
