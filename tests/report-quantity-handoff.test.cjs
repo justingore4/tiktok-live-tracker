@@ -55,6 +55,45 @@ test("quantity handoff derives reordered column and header row without including
   assert.doesNotMatch(result.text, /\t|sku|quantity/);
 });
 
+test("quantity handoff ignores G+ formulas and retains G-only leading/interior spacers with byte-identical output", () => {
+  const columns = ["quantity_on_hand_at_import", "size", "sku", "unit_cost", "style", "item"];
+  const source = layout([[], [], columns, [], row("TEE-L", columns), [], row("TEE-M", columns), row("HAT-OS", columns), []], 3);
+  const report = makeReport();
+  const expected = handoff.createQuantityHandoff(report, source);
+  const extended = clone(source);
+  extended.values = extended.values.map((entry, index) => [
+    ...Array.from({ length: 6 }, (_, column) => entry[column] ?? ""),
+    index === 2 ? "Total Inventory Cost" : "=SUM(A:A)",
+    "=A1*D1",
+  ]);
+  extended.values[4].push(...Array(20_000).fill("Personal data"));
+  const before = clone(extended);
+  const actual = handoff.createQuantityHandoff(report, extended);
+  assert.deepEqual(actual, expected);
+  assert.deepEqual(Buffer.from(actual.text), Buffer.from(expected.text));
+  assert.equal(actual.startCell, "A4");
+  assert.equal(actual.endCell, "A8");
+  assert.deepEqual(extended, before);
+});
+
+test("quantity handoff ignores trailing G-only rows beyond the row cap but still bounds the relevant A:F extent", () => {
+  const source = basicLayout();
+  const expected = handoff.createQuantityHandoff(makeReport(), source);
+  while (source.values.length <= 1_001) source.values.push(["", "", "", "", "", "", "=SUM(E:E)"]);
+  assert.deepEqual(handoff.createQuantityHandoff(makeReport(), source), expected);
+  source.values[1_001][5] = 1;
+  assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_QUANTITY_LAYOUT");
+});
+
+test("quantity handoff accepts an item on the final supported physical row and rejects one after it", () => {
+  const source = layout([headers, row("TEE-M"), row("HAT-OS"), ...Array.from({ length: 997 }, () => []), row("TEE-L")]);
+  const result = handoff.createQuantityHandoff(makeReport(), source);
+  assert.equal(result.endCell, "E1001");
+  assert.equal(result.rowCount, 1_000);
+  source.values.splice(3, 0, []);
+  assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_QUANTITY_LAYOUT");
+});
+
 test("quantity handoff uses exact size SKUs and existing oversold replacement clamping", () => {
   const report = makeReport();
   const result = handoff.createQuantityHandoff(report, basicLayout());
@@ -102,8 +141,8 @@ test("quantity handoff rejects formulas, unsafe quantities, invalid rows and non
     source.values[0][header.startsWith("quantity") ? 4 : 0] = header;
     assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_INVENTORY_SHEET");
   }
-  const extraColumn = basicLayout(); extraColumn.values[2].push("Unexpected data");
-  assertCode(() => handoff.createQuantityHandoff(makeReport(), extraColumn), "INVALID_INVENTORY_SHEET");
+  const missingHeader = basicLayout(); missingHeader.values[0] = [...headers.slice(0, 5), "notes", "unit_cost"];
+  assertCode(() => handoff.createQuantityHandoff(makeReport(), missingHeader), "INVALID_INVENTORY_SHEET");
 });
 
 test("quantity handoff ignores valid Sheet/report-only cost differences and leaves reports/full exports unchanged", () => {
@@ -125,7 +164,11 @@ test("quantity handoff rejects altered header metadata, malformed reports and la
     assertCode(() => handoff.createQuantityHandoff(makeReport(), { ...basicLayout(), ...changes }), "INVALID_QUANTITY_LAYOUT");
   }
   const source = basicLayout(); while (source.values.length <= 1001) source.values.push([]);
+  source.values[1001] = row("TEE-L");
   assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_QUANTITY_LAYOUT");
+  for (const values of [null, [...basicLayout().values, null], [...basicLayout().values, , []]]) {
+    assertCode(() => handoff.createQuantityHandoff(makeReport(), { ...basicLayout(), values }), "INVALID_QUANTITY_LAYOUT");
+  }
   const report = clone(makeReport()); report.inventory[0].replacementQuantity = 999;
   assertCode(() => handoff.createQuantityHandoff(report, basicLayout()), "INVALID_REPORT");
 });

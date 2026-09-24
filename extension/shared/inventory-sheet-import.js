@@ -65,6 +65,45 @@
       return Array.isArray(row) && row.every(isBlankCell);
     }
 
+    function projectInventoryColumns(values) {
+      if (!Array.isArray(values)) {
+        failWithIssues([
+          createIssue(
+            "INVALID_SHEET_VALUES",
+            null,
+            null,
+            "Inventory sheet values must be a two-dimensional array.",
+          ),
+        ]);
+      }
+
+      const issues = [];
+      const projected = [];
+      for (let index = 0; index < values.length; index += 1) {
+        const row = values[index];
+        if (!Array.isArray(row)) {
+          issues.push(
+            createIssue(
+              "INVALID_SHEET_VALUES",
+              index + 1,
+              null,
+              "Every Inventory sheet row must be an array.",
+            ),
+          );
+        } else {
+          projected.push(row.slice(0, REQUIRED_HEADERS.length));
+        }
+      }
+      if (issues.length > 0) failWithIssues(issues);
+
+      // Preserve physical row positions for diagnostics and quantity-only paste.
+      // Personal columns never turn an A:F spacer into an inventory row.
+      while (projected.length > 0 && isBlankRow(projected[projected.length - 1])) {
+        projected.pop();
+      }
+      return projected;
+    }
+
     function normalizeDisplayText(value) {
       if (typeof value !== "string" && typeof value !== "number") {
         return null;
@@ -359,34 +398,13 @@
     }
 
     function parseInventorySheet(values) {
-      if (!Array.isArray(values)) {
-        failWithIssues([
-          createIssue(
-            "INVALID_SHEET_VALUES",
-            null,
-            null,
-            "Inventory sheet values must be a two-dimensional array.",
-          ),
-        ]);
-      }
+      values = projectInventoryColumns(values);
 
       const issues = [];
       let headerIndex = -1;
 
       for (let index = 0; index < values.length; index += 1) {
         const row = values[index];
-
-        if (!Array.isArray(row)) {
-          issues.push(
-            createIssue(
-              "INVALID_SHEET_VALUES",
-              index + 1,
-              null,
-              "Every Inventory sheet row must be an array.",
-            ),
-          );
-          continue;
-        }
 
         if (!isBlankRow(row)) {
           headerIndex = index;
@@ -424,18 +442,6 @@
         const row = values[index];
         const rowNumber = index + 1;
 
-        if (!Array.isArray(row)) {
-          issues.push(
-            createIssue(
-              "INVALID_SHEET_VALUES",
-              rowNumber,
-              null,
-              "Every Inventory sheet row must be an array.",
-            ),
-          );
-          continue;
-        }
-
         if (isBlankRow(row)) {
           continue;
         }
@@ -443,20 +449,6 @@
         nonblankDataRows += 1;
 
         const rowIssueCountBefore = issues.length;
-
-        if (
-          row.length > REQUIRED_HEADERS.length &&
-          row.slice(REQUIRED_HEADERS.length).some((cell) => !isBlankCell(cell))
-        ) {
-          issues.push(
-            createIssue(
-              "INVALID_SHEET_VALUES",
-              rowNumber,
-              null,
-              "Inventory rows cannot contain values outside the six supported columns.",
-            ),
-          );
-        }
 
         const rawValues = Object.fromEntries(
           REQUIRED_HEADERS.map((header) => [header, row[headerIndexes.get(header)]]),
@@ -605,6 +597,7 @@
       IMPORT_CONTRACT_VERSION,
       REQUIRED_HEADERS,
       InventorySheetImportError,
+      projectInventoryColumns,
       parseInventorySheet,
     });
   },

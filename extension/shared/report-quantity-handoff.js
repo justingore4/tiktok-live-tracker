@@ -34,13 +34,21 @@
   function createQuantityHandoff(report, layout) {
     const hydrated = streamReport.hydrateStreamReport(report);
     if (!layout || layout.sheetTitle !== "Inventory" ||
-        typeof layout.spreadsheetId !== "string" || !/^[A-Za-z0-9_-]{20,200}$/.test(layout.spreadsheetId) ||
-        !Array.isArray(layout.values) || layout.values.length > googleImport.MAX_SHEET_ROWS ||
-        layout.values.some((row) => !Array.isArray(row) || row.length > googleImport.MAX_SHEET_COLUMNS) ||
-        layout.values.reduce((total, row) => total + row.length, 0) > googleImport.MAX_CELL_SLOTS) {
+        typeof layout.spreadsheetId !== "string" || !/^[A-Za-z0-9_-]{20,200}$/.test(layout.spreadsheetId)) {
       fail("INVALID_QUANTITY_LAYOUT", "The complete Inventory layout is unavailable or exceeds the supported size. Verify the Sheet again.");
     }
-    const values = layout.values;
+    let values;
+    try {
+      values = inventorySheetImport.projectInventoryColumns(layout.values);
+    } catch (error) {
+      if (!(error instanceof inventorySheetImport.InventorySheetImportError)) throw error;
+      fail("INVALID_QUANTITY_LAYOUT", "The complete Inventory layout is unavailable or exceeds the supported size. Verify the Sheet again.");
+    }
+    if (values.length > googleImport.MAX_SHEET_ROWS ||
+        values.some((row) => row.length > googleImport.MAX_SHEET_COLUMNS) ||
+        values.reduce((total, row) => total + row.length, 0) > googleImport.MAX_CELL_SLOTS) {
+      fail("INVALID_QUANTITY_LAYOUT", "The complete Inventory layout is unavailable or exceeds the supported size. Verify the Sheet again.");
+    }
     const parsed = inventorySheetImport.parseInventorySheet(values);
     const headerIndex = values.findIndex((row) => !row.every(isBlank));
     const quantityColumn = values[headerIndex].indexOf("quantity_on_hand_at_import") + 1;
@@ -68,8 +76,7 @@
       fail("QUANTITY_STOCK_CONFLICT", "Sheet quantities do not match this report's opening stock or its complete updated quantities. Reconcile restocks, earlier updates, or partial pastes before continuing.");
     }
     const skuColumn = values[headerIndex].indexOf("sku");
-    let lastRowIndex = values.length - 1;
-    while (lastRowIndex > headerIndex && values[lastRowIndex].every(isBlank)) lastRowIndex -= 1;
+    const lastRowIndex = values.length - 1;
     const lines = values.slice(headerIndex + 1, lastRowIndex + 1).map((row) =>
       row.every(isBlank) ? "" : String(bySku.get(row[skuColumn].trim()).replacementQuantity));
     const column = columnLabel(quantityColumn);

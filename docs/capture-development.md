@@ -387,7 +387,9 @@ and matching Chrome Extension OAuth client. Keep both values unchanged. See the
    and authorizes independently; being a test user does not grant access to a Sheet.
 4. Import [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv)
    into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
-   headers, and replace the dummy rows with the physical opening count and unit cost.
+   headers within A:F, and replace the dummy rows with the physical opening count and
+   unit cost. The headers may be reordered within A:F. G+ may contain notes, formulas,
+   or summaries; those columns are ignored by all inventory reads.
    Keep every size on its own unique-SKU row; repeat the same item and style for sizes that
    should share one live card. Give the authorizing Google account read access.
 5. With no local tracker stream active, open the side panel, which defaults to **Live
@@ -396,12 +398,12 @@ and matching Chrome Extension OAuth client. Keep both values unchanged. See the
    grants `identity`, the exact `https://sheets.googleapis.com/*` host, and only
    `https://www.googleapis.com/auth/spreadsheets.readonly`. That Google scope can read
    spreadsheets available to the connected account, but the importer requests only the
-   selected ID and fixed whole-sheet `'Inventory'` range.
+   selected ID and fixed `'Inventory'!A:F` range.
 6. Verify the full normalized table, row count, opening-unit total, and opening-cost
    total. Select **Confirm inventory baseline**. Confirmation re-reads the Sheet before
    atomically saving a new durable local baseline; Start becomes available only after
-   that succeeds. The importer accepts at most 1,000 inventory rows beyond the header;
-   an oversized Sheet is rejected without a partial preview or import.
+   that succeeds. The existing limit is 1,001 physical rows including the header and
+   A:F blank spacers; A:F data beyond it is rejected without a partial preview or import.
 
 With this read-only Sheets scope in **Testing**, Google authorization expires seven days
 after consent; reconnect when needed before the next import. This is authorization
@@ -411,11 +413,15 @@ the Testing limits and warnings.
 
 Run these fail-closed checks before relying on the importer:
 
-- Delete or rename a required header, duplicate a SKU, enter a formula, or use an invalid
-  quantity. Preview must show bounded row/column diagnostics, import nothing, and leave
+- Delete or rename a required A:F header, duplicate a SKU, enter an A:F formula, or use
+  an invalid quantity. Preview must show bounded row/column diagnostics, import nothing, and leave
   Start unavailable when there was no earlier confirmed baseline.
-- Create a valid preview, then change any cell before confirmation. Confirmation must
-  report a stale preview, create no baseline, and require another preview.
+- Add notes, formulas, or summary cells only in G+ before/after preview. They must not
+  alter the inventory preview or confirmation. Include G-only rows above the header,
+  between inventory rows, and below the last inventory row: they must not become headers
+  or records. Moving a required header into G+ must still fail.
+- Create a valid preview, then change an inventory value in A:F before confirmation.
+  Confirmation must report a stale preview, create no baseline, and require another preview.
 - Create a preview, reload the extension worker or wait more than ten minutes, then try
   to confirm. The opaque preview nonce is memory-only, so a fresh preview is required.
 - Revoke authorization or let it expire between preview and confirmation. Confirmation
@@ -436,9 +442,11 @@ Run these fail-closed checks before relying on the importer:
 After Start, inventory, reservations, payment reconciliation, and basic profit use the
 local baseline scope. The extension makes no automatic live Google request and has no
 Sheets write scope. If an unplanned SKU is needed, append its row to the same `Inventory`
-tab without changing or removing any existing row, then use **Add new SKUs from Sheet**.
-The worker re-reads the full tab and accepts it only when every existing SKU's six stored
-values are identical and at least one entirely new SKU is present. Row order is irrelevant.
+tab's A:F columns without changing or removing any existing inventory row, then use
+**Add new SKUs from Sheet**. The worker re-reads A:F and requires every existing SKU's
+six stored values to be identical. New SKUs are appended together; an unchanged inventory
+is a successful no-op. Row order is irrelevant.
+G+ changes alone add no SKU and do not invalidate unchanged A:F inventory.
 The action preserves all variations, mappings, payment states, completed allocations, and
 pending reservations. A Sheet mismatch, stream change, invalid row, or storage failure is
 atomic and adds nothing. Wait for the success message before mapping the new SKU. The
@@ -452,12 +460,15 @@ mapping, queueing, reconciliation, reports, and the Sheet handoff. Search can ma
 group item, style, size, or underlying SKU and keeps the whole matched group available.
 
 After End, the local report's **Other options** offers a six-column replacement CSV
-and **Copy Inventory No Formatting** for a full-table paste at A1. Neither preserves
-the original Sheet row layout. **Copy Updated Inventory** opens the quantity-only
-form. Its **Check Sheet** action explicitly re-reads the selected Sheet, matches exact SKUs, and prepares a
+and **Copy Inventory No Formatting** for a full-table paste at A1. Both can reorder rows
+into SKU order without spacers and are not formatting-preserving exports.
+**Copy Updated Inventory** opens the quantity-only form. Its **Check Sheet** action
+explicitly re-reads the selected `Inventory!A:F`, matches exact SKUs, and prepares a
 quantity-only column in the current physical row order, including blank spacers. The
-employee pastes values only into the indicated starting cell, not A1. Other columns
-and costs are outside this handoff; no automatic Sheet write occurs. A new physical recount is another
+employee pastes values only into the indicated starting cell, not A1. Other columns,
+including G+, and costs are outside this handoff; no automatic Sheet write occurs.
+G-only rows do not extend its paste range. Merges entirely in G+ are ignored; any merge
+touching A:F blocks the quantity handoff. A new physical recount is another
 pre-stream import after End. It may rename SKU or item/style/size values for future
 streams, but it cannot alter the opening quantity, identifiers, or pin of an active or
 historical stream. Complete the prior report's handoff before renaming so its older
@@ -760,7 +771,11 @@ distribution; reassess Google's requirements before expanding the audience.
     are not alphabetical, with a blank row below the header and consecutive spacers.
     Check the Sheet link, copy, and values-only paste once at the displayed starting
     cell. Confirm exact quantity alignment and unchanged row spacing, formatting,
-    item/style/size/cost cells, and trailing blank rows. Try a reordered quantity column.
+    item/style/size/cost cells, and trailing blank rows. Try a reordered quantity column
+    within A:F. Add G+ notes, formulas, and summaries above the header, alongside rows,
+    and below the last SKU; they must stay unchanged and not extend the paste range.
+    A merge entirely in G+ must be accepted, while a merge touching A:F must fail closed.
+    A:F data past physical row 1,001 must reject, not produce a partial handoff.
     Verify mismatch/authentication/clipboard failures do not report success; changed
     links, corrections, or stale reports require another check. Do not change the Sheet
     between verification and paste. Its screen-only controls must not enter printed/PDF

@@ -11,7 +11,7 @@
   function createInventoryImportClientModule() {
     "use strict";
 
-    const FIXED_INVENTORY_RANGE = "'Inventory'";
+    const FIXED_INVENTORY_RANGE = "'Inventory'!A:F";
     const DEFAULT_SPREADSHEET_ID_PATTERN = /^[A-Za-z0-9_-]{20,200}$/;
     const GOOGLE_SHEETS_HOST = "docs.google.com";
     const GOOGLE_SHEETS_PATH_PATTERN =

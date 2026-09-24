@@ -221,7 +221,7 @@
         value.previewToken.trim() === "" ||
         typeof value.spreadsheetId !== "string" ||
         value.spreadsheetId.trim() === "" ||
-        value.range !== "'Inventory'" ||
+        value.range !== "'Inventory'!A:F" ||
         typeof value.fingerprint !== "string" ||
         value.fingerprint.trim() === "" ||
         !Array.isArray(value.inventory) ||

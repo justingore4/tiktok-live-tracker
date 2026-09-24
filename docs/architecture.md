@@ -784,7 +784,7 @@ Shared tagger behavior includes:
   preferred exact size label after selection; its top-layer listbox orders numeric sizes
   naturally and shows every option's SKU, stock, and Selected/Live/Queued roles.
 - A compact **Add new SKUs from Sheet** action that appears only in a loaded active
-  workspace. It accepts the same Sheet link/ID, reads the complete `Inventory` tab, and
+  workspace. It accepts the same Sheet link/ID, reads `Inventory!A:F`, and
   adds only new SKU identities. The form alone is busy during the request; capture and
   the rest of the live workspace remain active.
 - Search across item, style, size, and SKU. Search operates on complete presentation
@@ -1606,7 +1606,7 @@ panel receives an access token.
 
 Google Sheets is not the live transactional source of truth. Once confirmed, the local
 baseline scope drives tagging, inventory, and basic profit without automatic Google
-requests. An employee may explicitly re-read the same full `Inventory` tab during an
+requests. An employee may explicitly re-read the same `Inventory!A:F` range during an
 active stream to append new SKU rows under the strict rules below. At End, the tracker
 saves its report locally first and offers a checked quantity-only clipboard handoff or
 a Google Sheets-ready six-column replacement CSV. It does not call the Sheets write API.
@@ -1616,12 +1616,15 @@ merge: duplicate the current `Inventory` tab as a backup before importing CSV wi
 **Replace current sheet** or pasting the six-column clipboard table at A1. The
 **Copy Inventory No Formatting** button reuses exported
 `report-page.js::copyUpdatedInventory(navigator, report, reportModule)` without changing
-its TSV output. Neither action reads Google or preserves the original row layout.
+its TSV output. Neither action reads Google; both can reorder inventory into SKU order
+without spacer rows and are not formatting-preserving exports.
 
-The **Copy Updated Inventory** button opens the quantity-only workflow, which verifies the chosen Sheet by exact
-SKU before preparing a positional single-column paste. Its fresh read retains the
-first nonblank header's physical row, the quantity column, and blank spacers through
-the last inventory row. Nothing is inserted into canonical inventory or saved reports;
+The **Copy Updated Inventory** button opens the quantity-only workflow, which verifies
+the chosen Sheet by exact SKU before preparing a positional single-column paste. Its fresh read retains the
+first nonblank A:F header's physical row, the quantity column within A:F, and blank
+A:F spacers through the last inventory row. G-only content does not select the header,
+create inventory records, or extend the paste range. Nothing is inserted into canonical
+inventory or saved reports;
 report inventory remains SKU-sorted. The source Sheet ID/layout and prepared output
 are transient, not new saved-data fields. Copying revalidates the report/context before
 returning quantities, and a changed link or report invalidates the page's preparation.
@@ -1632,10 +1635,13 @@ or protect against later Sheet edits. This is not automatic Google Sheets write-
 Preparation and copy use strict report-page-only commands in the worker FIFO. A bounded
 in-memory token expires after ten minutes (or restart), and retains an exact saved-report
 and local-state signature. Copy rechecks it instead of trusting the rendered report.
-The reader requests the whole Inventory tab, validates physical grid identity, rejects
-unsupported/merged layouts, and retains the existing response/row/cell limits; it never
-clips a large Sheet into a valid-looking partial handoff. Matching is an exact SKU set
-with saved item/style/size identity. Costs may differ but remain import-format-valid.
+The reader requests only `'Inventory'!A:F`, validates physical grid identity, and rejects
+unsupported layouts or any merge touching A:F. Merges wholly within G+ are ignored.
+The existing response/row/cell limits remain; A:F data beyond the 1,001-physical-row
+bound is rejected, never clipped into a valid-looking partial handoff. Leading and
+interior A:F blank rows retain their physical positions and count toward that bound.
+Matching is an exact SKU set with saved item/style/size identity. Costs may differ but
+remain import-format-valid.
 The quantity handoff changes neither those costs nor saved report-only corrections.
 Only the latest finalized report on the current verified imported baseline/latest
 stream is eligible, with no active tracker or blocking unfinished/reconciliation issues.
@@ -1645,6 +1651,7 @@ stream exports on a reused baseline require manual reconciliation; there is no
 per-row guess or blind subtraction. An oversold report retains its recount warning
 and existing zero-clamped replacement values.
 Prepared output is plain numeric text with blank spacer lines and no formulas/header.
+The quantity-only paste leaves every other column, including G+, outside the operation.
 The clipboard write starts in the explicit user gesture with a promised text/plain
 payload, released only after worker and page validation. Browser clipboard failure is
 not reported as successful copying, and successful copying is not a confirmed paste.
@@ -1660,8 +1667,12 @@ tracker state.
 
 ### `Inventory` tab
 
-The first nonblank row must contain these exact, case-sensitive headers. Column order may
-vary, but missing, duplicate, or unknown headers make the whole import invalid.
+Only columns A:F are inventory input for preview, confirmation, active-stream SKU
+additions, and quantity-handoff checks. Columns G+ are ignored, including formulas,
+notes, and summaries; this does not add formula evaluation, generated totals, or Apps Script.
+The first nonblank A:F row must contain these exact, case-sensitive headers. Column
+order may vary within A:F, but missing, duplicate, or unknown headers in A:F make the
+whole import invalid. A required header placed in G+ does not satisfy the contract.
 
 | Column | Required value |
 | --- | --- |
@@ -1672,9 +1683,10 @@ vary, but missing, duplicate, or unknown headers make the whole import invalid.
 | `quantity_on_hand_at_import` | Nonnegative safe integer representing the physical count when this baseline is confirmed |
 | `unit_cost` | Nonnegative US-dollar decimal with no symbol and at most two fractional digits, such as `12.00` |
 
-An all-blank row is ignored. In a data row, every field except `style` is required.
-Formula cells are invalid: import values are data and must never be evaluated by the
-tracker. The Google adapter reads `userEnteredValue`, preserving formula cells for this
+An all-blank A:F row is ignored for inventory, even if it has G+ content. In a data row,
+every field except `style` is required. Formula cells in A:F are invalid: import values
+are data and must never be evaluated by the tracker. The Google adapter reads
+`userEnteredValue`, preserving formula cells for this
 validation instead of supplying only an evaluated result. Leading and trailing
 whitespace is trimmed from cells, and runs of whitespace
 inside employee-facing item/style/size text are collapsed. Those display fields use one
@@ -1724,8 +1736,8 @@ this first contract.
 
 ### Atomic validation boundary
 
-The pure preview parser validates the header and every nonblank row before any inventory
-baseline may be appended. Validation includes required fields, types, SKU syntax and
+The pure preview parser validates the A:F header and every nonblank A:F row before any
+inventory baseline may be appended. Validation includes required fields, types, SKU syntax and
 uniqueness, duplicate item/style/size detection, and safe integer bounds. If any error
 exists, the parser returns row-specific errors and commits nothing; the connection
 adapter never partially imports valid rows from an invalid Sheet.
@@ -1775,18 +1787,21 @@ The Manifest V3 worker uses `chrome.identity` and the public OAuth client config
 `manifest.json`. It requests only
 `https://www.googleapis.com/auth/spreadsheets.readonly` and fetches only
 `https://sheets.googleapis.com`. The request is a GET for the selected spreadsheet's
-fixed whole-sheet `'Inventory'` range. It asks for grid `userEnteredValue` data so formulas
-remain distinguishable and invalid rather than being accepted as their evaluated result.
-The adapter accepts at most 1,000 inventory rows beyond the header. Response bytes,
-columns, cell slots, issue counts, retries, and request duration are also bounded before
-data reaches the pure parser. An oversized or invalid Sheet fails as a whole; it is never
-truncated into an apparently confirmable baseline. API error bodies and raw Sheet
+fixed `'Inventory'!A:F` range, without a row cutoff that could hide later inventory.
+It asks for grid `userEnteredValue` data so formulas within A:F remain distinguishable
+and invalid rather than being accepted as their evaluated result. The adapter retains
+the existing 1,001-physical-row bound, including the header, leading blanks, and interior
+spacer rows; A:F data beyond it fails closed. G-only rows are not inventory and do not
+extend the used inventory range. Response bytes, columns, cell slots, issue counts,
+retries, and request duration retain their existing bounds before data reaches the
+pure parser. An oversized or invalid inventory fails as a whole; it is never truncated
+into an apparently confirmable baseline. API error bodies and raw Sheet
 contents are not exposed to the side panel or application logs.
 
 Preview and confirmation are distinct operations:
 
 1. Preview checks that no local tracker stream is active, authorizes interactively,
-   reads and validates the complete `Inventory` tab, and returns detached normalized rows
+   reads and validates `Inventory!A:F`, and returns detached normalized rows
    plus summary totals. It does not write reconciliation state.
 2. A valid preview receives an opaque random nonce with a ten-minute expiration. The
    corresponding Sheet ID and normalized snapshot remain only in worker memory; the

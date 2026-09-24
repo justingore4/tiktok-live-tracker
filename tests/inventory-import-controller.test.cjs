@@ -19,7 +19,7 @@ const PREVIEW = {
   contractVersion: 1,
   previewToken: PREVIEW_TOKEN,
   spreadsheetId: SHEET_ID,
-  range: "'Inventory'",
+  range: "'Inventory'!A:F",
   fingerprint: "fnv1a64:0123456789abcdef",
   inventory: [
     {
@@ -121,6 +121,20 @@ test("previews detached rows then confirms a baseline explicitly", async () => {
     ["preview", SHEET_ID],
     ["confirm", PREVIEW_TOKEN],
   ]);
+});
+
+test("preview controller rejects whole-tab, wider, and row-capped range contracts", async () => {
+  for (const range of ["'Inventory'", "'Inventory'!A:G", "'Inventory'!A1:F1001"]) {
+    const controller = createInventoryImportController({
+      client: createClient({ previewSpreadsheetId: async () => ({ ...PREVIEW, range }) }),
+    });
+    await controller.start();
+    const failed = await controller.previewReference(SHEET_ID);
+    assert.equal(failed.phase, "error", range);
+    assert.equal(failed.error.code, "INVALID_CLIENT_RESPONSE", range);
+    assert.equal(failed.preview, null, range);
+    assert.equal(failed.hasConfirmedBaseline, false, range);
+  }
 });
 
 test("canceling a replacement preview retains the confirmed baseline identity", async () => {

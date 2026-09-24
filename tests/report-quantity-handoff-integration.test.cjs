@@ -32,7 +32,7 @@ const sheetRows = () => [HEADER, [], row(ITEMS[0]), [], [], row(ITEMS[1]), [], [
 
 function grid(rows = sheetRows(), spreadsheetId = SHEET) {
   return { spreadsheetId, sheets: [{
-    properties: { title: "Inventory", sheetType: "GRID", gridProperties: { rowCount: 1000, columnCount: 26 } },
+    properties: { title: "Inventory", sheetType: "GRID", gridProperties: { rowCount: Math.max(1000, rows.length), columnCount: 26 } },
     data: [{ startRow: 0, startColumn: 0, rowData: rows.map((cells) => ({
       values: cells.map((value) => ({ userEnteredValue: typeof value === "object" ? value
         : typeof value === "number" ? { numberValue: value } : { stringValue: value } })),
@@ -140,7 +140,7 @@ test("quantity handoff uses actual client/worker/Sheets GET in current physical 
   assert.deepEqual(await copy(h, preview.token), output, "Repeated copies do not subtract again");
   assert.equal(h.fetchCalls.length, 1);
   assert.equal(h.fetchCalls[0].method, "GET");
-  assert.equal(new URL(h.fetchCalls[0].url).searchParams.get("ranges"), "'Inventory'");
+  assert.equal(new URL(h.fetchCalls[0].url).searchParams.get("ranges"), "'Inventory'!A:F");
   assert.deepEqual(h.storage, before);
   assert.deepEqual(h.writes, []);
   assert.equal(reports.serializeInventoryTsv(h.prepared.report), fullExport);
@@ -155,6 +155,66 @@ test("quantity handoff derives a shifted header and reordered quantity column", 
   assert.equal(preview.startCell, "A4");
   assert.equal(preview.range, "A4:A7");
   assert.equal((await copy(h, preview.token)).text, "\r\n4\r\n\r\n3");
+});
+
+test("G+ formulas and summaries preserve quantity destinations, spacer bytes, full exports, and saved contracts", async () => {
+  const layouts = [
+    { rows: sheetRows(), startCell: "E2", range: "E2:E6", text: "\r\n4\r\n\r\n\r\n3" },
+    { rows: [[], [], [HEADER[4], ...HEADER.slice(0, 4), HEADER[5]], [],
+      [5, ...row(ITEMS[0]).slice(0, 4), 2], [], [4, ...row(ITEMS[1]).slice(0, 4), 2.5]],
+      startCell: "A4", range: "A4:A7", text: "\r\n4\r\n\r\n3" },
+  ];
+  for (const layout of layouts) {
+    const noisyRows = [...layout.rows, ...Array.from({ length: 1002 }, () => [])]
+      .map((cells, index) => {
+        const noisy = [...cells];
+        while (noisy.length < 6) noisy.push("");
+        noisy[6] = index === 0 ? "unit_cost" : "ignored-G-summary";
+        noisy[7] = { formulaValue: "=SUM(E:E)" };
+        noisy[25] = "ignored-Z-note";
+        return noisy;
+      });
+    const h = worker({ payload: () => grid(noisyRows) });
+    const before = clone(h.storage);
+    const beforeReport = clone(h.prepared.report);
+    const fullTsv = reports.serializeInventoryTsv(h.prepared.report);
+    const fullCsv = reports.serializeInventoryCsv(h.prepared.report);
+    const preview = await prepare(h);
+    assert.equal(preview.startCell, layout.startCell);
+    assert.equal(preview.range, layout.range);
+    assert.equal(preview.itemCount, 2);
+    assert.equal(preview.rowCount, layout.text.split("\r\n").length);
+    const copied = await copy(h, preview.token);
+    assert.deepEqual(Buffer.from(copied.text, "utf8"), Buffer.from(layout.text, "utf8"));
+    assert.deepEqual(await copy(h, preview.token), copied);
+    assert.equal(h.fetchCalls.length, 1);
+    assert.equal(new URL(h.fetchCalls[0].url).searchParams.get("ranges"), "'Inventory'!A:F");
+    assert.deepEqual(h.storage, before);
+    assert.deepEqual(h.prepared.report, beforeReport);
+    assert.equal(reports.serializeInventoryTsv(h.prepared.report), fullTsv);
+    assert.equal(reports.serializeInventoryCsv(h.prepared.report), fullCsv);
+    assert.deepEqual(h.writes, []);
+    assert.deepEqual(h.errors, []);
+  }
+});
+
+test("quantity worker permits G:H summary merges but rejects merges crossing the A:F boundary", async () => {
+  for (const startColumnIndex of [6, 5]) {
+    const h = worker({ payload: () => {
+      const payload = grid();
+      payload.sheets[0].merges = [{ startRowIndex: 0, endRowIndex: 2,
+        startColumnIndex, endColumnIndex: 8 }];
+      return payload;
+    } });
+    if (startColumnIndex === 6) {
+      const preview = await prepare(h);
+      assert.equal((await copy(h, preview.token)).text, "\r\n4\r\n\r\n\r\n3");
+    } else {
+      await assert.rejects(prepare(h), { code: "UNSUPPORTED_INVENTORY_LAYOUT" });
+    }
+    assert.deepEqual(h.writes, []);
+    assert.deepEqual(h.errors, []);
+  }
 });
 
 test("already-applied entire quantity vector is recognized without another deduction", async () => {

@@ -40,14 +40,17 @@ copy or CSV export to update the Sheet manually.
 ## Start and run a stream
 
 1. Prepare a Google Sheet with a tab named **Inventory**. Use the
-   [inventory template](docs/google-sheets-inventory-template.csv) and these six headers:
+   [inventory template](docs/google-sheets-inventory-template.csv) and these six headers
+   within columns **A:F** (their order within A:F may vary):
 
    ```csv
    sku,item,style,size,quantity_on_hand_at_import,unit_cost
    ```
 
    Each size needs its own unique SKU. Enter the opening physical stock count and
-   unit cost for each row.
+   unit cost for each row. The first nonblank A:F row must have exactly those six
+   headers, and formulas are not allowed in A:F. Columns **G and later are ignored**,
+   including notes, formulas, and summaries; they are not imported as inventory.
 2. In the tracker, paste the Sheet link or ID, choose **Connect and preview**, review
    the inventory, and confirm the baseline.
 3. Open `https://shop.tiktok.com/streamer/live/product/dashboard`. Keep the relevant
@@ -69,6 +72,9 @@ refresh the TikTok dashboard to load its current capture scripts.
 To append inventory during tracking, first update the same Sheet, then use
 **Add new SKUs from updated Sheet → Check and add**. Existing SKU values must remain
 unchanged; this workflow adds new SKUs, not edits to existing stock or costs.
+Preview, confirmation, and adding SKUs all read only **Inventory!A:F**. The existing
+limit is 1,001 physical rows, including the header and blank spacer rows; inventory
+data in A:F beyond that limit is rejected, not silently truncated.
 
 ### Inventory controls
 
@@ -300,18 +306,21 @@ To keep your Sheet's item order, blank spacer rows, and other columns:
    the exact starting cell shown by the tracker (usually **E2**, not A1), then use
    **values-only paste** once.
 
-The copied column follows the Sheet's exact SKU order, including blank spacer rows.
+The check reads only **Inventory!A:F**. The copied column follows the Sheet's exact
+SKU order, including A:F blank spacer rows between the header and last inventory row.
 Only quantities are included; item names, sizes, styles, costs, and other columns are
-not copied. Do not edit or rearrange the Sheet between checking, copying, and pasting.
+not copied. A quantity-only paste leaves G+ untouched. G-only content never supplies
+a header or inventory row and does not extend the paste range. Do not edit or rearrange
+the Sheet between checking, copying, and pasting.
 Copying is not confirmation that the Sheet was updated. A failed check requires fixing
 the mismatch and checking again; the tracker never guesses a SKU or silently skips rows.
 This action requires the latest eligible report and matching current inventory baseline,
-with no active tracker or unresolved report issues. The entire Sheet's quantities must
+with no active tracker or unresolved report issues. All A:F inventory quantities must
 match either that report's opening stock or its already-updated quantities. Restocks,
 partial pastes, or an intermediate report's quantities require manual reconciliation;
 do not replace valid newer stock with old opening numbers just to pass the check.
-The existing read limit includes spacer rows (1,001 physical rows total); merged layouts
-are not supported by this quantity-only workflow.
+The existing read limit includes spacer rows (1,001 physical rows total). Merges touching
+A:F are not supported by this quantity-only workflow; merges entirely in G+ are ignored.
 
 **Copy Updated Inventory** opens/closes the quantity-only form; opening it does not
 copy anything or contact Google. **Other options** offers two full-table alternatives:
@@ -320,8 +329,9 @@ copy anything or contact Google. **Other options** offers two full-table alterna
 - **Copy Inventory No Formatting** copies all six columns as plain text for pasting
   into **Inventory!A1**.
 
-Both use SKU order without blank spacer rows; they do not preserve the Sheet's row
-layout. Use the main quantity-only workflow above to preserve order and formatting.
+Both use SKU order without blank spacer rows, so they can reorder the Sheet's inventory
+and are not a formatting-preserving path. Use the main quantity-only workflow above to
+preserve order and formatting.
 
 Pasting replaces cells by position; it does not merge or look up rows by SKU.
 Do not apply an older report over newer stock changes without reconciling them.

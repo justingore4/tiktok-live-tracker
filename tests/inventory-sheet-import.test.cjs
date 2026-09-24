@@ -7,6 +7,7 @@ const {
   IMPORT_CONTRACT_VERSION,
   REQUIRED_HEADERS,
   InventorySheetImportError,
+  projectInventoryColumns,
   parseInventorySheet,
 } = require("../extension/shared/inventory-sheet-import.js");
 
@@ -105,6 +106,32 @@ test("publishes the same pure contract for browser and CommonJS consumers", () =
     globalThis.TikTokLiveTrackerInventorySheetImport.IMPORT_CONTRACT_VERSION,
     IMPORT_CONTRACT_VERSION,
   );
+  assert.equal(
+    globalThis.TikTokLiveTrackerInventorySheetImport.projectInventoryColumns,
+    projectInventoryColumns,
+  );
+});
+
+test("projects detached A:F rows while retaining leading/interior spacers and trimming trailing personal-only rows", () => {
+  const personalOnly = ["", null, undefined, " ", "", "", "=SUM(E:E)", "Notes"];
+  const values = [personalOnly, [...HEADERS, "total"], [], personalOnly, validValues()[1], personalOnly, []];
+  const before = structuredClone(values);
+  const result = projectInventoryColumns(values);
+  assert.deepEqual(result, [personalOnly.slice(0, 6), HEADERS, [], personalOnly.slice(0, 6), validValues()[1]]);
+  assert.deepEqual(values, before);
+  assert.notEqual(result, values);
+  result.forEach((entry, index) => assert.notEqual(entry, values[index]));
+  result[1][0] = "changed";
+  assert.equal(values[1][0], "sku");
+  assert.deepEqual(projectInventoryColumns([personalOnly, []]), []);
+});
+
+test("A:F projection rejects malformed rows even after otherwise blank trailing rows", () => {
+  for (const values of [null, {}, [...validValues(), [], null], [undefined, ...validValues()], [...validValues(), , []]]) {
+    assert.throws(() => projectInventoryColumns(values), (error) =>
+      error instanceof InventorySheetImportError && error.issues.every((issue) => issue.code === "INVALID_SHEET_VALUES"));
+    findIssue(values, "INVALID_SHEET_VALUES");
+  }
 });
 
 test("keeps the downloadable Google Sheets template on the parser contract", () => {
@@ -261,7 +288,6 @@ test("accepts plain nonnegative USD decimals while keeping money in cents", () =
 test("requires exactly one of every supported header", () => {
   for (const values of [
     [["sku", "item", "style", "size", "quantity_on_hand_at_import"]],
-    [[...HEADERS, "notes"]],
     [["sku", "item", "style", "size", "quantity_on_hand_at_import", "sku"]],
     [["SKU", "item", "style", "size", "quantity_on_hand_at_import", "unit_cost"]],
   ]) {
@@ -341,22 +367,39 @@ test("rejects a partial data row atomically instead of importing its valid cells
   assert.equal(Object.hasOwn(error, "inventory"), false);
 });
 
-test("rejects nonblank cells beyond the contract while allowing trailing blanks", () => {
-  const extraValueRows = validValues();
+test("ignores all personal headers, formulas, values, and G-only rows without changing the normalized inventory or fingerprint", () => {
+  const expected = parseInventorySheet(validValues());
+  const personalOnly = ["", "", "", "", "", "", "=SUM(E:E)", "Personal notes"];
+  const values = [
+    personalOnly,
+    [...HEADERS, "=SUM(E:E)", "Total Inventory Cost"],
+    [...validValues()[1], "=E3*F3", { ignored: "not an inventory cell" }],
+    personalOnly,
+    [...validValues()[2], "=E5*F5", "notes", ...Array(20_000).fill("outside A:F")],
+    personalOnly,
+  ];
+  const before = structuredClone(values);
+  assert.deepEqual(parseInventorySheet(values), expected);
+  assert.deepEqual(values, before);
 
-  extraValueRows[1].push("unsupported employee note");
-  findIssue(extraValueRows, "INVALID_SHEET_VALUES", {
-    rowNumber: 2,
-    column: null,
-  });
+  values[4][1] = "";
+  findIssue(values, "MISSING_REQUIRED_VALUE", { rowNumber: 5, column: "item" });
+});
 
-  const trailingBlankRows = validValues();
+test("reordered A:F headers still ignore G+ and cannot source a missing required header from G", () => {
+  const reordered = validValues().map((entry) => [...entry].reverse());
+  const withPersonalColumns = reordered.map((entry) => [...entry, "=SUM(A:A)", "notes"]);
+  assert.deepEqual(parseInventorySheet(withPersonalColumns), parseInventorySheet(validValues()));
+  const missing = validValues();
+  missing[0] = [...HEADERS.slice(0, 5), "notes", "unit_cost"];
+  missing[1].push(12);
+  findIssue(missing, "INVALID_HEADERS", { rowNumber: 1 });
+});
 
-  trailingBlankRows[1].push("", null, undefined);
-  assert.deepEqual(
-    parseInventorySheet(trailingBlankRows).inventory,
-    parseInventorySheet(validValues()).inventory,
-  );
+test("personal-only rows cannot supply an inventory header or inventory items", () => {
+  const personalOnly = ["", "", "", "", "", "", "=SUM(E:E)", "notes"];
+  findIssue([personalOnly], "EMPTY_INVENTORY");
+  findIssue([[...HEADERS, "notes"], personalOnly], "EMPTY_INVENTORY");
 });
 
 test("requires an explicit uppercase, spreadsheet-safe SKU", () => {

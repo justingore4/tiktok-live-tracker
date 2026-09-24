@@ -12,12 +12,13 @@
   function createGoogleSheetsInventoryImportModule() {
     "use strict";
 
-    const INVENTORY_RANGE = "'Inventory'";
+    const INVENTORY_RANGE = "'Inventory'!A:F";
+    const INVENTORY_COLUMN_COUNT = 6;
     const SHEETS_API_ROOT = "https://sheets.googleapis.com/v4/spreadsheets";
     const GRID_FIELDS =
       "sheets(properties(title),data(startRow,startColumn,rowData.values.userEnteredValue))";
     const LAYOUT_GRID_FIELDS =
-      "spreadsheetId,sheets(properties(title,sheetType,gridProperties(rowCount,columnCount)),merges,data(startRow,startColumn,rowData.values.userEnteredValue))";
+      "spreadsheetId,sheets(properties(sheetId,title,sheetType,gridProperties(rowCount,columnCount)),merges,data(startRow,startColumn,rowData.values.userEnteredValue))";
     const PREVIEW_TTL_MS = 10 * 60 * 1000;
     const MAX_RESPONSE_CHARACTERS = 4 * 1024 * 1024;
     const MAX_SHEET_ROWS = 1_001;
@@ -427,6 +428,7 @@
       }
 
       const output = [];
+      const visitedCells = new Set();
       let cellSlots = 0;
 
       (sheet.data ?? []).forEach((grid) => {
@@ -446,8 +448,9 @@
           startRow < 0 ||
           !Number.isSafeInteger(startColumn) ||
           startColumn < 0 ||
+          startColumn >= MAX_SHEET_COLUMNS ||
           !Array.isArray(rowData) ||
-          startRow + rowData.length > MAX_SHEET_ROWS
+          !Number.isSafeInteger(startRow + rowData.length)
         ) {
           fail(
             "INVENTORY_SHEET_TOO_LARGE",
@@ -469,13 +472,18 @@
             !Array.isArray(cells) ||
             startColumn + cells.length > MAX_SHEET_COLUMNS
           ) {
+            // Retain physical response-integrity limits, even for ignored G+.
             fail(
               "INVENTORY_SHEET_TOO_LARGE",
               "The Inventory tab exceeds the supported import size.",
             );
           }
 
-          cellSlots += cells.length;
+          // A:F is the complete inventory boundary, including when a mocked or
+          // unexpected response includes unrelated G+ cells or grid blocks.
+          const inventoryCells = cells.slice(0, Math.max(0, INVENTORY_COLUMN_COUNT - startColumn));
+          const rowIndex = startRow + rowOffset;
+          if (rowIndex < MAX_SHEET_ROWS) cellSlots += inventoryCells.length;
 
           if (cellSlots > MAX_CELL_SLOTS) {
             fail(
@@ -484,10 +492,9 @@
             );
           }
 
-          const rowIndex = startRow + rowOffset;
           const outputRow = output[rowIndex] ?? [];
 
-          cells.forEach((cell, columnOffset) => {
+          inventoryCells.forEach((cell, columnOffset) => {
             if (!isPlainRecord(cell)) {
               fail(
                 "INVALID_GOOGLE_SHEETS_RESPONSE",
@@ -495,22 +502,66 @@
               );
             }
 
+            const columnIndex = startColumn + columnOffset;
+            if (rowIndex < MAX_SHEET_ROWS) {
+              const key = `${rowIndex}:${columnIndex}`;
+              if (visitedCells.has(key)) {
+                fail("INVALID_GOOGLE_SHEETS_RESPONSE", "Google Sheets returned overlapping Inventory grid data.");
+              }
+              visitedCells.add(key);
+            }
             const value = parseGridValue(cell.userEnteredValue);
 
             if (value !== undefined) {
-              outputRow[startColumn + columnOffset] = value;
+              if (!isBlankInventoryValue(value) && rowIndex >= MAX_SHEET_ROWS) {
+                fail("INVENTORY_SHEET_TOO_LARGE", "The Inventory tab exceeds the supported import size.");
+              }
+              if (rowIndex < MAX_SHEET_ROWS) {
+                outputRow[columnIndex] = value;
+              }
             }
           });
 
-          output[rowIndex] = outputRow;
+          // Never allocate rows for remote summaries or trailing formatting.
+          if (rowIndex < MAX_SHEET_ROWS) output[rowIndex] = outputRow;
         });
       });
 
+      while (output.length > 0 && (output[output.length - 1] ?? []).every(isBlankInventoryValue)) {
+        output.pop();
+      }
       for (let rowIndex = 0; rowIndex < output.length; rowIndex += 1) {
         output[rowIndex] ??= [];
       }
 
       return output;
+    }
+
+    function isBlankInventoryValue(value) {
+      return value === undefined || value === null ||
+        (typeof value === "string" && value.trim() === "");
+    }
+
+    function hasUnsupportedInventoryMerges(sheet) {
+      if (sheet.merges === undefined) return false;
+      if (!Array.isArray(sheet.merges)) return true;
+      const { rowCount, columnCount } = sheet.properties.gridProperties;
+      // Google may omit a default-valued sheetId of zero in its response.
+      const sheetId = sheet.properties.sheetId === undefined ? 0 : sheet.properties.sheetId;
+      if (!Number.isSafeInteger(sheetId) || sheetId < 0) return true;
+      return sheet.merges.some((merge) => {
+        if (!isPlainRecord(merge)) return true;
+        if (merge.sheetId !== undefined &&
+            (!Number.isSafeInteger(merge.sheetId) || merge.sheetId < 0 || merge.sheetId !== sheetId)) return true;
+        const startRow = merge.startRowIndex === undefined ? 0 : merge.startRowIndex;
+        const endRow = merge.endRowIndex === undefined ? rowCount : merge.endRowIndex;
+        const startColumn = merge.startColumnIndex === undefined ? 0 : merge.startColumnIndex;
+        const endColumn = merge.endColumnIndex === undefined ? columnCount : merge.endColumnIndex;
+        if (![startRow, endRow, startColumn, endColumn].every(Number.isSafeInteger) ||
+            startRow < 0 || startColumn < 0 || endRow <= startRow || endColumn <= startColumn ||
+            endRow > rowCount || endColumn > columnCount) return true;
+        return startColumn < INVENTORY_COLUMN_COUNT;
+      });
     }
 
     function createGoogleSheetsInventoryImportService(options) {
@@ -930,8 +981,8 @@
         if (typeof spreadsheetId !== "string" || !/^[A-Za-z0-9_-]{20,200}$/.test(spreadsheetId)) {
           fail("INVALID_SPREADSHEET_ID", "Enter a valid Google Sheet link or spreadsheet ID.");
         }
-        // Read the whole named tab, never a capped A1 range. The existing
-        // response/row/cell limits reject oversized data instead of truncating it.
+        // Read all rows in A:F, never a capped A1 range. Existing limits reject
+        // oversized inventory instead of truncating it; G+ is not inventory.
         const payload = await requestGridPayload(spreadsheetId, true, LAYOUT_GRID_FIELDS);
         const sheet = payload?.sheets?.[0];
         const grid = sheet?.data?.[0];
@@ -946,13 +997,13 @@
             !Array.isArray(sheet.data) || sheet.data.length !== 1 || !isPlainRecord(grid) ||
             (grid.startRow ?? 0) !== 0 || (grid.startColumn ?? 0) !== 0 ||
             !Array.isArray(grid.rowData) || grid.rowData.length > properties.rowCount ||
-            (sheet.merges !== undefined && (!Array.isArray(sheet.merges) || sheet.merges.length > 0)) ||
+            hasUnsupportedInventoryMerges(sheet) ||
             grid.rowData.some((row) => Array.isArray(row?.values) && row.values.length > properties.columnCount)) {
-          fail("UNSUPPORTED_INVENTORY_LAYOUT", "The complete, unmerged Inventory tab could not be verified. Check the Sheet layout and try again.");
+          fail("UNSUPPORTED_INVENTORY_LAYOUT", "The complete, unmerged Inventory A:F layout could not be verified. Check the Sheet layout and try again.");
         }
         const values = gridResponseToValues(payload);
-        // Reuse the full import contract (including formulas, duplicates, extra
-        // columns and integer bounds), but retain the physical grid separately.
+        // Reuse strict A:F import validation (including formulas, duplicates and
+        // integer bounds), but retain the physical grid separately.
         try {
           dependencies.inventorySheetImport.parseInventorySheet(values);
         } catch (error) {

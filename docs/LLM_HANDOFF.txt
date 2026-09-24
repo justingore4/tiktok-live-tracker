@@ -1,10 +1,10 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 22, 2026
+Snapshot date: September 24, 2026
 Repository branch at this update: main
-Latest commit at this snapshot: 9fc595c
-Commit subject: Add queued preset indicators and read-only queue previews
+Latest commit at this snapshot: ae1fcc1
+Commit subject: Add layout-preserving quantity handoff
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
@@ -13,14 +13,16 @@ full variation/cancellation print/PDF output, and report-name PDF filenames were
 committed in 21ec5fc. The canceled-orders-per-SKU summary described in section 11 is
 committed in 7e79447. Upcoming-preset queued indicators and guarded header clearing,
 pre-stream viewed-preset previews, and manual queue dropdown previews are committed
-in 9fc595c. The current uncommitted work adds the quantity-only clipboard
-handoff and the Other options full-table exports described in sections 8 and 12 below.
+in 9fc595c. The quantity-only clipboard handoff and Other options full-table exports
+described in sections 8 and 12 are committed in ae1fcc1. The current uncommitted work
+narrows inventory reads/validation to A:F while ignoring G+ and preserving the existing
+inventory, row-bound, quantity-handoff, and read-only safeguards.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,042 passed, 0 failed
+Latest full synthetic test run: 2,061 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -476,10 +478,15 @@ See capture-development.md for synthetic tests and remaining live/manual checks.
 
 8. INVENTORY / GOOGLE SHEETS CONTRACT
 -----------------------------------
-Sheet tab: Inventory. Exact case-sensitive six headers, each once:
+Sheet tab: Inventory. Only A:F is inventory input. Exact case-sensitive six headers,
+each once:
   sku,item,style,size,quantity_on_hand_at_import,unit_cost
-Import can accept another column order; full report exports use the canonical order.
-Extra, missing, or duplicate headers are invalid. Blank rows are ignored.
+Import can accept another column order within A:F; full report exports use the canonical
+order. Unknown, missing, or duplicate A:F headers are invalid. A required header in G+
+does not count. G+ content, including notes, formulas, and summaries, is ignored for
+preview, confirmation, active-stream SKU additions, and quantity-handoff checks.
+The first nonblank A:F row is the header. A:F-blank rows are not inventory records,
+even if G+ has content; G-only rows neither choose the header nor extend a paste range.
 
 Rows:
 - sku: uppercase, unique, regex ^[A-Z0-9][A-Z0-9._-]{0,63}$ after trimming.
@@ -488,8 +495,8 @@ Rows:
 - size: required plain text, <=80 characters, own SKU for every size.
 - quantity_on_hand_at_import: nonnegative safe integer, actual opening physical stock.
 - unit_cost: nonnegative plain USD decimal, no symbol, at most 2 decimal places.
-- Zero quantity and zero unit cost are valid. No formulas; userEnteredValue is read
-  so formulas cannot evade validation by presenting evaluated values.
+- Zero quantity and zero unit cost are valid. No formulas within A:F; userEnteredValue
+  is read so those formulas cannot evade validation by presenting evaluated values.
 - Display labels normalize Unicode/whitespace. SKU case/punctuation is not rewritten.
 - Duplicate normalized item/style/size identities are invalid, even with unique SKUs.
 - Validation is atomic; never partially import a sheet with invalid rows.
@@ -499,15 +506,26 @@ Start requires a confirmed baseline; do not reintroduce automatic demo inventory
 for ordinary new streams. Legacy recovery is a separate guarded path.
 
 During active tracking, "Add new SKUs from updated Sheet -> Check and add" explicitly
-reads the same Sheet. Every stored field of every existing SKU must remain unchanged;
+reads the same Sheet's A:F. Every stored field of every existing SKU must remain unchanged;
 only new rows may be added. It cannot rename, remove, reprice, or restock existing
 stream rows. Existing mappings/counts/baseline lineage must remain consistent.
 
 OAuth/fetch lives in the worker, not content scripts. There is no automatic Sheets
 synchronization or write-back. Preview TTL is 10 minutes; request timeout 20 s.
-The adapter has bounded responses/rows/cells; consult its constants rather than
-loosening them to work around invalid Sheets. One header plus up to 1,000 inventory
-rows is the intended bounded grid use.
+The adapter requests the unbounded-row range 'Inventory'!A:F, then enforces its existing
+bounded responses/rows/cells; consult its constants rather than loosening them to work
+around invalid Sheets. The existing 1,001-physical-row bound includes the header,
+leading A:F blanks, and interior spacers. A:F data beyond it fails closed, not silently
+truncated. No new limits were introduced, and G-only rows do not extend used inventory.
+This boundary change does not implement formula evaluation, G/H totals, or Apps Script.
+
+Implementation trace: google-sheets-inventory-import.js owns the fixed A:F GET range
+for preview, confirmation, append, and readInventoryLayout; the import client/controller
+expect the same range metadata. inventory-sheet-import.js::projectInventoryColumns
+projects the first six cells before header discovery/validation and trims only trailing
+A:F-blank rows. report-quantity-handoff.js::createQuantityHandoff reuses that projection
+before layout bounds and positional clipboard construction. Worker/coordinator mutation
+ownership, report eligibility, token revalidation, and saved-data contracts are unchanged.
 
 After a report, the operator can copy the complete updated inventory or download CSV.
 They back up the Inventory tab, then replace the six-column table starting at A1.
@@ -517,11 +535,13 @@ oversold replacement quantity clamps to zero and needs a physical recount.
 
 The quantity-only handoff is an explicit read-only workflow, not a new import:
 - The employee supplies the intended Sheet link/ID in the report and checks it.
-- The worker reuses OAuth/whole-Inventory reads, with unchanged response/row/cell
+- The worker reuses OAuth/A:F-only reads, with unchanged response/row/cell
   limits. Blank physical rows count toward the existing 1,001-row grid bound.
 - A transient layout keeps the header row, quantity column, and exact SKU row order.
-  Leading/consecutive spacers below the header become blank clipboard lines; trailing
-  blank rows are left outside the output. No header or other column is copied.
+  The header's physical row retains leading A:F blanks. Leading/consecutive A:F spacers
+  below the header become blank clipboard lines; trailing A:F-blank rows are left outside
+  the output even with G+ content. No header or other column is copied.
+  Merges wholly in G+ are ignored; any merge touching A:F fails the layout check.
 - Source quantities must form a coherent known inventory snapshot, not a per-SKU
   mix that could hide restocks: the whole baseline-opening vector OR the whole current
   report replacement vector. An intermediate report's already-pasted quantities on a
@@ -531,7 +551,7 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
   Sheet costs remain format-validated but may differ after report-only corrections;
   this action never copies costs. Replacement quantities use saved report values,
   including zero/oversold clamping, never sales subtracted from current Sheet stock.
-- Missing/extra/duplicate SKUs, formulas, invalid/oversized layouts, conflicting stock,
+- Missing/extra/duplicate SKUs, A:F formulas, invalid/oversized layouts, conflicting stock,
   active streams, known newer streams/baselines/reports, and unverifiable lineage fail
   closed. No automatic cleanup of duplicated old Sheet rows or inferred mappings.
 - Prepared Sheet identity/layout/output live only in bounded worker memory. Opaque
@@ -539,14 +559,16 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
   nothing is added to report,
   baseline, or storage schemas. Copy revalidates the saved report and local context;
   changed links/report corrections invalidate the page's preparation.
-- One values-only paste starts at the displayed quantity cell (usually E2, not A1).
+- One values-only paste starts at the displayed quantity cell within A:F (usually E2,
+  not A1). It leaves all other columns, including G+, untouched.
   Back up Inventory first; do not edit/reorder it between checking and pasting. The
   extension cannot verify the user's paste destination or protect against later Sheet
   edits. "Copied" is not "Sheet updated." Exact formatting/blank-line behavior remains
   user-performed native Chrome/Sheets QA, not a synthetic-test claim.
 - Normal imports still discard blank rows; saved report inventory remains sorted by
   SKU. Other options exposes the unchanged six-column CSV and Copy Inventory No
-  Formatting, using the original full-table clipboard helper for an A1 paste.
+  Formatting, using the original full-table clipboard helper for an A1 paste. These
+  full-table exports can reorder rows and are not formatting-preserving paths.
 - Strict report-page-only prepare_quantity_handoff/copy_quantity_handoff commands
   use existing worker serialization and read-only authorization. Prepare's new client
   deadline is 90 seconds to cover the reader's existing retry/auth path; ordinary
@@ -1129,7 +1151,17 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,042 tests passed, 0 failed, on Windows (September 22, 2026).
+Latest full verification: 2,061 tests passed, 0 failed, on Windows (September 24, 2026).
+The A:F-only boundary adds 19 regressions over the previous 2,042-test run and expands
+existing validation tests. The eight-file focused import/layout/client/controller/
+worker/handoff group passes 132/132. Coverage includes G+ headers/formulas and summary
+rows before/between/after inventory, stable normalized fingerprints and confirmation,
+append-only safeguards, physical offsets/row limits without truncation, overlapping
+grid rejection, G+-only versus crossing/malformed merges (including default sheet ID
+zero), exact quantity clipboard bytes, and unchanged saved reports/full-table exports.
+git diff --check passes. No real Sheets, reports, profiles, credentials, or live tracker
+state were accessed. Native Chrome import/paste alignment and G/H formula preservation
+remain user-performed manual checks; no browser checks were launched.
 Other options adds 22 regressions over 2,020, covering its initially hidden state,
 opening without I/O, Escape/outside dismissal, focus, reload/navigation/disposal,
 stale URL and load/save/check locks, exact CSV/TSV output, copy errors, and prevention
@@ -1354,6 +1386,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  ae1fcc1  Add layout-preserving quantity handoff
   9fc595c  Add queued preset indicators and read-only queue previews
   7e79447  total cancels in report
   ae69a51  version reupdated to 1.0.0
@@ -1416,7 +1449,8 @@ delete them automatically or treat them as production dependency requirements.
 6. Report exactly what changed, test evidence, and unverified browser/live checks.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
-Previously committed implementation is preserved. The quantity-only clipboard handoff and its
-tests/documentation are the current uncommitted changes.
+Previously committed implementation is preserved, including the quantity-only clipboard
+handoff in ae1fcc1. The A:F-only inventory boundary and its tests/documentation are the
+current uncommitted changes.
 No commit or push was performed.
 There is no approved pending functional change to start automatically.

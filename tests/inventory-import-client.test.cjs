@@ -40,7 +40,7 @@ function previewData() {
     contractVersion: 1,
     previewToken: PREVIEW_TOKEN,
     spreadsheetId: SHEET_ID,
-    range: "'Inventory'",
+    range: "'Inventory'!A:F",
     fingerprint: FINGERPRINT,
     inventory: INVENTORY,
     summary: SUMMARY,
@@ -140,6 +140,20 @@ test("sends only the extracted ID and strictly parses status, preview, and confi
     }),
   ]);
   assert.equal(JSON.stringify(messages).includes(sharingLink), false);
+});
+
+test("preview range validation accepts only the open-ended A:F contract", async () => {
+  for (const range of ["'Inventory'", "'Inventory'!A:G", "'Inventory'!A1:F1001"]) {
+    const client = createInventoryImportClient({
+      protocol,
+      runtime: {
+        sendMessage: async () => ok({ ...previewData(), range }),
+      },
+    });
+    await assert.rejects(client.previewReference(SHEET_ID), {
+      code: "INVALID_RESPONSE",
+    }, range);
+  }
 });
 
 test("turns a sanitized invalid preview union into one typed issue error", async () => {

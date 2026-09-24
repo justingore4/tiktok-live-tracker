@@ -328,7 +328,7 @@ test("previews a fixed read-only Inventory range without persisting", async () =
     previewToken:
       "inventory-preview:11111111-1111-4111-8111-111111111111",
     spreadsheetId: SPREADSHEET_ID,
-    range: "'Inventory'",
+    range: "'Inventory'!A:F",
     contractVersion: 1,
     fingerprint: "fnv1a64:f77677917471abd7",
     inventory: [
@@ -358,7 +358,7 @@ test("previews a fixed read-only Inventory range without persisting", async () =
   assert.match(harness.fetchCalls[0].url, /includeGridData=true/);
   assert.match(harness.fetchCalls[0].url, /Inventory/);
   const requestUrl = new URL(harness.fetchCalls[0].url);
-  assert.equal(requestUrl.searchParams.get("ranges"), "'Inventory'");
+  assert.equal(requestUrl.searchParams.get("ranges"), "'Inventory'!A:F");
   assert.equal(requestUrl.searchParams.get("includeGridData"), "true");
   assert.equal(requestUrl.searchParams.get("fields"), googleImport.GRID_FIELDS);
   assert.equal(harness.fetchCalls[0].options.method, "GET");
@@ -390,26 +390,87 @@ test("returns sanitized validation issues without a token or partial rows", asyn
   );
 });
 
-test("the whole Inventory-tab range still rejects a seventh data column", async () => {
-  const payload = createGridPayload();
+test("A:F preview ignores personal headers and seventh-column data without changing its fingerprint", async () => {
+  const original = inventorySheetImport.parseInventorySheet(googleImport.gridResponseToValues(createGridPayload()));
+  const payload = createGridPayload({ extraHeader: true });
   payload.sheets[0].data[0].rowData[1].values.push(
-    gridCell("stringValue", "unsupported employee note"),
+    gridCell("formulaValue", "=SUM(E2:E10)"),
+    gridCell("stringValue", "employee note"),
   );
   const harness = createHarness({ payloads: [payload] });
 
   const result = await harness.service.previewGoogleSheet(SPREADSHEET_ID);
 
-  assert.equal(result.status, "invalid");
-  assert.ok(
-    result.issues.some(
-      (issue) =>
-        issue.code === "INVALID_SHEET_VALUES" && issue.rowNumber === 2,
-    ),
-  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.fingerprint, original.fingerprint);
+  assert.deepEqual(result.inventory, original.inventory);
+  assert.deepEqual(result.summary, original.summary);
   assert.equal(
     new URL(harness.fetchCalls[0].url).searchParams.get("ranges"),
-    "'Inventory'",
+    "'Inventory'!A:F",
   );
+});
+
+test("grid decoding preserves A:F physical rows and ignores G+ only blocks and distant summaries", () => {
+  const payload = createGridPayload();
+  const baseValues = googleImport.gridResponseToValues(payload);
+  const header = payload.sheets[0].data[0].rowData[0];
+  const item = payload.sheets[0].data[0].rowData[1];
+  const noteRow = { values: [...Array(6).fill({}), gridCell("formulaValue", "=1/0")] };
+  payload.sheets[0].data[0].rowData = [noteRow, header, noteRow, item, noteRow];
+  payload.sheets[0].data.push({ startRow: 5000, startColumn: 6, rowData: [
+    { values: [gridCell("formulaValue", "=SUM(E:E)"), gridCell("boolValue", true)] },
+  ] });
+  const before = structuredClone(payload);
+  assert.deepEqual(googleImport.gridResponseToValues(payload), [[], baseValues[0], [], baseValues[1]]);
+  assert.deepEqual(payload, before);
+});
+
+test("grid offsets assemble only A:F without shifting missing cells or accepting overlaps", () => {
+  const payload = createGridPayload();
+  const rows = payload.sheets[0].data[0].rowData;
+  const expected = googleImport.gridResponseToValues(payload);
+  payload.sheets[0].data = [
+    { startRow: 1, startColumn: 3, rowData: [{ values: [...rows[1].values.slice(3), gridCell("formulaValue", "=SUM(E:E)")] }] },
+    { startRow: 0, startColumn: 0, rowData: [rows[0], { values: rows[1].values.slice(0, 3) }] },
+  ];
+  assert.deepEqual(googleImport.gridResponseToValues(payload), expected);
+  payload.sheets[0].data.push({ startRow: 1, startColumn: 0, rowData: [{ values: [gridCell("stringValue", "OTHER-SKU")] }] });
+  assert.throws(() => googleImport.gridResponseToValues(payload), { code: "INVALID_GOOGLE_SHEETS_RESPONSE" });
+  payload.sheets[0].data.at(-1).rowData[0].values = [{}];
+  assert.throws(() => googleImport.gridResponseToValues(payload), { code: "INVALID_GOOGLE_SHEETS_RESPONSE" });
+});
+
+test("grid row bounds use the last populated A:F row without truncating inventory", () => {
+  const payload = createGridPayload();
+  const expected = googleImport.gridResponseToValues(payload);
+  const rowData = payload.sheets[0].data[0].rowData;
+  while (rowData.length < googleImport.MAX_SHEET_ROWS + 30) rowData.push({ values: Array(6).fill({}) });
+  rowData.at(-1).values.push(gridCell("formulaValue", "=100"));
+  assert.deepEqual(googleImport.gridResponseToValues(payload), expected);
+  rowData[googleImport.MAX_SHEET_ROWS - 1].values = [gridCell("stringValue", "LAST-SKU")];
+  assert.equal(googleImport.gridResponseToValues(payload).length, googleImport.MAX_SHEET_ROWS);
+  rowData[googleImport.MAX_SHEET_ROWS].values = [gridCell("stringValue", "OVER-LIMIT")];
+  assert.throws(() => googleImport.gridResponseToValues(payload), { code: "INVENTORY_SHEET_TOO_LARGE" });
+});
+
+test("grid safety rejects malformed A:F cells, impossible grid dimensions and repeated cell slots", () => {
+  for (const mutate of [
+    (p) => { p.sheets[0].data[0].startColumn = -1; },
+    (p) => { p.sheets[0].data.push({ startColumn: googleImport.MAX_SHEET_COLUMNS, rowData: [] }); },
+    (p) => { p.sheets[0].data[0].rowData[0].values = Array(googleImport.MAX_SHEET_COLUMNS + 1).fill({}); },
+    (p) => { p.sheets[0].data[0].startRow = Number.MAX_SAFE_INTEGER; },
+    (p) => { p.sheets[0].data[0].rowData[1] = null; },
+    (p) => { p.sheets[0].data[0].rowData[1].values[4] = null; },
+    (p) => { p.sheets[0].data[0].rowData[1].values[4].userEnteredValue = { numberValue: 1, formulaValue: "=2" }; },
+  ]) {
+    const p = createGridPayload(); mutate(p);
+    assert.throws(() => googleImport.gridResponseToValues(p));
+  }
+  const p = createGridPayload();
+  const blankGrid = { startRow: 0, startColumn: 0, rowData: Array.from({ length: 1001 }, () => ({ values: Array(6).fill({}) })) };
+  p.sheets[0].data = Array.from({ length: 4 }, () => structuredClone(blankGrid));
+  assert.throws(() => googleImport.gridResponseToValues(p), { code: "INVALID_GOOGLE_SHEETS_RESPONSE" });
 });
 
 test("caps validation issues to the client-safe limit", async () => {

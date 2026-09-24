@@ -28,14 +28,14 @@ function harness(responsePayload = payload(), options = {}) {
   return { service, calls };
 }
 
-test("fresh layout read preserves physical blank rows and requests the whole Inventory tab with unchanged read-only authorization", async () => {
+test("fresh layout read preserves internal blank rows and requests only A:F with unchanged read-only authorization", async () => {
   const { service, calls } = harness();
   const result = await service.readInventoryLayout(spreadsheetId);
-  assert.deepEqual(result, { spreadsheetId, sheetTitle: "Inventory", values, headerRowNumber: 1, quantityColumnNumber: 5 });
+  assert.deepEqual(result, { spreadsheetId, sheetTitle: "Inventory", values: values.slice(0, -1), headerRowNumber: 1, quantityColumnNumber: 5 });
   assert.deepEqual(calls.auth, [{ interactive: true }]);
   assert.equal(calls.fetch.length, 1);
   const url = new URL(calls.fetch[0].url);
-  assert.equal(url.searchParams.get("ranges"), "'Inventory'");
+  assert.equal(url.searchParams.get("ranges"), "'Inventory'!A:F");
   assert.equal(url.searchParams.get("fields"), googleImport.LAYOUT_GRID_FIELDS);
   assert.equal(calls.fetch[0].request.method, "GET");
   assert.equal(calls.fetch[0].request.credentials, "omit");
@@ -59,7 +59,7 @@ test("layout validation does not change ordinary import parsing, response fields
   assert.equal(preview.inventory.length, 2);
   assert.equal(new URL(calls.fetch[0].url).searchParams.get("fields"), googleImport.GRID_FIELDS);
   const layout = await service.readInventoryLayout(spreadsheetId);
-  assert.equal(layout.values.length, values.length);
+  assert.equal(layout.values.length, values.length - 1);
   assert.equal(preview.inventory.some((entry) => Object.hasOwn(entry, "rowNumber")), false);
   assert.deepEqual(calls.writes, []);
 });
@@ -83,12 +83,13 @@ test("layout reader rejects wrong identities, ambiguous blocks, shifted/truncate
   }
 });
 
-test("layout reader rejects formulas, duplicates, bad headers and any data outside supported columns", async () => {
+test("layout reader rejects formulas, duplicates and bad headers within A:F", async () => {
   const duplicate = payload([...values, values[2]]);
   const formula = payload(); formula.sheets[0].data[0].rowData[2].values[4].userEnteredValue = { formulaValue: "=5" };
   const wrongHeader = payload(); wrongHeader.sheets[0].data[0].rowData[0].values[0].userEnteredValue.stringValue = " sku ";
-  const extraData = payload(); extraData.sheets[0].data[0].rowData[3].values = [{}, {}, {}, {}, {}, {}, { userEnteredValue: { stringValue: "extra" } }];
-  for (const p of [duplicate, formula, wrongHeader, extraData]) {
+  const missingHeader = payload(); missingHeader.sheets[0].data[0].rowData[0].values[6] = missingHeader.sheets[0].data[0].rowData[0].values[5];
+  missingHeader.sheets[0].data[0].rowData[0].values[5] = {};
+  for (const p of [duplicate, formula, wrongHeader, missingHeader]) {
     await assert.rejects(harness(p).service.readInventoryLayout(spreadsheetId), { code: "INVALID_INVENTORY_SHEET" });
   }
   await assert.rejects(harness(formula).service.readInventoryLayout(spreadsheetId), (error) => {
@@ -109,13 +110,67 @@ test("layout reader preserves physical row, slot and byte bounds without truncat
   const tooManyRows = payload();
   tooManyRows.sheets[0].properties.gridProperties.rowCount = 2000;
   while (tooManyRows.sheets[0].data[0].rowData.length <= googleImport.MAX_SHEET_ROWS) tooManyRows.sheets[0].data[0].rowData.push({});
+  tooManyRows.sheets[0].data[0].rowData[googleImport.MAX_SHEET_ROWS] = payload().sheets[0].data[0].rowData[2];
   await assert.rejects(harness(tooManyRows).service.readInventoryLayout(spreadsheetId), { code: "INVENTORY_SHEET_TOO_LARGE" });
-  const tooManySlots = payload();
-  tooManySlots.sheets[0].properties.gridProperties.columnCount = googleImport.MAX_SHEET_COLUMNS;
-  tooManySlots.sheets[0].data[0].rowData = [{ values: Array(11000).fill({}) }, { values: Array(11000).fill({}) }];
-  await assert.rejects(harness(tooManySlots).service.readInventoryLayout(spreadsheetId), { code: "INVENTORY_SHEET_TOO_LARGE" });
+  const wide = payload();
+  wide.sheets[0].properties.gridProperties.columnCount = googleImport.MAX_SHEET_COLUMNS;
+  wide.sheets[0].data[0].rowData.forEach((row) => {
+    while (row.values.length < 6) row.values.push({});
+    row.values.push(...Array(11000).fill({ userEnteredValue: { formulaValue: "=1" } }));
+  });
+  assert.deepEqual((await harness(wide).service.readInventoryLayout(spreadsheetId)).values, values.slice(0, -1));
   const oversized = { status: 200, headers: { get: () => String(googleImport.MAX_RESPONSE_CHARACTERS + 1) }, async text() { throw new Error("must not read"); } };
   await assert.rejects(harness(payload(), { response: oversized }).service.readInventoryLayout(spreadsheetId), { code: "INVENTORY_SHEET_TOO_LARGE" });
+});
+
+test("layout ignores G+ headers, formulas and summary rows without changing A:F positions", async () => {
+  const p = payload([[], ...values]);
+  p.sheets[0].properties.gridProperties.rowCount = 2000;
+  const rows = p.sheets[0].data[0].rowData;
+  while (rows.length < 1200) rows.push({ values: [] });
+  rows.forEach((row, index) => {
+    while (row.values.length < 6) row.values.push({});
+    row.values.push({ userEnteredValue: { stringValue: index === 1 ? "total_value" : "note" } });
+    row.values.push({ userEnteredValue: { formulaValue: "=SUMPRODUCT(E:E,F:F)" } });
+  });
+  const result = await harness(p).service.readInventoryLayout(spreadsheetId);
+  assert.deepEqual(result.values, [[], ...values.slice(0, -1)]);
+  assert.equal(result.headerRowNumber, 2);
+  assert.equal(result.quantityColumnNumber, 5);
+});
+
+test("layout allows G+ merges but rejects crossing, malformed or ambiguous merge metadata", async () => {
+  const defaultSheet = payload();
+  defaultSheet.sheets[0].merges = [{ sheetId: 0, startColumnIndex: 6, endColumnIndex: 8 }];
+  assert.deepEqual((await harness(defaultSheet).service.readInventoryLayout(spreadsheetId)).values, values.slice(0, -1));
+  for (const merge of [
+    { startRowIndex: 1, endRowIndex: 4, startColumnIndex: 6, endColumnIndex: 8 },
+    { startColumnIndex: 6 },
+    { sheetId: 7, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 6, endColumnIndex: 26 },
+  ]) {
+    const p = payload(); p.sheets[0].properties.sheetId = 7; p.sheets[0].merges = [merge];
+    assert.deepEqual((await harness(p).service.readInventoryLayout(spreadsheetId)).values, values.slice(0, -1));
+  }
+  for (const merge of [
+    { startColumnIndex: 5, endColumnIndex: 8 },
+    { startColumnIndex: 0, endColumnIndex: 2 },
+    { startColumnIndex: -1, endColumnIndex: 8 },
+    { startColumnIndex: 6, endColumnIndex: 6 },
+    { startColumnIndex: 6, endColumnIndex: 27 },
+    { startColumnIndex: 6, endRowIndex: 1001 },
+    { startColumnIndex: 6, startRowIndex: 4, endRowIndex: 4 },
+    { startColumnIndex: 6, startRowIndex: -1 },
+    { startColumnIndex: 6, startRowIndex: null },
+    { startColumnIndex: 6, endColumnIndex: "8" },
+    { startColumnIndex: 6, sheetId: 8 },
+    { startColumnIndex: 6, sheetId: -1 },
+    null,
+  ]) {
+    const p = payload(); p.sheets[0].properties.sheetId = 7; p.sheets[0].merges = [merge];
+    await assert.rejects(harness(p).service.readInventoryLayout(spreadsheetId), { code: "UNSUPPORTED_INVENTORY_LAYOUT" });
+  }
+  const malformed = payload(); malformed.sheets[0].merges = {};
+  await assert.rejects(harness(malformed).service.readInventoryLayout(spreadsheetId), { code: "UNSUPPORTED_INVENTORY_LAYOUT" });
 });
 
 test("layout authorization, invalid ID, and malformed response failures never return a partial layout", async () => {

@@ -9,6 +9,7 @@ const vm = require("node:vm");
 const inventoryImportProtocol = require(
   "../extension/shared/inventory-import-protocol.js",
 );
+const inventorySheetImport = require("../extension/shared/inventory-sheet-import.js");
 const reconciliation = require("../extension/shared/reconciliation.js");
 const reconciliationProtocol = require(
   "../extension/shared/reconciliation-coordinator.js",
@@ -64,6 +65,17 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function withExtraColumns(rows, revision = 1) {
+  return rows.map((row, index) => {
+    const result = [...row];
+    while (result.length < 6) result.push("");
+    result[6] = `ignored-summary-${revision}-${index}`;
+    result[7] = { formulaValue: `=SUM(E:E)*${revision}` };
+    result[25] = index === 0 ? "sku" : `ignored-far-note-${revision}`;
+    return result;
+  });
+}
+
 function createGridPayload(rows = TEMPLATE_ROWS) {
   return {
     sheets: [
@@ -75,7 +87,7 @@ function createGridPayload(rows = TEMPLATE_ROWS) {
             startColumn: 0,
             rowData: rows.map((row) => ({
               values: row.map((value) => ({
-                userEnteredValue: typeof value === "number"
+                userEnteredValue: typeof value === "object" ? value : typeof value === "number"
                   ? { numberValue: value }
                   : { stringValue: value },
               })),
@@ -344,7 +356,7 @@ test("real Sheet confirmation persists, wins the worker FIFO, pins Start, and dr
     assert.match(request.authorization, /^Bearer worker-only-token-/);
     assert.equal(
       new URL(request.url).searchParams.get("ranges"),
-      "'Inventory'",
+      "'Inventory'!A:F",
     );
   });
   assert.equal(JSON.stringify(storage).includes("worker-only-token"), false);
@@ -384,6 +396,34 @@ test("real Sheet confirmation persists, wins the worker FIFO, pins Start, and dr
   );
   assert.deepEqual(firstWorker.workerErrors, []);
   assert.deepEqual(restartedWorker.workerErrors, []);
+});
+
+test("real preview and confirmation ignore changing G+ formulas, headers, and summary-only rows", async () => {
+  const rows = [[], TEMPLATE_ROWS[0], [], ...TEMPLATE_ROWS.slice(1), []];
+  const laterRows = [...rows, ...Array.from({ length: 1002 }, () => [])];
+  const worker = createRealWorkerHarness({ payloads: [
+    createGridPayload(withExtraColumns(rows)),
+    createGridPayload(withExtraColumns(laterRows, 2)),
+  ] });
+  const clients = createClients(worker.runtime);
+  const expected = inventorySheetImport.parseInventorySheet(TEMPLATE_ROWS);
+  const preview = await clients.inventory.previewReference(SPREADSHEET_ID);
+
+  assert.equal(preview.range, "'Inventory'!A:F");
+  assert.deepEqual(preview.inventory, expected.inventory);
+  assert.deepEqual(preview.summary, expected.summary);
+  assert.equal(preview.fingerprint, expected.fingerprint);
+  const confirmation = await clients.inventory.confirmPreview(preview.previewToken);
+  assert.equal(confirmation.sourceFingerprint, expected.fingerprint);
+  const state = await clients.reconciliation.getState();
+  const baseline = state.state.inventoryBaselines.find(
+    (entry) => entry.baselineId === confirmation.baselineId,
+  );
+  assert.deepEqual(baseline.inventory, expected.inventory);
+  assert.equal(JSON.stringify(worker.storage).includes("ignored-"), false);
+  assert.equal(JSON.stringify(worker.storage).includes("formulaValue"), false);
+  assert.equal(worker.fetchCalls.length, 2);
+  assert.deepEqual(worker.workerErrors, []);
 });
 
 test("a worker restart discards its in-memory preview authorization", async () => {
@@ -490,7 +530,7 @@ test("an active Sheet append preserves mappings and survives worker restart", as
     payloads: [
       createGridPayload(),
       createGridPayload(),
-      createGridPayload(expandedRows),
+      createGridPayload(withExtraColumns([[], ...expandedRows, [], []])),
     ],
   });
   const clients = createClients(worker.runtime);
@@ -565,4 +605,35 @@ test("an active Sheet append preserves mappings and survives worker restart", as
   assert.equal(JSON.stringify(storage).includes(SPREADSHEET_ID), false);
   assert.deepEqual(worker.workerErrors, []);
   assert.deepEqual(restartedWorker.workerErrors, []);
+});
+
+test("active G+ edits alone are a no-op while changes to every existing A:F field still reject atomically", async () => {
+  const mutations = ["RENAMED-SKU", "Changed item", "Changed style", "XXL", 99, 99];
+  const changedPayloads = mutations.map((value, column) => {
+    const rows = clone([...TEMPLATE_ROWS, LIMITED_SKU_ROW]);
+    rows[1][column] = value;
+    return createGridPayload(withExtraColumns(rows, column + 3));
+  });
+  const worker = createRealWorkerHarness({ payloads: [
+    createGridPayload(), createGridPayload(),
+    createGridPayload(withExtraColumns([[], ...TEMPLATE_ROWS, [], []], 2)),
+    ...changedPayloads,
+  ] });
+  const clients = createClients(worker.runtime);
+  const preview = await clients.inventory.previewReference(SPREADSHEET_ID);
+  await clients.inventory.confirmPreview(preview.previewToken);
+  await clients.stream.startStream();
+  const before = clone(worker.storage);
+  const unchanged = await clients.inventory.addActiveStreamSkusReference(SPREADSHEET_ID);
+  assert.equal(unchanged.status, "already_current");
+  assert.deepEqual(unchanged.addedSkus, []);
+  assert.deepEqual(worker.storage, before);
+
+  for (const header of TEMPLATE_ROWS[0]) {
+    await assert.rejects(clients.inventory.addActiveStreamSkusReference(SPREADSHEET_ID),
+      { code: "INVENTORY_BASELINE_NOT_APPEND_ONLY" }, header);
+    assert.deepEqual(worker.storage, before, header);
+  }
+  assert.equal(worker.fetchCalls.length, 9);
+  assert.deepEqual(worker.workerErrors, []);
 });
