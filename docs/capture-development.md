@@ -434,7 +434,7 @@ Run these fail-closed checks before relying on the importer:
 - After confirmation, close and reopen the panel. Import status must restore the locally
   saved baseline summary. Start a stream, then confirm the pre-stream preview/confirm
   controls are hidden. The active Inventory heading must instead expose **Add new SKUs
-  from Sheet** after the saved workspace loads.
+  from updated Sheet** after the saved workspace loads.
 - Inspect the side-panel and service-worker Console. Sheet rows, sharing links, Google
   access tokens, API error bodies, and credentials must not be logged. Only normalized
   confirmed inventory and its non-secret source fingerprint are persisted locally.
@@ -443,9 +443,9 @@ After Start, inventory, reservations, payment reconciliation, and basic profit u
 local baseline scope. The extension makes no automatic live Google request and has no
 Sheets write scope. If an unplanned SKU is needed, append its row to the same `Inventory`
 tab's A:F columns without changing or removing any existing inventory row, then use
-**Add new SKUs from Sheet**. The worker re-reads A:F and requires every existing SKU's
-six stored values to be identical. New SKUs are appended together; an unchanged inventory
-is a successful no-op. Row order is irrelevant.
+**Add new SKUs from updated Sheet → Check and add**. The worker re-reads A:F and
+requires every existing SKU's six stored values to be identical. New SKUs are appended
+together; an unchanged inventory is a successful no-op. Row order is irrelevant.
 G+ changes alone add no SKU and do not invalidate unchanged A:F inventory.
 The action preserves all variations, mappings, payment states, completed allocations, and
 pending reservations. A Sheet mismatch, stream change, invalid row, or storage failure is

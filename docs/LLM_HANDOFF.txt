@@ -3,8 +3,8 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 24, 2026
 Repository branch at this update: main
-Latest commit at this snapshot: ae1fcc1
-Commit subject: Add layout-preserving quantity handoff
+Most recent implementation commit at this snapshot: 6742457
+Commit subject: Tracker reads A-F only, g sheet metrics added
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
@@ -14,9 +14,9 @@ committed in 21ec5fc. The canceled-orders-per-SKU summary described in section 1
 committed in 7e79447. Upcoming-preset queued indicators and guarded header clearing,
 pre-stream viewed-preset previews, and manual queue dropdown previews are committed
 in 9fc595c. The quantity-only clipboard handoff and Other options full-table exports
-described in sections 8 and 12 are committed in ae1fcc1. The current uncommitted work
-narrows inventory reads/validation to A:F while ignoring G+ and preserving the existing
-inventory, row-bound, quantity-handoff, and read-only safeguards.
+described in sections 8 and 12 are committed in ae1fcc1. The A:F-only inventory
+boundary, including G+ exclusion and existing inventory, row-bound, quantity-handoff,
+and read-only safeguards, is committed in 6742457.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
 does not change tracker behavior. Instruction loading on both devices remains a
@@ -1386,6 +1386,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  6742457  Tracker reads A-F only, g sheet metrics added
   ae1fcc1  Add layout-preserving quantity handoff
   9fc595c  Add queued preset indicators and read-only queue previews
   7e79447  total cancels in report
@@ -1450,7 +1451,6 @@ delete them automatically or treat them as production dependency requirements.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
 Previously committed implementation is preserved, including the quantity-only clipboard
-handoff in ae1fcc1. The A:F-only inventory boundary and its tests/documentation are the
-current uncommitted changes.
-No commit or push was performed.
+handoff in ae1fcc1 and the A:F-only inventory boundary in 6742457. Inspect current
+Git status for any later work.
 There is no approved pending functional change to start automatically.

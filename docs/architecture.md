@@ -783,8 +783,8 @@ Shared tagger behavior includes:
   behavior. A multi-size card initially renders **Choose size**, then renders only the
   preferred exact size label after selection; its top-layer listbox orders numeric sizes
   naturally and shows every option's SKU, stock, and Selected/Live/Queued roles.
-- A compact **Add new SKUs from Sheet** action that appears only in a loaded active
-  workspace. It accepts the same Sheet link/ID, reads `Inventory!A:F`, and
+- A compact **Add new SKUs from updated Sheet** action that appears only in a
+  loaded active workspace. It accepts the same Sheet link/ID, reads `Inventory!A:F`, and
   adds only new SKU identities. The form alone is busy during the request; capture and
   the rest of the live workspace remain active.
 - Search across item, style, size, and SKU. Search operates on complete presentation
@@ -1816,10 +1816,11 @@ Preview and confirmation are distinct operations:
    the internal atomic baseline-creation command. A same-worker retry is idempotent; if
    the worker restarts after persistence, import status discovers the already durable
    active baseline rather than relying on the lost preview.
-5. During an active stream, **Add new SKUs from Sheet** sends only the extracted Sheet ID.
-   The worker derives the active stream and expected baseline itself, checks that stream
-   before and after the network read, and passes the complete validated snapshot to the
-   internal append-only command. Every existing row must match by SKU across all six
+5. During an active stream, **Add new SKUs from updated Sheet → Check and add**
+   sends only the extracted Sheet ID. The worker derives the active stream and
+   expected baseline itself, checks that stream before and after the network read,
+   and passes the complete validated snapshot to the internal append-only command.
+   Every existing row must match by SKU across all six
    fields; order may differ, but a rename, edit, or deletion rejects the whole operation.
    New rows are committed in one derived baseline and every stream sharing the prior
    baseline is advanced atomically. An exact no-change Sheet is a successful no-op.
