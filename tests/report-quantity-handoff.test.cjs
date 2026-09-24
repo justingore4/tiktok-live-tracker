@@ -24,15 +24,16 @@ function makeReport() {
 }
 function row(sku, columnOrder = headers, quantity) {
   const entry = inventory.find((item) => item.sku === sku);
-  const values = { ...entry, quantity_on_hand_at_import: quantity ?? entry.quantityOnHandAtImport,
+  const values = { ...entry, quantity: quantity ?? entry.quantityOnHandAtImport,
+    quantity_on_hand_at_import: quantity ?? entry.quantityOnHandAtImport,
     unit_cost: entry.unitCostCents / 100 };
   return columnOrder.map((header) => values[header]);
 }
 function layout(values, headerRowNumber = 1) {
   return { spreadsheetId, sheetTitle: "Inventory", values, headerRowNumber,
-    quantityColumnNumber: values[headerRowNumber - 1].indexOf("quantity_on_hand_at_import") + 1 };
+    quantityColumnNumber: importer.getQuantityHeaderIndex(values[headerRowNumber - 1]) + 1 };
 }
-function basicLayout() { return layout([headers, row("TEE-M"), row("HAT-OS"), row("TEE-L")]); }
+function basicLayout() { return layout([[...headers], row("TEE-M"), row("HAT-OS"), row("TEE-L")]); }
 function clone(value) { return structuredClone(value); }
 function assertCode(action, code) { assert.throws(action, (error) => error.code === code); }
 
@@ -46,13 +47,15 @@ test("quantity handoff preserves nonalphabetical physical order and consecutive 
 });
 
 test("quantity handoff derives reordered column and header row without including headers or trailing blanks", () => {
-  const columns = ["quantity_on_hand_at_import", "size", "sku", "unit_cost", "style", "item"];
-  const source = layout([[], [], columns, [], row("TEE-L", columns), [], row("TEE-M", columns), row("HAT-OS", columns), []], 3);
-  const result = handoff.createQuantityHandoff(makeReport(), source);
-  assert.equal(result.startCell, "A4");
-  assert.equal(result.endCell, "A8");
-  assert.equal(result.text, "\r\n3\r\n\r\n3\r\n0");
-  assert.doesNotMatch(result.text, /\t|sku|quantity/);
+  for (const quantityHeader of ["quantity", "quantity_on_hand_at_import"]) {
+    const columns = [quantityHeader, "size", "sku", "unit_cost", "style", "item"];
+    const source = layout([[], [], columns, [], row("TEE-L", columns), [], row("TEE-M", columns), row("HAT-OS", columns), []], 3);
+    const result = handoff.createQuantityHandoff(makeReport(), source);
+    assert.equal(result.startCell, "A4", quantityHeader);
+    assert.equal(result.endCell, "A8", quantityHeader);
+    assert.equal(result.text, "\r\n3\r\n\r\n3\r\n0", quantityHeader);
+    assert.doesNotMatch(result.text, /\t|sku|quantity/, quantityHeader);
+  }
 });
 
 test("quantity handoff ignores G+ formulas and retains G-only leading/interior spacers with byte-identical output", () => {
@@ -136,11 +139,14 @@ test("quantity handoff rejects formulas, unsafe quantities, invalid rows and non
     const source = basicLayout(); source.values[1][column] = value;
     assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_INVENTORY_SHEET");
   }
-  for (const header of ["SKU", " sku ", "quantity_on_hand_at_import "]) {
+  for (const header of ["SKU", " sku ", "quantity ", "quantity_on_hand_at_import "]) {
     const source = basicLayout(); source.values[0] = [...headers];
     source.values[0][header.startsWith("quantity") ? 4 : 0] = header;
     assertCode(() => handoff.createQuantityHandoff(makeReport(), source), "INVALID_INVENTORY_SHEET");
   }
+  const duplicateQuantityAliases = basicLayout();
+  duplicateQuantityAliases.values[0][5] = "quantity_on_hand_at_import";
+  assertCode(() => handoff.createQuantityHandoff(makeReport(), duplicateQuantityAliases), "INVALID_INVENTORY_SHEET");
   const missingHeader = basicLayout(); missingHeader.values[0] = [...headers.slice(0, 5), "notes", "unit_cost"];
   assertCode(() => handoff.createQuantityHandoff(makeReport(), missingHeader), "INVALID_INVENTORY_SHEET");
 });

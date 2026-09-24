@@ -26,7 +26,7 @@ function createGridPayload(overrides = {}) {
     "item",
     "style",
     "size",
-    "quantity_on_hand_at_import",
+    overrides.quantityHeader ?? "quantity",
     "unit_cost",
   ].map((value) => gridCell("stringValue", value));
 
@@ -370,6 +370,28 @@ test("previews a fixed read-only Inventory range without persisting", async () =
     harness.fetchCalls[0].options.headers.Authorization,
     "Bearer secret-access-token",
   );
+});
+
+test("preferred and legacy quantity headers produce the same inventory fingerprint and confirmation", async () => {
+  const preferred = createGridPayload();
+  const legacy = createGridPayload({ quantityHeader: "quantity_on_hand_at_import" });
+  const preferredParsed = inventorySheetImport.parseInventorySheet(
+    googleImport.gridResponseToValues(preferred),
+  );
+  const legacyParsed = inventorySheetImport.parseInventorySheet(
+    googleImport.gridResponseToValues(legacy),
+  );
+  assert.deepEqual(preferredParsed, legacyParsed);
+
+  const harness = createHarness({ payloads: [preferred, legacy] });
+  const preview = await harness.service.previewGoogleSheet(SPREADSHEET_ID);
+  assert.equal(preview.status, "ready");
+  assert.equal(preview.fingerprint, preferredParsed.fingerprint);
+  const imported = await harness.service.confirmGoogleSheetImport(preview.previewToken);
+  assert.equal(imported.status, "imported");
+  assert.equal(imported.sourceFingerprint, preview.fingerprint);
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(harness.baselineCalls.length, 1);
 });
 
 test("returns sanitized validation issues without a token or partial rows", async () => {

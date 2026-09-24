@@ -447,12 +447,12 @@ test("serializes deterministic six-column CSV and TSV with formula-safe text fie
 
   assert.equal(
     streamReport.serializeInventoryCsv(report),
-    "sku,item,style,size,quantity_on_hand_at_import,unit_cost\r\n" +
+    "sku,item,style,size,quantity,unit_cost\r\n" +
       "SAFE-SKU,\"'=SUM(1,1)\",'+black,'@L,2,12.00\r\n",
   );
   assert.equal(
     streamReport.serializeInventoryTsv(report),
-    "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost\r\n" +
+    "sku\titem\tstyle\tsize\tquantity\tunit_cost\r\n" +
       "SAFE-SKU\t'=SUM(1,1)\t'+black\t'@L\t2\t12.00\r\n",
   );
   assert.deepEqual(report.sheetRows[0], {

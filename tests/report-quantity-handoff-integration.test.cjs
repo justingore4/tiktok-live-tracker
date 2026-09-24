@@ -20,7 +20,7 @@ const SHEET = "1Synthetic_quantity_sheet_123";
 const OTHER_SHEET = "1Other_synthetic_quantity_123";
 const REPORT_URL = "chrome-extension://quantity-test/report/report.html";
 const PANEL_URL = "chrome-extension://quantity-test/tagger/sidepanel.html";
-const HEADER = ["sku", "item", "style", "size", "quantity_on_hand_at_import", "unit_cost"];
+const HEADER = ["sku", "item", "style", "size", "quantity", "unit_cost"];
 const ITEMS = [
   { sku: "Z-TEE-M", item: "Tee", style: "red", size: "M", quantityOnHandAtImport: 5, unitCostCents: 200 },
   { sku: "A-TEE-L", item: "Tee", style: "red", size: "L", quantityOnHandAtImport: 4, unitCostCents: 250 },
@@ -148,13 +148,16 @@ test("quantity handoff uses actual client/worker/Sheets GET in current physical 
 });
 
 test("quantity handoff derives a shifted header and reordered quantity column", async () => {
-  const rows = [[], [], [HEADER[4], ...HEADER.slice(0, 4), HEADER[5]], [],
-    [5, ...row(ITEMS[0]).slice(0, 4), 2], [], [4, ...row(ITEMS[1]).slice(0, 4), 2.5]];
-  const h = worker({ payload: () => grid(rows) });
-  const preview = await prepare(h);
-  assert.equal(preview.startCell, "A4");
-  assert.equal(preview.range, "A4:A7");
-  assert.equal((await copy(h, preview.token)).text, "\r\n4\r\n\r\n3");
+  for (const quantityHeader of ["quantity", "quantity_on_hand_at_import"]) {
+    const rows = [[], [], [quantityHeader, ...HEADER.slice(0, 4), HEADER[5]], [],
+      [5, ...row(ITEMS[0]).slice(0, 4), 2], [], [4, ...row(ITEMS[1]).slice(0, 4), 2.5]];
+    const h = worker({ payload: () => grid(rows) });
+    const preview = await prepare(h);
+    assert.equal(preview.startCell, "A4", quantityHeader);
+    assert.equal(preview.range, "A4:A7", quantityHeader);
+    assert.equal((await copy(h, preview.token)).text, "\r\n4\r\n\r\n3", quantityHeader);
+    assert.deepEqual(h.writes, [], quantityHeader);
+  }
 });
 
 test("G+ formulas and summaries preserve quantity destinations, spacer bytes, full exports, and saved contracts", async () => {

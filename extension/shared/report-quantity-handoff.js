@@ -51,7 +51,8 @@
     }
     const parsed = inventorySheetImport.parseInventorySheet(values);
     const headerIndex = values.findIndex((row) => !row.every(isBlank));
-    const quantityColumn = values[headerIndex].indexOf("quantity_on_hand_at_import") + 1;
+    const quantityColumn =
+      inventorySheetImport.getQuantityHeaderIndex(values[headerIndex]) + 1;
     if (layout.headerRowNumber !== headerIndex + 1 || layout.quantityColumnNumber !== quantityColumn) {
       fail("INVALID_QUANTITY_LAYOUT", "The Inventory header position changed. Verify the Sheet again.");
     }

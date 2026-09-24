@@ -8,6 +8,7 @@ const {
   REQUIRED_HEADERS,
   InventorySheetImportError,
   projectInventoryColumns,
+  getQuantityHeaderIndex,
   parseInventorySheet,
 } = require("../extension/shared/inventory-sheet-import.js");
 
@@ -16,9 +17,11 @@ const HEADERS = [
   "item",
   "style",
   "size",
-  "quantity_on_hand_at_import",
+  "quantity",
   "unit_cost",
 ];
+const LEGACY_HEADERS = HEADERS.map((header) =>
+  header === "quantity" ? "quantity_on_hand_at_import" : header);
 
 function validValues() {
   return [
@@ -110,6 +113,23 @@ test("publishes the same pure contract for browser and CommonJS consumers", () =
     globalThis.TikTokLiveTrackerInventorySheetImport.projectInventoryColumns,
     projectInventoryColumns,
   );
+  assert.equal(
+    globalThis.TikTokLiveTrackerInventorySheetImport.getQuantityHeaderIndex,
+    getQuantityHeaderIndex,
+  );
+});
+
+test("accepts the legacy quantity header without changing canonical inventory or fingerprint", () => {
+  const preferred = parseInventorySheet(validValues());
+  const legacyValues = validValues();
+  legacyValues[0] = [...LEGACY_HEADERS];
+
+  assert.deepEqual(parseInventorySheet(legacyValues), preferred);
+  assert.equal(getQuantityHeaderIndex(HEADERS), 4);
+  assert.equal(getQuantityHeaderIndex(LEGACY_HEADERS), 4);
+  assert.equal(getQuantityHeaderIndex(["quantity", "sku"]), 0);
+  assert.equal(getQuantityHeaderIndex(["sku", "quantity_on_hand_at_import"]), 1);
+  assert.equal(getQuantityHeaderIndex(["sku", "item"]), -1);
 });
 
 test("projects detached A:F rows while retaining leading/interior spacers and trimming trailing personal-only rows", () => {
@@ -287,9 +307,10 @@ test("accepts plain nonnegative USD decimals while keeping money in cents", () =
 
 test("requires exactly one of every supported header", () => {
   for (const values of [
-    [["sku", "item", "style", "size", "quantity_on_hand_at_import"]],
-    [["sku", "item", "style", "size", "quantity_on_hand_at_import", "sku"]],
-    [["SKU", "item", "style", "size", "quantity_on_hand_at_import", "unit_cost"]],
+    [["sku", "item", "style", "size", "quantity"]],
+    [["sku", "item", "style", "size", "quantity", "sku"]],
+    [["SKU", "item", "style", "size", "quantity", "unit_cost"]],
+    [["sku", "item", "style", "size", "quantity", "quantity_on_hand_at_import"]],
   ]) {
     findIssue(values, "INVALID_HEADERS", { rowNumber: 1 });
   }
@@ -353,7 +374,7 @@ test("rejects a partial data row atomically instead of importing its valid cells
       (issue) =>
         issue.code === "MISSING_REQUIRED_VALUE" &&
         issue.rowNumber === 2 &&
-        issue.column === "quantity_on_hand_at_import",
+        issue.column === "quantity",
     ),
   );
   assert.ok(
@@ -427,9 +448,28 @@ test("rejects negative, fractional, unsafe, and nonnumeric imported quantities",
     values[1][4] = quantity;
     findIssue(values, "INVALID_QUANTITY_ON_HAND_AT_IMPORT", {
       rowNumber: 2,
-      column: "quantity_on_hand_at_import",
+      column: "quantity",
     });
   }
+});
+
+test("reports legacy quantity validation errors against the header actually used", () => {
+  const missing = validValues();
+  missing[0] = [...LEGACY_HEADERS];
+  missing[1][4] = "";
+  const issue = findIssue(missing, "MISSING_REQUIRED_VALUE", {
+    rowNumber: 2,
+    column: "quantity_on_hand_at_import",
+  });
+  assert.match(issue.message, /quantity_on_hand_at_import is required/u);
+
+  const formula = validValues();
+  formula[0] = [...LEGACY_HEADERS];
+  formula[1][4] = "=1+1";
+  findIssue(formula, "FORMULA_NOT_ALLOWED", {
+    rowNumber: 2,
+    column: "quantity_on_hand_at_import",
+  });
 });
 
 test("rejects symbols, commas, negatives, and over-precise unit costs", () => {
@@ -516,7 +556,7 @@ test("collects independent row failures into one atomic import error", () => {
       {
         code: "INVALID_QUANTITY_ON_HAND_AT_IMPORT",
         rowNumber: 2,
-        column: "quantity_on_hand_at_import",
+        column: "quantity",
       },
       { code: "INVALID_UNIT_COST", rowNumber: 2, column: "unit_cost" },
     ],

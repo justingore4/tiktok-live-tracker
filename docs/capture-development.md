@@ -388,8 +388,10 @@ and matching Chrome Extension OAuth client. Keep both values unchanged. See the
 4. Import [`google-sheets-inventory-template.csv`](google-sheets-inventory-template.csv)
    into a Google spreadsheet, rename the tab exactly `Inventory`, preserve the six exact
    headers within A:F, and replace the dummy rows with the physical opening count and
-   unit cost. The headers may be reordered within A:F. G+ may contain notes, formulas,
-   or summaries; those columns are ignored by all inventory reads.
+   unit cost. The template uses `quantity`; an existing Sheet may still use
+   `quantity_on_hand_at_import` instead, but not both. The headers may be reordered
+   within A:F. G+ may contain notes, formulas, or summaries; those columns are
+   ignored by all inventory reads.
    Keep every size on its own unique-SKU row; repeat the same item and style for sizes that
    should share one live card. Give the authorizing Google account read access.
 5. With no local tracker stream active, open the side panel, which defaults to **Live
@@ -413,9 +415,10 @@ the Testing limits and warnings.
 
 Run these fail-closed checks before relying on the importer:
 
-- Delete or rename a required A:F header, duplicate a SKU, enter an A:F formula, or use
-  an invalid quantity. Preview must show bounded row/column diagnostics, import nothing, and leave
-  Start unavailable when there was no earlier confirmed baseline.
+- Delete or rename a required A:F header to an unsupported value, include both
+  quantity header names, duplicate a SKU, enter an A:F formula, or use an invalid
+  quantity. Preview must show bounded row/column diagnostics, import nothing, and
+  leave Start unavailable when there was no earlier confirmed baseline.
 - Add notes, formulas, or summary cells only in G+ before/after preview. They must not
   alter the inventory preview or confirmation. Include G-only rows above the header,
   between inventory rows, and below the last inventory row: they must not become headers
@@ -460,8 +463,9 @@ mapping, queueing, reconciliation, reports, and the Sheet handoff. Search can ma
 group item, style, size, or underlying SKU and keeps the whole matched group available.
 
 After End, the local report's **Other options** offers a six-column replacement CSV
-and **Copy Inventory No Formatting** for a full-table paste at A1. Both can reorder rows
-into SKU order without spacers and are not formatting-preserving exports.
+and **Copy Inventory No Formatting** for a full-table paste at A1. Both use `quantity`
+as the header and can reorder rows into SKU order without spacers; neither preserves
+formatting.
 **Copy Updated Inventory** opens the quantity-only form. Its **Check Sheet** action
 explicitly re-reads the selected `Inventory!A:F`, matches exact SKUs, and prepares a
 quantity-only column in the current physical row order, including blank spacers. The
@@ -762,7 +766,8 @@ distribution; reassess Google's requirements before expanding the audience.
     including `$0.00`; its visible **Sold** header means completed mapped sales since the
     inventory baseline. On a narrow window, verify the table scrolls horizontally, and in
     print preview verify all columns remain visible with repeating headers. Then verify the
-    downloaded CSV still has the exact six headers and all rows. Use
+    downloaded CSV has `sku,item,style,size,quantity,unit_cost` and all rows; check
+    the full-table clipboard header too. Use
     **File -> Import -> Upload -> Replace current sheet** only
     after making the backup. If a row is oversold, the exported count is zero but its raw
     shortage/recount warning remains; physically recount it. Review every attention notice

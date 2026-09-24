@@ -1020,7 +1020,8 @@
         return {
           spreadsheetId, sheetTitle: "Inventory", values: cloneSerializable(values),
           headerRowNumber: headerIndex + 1,
-          quantityColumnNumber: values[headerIndex].indexOf("quantity_on_hand_at_import") + 1,
+          quantityColumnNumber:
+            dependencies.inventorySheetImport.getQuantityHeaderIndex(values[headerIndex]) + 1,
         };
       }
 

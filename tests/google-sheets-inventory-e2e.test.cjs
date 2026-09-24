@@ -44,7 +44,7 @@ const SIDE_PANEL_URL =
 const SPREADSHEET_ID = "1Abc_def-Ghij234567890";
 
 const TEMPLATE_ROWS = Object.freeze([
-  ["sku", "item", "style", "size", "quantity_on_hand_at_import", "unit_cost"],
+  ["sku", "item", "style", "size", "quantity", "unit_cost"],
   ["STUSSY-TEE-BLACK-L", "Stussy tee", "black", "L", 5, 12],
   ["STUSSY-TEE-BLACK-M", "Stussy tee", "black", "M", 2, 12],
   ["NIKE-HOODIE-GREY-XL", "Nike hoodie", "grey", "XL", 3, 14],
@@ -423,6 +423,41 @@ test("real preview and confirmation ignore changing G+ formulas, headers, and su
   assert.equal(JSON.stringify(worker.storage).includes("ignored-"), false);
   assert.equal(JSON.stringify(worker.storage).includes("formulaValue"), false);
   assert.equal(worker.fetchCalls.length, 2);
+  assert.deepEqual(worker.workerErrors, []);
+});
+
+test("real preview, confirmation, and active SKU addition accept either quantity header without changing saved fields", async () => {
+  const preferredRows = clone(TEMPLATE_ROWS);
+  const legacyRows = clone(TEMPLATE_ROWS);
+  legacyRows[0][4] = "quantity_on_hand_at_import";
+  const worker = createRealWorkerHarness({ payloads: [
+    createGridPayload(legacyRows),
+    createGridPayload(preferredRows),
+    createGridPayload(legacyRows),
+    createGridPayload([...preferredRows, LIMITED_SKU_ROW]),
+  ] });
+  const clients = createClients(worker.runtime);
+  const preview = await clients.inventory.previewReference(SPREADSHEET_ID);
+  const expected = inventorySheetImport.parseInventorySheet(preferredRows);
+  assert.equal(preview.fingerprint, expected.fingerprint);
+  assert.deepEqual(preview.inventory, expected.inventory);
+
+  const confirmation = await clients.inventory.confirmPreview(preview.previewToken);
+  assert.equal(confirmation.sourceFingerprint, expected.fingerprint);
+  await clients.stream.startStream();
+  const before = clone(worker.storage);
+  const unchanged = await clients.inventory.addActiveStreamSkusReference(SPREADSHEET_ID);
+  assert.equal(unchanged.status, "already_current");
+  assert.deepEqual(worker.storage, before);
+  const added = await clients.inventory.addActiveStreamSkusReference(SPREADSHEET_ID);
+  assert.equal(added.status, "extended");
+  assert.deepEqual(added.addedSkus, [LIMITED_SKU_ROW[0]]);
+  const current = await clients.reconciliation.getState();
+  const baseline = current.state.inventoryBaselines.find((entry) =>
+    entry.baselineId === current.state.activeInventoryBaselineId);
+  assert.equal(baseline.inventory.find((entry) => entry.sku === LIMITED_SKU_ROW[0]).quantityOnHandAtImport, 3);
+  assert.equal(Object.hasOwn(baseline.inventory[0], "quantity"), false);
+  assert.equal(worker.fetchCalls.length, 4);
   assert.deepEqual(worker.workerErrors, []);
 });
 

@@ -43,13 +43,15 @@ test("fresh layout read preserves internal blank rows and requests only A:F with
 });
 
 test("layout header metadata follows actual row and recognized reordered quantity column", async () => {
-  const reordered = ["size", "quantity_on_hand_at_import", "sku", "style", "unit_cost", "item"];
-  const { service } = harness(payload([[], reordered, [], ["M", 2, "TEE-M", "Red", 5, "Tee"]]));
-  const result = await service.readInventoryLayout(spreadsheetId);
-  assert.equal(result.headerRowNumber, 2);
-  assert.equal(result.quantityColumnNumber, 2);
-  assert.deepEqual(result.values[0], []);
-  assert.deepEqual(result.values[2], []);
+  for (const quantityHeader of ["quantity", "quantity_on_hand_at_import"]) {
+    const reordered = ["size", quantityHeader, "sku", "style", "unit_cost", "item"];
+    const { service } = harness(payload([[], reordered, [], ["M", 2, "TEE-M", "Red", 5, "Tee"]]));
+    const result = await service.readInventoryLayout(spreadsheetId);
+    assert.equal(result.headerRowNumber, 2, quantityHeader);
+    assert.equal(result.quantityColumnNumber, 2, quantityHeader);
+    assert.deepEqual(result.values[0], [], quantityHeader);
+    assert.deepEqual(result.values[2], [], quantityHeader);
+  }
 });
 
 test("layout validation does not change ordinary import parsing, response fields, or preview behavior", async () => {
@@ -94,7 +96,7 @@ test("layout reader rejects formulas, duplicates and bad headers within A:F", as
   }
   await assert.rejects(harness(formula).service.readInventoryLayout(spreadsheetId), (error) => {
     assert.equal(error.code, "INVALID_INVENTORY_SHEET");
-    assert.match(error.message, /Inventory row 3 \(quantity_on_hand_at_import\):.*value, not a formula/);
+    assert.match(error.message, /Inventory row 3 \(quantity\):.*value, not a formula/);
     assert.doesNotMatch(error.message, /=5|synthetic-token|userEnteredValue/);
     return true;
   });
@@ -103,6 +105,11 @@ test("layout reader rejects formulas, duplicates and bad headers within A:F", as
     assert.match(error.message, /Inventory row 8 \(sku\):.*duplicates Inventory row 3/);
     assert.match(error.message, /1 additional validation issue/);
     return true;
+  });
+  const duplicateQuantityAliases = payload();
+  duplicateQuantityAliases.sheets[0].data[0].rowData[0].values[5].userEnteredValue.stringValue = "quantity_on_hand_at_import";
+  await assert.rejects(harness(duplicateQuantityAliases).service.readInventoryLayout(spreadsheetId), {
+    code: "INVALID_INVENTORY_SHEET",
   });
 });
 

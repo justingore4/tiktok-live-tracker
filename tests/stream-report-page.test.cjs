@@ -591,7 +591,7 @@ test("Other options starts hidden and opens without reading Sheets, downloading,
   assert.deepEqual(surface.copyRequests, []);
 });
 
-test("Other options full copy closes the popup and copies unchanged six-column TSV for A1", async () => {
+test("Other options full copy closes the popup and copies six-column TSV with quantity for A1", async () => {
   const report = createReport();
   const original = structuredClone(report);
   const surface = mountInventoryOtherOptions({ report });
@@ -601,7 +601,7 @@ test("Other options full copy closes the popup and copies unchanged six-column T
   assert.equal(surface.optionsPanel.hidden, true);
   assert.equal(surface.optionsButton.getAttribute("aria-expanded"), "false");
   assert.deepEqual(surface.fullTexts, [reportPage.serializeInventoryTsv(report)]);
-  assert.equal(surface.fullTexts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost");
+  assert.equal(surface.fullTexts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity\tunit_cost");
   assert.equal(surface.actionFeedback.textContent, "Inventory copied. Paste into spreadsheet cell A1.");
   assert.deepEqual(report, original);
   assert.deepEqual(surface.prepareRequests, []);
@@ -954,13 +954,13 @@ test("top quantity toggle respects an in-flight report rename and re-enables aft
   assert.deepEqual(surface.prepareRequests, []);
 });
 
-test("full-table clipboard helper copies the unchanged six-column TSV independently of its UI", async () => {
+test("full-table clipboard helper copies six-column TSV independently of its UI", async () => {
   const report = createReport();
   const original = structuredClone(report);
   const texts = [];
   await reportPage.copyUpdatedInventory({ clipboard: { async writeText(text) { texts.push(text); } } }, report);
   assert.deepEqual(texts, [reportPage.serializeInventoryTsv(report)]);
-  assert.equal(texts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost");
+  assert.equal(texts[0].split("\n")[0], "sku\titem\tstyle\tsize\tquantity\tunit_cost");
   assert.doesNotMatch(texts[0], /secret-oauth-token|private-buyer/);
   assert.deepEqual(report, original);
   await reportPage.copyUpdatedInventory({ clipboard: { async writeText(text) { texts.push(text); } } }, report, {
@@ -5530,7 +5530,7 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
   const tsv = reportPage.serializeInventoryTsv(report);
   const csv = reportPage.serializeInventoryCsv(report);
   const expectedHeader =
-    "sku\titem\tstyle\tsize\tquantity_on_hand_at_import\tunit_cost";
+    "sku\titem\tstyle\tsize\tquantity\tunit_cost";
 
   assert.equal(tsv.split("\n")[0], expectedHeader);
   assert.equal(reportPage.SHEET_HEADERS.length, 6);
@@ -5552,7 +5552,7 @@ test("inventory payloads use the exact six columns, retain zero, and omit unrela
       ),
   );
   assert.match(tsv, /SKU-A[^\n]*\t0\t6\.00/);
-  assert.match(csv, /quantity_on_hand_at_import/);
+  assert.match(csv, /"quantity"/);
 
   for (const secret of [
     report.oauthToken,

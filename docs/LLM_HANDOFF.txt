@@ -22,7 +22,7 @@ The root AGENTS.md now provides shared Mac/Windows development rules; this addit
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,061 passed, 0 failed
+Latest full synthetic test run: 2,065 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -478,12 +478,14 @@ See capture-development.md for synthetic tests and remaining live/manual checks.
 
 8. INVENTORY / GOOGLE SHEETS CONTRACT
 -----------------------------------
-Sheet tab: Inventory. Only A:F is inventory input. Exact case-sensitive six headers,
-each once:
-  sku,item,style,size,quantity_on_hand_at_import,unit_cost
-Import can accept another column order within A:F; full report exports use the canonical
-order. Unknown, missing, or duplicate A:F headers are invalid. A required header in G+
-does not count. G+ content, including notes, formulas, and summaries, is ignored for
+Sheet tab: Inventory. Only A:F is inventory input. The preferred exact, case-sensitive
+six headers are:
+  sku,item,style,size,quantity,unit_cost
+Existing Sheets may use `quantity_on_hand_at_import` instead of `quantity`; both names
+together are invalid. Import accepts another column order within A:F; full report
+CSV and TSV exports use the preferred header and canonical order. Unknown, missing,
+or duplicate A:F headers are invalid. A required header in G+ does not count. G+
+content, including notes, formulas, and summaries, is ignored for
 preview, confirmation, active-stream SKU additions, and quantity-handoff checks.
 The first nonblank A:F row is the header. A:F-blank rows are not inventory records,
 even if G+ has content; G-only rows neither choose the header nor extend a paste range.
@@ -493,7 +495,8 @@ Rows:
 - item: required plain text, <=160 characters.
 - style: optional plain text, <=160 characters; empty is valid.
 - size: required plain text, <=80 characters, own SKU for every size.
-- quantity_on_hand_at_import: nonnegative safe integer, actual opening physical stock.
+- quantity (legacy header `quantity_on_hand_at_import`): nonnegative safe integer,
+  actual opening physical stock at baseline confirmation.
 - unit_cost: nonnegative plain USD decimal, no symbol, at most 2 decimal places.
 - Zero quantity and zero unit cost are valid. No formulas within A:F; userEnteredValue
   is read so those formulas cannot evade validation by presenting evaluated values.
@@ -528,7 +531,8 @@ before layout bounds and positional clipboard construction. Worker/coordinator m
 ownership, report eligibility, token revalidation, and saved-data contracts are unchanged.
 
 After a report, the operator can copy the complete updated inventory or download CSV.
-They back up the Inventory tab, then replace the six-column table starting at A1.
+Both full-table exports label the replacement-count column `quantity`. The operator
+backs up the Inventory tab, then replaces the six-column table starting at A1.
 Paste is positional, not a SKU-aware merge. Avoid overwriting newer stock with an old
 report. Export quantity excludes completed mapped sales, not merely reservations;
 oversold replacement quantity clamps to zero and needs a physical recount.
@@ -566,9 +570,10 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
   edits. "Copied" is not "Sheet updated." Exact formatting/blank-line behavior remains
   user-performed native Chrome/Sheets QA, not a synthetic-test claim.
 - Normal imports still discard blank rows; saved report inventory remains sorted by
-  SKU. Other options exposes the unchanged six-column CSV and Copy Inventory No
-  Formatting, using the original full-table clipboard helper for an A1 paste. These
-  full-table exports can reorder rows and are not formatting-preserving paths.
+  SKU. Other options exposes the six-column CSV and Copy Inventory No Formatting,
+  using the full-table clipboard helper for an A1 paste. Both now emit the `quantity`
+  header. These full-table exports can reorder rows and are not formatting-preserving
+  paths.
 - Strict report-page-only prepare_quantity_handoff/copy_quantity_handoff commands
   use existing worker serialization and read-only authorization. Prepare's new client
   deadline is 90 seconds to cover the reader's existing retry/auth path; ordinary
@@ -1044,8 +1049,11 @@ invalidates stale work. Loading/correction/copy locks are rechecked in handlers.
 The old full-table explanatory paragraph remains removed. The former CSV toolbar
 button is now Other options, an initially hidden group of two real buttons:
 Download Updated Inventory CSV and Copy Inventory No Formatting. The latter uses
-exported copyUpdatedInventory(navigator, report, reportModule), copying the original
-six-column TSV with A1 feedback. CSV bytes/filenames and both serializers are unchanged.
+exported copyUpdatedInventory(navigator, report, reportModule), copying the
+six-column TSV with A1 feedback. Both CSV and TSV now use `quantity` as the column-E
+header; data rows and CSV filenames retain their existing behavior. The saved report
+`sheetRows` key and canonical baseline field remain `quantity_on_hand_at_import` and
+`quantityOnHandAtImport` respectively; no saved-data schema changes.
 Neither full-table action preserves Sheet row layout or contacts Google. Opening the
 group has no side effects; outside click, Escape, selection, reload/error/disposal close
 it. Hidden/stale/busy actions are guarded. Clipboard delivery shares the existing
@@ -1151,14 +1159,21 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,061 tests passed, 0 failed, on Windows (September 24, 2026).
+Latest full verification: 2,065 tests passed, 0 failed, on Windows (September 24, 2026).
+The preferred `quantity` Sheet/header change adds four regressions over the 2,061-test
+baseline. The relevant eight-file focused group passes 342/342; the full suite passes
+2,065/2,065. Synthetic coverage checks preferred and legacy header acceptance, duplicate
+logical quantity-header rejection, preserved quantity-handoff alignment, `quantity`
+CSV/TSV headers, and unchanged saved report row keys. No real Sheet, Chrome profile,
+report, or credential was accessed. Native Google Sheets import, clipboard paste, and
+layout checks remain user-performed.
 The A:F-only boundary adds 19 regressions over the previous 2,042-test run and expands
 existing validation tests. The eight-file focused import/layout/client/controller/
 worker/handoff group passes 132/132. Coverage includes G+ headers/formulas and summary
 rows before/between/after inventory, stable normalized fingerprints and confirmation,
 append-only safeguards, physical offsets/row limits without truncation, overlapping
 grid rejection, G+-only versus crossing/malformed merges (including default sheet ID
-zero), exact quantity clipboard bytes, and unchanged saved reports/full-table exports.
+zero), exact quantity clipboard bytes, and saved reports/full-table exports at that step.
 git diff --check passes. No real Sheets, reports, profiles, credentials, or live tracker
 state were accessed. Native Chrome import/paste alignment and G/H formula preservation
 remain user-performed manual checks; no browser checks were launched.
@@ -1386,6 +1401,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  3445c3b  Update handoff and inventory action documentation
   6742457  Tracker reads A-F only, g sheet metrics added
   ae1fcc1  Add layout-preserving quantity handoff
   9fc595c  Add queued preset indicators and read-only queue previews

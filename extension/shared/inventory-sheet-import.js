@@ -17,10 +17,11 @@
       "item",
       "style",
       "size",
-      "quantity_on_hand_at_import",
+      "quantity",
       "unit_cost",
     ]);
     const REQUIRED_HEADER_SET = new Set(REQUIRED_HEADERS);
+    const LEGACY_QUANTITY_HEADER = "quantity_on_hand_at_import";
     const SKU_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,63}$/;
     const MAX_TEXT_LENGTHS = Object.freeze({
       item: 160,
@@ -123,6 +124,15 @@
       return typeof value === "string" && value.trim().startsWith("=");
     }
 
+    // Call after header validation so the aliases cannot be ambiguous.
+    function getQuantityHeaderIndex(headerRow) {
+      if (!Array.isArray(headerRow)) return -1;
+      const preferredIndex = headerRow.indexOf("quantity");
+      return preferredIndex >= 0
+        ? preferredIndex
+        : headerRow.indexOf(LEGACY_QUANTITY_HEADER);
+    }
+
     function validateHeaders(headerRow, rowNumber, issues) {
       if (headerRow.length !== REQUIRED_HEADERS.length) {
         issues.push(
@@ -140,16 +150,19 @@
       let valid = true;
 
       headerRow.forEach((header, index) => {
+        const canonicalHeader = header === LEGACY_QUANTITY_HEADER
+          ? "quantity"
+          : header;
         if (
           typeof header !== "string" ||
-          !REQUIRED_HEADER_SET.has(header) ||
-          headerIndexes.has(header)
+          !REQUIRED_HEADER_SET.has(canonicalHeader) ||
+          headerIndexes.has(canonicalHeader)
         ) {
           valid = false;
           return;
         }
 
-        headerIndexes.set(header, index);
+        headerIndexes.set(canonicalHeader, index);
       });
 
       if (
@@ -282,14 +295,14 @@
       return normalized;
     }
 
-    function parseQuantity(value, rowNumber, issues) {
+    function parseQuantity(value, rowNumber, issues, column) {
       if (isBlankCell(value)) {
         issues.push(
           createIssue(
             "MISSING_REQUIRED_VALUE",
             rowNumber,
-            "quantity_on_hand_at_import",
-            "quantity_on_hand_at_import is required.",
+            column,
+            `${column} is required.`,
           ),
         );
         return null;
@@ -303,8 +316,8 @@
           createIssue(
             "INVALID_QUANTITY_ON_HAND_AT_IMPORT",
             rowNumber,
-            "quantity_on_hand_at_import",
-            "quantity_on_hand_at_import must be a nonnegative safe integer.",
+            column,
+            `${column} must be a nonnegative safe integer.`,
           ),
         );
         return null;
@@ -317,8 +330,8 @@
           createIssue(
             "INVALID_QUANTITY_ON_HAND_AT_IMPORT",
             rowNumber,
-            "quantity_on_hand_at_import",
-            "quantity_on_hand_at_import must be a nonnegative safe integer.",
+            column,
+            `${column} must be a nonnegative safe integer.`,
           ),
         );
         return null;
@@ -425,8 +438,9 @@
       }
 
       const headerRowNumber = headerIndex + 1;
+      const headerRow = values[headerIndex];
       const headerIndexes = validateHeaders(
-        values[headerIndex],
+        headerRow,
         headerRowNumber,
         issues,
       );
@@ -434,6 +448,8 @@
       if (headerIndexes === null) {
         failWithIssues(issues);
       }
+
+      const quantityColumn = headerRow[getQuantityHeaderIndex(headerRow)];
 
       const parsedRows = [];
       let nonblankDataRows = 0;
@@ -458,12 +474,13 @@
         REQUIRED_HEADERS.forEach((column) => {
           if (isFormulaCell(rawValues[column])) {
             formulaColumns.add(column);
+            const sheetColumn = column === "quantity" ? quantityColumn : column;
             issues.push(
               createIssue(
                 "FORMULA_NOT_ALLOWED",
                 rowNumber,
-                column,
-                `${column} must contain a value, not a formula.`,
+                sheetColumn,
+                `${sheetColumn} must contain a value, not a formula.`,
               ),
             );
           }
@@ -478,11 +495,12 @@
         const size = formulaColumns.has("size") ? null :
           parseRequiredText(rawValues.size, rowNumber, "size", issues);
         const quantityOnHandAtImport =
-          formulaColumns.has("quantity_on_hand_at_import") ? null :
+          formulaColumns.has("quantity") ? null :
             parseQuantity(
-              rawValues.quantity_on_hand_at_import,
+              rawValues.quantity,
               rowNumber,
               issues,
+              quantityColumn,
             );
         const unitCostCents = formulaColumns.has("unit_cost") ? null :
           parseUnitCost(rawValues.unit_cost, rowNumber, issues);
@@ -598,6 +616,7 @@
       REQUIRED_HEADERS,
       InventorySheetImportError,
       projectInventoryColumns,
+      getQuantityHeaderIndex,
       parseInventorySheet,
     });
   },

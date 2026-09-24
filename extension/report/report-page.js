@@ -68,6 +68,10 @@
       "quantity_on_hand_at_import",
       "unit_cost",
     ]);
+    const SHEET_EXPORT_HEADERS = Object.freeze(
+      SHEET_HEADERS.map((header) =>
+        header === "quantity_on_hand_at_import" ? "quantity" : header),
+    );
     const ACTION_FEEDBACK_DURATION_MS = 4_000;
     const WARNING_MESSAGES = Object.freeze({
       active_bidding_at_end:
@@ -413,7 +417,7 @@
       }
 
       return [
-        SHEET_HEADERS.join("\t"),
+        SHEET_EXPORT_HEADERS.join("\t"),
         ...getSheetRows(report).map((row) =>
           SHEET_HEADERS.map((header) =>
             protectSpreadsheetCell(row?.[header]),
@@ -432,7 +436,7 @@
       }
 
       return [
-        SHEET_HEADERS.map(escapeCsvCell).join(","),
+        SHEET_EXPORT_HEADERS.map(escapeCsvCell).join(","),
         ...getSheetRows(report).map((row) =>
           SHEET_HEADERS.map((header) => escapeCsvCell(row?.[header])).join(","),
         ),

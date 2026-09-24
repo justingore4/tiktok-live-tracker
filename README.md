@@ -44,11 +44,13 @@ copy or CSV export to update the Sheet manually.
    within columns **A:F** (their order within A:F may vary):
 
    ```csv
-   sku,item,style,size,quantity_on_hand_at_import,unit_cost
+   sku,item,style,size,quantity,unit_cost
    ```
 
    Each size needs its own unique SKU. Enter the opening physical stock count and
-   unit cost for each row. The first nonblank A:F row must have exactly those six
+   unit cost for each row. Column E in the template is `quantity`; existing Sheets
+   using `quantity_on_hand_at_import` instead are still accepted. Use exactly one
+   quantity header, not both. The first nonblank A:F row must have the six required
    headers, and formulas are not allowed in A:F. Columns **G and later are ignored**,
    including notes, formulas, and summaries; they are not imported as inventory.
 2. In the tracker, paste the Sheet link or ID, choose **Connect and preview**, review
@@ -325,9 +327,10 @@ A:F are not supported by this quantity-only workflow; merges entirely in G+ are 
 **Copy Updated Inventory** opens/closes the quantity-only form; opening it does not
 copy anything or contact Google. **Other options** offers two full-table alternatives:
 
-- **Download Updated Inventory CSV** downloads the existing six-column CSV.
+- **Download Updated Inventory CSV** downloads the six-column CSV with a `quantity`
+  header.
 - **Copy Inventory No Formatting** copies all six columns as plain text for pasting
-  into **Inventory!A1**.
+  into **Inventory!A1**, also with a `quantity` header.
 
 Both use SKU order without blank spacer rows, so they can reorder the Sheet's inventory
 and are not a formatting-preserving path. Use the main quantity-only workflow above to

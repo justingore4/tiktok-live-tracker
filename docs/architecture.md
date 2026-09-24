@@ -624,8 +624,8 @@ shows the saved unit cost for every SKU. Its short visible `Sold` header has the
 meaning "Sold since inventory baseline" and represents baseline-wide completed mapped
 sales. Narrow screens keep the full table in a horizontal scroll region; print removes
 that screen minimum width so all columns can fit the page. The retained Sheet handoff is
-still a complete six-column table with the original `sku,item,style,size,unit_cost` plus
-the replacement count under `quantity_on_hand_at_import`. CSV and tab-separated clipboard
+still a complete six-column table with `sku,item,style,size,quantity,unit_cost`;
+`quantity` contains the replacement count. CSV and tab-separated clipboard
 serializers neutralize spreadsheet-formula prefixes while preserving valid Sheet values.
 
 The extension-owned report page initially loads only the local saved record. It supports native
@@ -636,7 +636,7 @@ the chosen Sheet through the worker and the subsequent **Copy quantities** actio
 a single-column clipboard handoff in its current physical row order. It retains blank
 spacers and reports the quantity-column starting cell for one values-only paste, leaving
 other columns outside the operation. **Other options** opens a compact button group
-with the unchanged six-column CSV download and **Copy Inventory No Formatting**, which
+with the six-column CSV download and **Copy Inventory No Formatting**, which
 uses the existing full-table TSV clipboard helper for pasting at A1. Opening the group
 does no I/O; Escape/outside click/actions close it. Hidden or busy actions are guarded,
 and both clipboard paths share the report-edit/copy lock to prevent overlapping writes.
@@ -1670,9 +1670,11 @@ tracker state.
 Only columns A:F are inventory input for preview, confirmation, active-stream SKU
 additions, and quantity-handoff checks. Columns G+ are ignored, including formulas,
 notes, and summaries; this does not add formula evaluation, generated totals, or Apps Script.
-The first nonblank A:F row must contain these exact, case-sensitive headers. Column
-order may vary within A:F, but missing, duplicate, or unknown headers in A:F make the
-whole import invalid. A required header placed in G+ does not satisfy the contract.
+The first nonblank A:F row must contain the exact, case-sensitive headers `sku`,
+`item`, `style`, `size`, and `unit_cost`, plus exactly one quantity header: preferred
+`quantity` or legacy `quantity_on_hand_at_import`. Column order may vary within A:F,
+but missing, duplicate, or unknown headers in A:F make the whole import invalid.
+A required header placed in G+ does not satisfy the contract.
 
 | Column | Required value |
 | --- | --- |
@@ -1680,7 +1682,7 @@ whole import invalid. A required header placed in G+ does not satisfy the contra
 | `item` | Nonblank employee-facing product name up to 160 characters, such as `Stussy tee` |
 | `style` | Optional color, design, or distinguishing style up to 160 characters, such as `black`; blank is valid when the item has no style variant |
 | `size` | Nonblank size label up to 80 characters for this exact SKU row; every size needs a unique SKU |
-| `quantity_on_hand_at_import` | Nonnegative safe integer representing the physical count when this baseline is confirmed |
+| `quantity` (legacy: `quantity_on_hand_at_import`) | Nonnegative safe integer representing the physical count when this baseline is confirmed |
 | `unit_cost` | Nonnegative US-dollar decimal with no symbol and at most two fractional digits, such as `12.00` |
 
 An all-blank A:F row is ignored for inventory, even if it has G+ content. In a data row,
@@ -1707,13 +1709,14 @@ and appear as one live inventory card. This UI grouping never merges the rows in
 baseline, report inventory table, SKU performance, accounting, or six-column Sheet
 handoff.
 
-`quantity_on_hand_at_import` is an **opening baseline**, not a lifetime quantity received
-and not a value that the tracker writes down after each sale. It means the physical units
-counted at the instant the employee confirms an import. The pure parser and version-7
-engine both retain that meaning as the immutable `quantityOnHandAtImport` field:
+The Sheet's `quantity` value (or legacy `quantity_on_hand_at_import`) becomes an
+**opening baseline** when confirmed, not a lifetime quantity received or a value
+that the tracker writes down after each sale. It means the physical units counted
+at that instant. The pure parser and version-7 engine retain that meaning as the
+immutable `quantityOnHandAtImport` field:
 
 ```text
-remainingQuantity = quantity_on_hand_at_import - completed mapped sales under this baseline
+remainingQuantity = quantityOnHandAtImport - completed mapped sales under this baseline
 ```
 
 Pending reservations affect `availableToTagQuantity`, not the opening baseline or

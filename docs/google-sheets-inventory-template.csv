@@ -1,4 +1,4 @@
-sku,item,style,size,quantity_on_hand_at_import,unit_cost
+sku,item,style,size,quantity,unit_cost
 STUSSY-TEE-BLACK-L,Stussy tee,black,L,5,12.00
 STUSSY-TEE-BLACK-M,Stussy tee,black,M,2,12.00
 NIKE-HOODIE-GREY-XL,Nike hoodie,grey,XL,3,14.00

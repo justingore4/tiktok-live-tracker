@@ -35,6 +35,10 @@
       "quantity_on_hand_at_import",
       "unit_cost",
     ]);
+    const SHEET_EXPORT_HEADERS = Object.freeze(
+      SHEET_HEADERS.map((header) =>
+        header === "quantity_on_hand_at_import" ? "quantity" : header),
+    );
     const REASON_ORDER = Object.freeze([
       "active_bidding_at_end",
       "unresolved_orders",
@@ -2302,7 +2306,7 @@
 
     function serializeInventory(report, delimiter) {
       const hydrated = hydrateStreamReport(report);
-      const lines = [SHEET_HEADERS.join(delimiter)];
+      const lines = [SHEET_EXPORT_HEADERS.join(delimiter)];
 
       hydrated.sheetRows.forEach((row) => {
         lines.push(
