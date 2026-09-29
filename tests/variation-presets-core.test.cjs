@@ -261,10 +261,10 @@ test("totals below highest captured variation are rejected even when live number
   assert.equal((await h.create(30)).total, 30);
 });
 
-test("a within-range total cannot change until reset, and reset tombstones prevent delayed ABA edits", async () => {
+test("a within-range total can change without reset, and reset tombstones prevent delayed ABA edits", async () => {
   const h = harness();
   const first = await h.create();
-  await assert.rejects(h.create(400), { code: "PRESETS_ALREADY_ENABLED" });
+  assert.equal((await h.create(400)).total, 400);
   const disabled = await h.reset();
   assert.equal(disabled.total, null);
   assert.notEqual(disabled.revision, first.revision);
@@ -294,6 +294,147 @@ test("future assignments change only preset state, allow repeated SKU plans, and
   assert.deepEqual(await h.assign(80), assigned);
   assert.equal(h.notices.length, noticesBefore, "no-op plans and GETs do not cause notification loops");
   assert.equal((await h.assign(80, null)).assignments.length, 2);
+});
+
+test("offline resizing replaces the absolute total atomically and keeps exact retained assignments", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  for (let number = 1; number <= 10; number += 1) await h.assign(number, number % 2 ? "LA-M" : "TEE-OS");
+  const original = await h.snapshot();
+  const canonical = h.getState();
+  const beforeWrites = h.memory.writes.length;
+  const extended = await h.create(20);
+  assert.equal(extended.total, 20, "new total is not added to the old total");
+  assert.deepEqual(extended.assignments, original.assignments);
+  assert.equal(h.memory.writes.length, beforeWrites + 1, "total and plans persist in one write");
+  const reduced = await h.create(5);
+  assert.equal(reduced.total, 5);
+  assert.deepEqual(reduced.assignments, original.assignments.slice(0, 5));
+  assert.notEqual(reduced.revision, extended.revision);
+  assert.equal(h.memory.writes.length, beforeWrites + 2, "shrinking never saves a reset tombstone first");
+  h.restart();
+  assert.deepEqual(await h.snapshot(), reduced);
+  const regrown = await h.create(20);
+  assert.deepEqual(regrown.assignments, reduced.assignments, "discarded plans cannot reappear on regrowth");
+  assert.deepEqual(h.getState(), canonical);
+});
+
+test("same-total resize is a detached successful no-op with no revision, writes, notifications or queue changes", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  const saved = await h.assign(5);
+  const writes = h.memory.writes.length;
+  const notices = h.notices.length;
+  const canonical = h.getState();
+  const result = await h.client.createPresets({ ...h.expected(saved), total: 10 });
+  assert.deepEqual(result, saved);
+  result.assignments[0].sku = "CHANGED";
+  assert.deepEqual(await h.snapshot(), saved);
+  assert.equal(h.memory.writes.length, writes);
+  assert.equal(h.notices.length, notices);
+  assert.equal(h.getQueue(), "TEE-OS");
+  assert.deepEqual(h.getState(), canonical);
+});
+
+test("within-range live shrinking keeps skipped plans and cannot change captured mappings or accounting", async () => {
+  const h = harness();
+  await h.create(10);
+  await h.assign(1);
+  await h.assign(2, "TEE-OS");
+  await h.assign(5, "TEE-OS");
+  await h.assign(9);
+  await h.stateCoordinator.dispatch({ type: "map_variation", streamId: STREAM, variationNumber: 3, sku: "LA-M" });
+  await h.capture(6);
+  const canonical = h.getState();
+  const beforeReport = report(canonical);
+  const csv = streamReport.serializeInventoryCsv(beforeReport);
+  const resized = await h.create(6);
+  assert.deepEqual(resized.assignments, [
+    { variationNumber: 1, sku: "LA-M" }, { variationNumber: 2, sku: "TEE-OS" },
+    { variationNumber: 5, sku: "TEE-OS" },
+  ]);
+  assert.equal(resized.total, 6);
+  assert.deepEqual(h.getState(), canonical);
+  assert.deepEqual(report(h.getState()), beforeReport);
+  assert.equal(streamReport.serializeInventoryCsv(report(h.getState())), csv);
+  assert.equal(h.getQueue(), "TEE-OS");
+  assert.equal(h.queueClears.length, 0);
+});
+
+test("failed growth and shrink saves preserve the whole authoritative range and all assignments", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  await h.assign(5);
+  const saved = await h.assign(10, "TEE-OS");
+  const canonical = h.getState();
+  for (const total of [5, 20]) {
+    const writes = h.memory.writes.length;
+    h.memory.failNext("set");
+    await assert.rejects(h.client.createPresets({ ...h.expected(saved), total }), /Could not save variation presets/);
+    assert.deepEqual(await h.snapshot(), saved);
+    assert.equal(h.memory.writes.length, writes);
+    assert.deepEqual(h.getState(), canonical);
+    assert.equal(h.getQueue(), "TEE-OS");
+  }
+  assert.deepEqual((await h.create(5)).assignments, [{ variationNumber: 5, sku: "LA-M" }]);
+});
+
+test("a resize rechecks live and historical capture floors against the displayed revision", async () => {
+  for (const status of ["bidding", "canceled", "payment_complete"]) {
+    const h = harness({ noCapture: true });
+    const displayed = await h.create(10);
+    await h.capture(8, status);
+    const canonical = h.getState();
+    await assert.rejects(h.client.createPresets({ ...h.expected(displayed), total: 5 }), (error) => {
+      assert.equal(error.code, "PRESET_TOTAL_BELOW_CAPTURED");
+      assert.match(error.message, /#8/);
+      return true;
+    });
+    assert.equal((await h.snapshot()).total, 10);
+    assert.deepEqual(h.getState(), canonical);
+    assert.equal((await h.client.createPresets({ ...h.expected(displayed), total: 8 })).total, 8);
+  }
+});
+
+test("capture promotion repairs an assigned target before a stale shrinking request can discard it", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  await h.assign(5, "TEE-OS");
+  const displayed = await h.assign(8);
+  await h.capture(8, "payment_complete");
+  await assert.rejects(h.client.createPresets({ ...h.expected(displayed), total: 5 }), { code: "PRESETS_CHANGED" });
+  const repaired = await h.snapshot();
+  assert.equal(repaired.total, 10);
+  assert.deepEqual(repaired.assignments, [{ variationNumber: 5, sku: "TEE-OS" }]);
+  assert.equal(reconciliation.getAuction(h.getState(), { streamId: STREAM, variationNumber: 8 }).sku, "LA-M");
+  await assert.rejects(h.create(5), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
+  assert.deepEqual((await h.create(8)).assignments, repaired.assignments);
+});
+
+test("competing growth and shrink use one revision and reject stale assignment, reset and resize commands", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  const before = await h.assign(5);
+  const shrink = h.client.createPresets({ ...h.expected(before), total: 5 });
+  const growth = h.client.createPresets({ ...h.expected(before), total: 20 });
+  const saved = await shrink;
+  await assert.rejects(growth, { code: "PRESETS_CHANGED" });
+  await assert.rejects(h.client.setPresetItem({ ...h.expected(before), variationNumber: 5, sku: "TEE-OS" }), { code: "PRESETS_CHANGED" });
+  await assert.rejects(h.reset(before), { code: "PRESETS_CHANGED" });
+  await assert.rejects(h.client.createPresets({ ...h.expected(before), total: 5 }), { code: "PRESETS_CHANGED" });
+  assert.deepEqual(await h.snapshot(), saved);
+});
+
+test("invalid edits after presets exist cannot change the saved range", async () => {
+  const h = harness({ noCapture: true });
+  await h.create(10);
+  const before = await h.assign(10);
+  const writes = h.memory.writes.length;
+  for (const total of [0, -1, 1.5, 1001, "5", null, NaN, Infinity]) {
+    await assert.rejects(h.client.createPresets({ ...h.expected(before), total }), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
+  }
+  assert.deepEqual(await h.snapshot(), before);
+  assert.equal(h.memory.writes.length, writes);
 });
 
 test("assignment rejects captured targets, unknown SKUs, outside-range targets and stale revisions", async () => {
@@ -958,12 +1099,12 @@ test("extension readiness is backward-compatible optional metadata only for an e
   ]) assert.throws(() => protocol.validateSnapshot(value), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
 });
 
-test("range extension activates only after actual live capture exceeds the total and latches once", async () => {
+test("legacy range-exceeded metadata still latches only after actual live capture and does so once", async () => {
   const h = harness();
   const initial = await h.create(100);
   await h.capture(100);
   assert.equal((await h.snapshot()).extensionAvailable, undefined);
-  await assert.rejects(h.create(200), { code: "PRESETS_ALREADY_ENABLED" });
+  assert.deepEqual(await h.create(100), initial);
   const writes = h.memory.writes.length;
   const notices = h.notices.length;
   await h.capture(101);
@@ -999,18 +1140,19 @@ test("exceeded readiness survives payment completion and worker restart without 
   assert.deepEqual(await h.snapshot(), extended);
 });
 
-test("a high historical payment backfill cannot enable extension even when it is the highest captured number", async () => {
+test("historical backfill sets the resize floor without needing legacy range-exceeded metadata", async () => {
   const h = harness();
   await h.create(100);
   await h.capture(150, "canceled");
   assert.equal(h.getState().streams[0].activeBiddingVariationNumber, 3);
   assert.equal((await h.snapshot()).extensionAvailable, undefined);
-  await assert.rejects(h.create(200), { code: "PRESETS_ALREADY_ENABLED" });
+  await assert.rejects(h.create(149), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
   await h.capture(3, "payment_complete");
   assert.equal(h.getState().streams[0].activeBiddingVariationNumber, null);
   h.restart();
   assert.equal((await h.snapshot()).extensionAvailable, undefined);
-  await assert.rejects(h.create(200), { code: "PRESETS_ALREADY_ENABLED" });
+  assert.equal((await h.create(200)).total, 200);
+  assert.equal((await h.create(150)).total, 150);
 });
 
 test("extension preserves skipped plans and real mappings without changing canonical inventory, reports, exports or queue", async () => {
@@ -1050,7 +1192,7 @@ test("skipping beyond a preset total enables extension but revalidates against t
   const ready = await h.snapshot();
   assert.equal(ready.extensionAvailable, true);
   for (const total of [1, 99, 100]) {
-    await assert.rejects(h.create(total), { code: "PRESET_TOTAL_NOT_INCREASED" });
+    await assert.rejects(h.create(total), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
   }
   await assert.rejects(h.create(124), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
   await h.capture(180, "canceled");
@@ -1058,7 +1200,7 @@ test("skipping beyond a preset total enables extension but revalidates against t
   const extended = await h.create(180);
   assert.equal(extended.total, 180);
   assert.equal(extended.extensionAvailable, undefined);
-  await assert.rejects(h.create(200), { code: "PRESETS_ALREADY_ENABLED" });
+  assert.equal((await h.create(200)).total, 200);
 });
 
 test("each extended range can be exceeded again and the preset limit never caps real capture", async () => {
@@ -1076,7 +1218,7 @@ test("each extended range can be exceeded again and the preset limit never caps 
   assert.equal((await h.snapshot()).extensionAvailable, true);
   assert.equal(h.getState().streams[0].activeBiddingVariationNumber, 1001);
   await assert.rejects(h.create(1001), { code: "INVALID_VARIATION_PRESETS_MESSAGE" });
-  await assert.rejects(h.create(1000), { code: "PRESET_TOTAL_NOT_INCREASED" });
+  await assert.rejects(h.create(1000), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
   assert.equal((await h.snapshot()).total, 1000);
 });
 

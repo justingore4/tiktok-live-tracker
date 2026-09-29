@@ -48,7 +48,7 @@ function element() {
 }
 function baselineView() {
   return {
-    streamId: "synthetic-stream", currentVariationNumber: 30, selectedVariationNumber: 30,
+    streamId: "synthetic-stream", inventoryBaselineId: "synthetic-baseline", currentVariationNumber: 30, selectedVariationNumber: 30,
     variationNumber: 30, isReviewingHistory: false, activeBiddingVariationNumber: 30,
     activeAuctionMapping: { variationNumber: 30, sku: "A", unitCostCents: 500 },
     variations: [30, 29, 1].map((variationNumber) => ({ variationNumber,
@@ -61,7 +61,7 @@ function baselineView() {
 }
 function presetSnapshot(total = 200) {
   return { streamId: "synthetic-stream", baselineId: "synthetic-baseline", revision: "r1", total,
-    assignments: total === null ? [] : [{ variationNumber: 80, sku: "A" }] };
+    assignments: total !== null && total >= 80 ? [{ variationNumber: 80, sku: "A" }] : [] };
 }
 function deferred() {
   let resolve, reject;
@@ -113,7 +113,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     captureConnectingPlanning: null, capturePlanningDisposed: false,
     CONNECTING_PLANNING_DELAY_MS: 1300, window: clock,
     document: element(),
-    variationPresetsForm: element(), variationPresetsButton: element(), variationPresetsInput: element(),
+    variationPresetsForm: element(), variationPresetsButton: element(), variationPresetsResetButton: element(), variationPresetsInput: element(),
     variationSearchForm: element(), variationSearchInput: element(),
     variationStepControls: element(), previousVariationButton: element(), nextVariationButton: element(),
     variationSelector: element(), searchInput: element(), returnToCurrentButton: element(),
@@ -136,6 +136,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     releaseInventorySizeMenu() { context.inventorySizeMenuState = null; },
     describeSelectedVariation(view) { return `Variation ${view.selectedVariationNumber}`; },
     persistentController: {
+      async refresh() { return context.savedSnapshot; },
       selectVariation(number) {
         selections.push(number);
         rawView.selectedVariationNumber = number;
@@ -150,14 +151,21 @@ function fixture({ total = null, view = baselineView() } = {}) {
     console: { error() {} },
   };
   context.variationPresetsForm.contains = (target) =>
-    [context.variationPresetsForm, context.variationPresetsButton, context.variationPresetsInput].includes(target);
+    [context.variationPresetsForm, context.variationPresetsButton, context.variationPresetsResetButton, context.variationPresetsInput].includes(target);
+  context.variationPresetsSnapshot.baselineId = rawView.inventoryBaselineId;
+  context.variationPresetsResetButton.textContent = "Reset presets";
   context.inventoryGrid.contains = (button) => button.contained !== false;
   for (const kind of ["createPresets", "setPresetItem", "resetPresets", "assignNextPresetItem"]) {
     context.variationPresetsClient[kind] = async (command) => {
       calls.push({ kind, command: clone(command) });
       const next = clone(context.variationPresetsSnapshot);
+      if (kind === "createPresets" && next.total === command.total) return next;
       next.revision = `${next.revision}-next`;
-      if (kind === "createPresets") { next.total = command.total; delete next.extensionAvailable; }
+      if (kind === "createPresets") {
+        next.total = command.total;
+        next.assignments = next.assignments.filter((entry) => entry.variationNumber <= command.total);
+        delete next.extensionAvailable;
+      }
       if (kind === "resetPresets") { next.total = null; next.assignments = []; delete next.extensionAvailable; }
       if (kind === "setPresetItem") {
         next.assignments = next.assignments.filter((entry) => entry.variationNumber !== command.variationNumber);
@@ -182,14 +190,14 @@ function fixture({ total = null, view = baselineView() } = {}) {
     "findVariationOption", "isCaptureInteractionLocked", "guardCaptureInteraction", "isCurrentVariationMapped", "getCurrentVariationMappedSku",
     "canUseVariationPresetData", "hasCapturePlanningScope", "isCapturePlanningEnabled", "isCapturePlanningLocked", "isCapturePlanningTarget", "handleCapturePlanningLoad", "syncCapturePlanningScope",
     "resetConnectingPlanningDelay", "isConnectingPlanningContextCurrent", "syncConnectingPlanningDelay", "hasConnectingPlanningScope",
-    "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "snapshotIsBackgroundRefresh", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection",
+    "canChangeVariationPresets", "updateVariationPresetsAvailability", "mutateVariationPresets", "dismissVariationPresetsEntry", "submitVariationPresets", "snapshotIsBackgroundRefresh", "resetVariationPresetsDisplay", "preserveCapturedPresetSelection", "optIntoPresetPlanning", "reconcileRemovedPresetSelection",
     "getFuturePresetContext", "isFuturePresetContextCurrent", "assignNextFuturePreset",
     "restoreResumedPresetSelection",
     "canSubmitVariationSearch", "updateVariationSearchAvailability", "submitVariationSearch", "selectVariationFromPicker", "nextVariationHasPreset",
     "canStepVariation", "getAdjacentVariationNumber", "updateVariationStepAvailability",
     "saveOrdinaryInventorySelection", "toggleNextItemQueue", "mapCurrentVariationFromHistory", "selectInventorySizeFromPicker",
   ].map(declaration).join("\n"), context);
-  vm.runInContext(["variationPresetsForm", "variationPresetsButton", "variationPresetsInput", "variationSearchForm", "returnToCurrentButton"].map(registrations).join("\n"), context);
+  vm.runInContext(["variationPresetsForm", "variationPresetsButton", "variationPresetsResetButton", "variationPresetsInput", "variationSearchForm", "returnToCurrentButton"].map(registrations).join("\n"), context);
   const outsideDismissal = source.match(/^  document\.addEventListener\("pointerdown", dismissVariationPresetsEntry, true\);$/m);
   assert.ok(outsideDismissal, "Outside dismissal runs in capture phase, including clicks whose target stops propagation");
   vm.runInContext(outsideDismissal[0], context);
@@ -326,7 +334,7 @@ test("successful initial pre-stream create immediately displays #1 and hides Ret
     assert.equal(c.getActiveView().isReviewingPreset, true);
     assert.equal(c.getActiveView().auction, null);
     assert.equal(c.returnToCurrentButton.hidden, true);
-    assert.equal(c.variationPresetsButton.textContent, "Reset presets");
+    assert.equal(c.variationPresetsResetButton.textContent, "Reset presets");
     assert.equal(c.variationPresetsButton.focused, true);
     assert.match(c.mappingAnnouncement.textContent, /Planning untracked variation #1/);
     assert.equal(c.variationNavigationGeneration, 1);
@@ -374,7 +382,7 @@ test("own successful-create notification before acknowledgement still selects #1
   const f = await emptyStreamFixture(), c = f.context, reply = deferred();
   installPresetNavigation(f);
   const { sender } = installCaptureNotifications(c);
-  const completed = { ...presetSnapshot(200), revision: "saved-initial", assignments: [] };
+  const completed = { ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "saved-initial", assignments: [] };
   c.variationPresetsClient.createPresets = () => reply.promise;
   const pending = beginInitialPresetSave(f); await settle();
   vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
@@ -404,7 +412,7 @@ test("an in-flight canonical refresh from the create notification finishes befor
     c.updateVariationPresetsAvailability();
     c.renderAll();
   });
-  const completed = { ...presetSnapshot(200), revision: "created", assignments: [] };
+  const completed = { ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "created", assignments: [] };
   c.variationPresetsClient.createPresets = () => reply.promise;
   const pending = beginInitialPresetSave(f); await settle();
   vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
@@ -477,7 +485,7 @@ test("capture during initial save prevents auto-selection even before the deboun
       c.handleCaptureStateChanged(capture, sender);
       assert.equal(c.getRecordedVariations(c.savedSnapshot.view).length, 0, "UI is still stale");
     }
-    reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+    reply.resolve({ ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "created", assignments: [] }); await pending;
     assert.equal(c.selectedPresetVariationNumber, null);
     assert.equal(c.variationPresetsSnapshot.total, 200, "The plan itself still saves");
     c.savedSnapshot = await c.persistentController.refresh(); c.renderAll();
@@ -489,7 +497,7 @@ test("capture during initial save prevents auto-selection even before the deboun
 
 test("navigation during an initial save is not replaced by #1 or a late focus change", async () => {
   const f = await emptyStreamFixture(), c = f.context, reply = deferred();
-  const completed = { ...presetSnapshot(200), revision: "created", assignments: [] };
+  const completed = { ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "created", assignments: [] };
   c.variationPresetsClient.createPresets = () => reply.promise;
   const pending = beginInitialPresetSave(f); await settle();
   // A view change after a saved-range notification must win over its delayed acknowledgement.
@@ -518,7 +526,7 @@ test("failed, canceled and stale initial creates never auto-select or reopen a d
         c.variationPresetsReadGeneration++;
         c.variationPresetsEntryContext = null;
       }
-      reply.resolve({ ...presetSnapshot(200), revision: "old-create", assignments: [] });
+      reply.resolve({ ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "old-create", assignments: [] });
     }
     await pending;
     assert.equal(c.selectedPresetVariationNumber, null, outcome);
@@ -565,7 +573,7 @@ test("unrelated and untrusted notifications cannot suppress initial auto-selecti
   c.handleCaptureStateChanged(c.nextItemQueueProtocol.createQueueChangedNotification(), sender);
   c.handleCaptureStateChanged(c.liveBidProtocol.createLiveBidChangedNotification(), sender);
   assert.equal(c.captureStateNotificationGeneration, 0);
-  reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+  reply.resolve({ ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "created", assignments: [] }); await pending;
   assert.equal(c.selectedPresetVariationNumber, 1);
 });
 
@@ -580,7 +588,7 @@ test("initial save acknowledgement does not bypass newly active loading, error o
     c.variationPresetsClient.createPresets = () => reply.promise;
     const pending = beginInitialPresetSave(f); await settle();
     lock(c);
-    reply.resolve({ ...presetSnapshot(200), revision: "created", assignments: [] }); await pending;
+    reply.resolve({ ...presetSnapshot(200), baselineId: f.rawView.inventoryBaselineId, revision: "created", assignments: [] }); await pending;
     assert.equal(c.selectedPresetVariationNumber, null);
     assert.equal(c.variationPresetsSnapshot.total, 200);
     assert.equal(c.canChangeVariationPresets(), false);
@@ -1558,10 +1566,10 @@ test("existing Reset presets can opt into startup planning without bypassing res
   const f = await emptyStreamFixture({ total: 200 }), c = f.context, reply = deferred();
   installPlanningRuntime(f, "connecting");
   c.variationPresetsClient.resetPresets = () => reply.promise;
-  const pending = c.variationPresetsButton.dispatch("click");
+  const pending = c.variationPresetsResetButton.dispatch("click");
   assert.ok(c.capturePlanningOverride);
   assert.equal(c.variationPresetsSnapshot.total, 200);
-  assert.equal(c.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(c.variationPresetsResetButton.textContent, "Reset presets");
   assert.equal(c.variationPresetsButton.disabled, true);
   assert.equal(c.trackerWorkspace.hasAttribute("data-capture-planning"), true);
   reply.resolve({ ...presetSnapshot(null), revision: "reset" }); await pending;
@@ -1786,7 +1794,7 @@ test("new-document changes suppress delayed create, sequential, and reset naviga
     };
     let pending;
     if (action === "create") pending = beginInitialPresetSave(f, 200);
-    else if (action === "reset") pending = c.variationPresetsButton.dispatch("click");
+    else if (action === "reset") pending = c.variationPresetsResetButton.dispatch("click");
     else await c.inventoryGrid.dispatch("click", { target: inventoryCard(f) });
     await settle();
     assert.equal(c.variationPresetsBusy, true);
@@ -1928,7 +1936,7 @@ test("zero-capture planning supports total entry, exact lookup, right-click chan
   await f.context.variationPresetsButton.dispatch("click");
   f.context.variationPresetsInput.value = "200";
   await f.context.variationPresetsForm.dispatch("submit");
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   const waiting = f.context.getActiveView();
   assert.equal(waiting.variations.length, 200);
   assert.equal(waiting.variations.some((entry) => entry.recorded || entry.current), false);
@@ -1968,7 +1976,7 @@ test("zero-capture future size picker requires an exact SKU and does not invent 
   await f.context.returnToCurrentButton.dispatch("click");
   assert.match(f.context.mappingAnnouncement.textContent, /latest live item is not available yet/);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 1);
-  await f.context.variationPresetsButton.dispatch("click");
+  await f.context.variationPresetsResetButton.dispatch("click");
   assert.equal(f.context.variationPresetsSnapshot.total, null);
   assert.equal(f.context.selectedPresetVariationNumber, null);
   assert.equal(f.context.getActiveView().variations.some((entry) => entry.recorded), false);
@@ -2061,18 +2069,20 @@ test("preset bubble and editor occupy only the existing third startup-row slot w
   assert.doesNotMatch(fs.readFileSync(path.join(tagger, "..", "report", "report.html"), "utf8"), /variation-presets/);
 });
 
-test("narrow preset controls retain complete labels in the existing track without changing other controls or row height", () => {
-  const rule = css.match(/@media \(max-width: 320px\)\s*\{\s*\/\*[\s\S]*?\*\/\s*(#variation-presets-button,\s*#variation-presets-input)\s*\{([^}]+)\}\s*\}/);
-  assert.ok(rule, "Only the new preset bubble/editor need a narrower treatment");
+test("narrow split preset controls retain full labels and wrap together below the existing controls", () => {
+  const rule = css.match(/@media \(max-width: 320px\)\s*\{\s*\/\*[\s\S]*?\*\/\s*(#variation-presets-button,\s*#variation-presets-reset-button,\s*#variation-presets-input)\s*\{([^}]+)\}\s*\}/);
+  assert.ok(rule, "Both preset buttons and the editor retain the narrow label treatment");
   assert.match(rule[2], /padding:\s*0 1px;/);
   assert.match(rule[2], /font-size:\s*9px;/);
   assert.doesNotMatch(rule[2], /height|width|margin|grid|overflow|text-overflow/);
   assert.match(css, /#variation-presets-button\s*\{[^}]*white-space:\s*nowrap;/);
   assert.match(css, /#variation-presets-input\s*\{[^}]*height:\s*20px;/);
   assert.doesNotMatch(rule[1], /variation-search|capture-health/);
+  assert.match(css, /\.variation-presets-form\[data-has-presets\]\s*\{[^}]*width: 178px;[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(css, /@media \(max-width: 560px\)[\s\S]*?\.variation-presets-form\[data-has-presets\]\s*\{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;/);
 });
 
-test("click opens editor, Escape cancels, Enter saves total and replaces control with Reset without switching live", async () => {
+test("click opens editor, Escape cancels, Enter saves total and exposes a separate Reset without switching live", async () => {
   const f = fixture();
   await f.context.variationPresetsButton.dispatch("click");
   assert.equal(f.context.variationPresetsInput.hidden, false);
@@ -2087,7 +2097,7 @@ test("click opens editor, Escape cancels, Enter saves total and replaces control
   assert.equal(f.calls[0].command.total, 200);
   assert.equal(f.calls[0].command.expectedBaselineId, "synthetic-baseline");
   assert.equal(f.calls[0].command.expectedRevision, "r1");
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   assert.equal(f.context.getActiveView().variations.length, 200);
   assert.deepEqual(f.selections, []);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 30);
@@ -2156,7 +2166,7 @@ test("outside dismissal clears invalid draft feedback and reopening still suppor
   await c.variationPresetsForm.dispatch("submit");
   assert.equal(calls.length, 1);
   assert.equal(c.variationPresetsSnapshot.total, 200);
-  assert.equal(c.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(c.variationPresetsResetButton.textContent, "Reset presets");
 });
 
 test("outside interaction does not invalidate a pending preset save or discard a failed save's draft", async () => {
@@ -2232,16 +2242,18 @@ test("invalid totals and totals below the highest captured variation are rejecte
   }
 });
 
-test("valid upper bound and leading-zero whole totals work; an enabled total cannot be edited", async () => {
+test("valid upper bound and leading-zero whole totals work and the existing total can be edited", async () => {
   const f = fixture();
   await f.context.variationPresetsButton.dispatch("click");
   f.context.variationPresetsInput.value = " 01000 ";
   await f.context.variationPresetsForm.dispatch("submit");
   assert.equal(f.context.variationPresetsSnapshot.total, 1000);
-  f.context.variationPresetsEditing = true;
+  await f.context.variationPresetsButton.dispatch("click");
+  assert.equal(f.context.variationPresetsInput.value, "1000");
   f.context.variationPresetsInput.value = "900";
   await f.context.variationPresetsForm.dispatch("submit");
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.context.variationPresetsSnapshot.total, 900);
 });
 
 test("future selection and Var # lookup never call the captured controller and incoming updates preserve the draft and selection", async () => {
@@ -2291,7 +2303,7 @@ test("reset from live, history or future deletes only the display plan after ack
     const f = fixture({ total: 200 });
     f.context.selectVariationFromPicker(selected);
     const before = clone(f.rawView.variations);
-    await f.context.variationPresetsButton.dispatch("click");
+    await f.context.variationPresetsResetButton.dispatch("click");
     assert.equal(f.calls.at(-1).kind, "resetPresets");
     assert.equal(f.context.variationPresetsSnapshot.total, null);
     assert.equal(f.context.variationPresetsButton.textContent, "Preset items");
@@ -2305,10 +2317,10 @@ test("failed reset preserves presets, the future view and Reset control", async 
   const f = fixture({ total: 200 });
   f.context.selectVariationFromPicker(80);
   f.context.variationPresetsClient.resetPresets = async () => { throw new Error("Synthetic storage failure"); };
-  await f.context.variationPresetsButton.dispatch("click");
+  await f.context.variationPresetsResetButton.dispatch("click");
   assert.equal(f.context.variationPresetsSnapshot.total, 200);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 80);
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   assert.match(f.context.mappingAnnouncement.textContent, /Synthetic storage failure/);
 });
 
@@ -2399,7 +2411,9 @@ test("queue, save, session, End, import and error guards disable preset entry in
     block(f);
     f.context.updateVariationPresetsAvailability();
     assert.equal(f.context.variationPresetsButton.disabled, true);
+    assert.equal(f.context.variationPresetsResetButton.disabled, true);
     await f.context.variationPresetsButton.dispatch("click");
+    await f.context.variationPresetsResetButton.dispatch("click");
     await f.context.mutateVariationPresets("resetPresets");
     assert.equal(f.calls.length, 0);
   }
@@ -3007,12 +3021,12 @@ test("same-configuration late pre-latch snapshots cannot undo extension availabi
   }
 });
 
-test("live 100 retains Reset; live 101 permits extending to 200 without selection, assignment, or canonical changes", async () => {
+test("live 100 and live 101 retain separate edit/reset controls and growth preserves selection and assignments", async () => {
   const f = fixture({ total: 100 });
   f.context.selectVariationFromPicker(80);
   f.context.variationSearchInput.value = "80";
   advanceLive(f, 100);
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   advanceLive(f, 101);
   assert.equal(f.context.variationPresetsButton.textContent, "Preset items");
   const before = JSON.stringify(f.rawView);
@@ -3022,7 +3036,7 @@ test("live 100 retains Reset; live 101 permits extending to 200 without selectio
   await f.context.variationPresetsForm.dispatch("submit");
   assert.equal(f.calls[0].kind, "createPresets");
   assert.equal(f.calls[0].command.total, 200);
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   assert.equal(f.context.getActiveView().variations.length, 200);
   assert.equal(new Set(f.context.getActiveView().variations.map((entry) => entry.variationNumber)).size, 200);
   assert.deepEqual(clone(f.context.variationPresetsSnapshot.assignments), assignments);
@@ -3034,14 +3048,14 @@ test("live 100 retains Reset; live 101 permits extending to 200 without selectio
   assert.equal(f.context.variationPresetsButton.textContent, "Preset items");
 });
 
-test("reopened exhausted snapshots retain Preset items after live bidding clears, while browsing and backfill alone do not enable it", async () => {
+test("reopened snapshots retain both controls regardless of historical or exhausted range metadata", async () => {
   const f = fixture({ total: 100 });
   f.context.selectVariationFromPicker(100);
   f.rawView.currentVariationNumber = 150;
   f.rawView.variations.push({ variationNumber: 150, recorded: true });
   f.rawView.activeBiddingVariationNumber = null;
   f.context.updateVariationPresetsAvailability();
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   f.context.variationPresetsSnapshot.extensionAvailable = true;
   f.context.updateVariationPresetsAvailability();
   assert.equal(f.context.variationPresetsButton.textContent, "Preset items");
@@ -3083,7 +3097,7 @@ test("ordinary preset reads and same-revision latching keep extension input text
   assert.equal(f.context.variationPresetsInput.value, "0200");
   await f.context.variationPresetsForm.dispatch("submit");
   assert.equal(f.calls[0].command.total, 200);
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
 });
 
 test("same-range promotion or reset/recreate revision changes preserve typed text but require a new explicit editor before submission", async () => {
@@ -3248,7 +3262,7 @@ test("a stale reset acknowledgement cannot discard a newer extension editor or r
   f.context.selectVariationFromPicker(80);
   f.context.variationSearchInput.value = "80";
   f.context.variationPresetsClient.resetPresets = () => reply.promise;
-  const pending = f.context.variationPresetsButton.dispatch("click");
+  const pending = f.context.variationPresetsResetButton.dispatch("click");
   const newer = { ...presetSnapshot(200), revision: "new-configuration", extensionAvailable: true };
   f.context.variationPresetsReadGeneration++;
   f.context.variationPresetsSnapshot = newer;
@@ -3281,7 +3295,172 @@ test("a successful extension notification arriving before its acknowledgement st
   f.context.scheduleVariationPresetsRefresh(); await settle();
   assert.equal(f.context.variationPresetsEditing, false);
   reply.resolve(completed); await pending;
-  assert.equal(f.context.variationPresetsButton.textContent, "Reset presets");
+  assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   assert.equal(f.context.variationPresetsButton.focused, true);
   assert.match(f.context.mappingAnnouncement.textContent, /Preset variations.*200 are ready/);
+});
+
+test("the edit and reset controls remain separate and editing prefills the saved total", async () => {
+  const f = fixture({ total: 200 }), c = f.context;
+  assert.equal(c.variationPresetsButton.textContent, "Preset items");
+  assert.equal(c.variationPresetsResetButton.hidden, false);
+  await c.variationPresetsButton.dispatch("click");
+  assert.equal(c.variationPresetsInput.value, "200");
+  assert.equal(c.variationPresetsEditing, true);
+  assert.equal(c.variationPresetsResetButton.hidden, false);
+  c.variationPresetsInput.value = "250";
+  await c.variationPresetsInput.dispatch("keydown", { key: "Escape" });
+  assert.equal(c.variationPresetsSnapshot.total, 200);
+  assert.equal(c.variationPresetsEditing, false);
+  assert.equal(f.calls.length, 0);
+  await c.variationPresetsResetButton.dispatch("click");
+  assert.equal(f.calls[0].kind, "resetPresets");
+  assert.equal(c.variationPresetsSnapshot.total, null);
+  assert.equal(c.variationPresetsResetButton.hidden, true);
+  assert.equal(c.variationPresetsButton.textContent, "Preset items");
+});
+
+test("growing, shrinking, and regrowing a plan preserve retained assignments without resurrecting removed ones", async () => {
+  const f = await emptyStreamFixture({ total: 10 }), c = f.context;
+  c.variationPresetsSnapshot.assignments = [{ variationNumber: 3, sku: "A" }, { variationNumber: 9, sku: "A" }];
+  c.selectedPresetVariationNumber = 3;
+  const before = JSON.stringify(f.state);
+  await beginInitialPresetSave(f, 20);
+  assert.equal(c.selectedPresetVariationNumber, 3, "Growth does not jump back to #1");
+  assert.deepEqual(clone(c.variationPresetsSnapshot.assignments), [{ variationNumber: 3, sku: "A" }, { variationNumber: 9, sku: "A" }]);
+  await beginInitialPresetSave(f, 5);
+  assert.equal(c.selectedPresetVariationNumber, 3);
+  assert.deepEqual(clone(c.variationPresetsSnapshot.assignments), [{ variationNumber: 3, sku: "A" }]);
+  await beginInitialPresetSave(f, 20);
+  assert.equal(c.getActiveView().variations.find(row => row.variationNumber === 9).sku, null);
+  assert.equal(c.selectedPresetVariationNumber, 3);
+  assert.equal(JSON.stringify(f.state), before, "Range edits do not change inventory, accounting, or canonical capture");
+  assert.ok(f.calls.every(call => call.kind === "createPresets"));
+});
+
+test("saving the same total is a no-op for revision, mappings, and selected view", async () => {
+  const f = fixture({ total: 200 }), c = f.context;
+  c.selectedPresetVariationNumber = 80;
+  const before = JSON.stringify(c.variationPresetsSnapshot), baseline = JSON.stringify(f.rawView);
+  await beginInitialPresetSave(f, 200);
+  assert.equal(JSON.stringify(c.variationPresetsSnapshot), before);
+  assert.equal(JSON.stringify(f.rawView), baseline);
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.deepEqual(f.selections, []);
+  assert.equal(c.variationPresetsEditing, false);
+  assert.equal(c.variationPresetsButton.focused, true);
+});
+
+test("editable totals reject a range below captured history but allow its exact highest variation", async () => {
+  const f = fixture({ total: 200 }), c = f.context;
+  await beginInitialPresetSave(f, 29);
+  assert.equal(f.calls.length, 0);
+  assert.match(c.variationPresetsInput.validationMessage, /at least 30/);
+  assert.equal(c.variationPresetsSnapshot.total, 200);
+  c.variationPresetsInput.value = "30";
+  await c.variationPresetsForm.dispatch("submit");
+  assert.equal(c.variationPresetsSnapshot.total, 30);
+  assert.equal(f.calls.length, 1);
+  assert.equal(c.getActiveView().currentVariationNumber, 30);
+  assert.deepEqual(f.selections, []);
+});
+
+test("shrinking away an offline selected placeholder chooses the last remaining preset and restores button focus", async () => {
+  const f = await emptyStreamFixture({ total: 10 }), c = f.context;
+  c.selectedPresetVariationNumber = 10;
+  const before = JSON.stringify(f.state);
+  await beginInitialPresetSave(f, 5);
+  assert.equal(c.selectedPresetVariationNumber, 5);
+  assert.equal(c.getActiveView().selectedVariationNumber, 5);
+  assert.equal(c.variationPresetsButton.focused, true);
+  assert.equal(JSON.stringify(f.state), before);
+});
+
+test("shrinking away a future view after capture returns to actual live, but leaves retained history and presets alone", async () => {
+  for (const selected of [80, 40, 29]) {
+    const f = fixture({ total: 200 }), c = f.context;
+    if (selected === 29) c.persistentController.selectVariation(29);
+    else c.selectedPresetVariationNumber = selected;
+    f.selections.length = 0;
+    await beginInitialPresetSave(f, 50);
+    assert.equal(c.getActiveView().selectedVariationNumber, selected === 80 ? 30 : selected);
+    assert.deepEqual(f.selections, selected === 80 ? [30] : []);
+    assert.equal(c.variationPresetsButton.focused, true);
+  }
+});
+
+test("shrinking an empty preset overlaid by a manual queue preserves its read-only preview and queue identity", async () => {
+  const f = fixture({ total: 100 }), c = f.context;
+  c.queuedNextItemSnapshot = { streamId: f.rawView.streamId, baselineId: f.rawView.inventoryBaselineId,
+    queuedSku: "A", queueToken: "same-queue-token", armedAfterVariationNumber: 30 };
+  c.selectedPresetVariationNumber = 31;
+  const before = JSON.stringify(c.queuedNextItemSnapshot), baseline = JSON.stringify(f.rawView);
+  assert.equal(c.getActiveView().isReviewingQueuePreview, true);
+  await beginInitialPresetSave(f, 30);
+  assert.equal(c.selectedPresetVariationNumber, null);
+  assert.equal(c.selectedQueuedVariationNumber, 31);
+  assert.equal(c.getActiveView().selectedVariationNumber, 31);
+  assert.equal(c.getActiveView().isReviewingQueuePreview, true);
+  assert.equal(JSON.stringify(c.queuedNextItemSnapshot), before);
+  assert.equal(JSON.stringify(f.rawView), baseline);
+  assert.deepEqual(f.selections, []);
+  assert.deepEqual(f.calls.map(call => call.kind), ["createPresets"]);
+});
+
+test("failed resize preserves all saved assignments and selected view with the user's draft available", async () => {
+  const f = fixture({ total: 200 }), c = f.context;
+  c.selectedPresetVariationNumber = 80;
+  const before = JSON.stringify(c.variationPresetsSnapshot);
+  c.variationPresetsClient.createPresets = async () => { throw new Error("Synthetic save failed"); };
+  await beginInitialPresetSave(f, 50);
+  assert.equal(JSON.stringify(c.variationPresetsSnapshot), before);
+  assert.equal(c.selectedPresetVariationNumber, 80);
+  assert.equal(c.variationPresetsInput.value, "50");
+  assert.equal(c.variationPresetsEditing, true);
+  assert.match(c.mappingAnnouncement.textContent, /Synthetic save failed/);
+  assert.equal(c.variationPresetsButton.focused, undefined);
+});
+
+for (const race of ["navigation", "capture", "end", "error", "baseline", "planning cycle"]) {
+  test(`removed offline selection verification cannot steal selection or focus after ${race} changes`, async () => {
+    const f = await emptyStreamFixture({ total: 10 }), c = f.context, reply = deferred();
+    c.selectedPresetVariationNumber = 10;
+    c.persistentController = { ...c.persistentController, refresh: () => reply.promise };
+    const original = c.savedSnapshot;
+    const pending = beginInitialPresetSave(f, 5);
+    await settle();
+    assert.equal(c.selectedPresetVariationNumber, null);
+    if (race === "navigation") { c.variationNavigationGeneration++; c.selectedPresetVariationNumber = 2; }
+    if (race === "capture") {
+      c.captureStateNotificationGeneration++;
+      c.savedSnapshot = { ...original, view: { ...original.view, currentVariationNumber: 2,
+        selectedVariationNumber: 2, variations: [{ variationNumber: 2, recorded: true }] } };
+    }
+    if (race === "end") c.streamSnapshot.resumed = false;
+    if (race === "error") c.savedSnapshot = { ...original, phase: "error" };
+    if (race === "baseline") c.savedSnapshot = { ...original, view: { ...original.view, inventoryBaselineId: "different-baseline" } };
+    if (race === "planning cycle") c.capturePlanningCycleGeneration++;
+    reply.resolve(original);
+    await pending;
+    assert.equal(c.selectedPresetVariationNumber, race === "navigation" ? 2 : null);
+    assert.equal(c.variationPresetsButton.focused, undefined);
+    assert.deepEqual(f.selections, []);
+  });
+}
+
+test("an authoritative shrink arriving during a canonical refresh falls back after that refresh finishes", async () => {
+  const f = await emptyStreamFixture({ total: 10 }), c = f.context;
+  installSavedRenderer(f);
+  c.selectedPresetVariationNumber = 10;
+  const updated = { ...clone(c.variationPresetsSnapshot), total: 5, revision: "external-shrink" };
+  c.variationPresetsClient.getPresets = async () => updated;
+  const ready = c.savedSnapshot;
+  c.savedSnapshot = { ...ready, phase: "loading", busy: true, operation: "refresh" };
+  c.scheduleVariationPresetsRefresh(); await settle();
+  assert.equal(c.selectedPresetVariationNumber, 10, "Wait for the canonical view before choosing a fallback");
+  c.renderSavedSnapshot({ ...ready, operation: "refresh" });
+  await settle(); await settle();
+  assert.equal(c.selectedPresetVariationNumber, 5);
+  assert.equal(c.getActiveView().selectedVariationNumber, 5);
+  assert.equal(c.variationPresetsButton.focused, undefined, "External updates do not take focus");
 });

@@ -186,16 +186,19 @@
       checkExpected(command, context);
       const { snapshot, stream, baseline } = context;
       if (command.type === protocol.COMMAND_TYPES.CREATE_PRESETS) {
-        if (snapshot.total !== null && snapshot.extensionAvailable !== true) {
-          fail("PRESETS_ALREADY_ENABLED", "Reset presets before choosing another total.");
-        }
-        if (snapshot.total !== null && command.total <= snapshot.total) {
-          fail("PRESET_TOTAL_NOT_INCREASED", "Enter a larger preset total to extend this range.");
-        }
         const highest = stream.variations.reduce((value, entry) => Math.max(value, entry.variationNumber), 0);
         if (command.total < highest) fail("PRESET_TOTAL_BELOW_CAPTURED", `The total cannot be lower than captured variation #${highest}.`);
+        // The total is an absolute range, not an increment. Check the current
+        // capture floor before even an unchanged-total acknowledgement, and
+        // preserve the revision on a genuine no-op.
+        if (command.total === snapshot.total) return clone(snapshot);
         const { extensionAvailable: _extensionAvailable, ...configuration } = snapshot;
-        return save({ ...configuration, revision: revision(), total: command.total, assignments: snapshot.assignments });
+        return save({
+          ...configuration,
+          revision: revision(),
+          total: command.total,
+          assignments: snapshot.assignments.filter((entry) => entry.variationNumber <= command.total),
+        });
       }
       if (snapshot.total === null) fail("NO_PRESETS", "There is no active preset configuration to change.");
       if (command.type === protocol.COMMAND_TYPES.RESET_PRESETS) {

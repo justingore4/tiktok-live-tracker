@@ -90,6 +90,7 @@ function fixture() {
     scheduleVariationPresetsRefresh() { refreshes.push("presets"); },
     scheduleCaptureRefresh() { refreshes.push("capture"); },
     updateVariationPresetsAvailability() {},
+    reconcileRemovedPresetSelection() {},
     updateVariationSearchAvailability() {},
     setWorkspaceBusy() {},
     isCapturePlanningLocked: () => context.isCaptureInteractionLocked(),
@@ -585,6 +586,53 @@ test("an empty immediate-next preset does not show a later assigned item", () =>
   f.context.queuedNextItemToken = "manual-token";
   f.context.renderQueuedItemBadge(f.context.getActiveView());
   assert.equal(f.context.queuedItemLabel.textContent, "Other item tee-L", "Normal manual queue still renders");
+});
+
+test("resizing retains an in-range upcoming preset, removes truncated indicators, and never resurrects its assignment", async () => {
+  for (const offline of [false, true]) {
+    const f = offline ? prestreamFixture({ selected: 10, assignments: [{ variationNumber: 11, sku: "SYNTHETIC-A" }] }) : presetFixture();
+    const c = f.context;
+    c.restoreResumedPresetSelection = () => false;
+    c.captureConnectingPlanning = null;
+    let next = { ...clone(c.variationPresetsSnapshot), total: 30, revision: "grown" };
+    c.variationPresetsClient.getPresets = async () => next;
+    vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+    const before = JSON.stringify(f.view);
+    c.searchInput.value = "no matching cards";
+    c.scheduleVariationPresetsRefresh(); await settle();
+    assert.equal(c.queuedItemSlot.hidden, false);
+    assert.equal(c.queuedItemLabel.textContent, "LA hoodie-M");
+    assert.equal(c.clearQueuedItemButton.dataset.revision, "grown");
+    next = { ...next, total: 10, revision: "shrunk", assignments: [] };
+    c.scheduleVariationPresetsRefresh(); await settle();
+    assert.equal(c.queuedItemSlot.hidden, true);
+    assert.equal(c.clearQueuedItemButton.disabled, true);
+    await f.clear();
+    assert.deepEqual(f.presetRequests, []);
+    next = { ...next, total: 30, revision: "regrown" };
+    c.scheduleVariationPresetsRefresh(); await settle();
+    assert.equal(c.queuedItemSlot.hidden, true);
+    assert.equal(c.queuedNextItemSku, null);
+    assert.equal(JSON.stringify(f.view), before);
+    assert.deepEqual(f.requests, []);
+  }
+});
+
+test("shrinking empty presets leaves the ordinary manual queue header and its clear token intact", async () => {
+  const f = presetFixture({ assignments: [] }), c = f.context;
+  c.queuedNextItemSku = "SYNTHETIC-B";
+  c.queuedNextItemToken = "unchanged-manual-token";
+  c.restoreResumedPresetSelection = () => false;
+  c.captureConnectingPlanning = null;
+  c.variationPresetsClient.getPresets = async () => ({ ...clone(c.variationPresetsSnapshot), total: 10, revision: "shrunk" });
+  vm.runInContext(declaration("scheduleVariationPresetsRefresh"), c);
+  c.scheduleVariationPresetsRefresh(); await settle();
+  assert.equal(c.queuedItemSlot.hidden, false);
+  assert.equal(c.queuedItemLabel.textContent, "Other item tee-L");
+  assert.equal(c.clearQueuedItemButton.disabled, false);
+  assert.equal(c.queuedNextItemToken, "unchanged-manual-token");
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.presetRequests, []);
 });
 
 test("preset indicators advance only with actual bidding, disappear outside live view, and restore on return or reopening", () => {

@@ -81,6 +81,7 @@
   const nextVariationButton = document.querySelector("#next-variation");
   const variationPresetsForm = document.querySelector("#variation-presets-form");
   const variationPresetsButton = document.querySelector("#variation-presets-button");
+  const variationPresetsResetButton = document.querySelector("#variation-presets-reset-button");
   const variationPresetsInput = document.querySelector("#variation-presets-input");
   const captureHealthView = globalThis.TikTokLiveTrackerCaptureHealthView;
   const captureHealthController = captureHealthView.createCaptureHealthViewController({
@@ -1414,12 +1415,14 @@
       isCaptureInteractionLocked() && canUseVariationPresetData();
     variationPresetsForm.toggleAttribute("inert", disabled && !canOptIn);
     variationPresetsButton.disabled = disabled && !canOptIn;
+    variationPresetsResetButton.disabled = disabled && !canOptIn;
     variationPresetsInput.disabled = disabled;
     variationPresetsButton.hidden = variationPresetsEditing;
     variationPresetsInput.hidden = !variationPresetsEditing;
-    variationPresetsButton.textContent = variationPresetsSnapshot?.total != null &&
-      !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot)
-      ? "Reset presets" : "Preset items";
+    const hasPresets = variationPresetsSnapshot?.total != null;
+    variationPresetsButton.textContent = "Preset items";
+    variationPresetsResetButton.hidden = !hasPresets;
+    variationPresetsForm.toggleAttribute("data-has-presets", hasPresets);
     updateVariationStepAvailability();
   }
 
@@ -1464,6 +1467,7 @@
         variationPresetsEntryContext = null;
       }
       restoreResumedPresetSelection();
+      reconcileRemovedPresetSelection();
       // Presets may finish loading after the blue-only planning delay elapsed.
       if (captureConnectingPlanning?.elapsed && !captureConnectingPlanning.activated) {
         setWorkspaceBusy(savedSnapshot?.busy === true);
@@ -1607,6 +1611,12 @@
       const snapshot = variationPresetsView.preserveExtensionAvailability(
         sequential ? response.presets : response, variationPresetsSnapshot);
       if (generation !== variationPresetsGeneration || expected.expectedStreamId !== mountedStreamId) return false;
+      if (kind === "createPresets" && (snapshot.baselineId !== expected.expectedBaselineId ||
+          variationPresetsSnapshot?.baselineId !== expected.expectedBaselineId ||
+          savedSnapshot?.view?.inventoryBaselineId !== expected.expectedBaselineId)) {
+        scheduleVariationPresetsRefresh();
+        return false;
+      }
       if ((values.expectedActiveBiddingVariationNumber !== undefined || prestreamClear) &&
           (savedSnapshot?.view?.inventoryBaselineId !== expected.expectedBaselineId ||
             variationPresetsSnapshot?.baselineId !== expected.expectedBaselineId ||
@@ -1723,9 +1733,7 @@
   async function submitVariationPresets(event) {
     event.preventDefault();
     if (guardCaptureInteraction(event) || !canChangeVariationPresets() ||
-        !variationPresetsEditing || !variationPresetsEntryContext ||
-        (variationPresetsSnapshot.total !== null &&
-          !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot))) return;
+        !variationPresetsEditing || !variationPresetsEntryContext) return;
     const query = variationPresetsInput.value.trim();
     const total = Number(query);
     const highest = Math.max(0, ...getRecordedVariations(savedSnapshot.view).map((entry) => entry.variationNumber));
@@ -1740,9 +1748,7 @@
       : !/^\d+$/.test(query) || !Number.isSafeInteger(total) || total < 1 ||
       total > variationPresetsProtocol.MAX_PRESET_VARIATIONS
       ? `Enter a whole number from 1 to ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}.`
-      : total < highest ? `Enter at least ${highest}, the highest captured variation.`
-      : variationPresetsSnapshot.total !== null && total <= variationPresetsSnapshot.total
-      ? `Enter a total greater than ${variationPresetsSnapshot.total}.` : "";
+      : total < highest ? `Enter at least ${highest}, the highest captured variation.` : "";
     variationPresetsInput.setCustomValidity(message);
     if (message) {
       variationPresetsInput.setAttribute("aria-invalid", "true");
@@ -1765,6 +1771,12 @@
       created.revision === variationPresetsSnapshot?.revision &&
       created.total === variationPresetsSnapshot?.total;
     if (!isCurrentCreate()) return;
+
+    if (entryContext.total !== null) {
+      await reconcileRemovedPresetSelection({ focusControl: true });
+      if (!isCurrentCreate() || captureGeneration !== captureStateNotificationGeneration ||
+          !canChangeVariationPresets() || savedSnapshot?.view?.inventoryBaselineId !== entryContext.baselineId) return;
+    }
 
     let confirmedBeforeCapture = false;
     if (creatingBeforeCapture && captureGeneration === captureStateNotificationGeneration &&
@@ -1796,6 +1808,69 @@
         `Preset variations #1–#${created.total} are ready. Planning untracked variation #1. No inventory has been reserved.`;
     }
     variationPresetsButton.focus();
+  }
+
+  async function reconcileRemovedPresetSelection({ focusControl = false } = {}) {
+    const number = selectedPresetVariationNumber;
+    const presets = variationPresetsSnapshot;
+    const view = savedSnapshot?.view;
+    if (number === null || presets?.total == null || number <= presets.total ||
+        variationPresetsBusy || savedSnapshot?.phase !== "ready" || savedSnapshot.busy ||
+        !streamSnapshot.resumed || !persistentController || view?.streamId !== mountedStreamId ||
+        presets.streamId !== mountedStreamId || presets.baselineId !== view.inventoryBaselineId ||
+        view.variations.some((entry) => entry.recorded && entry.variationNumber === number)) return false;
+
+    if (findVariationOption(getActiveView(), number)?.queuedPreview) {
+      // A manual queue may validly keep its temporary preview outside the new
+      // preset range. Preserve that view without treating it as a saved plan.
+      selectedPresetVariationNumber = null;
+      selectedQueuedVariationNumber = number;
+      return false;
+    }
+
+    // Forget the removed placeholder immediately: a later growth must not revive
+    // either its assignment or a stale selection. Verify offline state before
+    // choosing a replacement, as capture may be ahead of the panel's last read.
+    selectedPresetVariationNumber = null;
+    const controller = persistentController;
+    const navigationGeneration = variationNavigationGeneration;
+    const planningCycle = capturePlanningCycleGeneration;
+    const captureGeneration = captureStateNotificationGeneration;
+    let snapshot = savedSnapshot;
+    if (!getRecordedVariations(view).length) {
+      try {
+        snapshot = await controller.refresh();
+      } catch (error) {
+        console.error("[TikTok Live Tracker] Resized preset view could not be verified.", error);
+        renderAll();
+        return false;
+      }
+    }
+    if (controller !== persistentController || planningCycle !== capturePlanningCycleGeneration ||
+        captureGeneration !== captureStateNotificationGeneration ||
+        navigationGeneration !== variationNavigationGeneration || selectedPresetVariationNumber !== null ||
+        selectedQueuedVariationNumber !== null || !streamSnapshot.resumed ||
+        !canChangeVariationPresets() || savedSnapshot?.phase !== "ready" || savedSnapshot.busy ||
+        savedSnapshot.view?.inventoryBaselineId !== presets.baselineId ||
+        snapshot?.phase !== "ready" || snapshot.busy || snapshot.view?.streamId !== mountedStreamId ||
+        snapshot.view.inventoryBaselineId !== presets.baselineId ||
+        presets.streamId !== variationPresetsSnapshot?.streamId ||
+        presets.baselineId !== variationPresetsSnapshot?.baselineId ||
+        presets.revision !== variationPresetsSnapshot?.revision ||
+        presets.total !== variationPresetsSnapshot?.total) return false;
+    const recorded = getRecordedVariations(snapshot.view);
+    if (recorded.length) {
+      const current = recorded.find((entry) => entry.variationNumber === snapshot.view.currentVariationNumber);
+      if (!current) return false;
+      variationNavigationGeneration += 1;
+      controller.selectVariation(current.variationNumber);
+    } else {
+      selectedPresetVariationNumber = presets.total;
+      variationNavigationGeneration += 1;
+    }
+    renderAll();
+    if (focusControl) variationPresetsButton.focus();
+    return true;
   }
 
   function createEmptySavedSnapshot() {
@@ -2166,7 +2241,8 @@
   function isCapturePlanningTarget(target, { allowBackgroundRefresh = false } = {}) {
     if (!target) return false;
     if (captureHealthBadge.dataset.phase === "connecting" &&
-        !variationPresetsEditing && variationPresetsButton.contains(target) &&
+        !variationPresetsEditing && (variationPresetsButton.contains(target) ||
+          (!variationPresetsResetButton.hidden && variationPresetsResetButton.contains(target))) &&
         canUseVariationPresetData()) return true;
     if (!isCapturePlanningEnabled({ allowBackgroundRefresh })) return false;
     if ([variationPresetsForm, variationSearchForm, variationStepControls,
@@ -5828,7 +5904,7 @@
 
   document.addEventListener("pointerdown", dismissVariationPresetsEntry, true);
   variationPresetsForm.addEventListener("submit", submitVariationPresets);
-  variationPresetsButton.addEventListener("click", async (event) => {
+  function optIntoPresetPlanning() {
     if (captureHealthBadge.dataset.phase === "connecting" &&
         isCaptureInteractionLocked() && !variationPresetsEditing && canUseVariationPresetData()) {
       capturePlanningOverride = {
@@ -5837,21 +5913,17 @@
       };
       setWorkspaceBusy(savedSnapshot?.busy === true);
     }
+  }
+  variationPresetsButton.addEventListener("click", (event) => {
+    optIntoPresetPlanning();
     if (guardCaptureInteraction(event) || !canChangeVariationPresets()) return;
-    if (variationPresetsSnapshot.total !== null &&
-        !variationPresetsView.canExtend(savedSnapshot?.view, variationPresetsSnapshot)) {
-      const planningCycle = capturePlanningCycleGeneration;
-      if (await mutateVariationPresets("resetPresets") && planningCycle === capturePlanningCycleGeneration) {
-        variationPresetsButton.focus();
-      }
-      return;
-    }
+    if (variationPresetsEditing) return;
     variationPresetsEditing = true;
     variationPresetsEntryContext = {
       streamId: mountedStreamId, baselineId: variationPresetsSnapshot.baselineId,
       revision: variationPresetsSnapshot.revision, total: variationPresetsSnapshot.total,
     };
-    variationPresetsInput.value = "";
+    variationPresetsInput.value = variationPresetsSnapshot.total === null ? "" : String(variationPresetsSnapshot.total);
     variationPresetsInput.setCustomValidity("");
     variationPresetsInput.removeAttribute("aria-invalid");
     updateVariationPresetsAvailability();
@@ -5860,6 +5932,15 @@
         entry.variationNumber > variationPresetsProtocol.MAX_PRESET_VARIATIONS)) {
       mappingAnnouncement.textContent =
         `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-variation preset limit. Normal tracking continues; another preset range cannot be created.`;
+    }
+  });
+  variationPresetsResetButton.addEventListener("click", async (event) => {
+    if (variationPresetsResetButton.hidden || variationPresetsSnapshot?.total == null) return;
+    optIntoPresetPlanning();
+    if (guardCaptureInteraction(event) || !canChangeVariationPresets()) return;
+    const planningCycle = capturePlanningCycleGeneration;
+    if (await mutateVariationPresets("resetPresets") && planningCycle === capturePlanningCycleGeneration) {
+      variationPresetsButton.focus();
     }
   });
   variationPresetsInput.addEventListener("input", () => {

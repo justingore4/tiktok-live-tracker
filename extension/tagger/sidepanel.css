@@ -528,6 +528,9 @@ button {
 }
 
 .variation-presets-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
@@ -537,7 +540,13 @@ button {
   margin: 0;
 }
 
+.variation-presets-form[data-has-presets] {
+  width: 178px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 #variation-presets-button,
+#variation-presets-reset-button,
 #variation-presets-input {
   box-sizing: border-box;
   width: 100%;
@@ -554,6 +563,7 @@ button {
   text-align: center;
 }
 
+#variation-presets-reset-button,
 #variation-presets-button {
   cursor: pointer;
   white-space: nowrap;
@@ -561,15 +571,31 @@ button {
 
 #variation-presets-input::placeholder { color: var(--text-muted); }
 #variation-presets-button:disabled,
+#variation-presets-reset-button:disabled,
 #variation-presets-input:disabled { opacity: 0.5; cursor: default; }
 #variation-presets-button:focus-visible,
+#variation-presets-reset-button:focus-visible,
 #variation-presets-input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 #variation-presets-input[aria-invalid="true"] { border-color: var(--amber); }
+
+@media (max-width: 560px) {
+  /* Keep both original-sized pills together below the unchanged search/badge
+     row when the right-hand track cannot hold them without overlap. */
+  .capture-health-row:has(.variation-presets-form[data-has-presets]) {
+    height: auto;
+    row-gap: 6px;
+  }
+  .variation-presets-form[data-has-presets] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
 
 @media (max-width: 320px) {
   /* Fit the complete Reset presets label in the existing right-hand track
      at narrow panel widths; leave the search, center badge and row unchanged. */
   #variation-presets-button,
+  #variation-presets-reset-button,
   #variation-presets-input {
     padding: 0 1px;
     font-size: 9px;

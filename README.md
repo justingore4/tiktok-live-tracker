@@ -142,7 +142,7 @@ When you first save presets before any variations have been captured, **#1** ope
 automatically so you can immediately select its item. If capture or your view changes
 while saving, the tracker keeps that newer view instead. **Resume stream tracking**
 also opens saved presets at **#1** if no variations have been captured yet.
-Extending presets or ordinary updates won't reset your selected variation.
+Editing the preset total or ordinary updates won't reset a selection that still exists.
 Choose other **untracked** variations from the dropdown or Var #. Before the first
 capture, an unselected dropdown opens at **#1**; an existing selection is preserved.
 Normal live/history behavior and the dropdown's newest-first order stay unchanged.
@@ -182,19 +182,22 @@ stock reserved. Once capture begins, the live-only rules above apply—even if b
 later stops. The clear control respects loading, saving, and error locks; it never
 changes a captured mapping or stock.
 
-The bubble becomes **Reset presets** after saving. Reset removes all uncaptured
-placeholders and their planned assignments, preserves captured variations and
-mappings, and returns to live. While live capture is within the preset range, reset
-first to choose another total.
+After saving, **Preset items** stays visible beside a separate **Reset presets**
+button. Click **Preset items** again to edit the current total, which is filled in
+for you. You can change it before or during live tracking whenever the normal
+editing safeguards allow; no reset or live capture beyond the range is required.
+The number is always the new total: changing **10 to 20** keeps existing plans and
+adds #11–#20. Changing **10 to 5** keeps #1–#5 and removes the future placeholders
+and assignments above #5. Increasing it again does not restore removed assignments.
+Saving the same total makes no change. A total below the highest captured variation
+or outside **1–1,000** is rejected.
 
-If actual live capture exceeds the total (for example, #101 after presetting 100),
-the bubble automatically becomes **Preset items** again. Enter a larger total to
-extend the range without deleting skipped, still-uncaptured assignments or changing
-your selected variation. This is not an automatic reset. At #100 the bubble still
-says **Reset presets**; browsing future entries or historical backfill alone never
-unlocks extension. Extension remains available after the live item finishes and the
-panel reopens. The 1,000 preset limit still applies: beyond it, normal tracking
-continues but another preset range cannot be created within the supported limit.
+If a smaller range removes the preset you were viewing, the tracker selects the
+last remaining preset before the first capture, or returns to live after capture
+has begun. A newer view or capture during saving takes priority. **Reset presets**
+still removes all uncaptured placeholders and assignments, preserves captured
+variations and mappings, and returns to live. Beyond variation #1,000, normal
+tracking continues but the preset limit still applies.
 
 Presets survive
 refresh/reopening for the same stream, but never carry into a new stream or inventory

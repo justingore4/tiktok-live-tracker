@@ -119,7 +119,7 @@ function fixture({ numbers = [500, 1, 25, 212], selected = 500, total = null } =
     "variationStepControls", "previousVariationButton", "nextVariationButton",
     "variationSearchForm", "variationSearchInput", "trackerWorkspace", "captureHealthBadge",
     "mappingAnnouncement", "searchInput", "variationSelector",
-    "variationPresetsForm", "variationPresetsButton", "variationPresetsInput",
+    "variationPresetsForm", "variationPresetsButton", "variationPresetsResetButton", "variationPresetsInput",
   ]) context[name] = element(document);
   context.captureHealthBadge.dataset.phase = "active";
   vm.createContext(context);

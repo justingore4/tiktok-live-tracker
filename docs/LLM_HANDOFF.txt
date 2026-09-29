@@ -3,11 +3,12 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 29, 2026
 Repository branch at this update: main
-Most recent implementation commit at this snapshot: 7540b1d
-Commit subject: Accept quantity as inventory sheet header
-Current uncommitted implementation: all-captured-unresolved post-stream recovery
-and inline unresolved variation numbers in the existing End warning, plus saved
-processing-row prices for editable report prefills. See sections 6, 7, and 11.
+Most recent implementation commit at this snapshot: e2d1eff
+Commit subject: Improve unresolved order recovery and prefill captured processing prices
+Current uncommitted implementation: editable absolute preset totals with separate
+Preset items / Reset presets controls. See section 9. All-captured-unresolved
+recovery, inline End-warning variation numbers, and saved processing-row price
+prefills are committed in e2d1eff; see sections 6, 7, and 11.
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
@@ -25,7 +26,7 @@ The root AGENTS.md now provides shared Mac/Windows development rules; this addit
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,196 passed, 0 failed
+Latest full synthetic test run: 2,227 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -699,7 +700,11 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
 
 Current compact visual decisions:
 - Preset items occupies the right slot of the existing startup badge row. Enter
-  a total 1–1000 (#1–#N, not N additional), then Reset presets replaces the field.
+  a total 1–1000 (#1–#N, not N additional). Once enabled, Preset items remains to
+  the left of a separate Reset presets button; its editor prefills the saved total.
+  Each pill keeps the original 86px width/20px height. At <=560px viewport width,
+  the pair moves together to a right-aligned second row, preserving search/badge/
+  arrow placement without overlap. The editor replaces only the left pill.
   Totals below the highest actual capture are rejected; real capture is not capped.
   Clicking outside an unsaved total field discards its draft and restores the
   bubble without saving or moving focus. Inside clicks keep editing; an accepted
@@ -791,19 +796,34 @@ Current compact visual decisions:
   variations always survive reset, including out-of-order capture. New stream or
   baseline cannot inherit plans. Successful End cleanup is best-effort; failed
   End preserves the current plans. No direct side-panel storage access.
-- When actual live bidding exceeds the preset total (100 -> live #101), the bubble
-  becomes Preset items and accepts a larger total through create_presets, preserving
-  skipped uncaptured assignments and current selection. At exactly #100 it still
-  offers Reset presets. Within-range edits still require manual reset first.
-  The existing v1 preset snapshot optionally stores extensionAvailable: true, latched
+- create_presets now sets an absolute total whenever normal planning guards permit,
+  before capture or during live tracking; it no longer requires reset or capture
+  beyond the previous total. 10 -> 20 retains plans and adds empty #11–#20;
+  10 -> 5 retains exact assignments #1–#5 and discards higher uncaptured plans.
+  Later growth never resurrects discarded plans. Assignment filtering uses only
+  the new upper bound, preserving skipped/out-of-order uncaptured plans within it.
+  Same valid total is a no-op with no revision rotation or preset save/notification.
+  The worker rechecks the highest actual capture even for no-ops, after ordinary
+  capture-promotion repair and expected stream/baseline/revision validation.
+  Total and retained assignments are saved together, never reset then recreated;
+  failed persistence retains the durable prior plan. Captured mappings/accounting
+  and manual queues are unchanged; real capture can still exceed the preset range.
+  A manual queue's temporary preview can legitimately remain beyond the new total.
+  Valid selected variations/live following survive resizing. If a selected preset
+  is removed, reconcileRemovedPresetSelection forgets the invalid pointer and chooses
+  the new last preset offline or actual current/live entry after capture. Before an
+  offline fallback it verifies canonical state with one refresh; navigation, capture,
+  controller/session/baseline/configuration, startup-cycle, or error changes prevent
+  a late fallback/focus move. A surviving manual-queue preview remains view-only.
+  Initial creation and explicit offline Resume keep their separate #1 behavior.
+  The existing v1 preset snapshot still accepts extensionAvailable: true, latched
   only by canonical activeBiddingVariationNumber > total, never selected/fallback
   highest historical numbers. Payment clears that canonical marker, so the durable
-  latch preserves extension availability through payment and worker/panel reopening.
-  Old records without the optional field remain valid without migration. Latching
-  alone retains revision; extension rotates revision, keeps assignments, clears the
-  latch, and revalidates the highest captured number and unchanged 1,000 limit.
-  Reset/new stream/baseline cannot retain old eligibility. No automatic destructive
-  reset or capture cap. Typed drafts stay scoped to their originating configuration;
+  latch remains backward-compatible metadata, not edit eligibility or a button-label
+  gate. Old records without the optional field remain valid without migration.
+  Latching alone retains revision; a changed total rotates revision and clears the
+  obsolete latch. Reset removes it. The existing readiness barrier remains unchanged.
+  No automatic destructive reset or capture cap. Typed drafts stay scoped to their originating configuration;
   stale submit/read/response guards prevent acting against a replaced preset range.
   preserveExtensionAvailability(streamId) is a serialized latch-only pre-capture
   barrier. It retries pending readiness persistence before payment can clear the
@@ -1257,8 +1277,22 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,196 tests passed, 0 failed, on Windows (September 29, 2026).
-The saved processing-price implementation adds 71 regressions over 2,125. Focused
+Latest full verification: 2,227 tests passed, 0 failed, on Windows (September 29, 2026).
+Editable preset totals add 31 regressions over 2,196: 14 core/worker integration,
+15 UI, and two queued-header cases. Focused preset core/integration: 151/151;
+preset UI: 145/145; queued-header: 47/47. Existing navigation fixtures were updated
+for the separate reset control. Covers absolute growth/shrink/no-op, discarded-plan
+nonresurrection, exact/skipped assignments, offline/live removed-selection fallback,
+manual queue previews beyond the range, captured floors/backfill, stale revisions,
+capture/session/baseline/navigation races, failed saves/reopening, and unchanged
+accounting/report output. Deferred fallback tests also guard focus after capture,
+End, error, baseline, or startup-cycle changes. Full node --test and git diff --check
+pass. No browser checks, real-data access, commit, or push. User manual Chrome checks:
+paired pills at normal/narrow widths, current-total prefill, Enter/Escape/outside click,
+10 -> 20 -> 5 -> 10 retention, separate Reset, offline/live fallback and blue/yellow locks.
+
+The prior saved processing-price implementation passed 2,196 tests and added 71
+regressions over 2,125. Focused
 runs: parser/locator/capture client/content 183/183; core/worker/protocol/integration/
 storage/coordinator/reconciliation 344/344; report page/client 254/254. Coverage includes
 exact-row and ancestor boundaries, late prices, static rows after Start, conflicting
@@ -1515,6 +1549,8 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  e2d1eff  Improve unresolved order recovery and prefill captured processing prices
+  7540b1d  Accept quantity as inventory sheet header
   3445c3b  Update handoff and inventory action documentation
   6742457  Tracker reads A-F only, g sheet metrics added
   ae1fcc1  Add layout-preserving quantity handoff

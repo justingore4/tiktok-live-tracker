@@ -1478,7 +1478,7 @@ a `payment_complete` record.
 The local key `tiktokLiveTracker.variationPresets.v1` contains
 `{schemaVersion: 1, presets: {streamId, baselineId, revision, total, assignments}}`.
 Assignments are ordered exact `{variationNumber, sku}` pairs; no canonical orders
-or payment statuses are fabricated. The preset-only total is 1–1,000. Create rejects
+or payment statuses are fabricated. The preset-only total is 1–1,000. Create/resize rejects
 totals below the highest captured number; real capture has no preset-based ceiling.
 
 Planning is available before the first actual auction in a started/resumed local
@@ -1492,8 +1492,8 @@ recovering an unsuccessful early preset read.
 
 Connecting initially blocks planning, but the preset button remains available
 once canonical inventory/session and preset data have loaded successfully. Clicking it
-opts into panel-local startup planning and opens the existing input (or performs the
-existing Reset presets action). `canUseVariationPresetData` retains independent save,
+opts into panel-local startup planning and opens the total input; the separate Reset
+presets control keeps its existing reset action. `canUseVariationPresetData` retains independent save,
 queue, import, session, error, and root-inert guards. `isCapturePlanningLocked` adds a
 narrow exception for navigation and future assignments; live/history mapping, manual
 queue controls, pins, imports, and unrelated editing retain `isCaptureInteractionLocked`.
@@ -1516,7 +1516,7 @@ Reload Site, a new document/session, unmount, and disposal cancel the automatic 
 stale callbacks cannot unlock a different cycle. First document identity discovery
 does not restart the delay. Yellow remains strictly gray; the manual preset override
 works only during blue and is never replaced by this timer.
-Yellow revokes both manual and automatic planning scopes. Preset creation/reset,
+Yellow revokes both manual and automatic planning scopes. Preset creation/resize/reset,
 navigation and assignment handlers reject yellow even if they receive stale events;
 the CSS yellow tint ignores any leftover planning attribute. The existing readiness
 signal ends yellow without an added timer or a new Sold Items/live-bidding gate.
@@ -1550,7 +1550,7 @@ baseline, acknowledged preset revision/total, navigation, and capture-notificati
 before selecting. Failed verification, intervening capture or navigation, and a newer
 reset/configuration cannot force #1. A save notification arriving before its matching
 acknowledgement remains supported. This submit-only selection does not run on
-ordinary reads, range extension, or creation during a captured stream.
+ordinary reads, range resizing, or creation during a captured stream.
 Explicit Resume has a separate one-shot restoration: after the resumed controller's
 canonical load and saved-preset read, select existing future **#1** only if no actual
 variations have been captured. One additional canonical verification read after
@@ -1566,46 +1566,48 @@ interaction locks, and does not opt into startup planning. Later reads never re-
 unselected pre-capture dropdown opens at #1 without reordering its descending list; intentional future
 selection and explicit Home/End navigation keep their existing behavior.
 
-The side-panel-only protocol supports get/create/set-item/assign-next-item/reset. Mutations compare
+The side-panel-only protocol supports get/create/set-item/assign-next-item/reset, with
+`create_presets` also resizing an enabled range. Mutations compare
 stream, pinned baseline, and a durable UUID revision inside the coordinator FIFO
 and the existing worker message FIFO. Reset saves a disabled revision tombstone so
 late edits/resets cannot resurrect old plans or erase a new configuration. Missing
 data means no presets; malformed stored data fails closed. Existing reconciliation,
 session, report, and queue schemas remain unchanged.
 
-An enabled preset snapshot can additionally contain `extensionAvailable: true`.
-This optional, true-only field is stored in the same v1 preset envelope; old records
-without it remain valid and require no migration. The coordinator latches it only
-when the canonical `activeBiddingVariationNumber` exceeds the saved total. Highest
-captured fallback values, historical backfill, and panel selection never establish
-eligibility. The small durable latch is necessary because payment observations clear
-the live bidding marker; extension must remain available after that and worker restart.
-Metadata-only latching keeps the revision, range, and assignments unchanged.
-The capture path also calls a serialized, latch-only readiness barrier before
-canonical updates: if the first latch write failed, payment cannot erase the last
-durable live marker before the existing retry can retain that proof. This barrier
-does not promote presets or consume/clear a queue. Storage failures use the existing
-capture error/retry path; classification, scheduling, and retry timing are unchanged.
+**Preset items** remains visible at its existing size to the left of a separate
+**Reset presets** button whenever presets are enabled. Opening it replaces the left
+button with the total editor, prefilled with the current saved total; reset stays visible.
+The pair may wrap together at narrow panel widths without overlapping Var #, navigation
+arrows, or the capture badge. Reset remains a distinct action, not a prerequisite for
+editing a total. Existing startup/save/error guards apply before and during live tracking.
 
-With that latch, `create_presets` may extend an existing range. The worker requires
-a strictly larger total at least as high as every captured variation, within the
-unchanged 1,000 preset-only limit. It preserves remaining uncaptured assignments,
-rotates the revision, and removes the old latch. A later actual live capture beyond
-the new total can latch it again. Manual reset also removes the latch. Existing
-stream/baseline scoping prevents it leaking to another tracker session. No canonical
-schema, report content, accounting, or ordinary queue operation changes merely from
-enabling or saving an extension.
+`create_presets` takes an absolute total, not an increment, for both initial creation
+and resizing. After expected-context validation and ordinary captured-plan repair, the
+worker rechecks the highest actually captured variation, including historical backfill,
+and rejects totals below it or outside 1–1,000. Growing keeps existing assignments;
+shrinking retains only assignments at or below the new total and removes higher
+uncaptured placeholders. Regrowing does not restore discarded assignments. A changed
+total and filtered assignments are saved together with one new revision. A valid same-total
+request is a no-op after the existing guards/repair: no resize write, revision rotation,
+or resize notification. Captured mappings and accounting are never deleted by resizing.
 
-The panel uses the durable latch or the same-stream actual live bidding marker for
-the button label, never its selected variation or historical fallback. An open total
-draft survives ordinary refreshes and is scoped to its originating configuration;
-stale submissions are rejected rather than silently retried against a new range.
+Existing `extensionAvailable: true` snapshots, the canonical-live-marker latch, and its
+serialized pre-capture preservation barrier remain compatible in the same v1 envelope.
+They no longer control whether the total can be edited or which button is displayed.
+Changing the total removes obsolete latch metadata; reset still removes it. No new
+storage shape, canonical schema, payment classification, timing, report field, or ordinary
+queue operation is introduced by resizing.
+
+An open total draft survives ordinary refreshes and is scoped to its originating
+configuration; stale submissions are rejected rather than silently retried against a new range.
 Escape or an outside click dismisses an unsaved total draft without changing the saved
 range or assignments. Outside clicks do not cancel a save already in flight or steal
 focus from the clicked control.
-Delayed snapshots cannot undo a latched flag for the same revision. Successful
-extension does not force a selection or label: latest authoritative capture may
-already have overtaken the newly saved range.
+Successful resizing retains a viewed variation that still exists. When shrinking removes
+the viewed future preset, the panel selects the last remaining preset before any capture,
+or returns to live after capture begins. This fallback is save/context/navigation guarded;
+intervening capture, navigation, reset, or session changes cannot be overridden by a late
+acknowledgement. It does not reuse the initial-create/Resume automatic #1 behavior.
 
 `assign_next_preset_item` receives the displayed future source number, exact SKU,
 and expected stream/baseline/revision. Inside the same FIFO it validates that the
@@ -1658,7 +1660,7 @@ The tagger's pure `variation-presets-view.js` projects untracked dropdown entrie
 future selection without passing placeholders into canonical controllers. Preset
 assignments use the dedicated client. Reset discards uncaptured plans based on actual
 capture state, returns to the actual live/newest variation when one exists (otherwise
-the waiting-for-live view), and restores the creation control. Presets survive
+the waiting-for-live view), and leaves only the creation control visible. Presets survive
 same-stream reloads and never apply to another baseline/session. Successful End
 cleans up best-effort; failed End retains plans, and old scoped data cannot leak into
 the next stream if cleanup fails.

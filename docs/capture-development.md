@@ -1188,8 +1188,11 @@ no dashboard capture source or timer. The `variation-presets-core`,
 strict messages, storage, capture promotion, queue precedence, reset, and recovery.
 
 For a manual UI check, verify the existing badge row at normal and narrow panel
-widths with **Preset items**, its inline input, and **Reset presets**. Var # and the
-capture badge must not move or overlap. Enter 200, plan multiple future items, browse
+widths with **Preset items**, its inline input, and **Reset presets**. After enabling
+presets, the original-sized **Preset items** control must remain to the left of the
+separate reset button; opening it must prefill the current saved total. Var # and the
+capture badge must not overlap the controls. The editor replaces only the left button;
+reset remains visible, and the pair can wrap together at narrow widths. Enter 200, plan multiple future items, browse
 one by Var #, and use Return to live after an actual variation has been captured. Check that
 planning changes neither stock nor metrics, while actual capture applies the normal
 payment/mapping rules. Reload and confirm same-stream plans remain.
@@ -1257,7 +1260,7 @@ Repeat without a saved plan and after an actual capture: Resume must keep the or
 waiting/live view. Delay the preset read and navigate, capture, reset, change sessions,
 or fail loading: the late result must not override the newer view. Subsequent refreshes
 must preserve an intentionally selected future variation.
-Creating presets during live tracking, extending a range, and ordinary refreshes must
+Creating presets during live tracking, resizing a range, and ordinary refreshes must
 not force #1. With a delayed save or its canonical
 verification read, navigate elsewhere, deliver a real capture, reset presets, or change
 session; the late response must not override the newer state. Include a capture whose
@@ -1324,20 +1327,27 @@ selection or scroll. Leaving/resuming another session and reopening the panel ca
 inherit the override. Check normal/narrow layout, native tint, focus, and interaction
 in isolated Chrome fixtures; synthetic DOM tests are not native visual verification.
 
-Preset to 100, keep an uncaptured assignment at #80, and capture live #100: the
-control must still say **Reset presets**. Capture live #101 (or skip directly past
-100): it should become **Preset items**, retaining #80 and the current view. Enter
-200, verify the preserved #80 assignment and exactly one entry per number, then
-capture #80 later to check normal promotion. Payment completion clearing the live
-marker and panel/worker reopening must not lose extension availability. Historical
-backfill alone, with or without an active live marker, must not enable it.
+Preset to 10 and assign items both within #1–#5 and above #5. Open **Preset items**
+again and verify the field shows 10. Save 20: it must mean #1–#20, not 20 additional
+variations, with all existing assignments retained and one dropdown entry per number.
+Save 5: only uncaptured plans above #5 should be removed. Save 10 again: the removed
+assignments must not reappear. Saving the existing valid total must not reset plans,
+rotate the revision, or move the selected variation.
 
-While entering an extension, check Enter/Escape, typing through refreshes, failed
-saves, capture overtaking the proposed total, external reset, and delayed responses.
-At live #201 a saved total of 200 must become extendable again. After actual capture
-passes 1,000, verify accessible limit feedback and uninterrupted normal capture.
-No label change or range extension may move selection, erase skipped assignments,
-clear an ordinary queue, or alter report/inventory values by itself.
+Repeat while live capture is within, exactly at, and beyond the saved range; the edit
+control remains available under the same startup/save/error locks, with no live-exceeded
+gate. Reject totals below the highest captured number, including a higher historical
+backfill, and reject values outside 1–1,000. Captured mappings must survive resizing;
+ordinary queue rules and existing conflict repair must remain unchanged. Reopen the panel
+and verify the new total and remaining plans.
+
+Keep the selected preset if it survives a shrink. If it is removed before any capture,
+select the new last preset; after capture begins, return to live. Delay the save and
+navigate or deliver capture: the acknowledgement must not override the newer view.
+Check Enter/Escape, outside-click cancellation, typing through background refreshes,
+failed saves, capture overtaking the proposed total, external reset, and delayed replies.
+After actual capture passes 1,000, verify limit feedback and uninterrupted normal capture.
+Resizing itself must not change stock, payments, metrics, report rows, or inventory exports.
 
 For sequential planning, view empty future #25 and left-click an exact SKU: #25
 should be assigned without navigation. Left-click another item: it should save

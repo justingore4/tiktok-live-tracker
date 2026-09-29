@@ -211,6 +211,136 @@ function expected(snapshot) {
   return { expectedStreamId: snapshot.streamId, expectedBaselineId: snapshot.baselineId, expectedRevision: snapshot.revision };
 }
 
+test("real client resizes offline plans atomically in absolute totals and persists only retained exact SKUs", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.create(10);
+  for (let number = 1; number <= 10; number += 1) await worker.assign(number, number % 2 ? "SYNTH-A" : "SYNTH-B");
+  const original = await worker.presets();
+  const canonical = await worker.state();
+  const before = h.writes.length;
+  const extended = await worker.presetClient.createPresets({ ...expected(original), total: 20 });
+  assert.equal(extended.total, 20);
+  assert.deepEqual(extended.assignments, original.assignments);
+  const reduced = await worker.presetClient.createPresets({ ...expected(extended), total: 5 });
+  assert.equal(reduced.total, 5);
+  assert.deepEqual(reduced.assignments, original.assignments.slice(0, 5));
+  const writes = h.writes.slice(before);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes.map((write) => Object.keys(write.items)), [[presetStorage.STORAGE_KEY], [presetStorage.STORAGE_KEY]]);
+  assert.deepEqual(writes.map((write) => write.items[presetStorage.STORAGE_KEY].presets.total), [20, 5]);
+  assert.deepEqual(await worker.state(), canonical);
+  const reopened = h.open();
+  assert.deepEqual(await reopened.presetClient.getPresets(), reduced);
+  const regrown = await reopened.presetClient.createPresets({ ...expected(reduced), total: 20 });
+  assert.deepEqual(regrown.assignments, reduced.assignments, "reopening or regrowth does not recover discarded mappings");
+  await reopened.bid(6);
+  assert.equal(auction(await reopened.state(), 6).sku, null, "discarded #6 is not silently promoted");
+  await reopened.capture("payment_complete", { variationNumber: 5, soldPriceCents: 1700 });
+  assert.equal(auction(await reopened.state(), 5).sku, "SYNTH-A", "retained skipped plan still promotes normally");
+});
+
+test("real worker unchanged-total edits succeed without storage writes or preset notifications", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.create(10);
+  const saved = await worker.assign(5, "SYNTH-B");
+  const canonical = await worker.state();
+  const writes = h.writes.length;
+  const notices = h.notifications.length;
+  assert.deepEqual(await worker.presetClient.createPresets({ ...expected(saved), total: 10 }), saved);
+  assert.deepEqual(await worker.presetClient.createPresets({ ...expected(saved), total: 10 }), saved);
+  assert.equal(h.writes.length, writes);
+  assert.equal(h.notifications.length, notices);
+  assert.deepEqual(await worker.state(), canonical);
+});
+
+test("live resizing never clears or converts the ordinary manual queue, including shrinking below its preview", async () => {
+  const h = createHarness(), worker = h.open();
+  await worker.create(10);
+  await worker.assign(2, "SYNTH-A");
+  await worker.assign(8, "SYNTH-B");
+  await worker.bid(3);
+  await worker.map(3);
+  await worker.queue("toggle_queue", 3, "SYNTH-B");
+  const queue = await worker.send("queue", { type: "get_queue" });
+  const canonical = await worker.state();
+  const saved = await worker.presets();
+  const reduced = await worker.presetClient.createPresets({ ...expected(saved), total: 3 });
+  assert.deepEqual(reduced.assignments, [{ variationNumber: 2, sku: "SYNTH-A" }]);
+  assert.deepEqual(await worker.send("queue", { type: "get_queue" }), queue);
+  assert.deepEqual(await worker.state(), canonical);
+  assert.equal((await worker.create(20)).total, 20);
+  assert.deepEqual(await worker.send("queue", { type: "get_queue" }), queue);
+  await worker.bid(4);
+  assert.equal(auction(await worker.state(), 4).sku, "SYNTH-B");
+  assert.deepEqual((await worker.presets()).assignments, reduced.assignments);
+});
+
+test("real worker failed resize persistence preserves assignments and total together for retry after restart", async () => {
+  for (const total of [5, 20]) {
+    const h = createHarness(), worker = h.open();
+    await worker.create(10);
+    await worker.assign(5, "SYNTH-B");
+    const before = await worker.assign(10);
+    const canonical = await worker.state();
+    h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
+    await assert.rejects(worker.presetClient.createPresets({ ...expected(before), total }), /Could not save variation presets/);
+    assert.deepEqual(await worker.presets(), before);
+    assert.deepEqual(await worker.state(), canonical);
+    const reopened = h.open();
+    assert.deepEqual(await reopened.presets(), before);
+    const saved = await reopened.presetClient.createPresets({ ...expected(before), total });
+    assert.equal(saved.total, total);
+    assert.deepEqual(saved.assignments, before.assignments.filter((entry) => entry.variationNumber <= total));
+  }
+});
+
+test("worker FIFO protects captured assignments when capture wins a shrinking race and honors shrink when it wins", async () => {
+  for (const captureFirst of [true, false]) {
+    const worker = createHarness().open();
+    await worker.create(10);
+    const original = await worker.assign(8, "SYNTH-B");
+    const capture = () => worker.raw("capture", { type: "observe_bidding_variation", variationNumber: 8 }, DASHBOARD);
+    const shrink = () => worker.raw("presets", { type: "create_presets", ...expected(original), total: 5 });
+    const results = await Promise.all(captureFirst ? [capture(), shrink()] : [shrink(), capture()]);
+    assert.equal(results[0].ok, true);
+    const captured = auction(await worker.state(), 8);
+    if (captureFirst) {
+      assert.equal(results[1].ok, false);
+      assert.equal(results[1].error.code, "PRESETS_CHANGED");
+      assert.equal(captured.sku, "SYNTH-B");
+      assert.equal((await worker.presets()).total, 10);
+      await assert.rejects(worker.create(5), /captured variation #8/);
+    } else {
+      assert.equal(results[1].ok, true);
+      assert.equal(captured.sku, null);
+      assert.equal((await worker.presets()).total, 5, "real capture can exceed the newly shrunken preset range");
+      await worker.create(10);
+      assert.equal(auction(await worker.state(), 8).sku, null, "regrowth cannot restore an old removed assignment");
+    }
+  }
+});
+
+test("unassigned capture races enforce the current minimum without depending on a preset revision change", async () => {
+  for (const event of [
+    { type: "observe_bidding_variation", variationNumber: 8 },
+    { type: "observe_payment_statuses", statuses: [{ variationNumber: 8, observedPaymentStatus: "canceled" }] },
+  ]) {
+    const worker = createHarness().open();
+    const saved = await worker.create(10);
+    const [captured, resized] = await Promise.all([
+      worker.raw("capture", event, DASHBOARD),
+      worker.raw("presets", { type: "create_presets", ...expected(saved), total: 5 }),
+    ]);
+    assert.equal(captured.ok, true);
+    assert.equal(resized.ok, false);
+    assert.equal(resized.error.code, "PRESET_TOTAL_BELOW_CAPTURED");
+    assert.match(resized.error.message, /#8/);
+    assert.equal((await worker.presets()).revision, saved.revision);
+    assert.equal((await worker.presets()).total, 10);
+    assert.equal((await worker.create(8)).total, 8);
+  }
+});
+
 async function setStartupPhase(worker, phase) {
   if (phase === "connecting") return null;
   const context = await worker.health("context");
@@ -486,7 +616,7 @@ test("pre-stream sequential save serialized before first capture promotes once t
   assert.deepEqual((await worker.presets()).assignments, []);
 });
 
-test("actual live capture exceeding the preset range enables a preserving client-to-worker extension", async () => {
+test("actual live capture exceeding the preset range still allows a preserving client-to-worker resize", async () => {
   const h = createHarness(), worker = h.open();
   await worker.create(100);
   await worker.assign(80, "SYNTH-B");
@@ -494,7 +624,7 @@ test("actual live capture exceeding the preset range enables a preserving client
   await worker.map(100);
   const atLimit = await worker.presetClient.getPresets();
   assert.notEqual(atLimit.extensionAvailable, true);
-  await assert.rejects(worker.presetClient.createPresets({ ...expected(atLimit), total: 200 }), { code: "PRESETS_ALREADY_ENABLED" });
+  assert.deepEqual(await worker.presetClient.createPresets({ ...expected(atLimit), total: 100 }), atLimit);
   await worker.bid(101);
   const exceeded = await worker.presetClient.getPresets();
   assert.equal(exceeded.extensionAvailable, true);
@@ -515,7 +645,7 @@ test("actual live capture exceeding the preset range enables a preserving client
   assert.deepEqual((await worker.presets()).assignments, []);
 });
 
-test("high historical backfill cannot authorize extension with or without an actual live marker", async () => {
+test("high historical backfill protects the resize floor with or without an actual live marker", async () => {
   for (const hasLiveMarker of [true, false]) {
     const worker = createHarness().open();
     await worker.create(100);
@@ -523,12 +653,10 @@ test("high historical backfill cannot authorize extension with or without an act
     await worker.capture("observe_payment_statuses", { statuses: [{ variationNumber: 201, observedPaymentStatus: "canceled" }] });
     const backfilled = await worker.presets();
     assert.notEqual(backfilled.extensionAvailable, true);
-    await assert.rejects(worker.presetClient.createPresets({ ...expected(backfilled), total: 300 }), { code: "PRESETS_ALREADY_ENABLED" });
-    await worker.bid(102);
-    const eligible = await worker.presets();
-    assert.equal(eligible.extensionAvailable, true, "skipping past the total is sufficient real live advancement");
-    await assert.rejects(worker.presetClient.createPresets({ ...expected(eligible), total: 200 }), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
-    assert.equal((await worker.presetClient.createPresets({ ...expected(eligible), total: 300 })).total, 300);
+    await assert.rejects(worker.presetClient.createPresets({ ...expected(backfilled), total: 200 }), { code: "PRESET_TOTAL_BELOW_CAPTURED" });
+    const resized = await worker.presetClient.createPresets({ ...expected(backfilled), total: 300 });
+    assert.equal(resized.total, 300);
+    assert.equal((await worker.presetClient.createPresets({ ...expected(resized), total: 201 })).total, 201);
   }
 });
 
@@ -984,7 +1112,7 @@ test("real worker rejects invalid totals, captured targets, stale identities, an
   assert.deepEqual(h.values, baseline);
   await worker.create(200);
   const enabled = await worker.presets();
-  assert.equal((await worker.raw("presets", { type: "create_presets", ...expected(enabled), total: 300 })).ok, false);
+  assert.equal((await worker.raw("presets", { type: "create_presets", ...expected(empty), total: 300 })).ok, false);
   for (const change of [
     { variationNumber: 30, sku: "SYNTH-A" },
     { variationNumber: 201, sku: "SYNTH-A" },
