@@ -3,10 +3,14 @@ TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 
 Snapshot date: September 29, 2026
 Repository branch at this update: main
-Most recent implementation commit at this snapshot: e2d1eff
-Commit subject: Improve unresolved order recovery and prefill captured processing prices
-Current uncommitted implementation: editable absolute preset totals with separate
-Preset items / Reset presets controls. See section 9. All-captured-unresolved
+Most recent implementation commit at this snapshot: e6bb7fe
+Commit subject: Allow resizing preset totals without resetting retained assignments
+Current uncommitted implementation: current-stream "X ran" counts above inventory-card
+stock. See section 9. The documentation-only clarification of the maintainer's
+"git me commands" preference in AGENTS.md, README.md, and this handoff is also
+uncommitted; see section 2.
+Editable absolute preset totals with separate Preset items / Reset presets controls
+are committed in e6bb7fe; see section 9. All-captured-unresolved
 recovery, inline End-warning variation numbers, and saved processing-row price
 prefills are committed in e2d1eff; see sections 6, 7, and 11.
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
@@ -26,7 +30,7 @@ The root AGENTS.md now provides shared Mac/Windows development rules; this addit
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,227 passed, 0 failed
+Latest full synthetic test run: 2,254 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -80,8 +84,14 @@ and separate computers have separate tracker data.
 - When asked to explain, investigate, review, or work read-only, do not implement.
 - When asked to confirm understanding before starting, wait for the user's go.
 - When asked for a prompt or commands, provide those; do not execute them by default.
-- Do not commit or push unless explicitly requested. Past "git me commands"
-  requests meant show commands, not run them.
+- "git me commands" means respond ONLY with one paste-ready code block containing
+  git add -A, git commit -m with an actual descriptive change summary, and the
+  appropriate git push command for the current branch. Include all repository
+  changes (added, modified, and deleted), not a selected list of task files.
+  Respect .gitignore; do not force-add ignored data. Omit extra review/test commands
+  and surrounding narration. Never execute staging, committing, or pushing for
+  this request; the user pastes the commands. Separate explicit authorization is
+  required to perform Git mutations. Never infer permission to force-push.
 - Preserve unrelated dirty-worktree changes. Inspect git status/diff first.
 - Preserve manifest version, public key, extension ID, OAuth client, permissions,
   scopes, dependency pins/licenses, and saved-data contracts unless specifically
@@ -641,6 +651,23 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
 - Cards group normalized item+style; sizes select exact SKUs. Single-row groups map
   directly. Search covers SKU/item/style/size. Filtering, ordering, and counts are
   existing view-model behavior, not quantities guessed from card labels.
+- Current-stream "X ran" appears directly above each card's stock count only when
+  positive, using the same stock styling. It is an auction-use count, not completed
+  sales or inventory consumed. inventory-view-model.js::getRanCountsBySku(view)
+  derives an exact-SKU Map from that rendered view's recorded, mapped variations,
+  deduplicated by variation number. It excludes the actual active bidding marker and
+  uncaptured presets/manual-queue previews, not the browsed/current fallback number.
+  Every ended outcome counts, including completed, canceled, processing, fixing,
+  missing/unrecognized statuses, and the last ended auction before a new one starts.
+  getInventoryGroupRanCount(group, counts) sums the existing normalized item/style
+  card's exact size SKUs. Cards and counts share one rendered view; no snapshot mixing.
+  Remapping moves the contribution; unmapping removes it. Search, pins, and variation
+  navigation cannot change totals. Reopening recomputes from current-stream truth;
+  a new empty stream shows no labels even when it reuses the same inventory baseline.
+  No persistent counters, storage schema, capture, queue/preset behavior, reservations,
+  accounting, reports, or exports change. User manual Chrome checks: normal/narrow
+  label placement and stock styling, multi-size sums, zero hidden, live advancement
+  including the last ended auction, remap/unmap, navigation/search, and reopening.
 - On captured variations, left-click selects/unmaps for the viewed variation.
 - On live: right-click maps if unassigned; if already mapped, toggles next-item queue.
 - In history: right-click targets live/newest without changing history selection or
@@ -901,7 +928,8 @@ Current compact visual decisions:
 - Add new SKUs from updated Sheet stays on the right with existing visibility rules.
 - Performance Metrics is one line matching Inventory heading typography.
 - Inventory cards have compact name/style, smaller pin control, and smaller stock
-  count positioned toward bottom-right; preserve narrow-panel usability.
+  count positioned toward bottom-right; a positive "X ran" line sits directly above
+  stock in the same styling. Preserve narrow-panel usability.
 - Active session status is "Tracker Active | Started <formatted actual start time>"
   with a small dot, consistent text styling and natural wrapping. No separate Active
   pill, identity-survival explanation, or routine LIVE SESSION DATA RESTORED footer.
@@ -1277,7 +1305,18 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,227 tests passed, 0 failed, on Windows (September 29, 2026).
+Latest full verification: 2,254 tests passed, 0 failed, on Windows (September 29, 2026).
+The inventory-card "X ran" display adds 27 regressions over 2,227: 13 view-model,
+seven real storage/coordinator/controller integration, and seven card/render UI tests.
+The four-file focused group passes 105/105. Covers all ended outcomes, exclusion of
+actual live bidding and uncaptured plans/queue previews, exact-SKU size aggregation,
+deduplication/gaps, last-ended counting, remap/unmap, search/navigation/pins, frozen
+size-picker renders, reopening and same-baseline stream isolation, transient bid
+loss, hidden zero/stock placement, accessible labels, and unchanged saved data and
+accounting. Full node --test and git diff --check pass. No browser checks, real-data
+access, commit, or push. User manual Chrome checks are listed in section 9.
+
+The prior editable-preset implementation passed 2,227 tests.
 Editable preset totals add 31 regressions over 2,196: 14 core/worker integration,
 15 UI, and two queued-header cases. Focused preset core/integration: 151/151;
 preset UI: 145/145; queued-header: 47/47. Existing navigation fixtures were updated
@@ -1549,6 +1588,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  e6bb7fe  Allow resizing preset totals without resetting retained assignments
   e2d1eff  Improve unresolved order recovery and prefill captured processing prices
   7540b1d  Accept quantity as inventory sheet header
   3445c3b  Update handoff and inventory action documentation

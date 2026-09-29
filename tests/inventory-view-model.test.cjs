@@ -10,9 +10,11 @@ const {
   filterInventoryGroups,
   formatGrossMarginPercentage,
   formatUsdCents,
+  getInventoryGroupRanCount,
   getInventoryGroupStockDisplay,
   getPreferredInventoryGroupEntry,
   getProfitDisplay,
+  getRanCountsBySku,
   getRemainingQuantity,
   getStockDisplay,
   groupInventoryEntries,
@@ -993,4 +995,188 @@ test("prefers a calculated remaining quantity when one is available", () => {
     getRemainingQuantity({ quantityReceived: 5, remainingQuantity: 2 }),
     2,
   );
+});
+
+function ranView(variations, extra = {}) {
+  return { streamId: "current-stream", activeBiddingVariationNumber: null, variations, ...extra };
+}
+
+function ranVariation(variationNumber, sku = "TEE-M", extra = {}) {
+  return { variationNumber, sku, recorded: true, ...extra };
+}
+
+test("ran counts include each mapped recorded outcome, including unresolved previous auctions", () => {
+  const statuses = ["payment_complete", "canceled", "payment_processing", "order_processing",
+    "payment_fixing", "payment_failed", "not_observed", "unrecognized"];
+  const variations = statuses.map((observedPaymentStatus, index) => ranVariation(index + 1, "TEE-M", {
+    observedPaymentStatus, soldPriceCents: observedPaymentStatus === "payment_complete" ? 100 : null,
+  }));
+  const view = ranView([...variations, ranVariation(9)], { activeBiddingVariationNumber: 9 });
+  assert.deepEqual([...getRanCountsBySku(view)], [["TEE-M", 8]]);
+});
+
+test("ran excludes unrecorded presets, manual queue previews, and unmapped actual rows", () => {
+  const view = ranView([
+    ranVariation(1), ranVariation(2, null), ranVariation(3, ""),
+    ranVariation(4, "TEE-M", { recorded: false, preset: true }),
+    ranVariation(5, "TEE-M", { recorded: false, queuedPreview: true }),
+    { variationNumber: 6, sku: "TEE-M" },
+    ranVariation(7, "TEE-M", { preset: true }),
+    ranVariation(8, "TEE-M", { queuedPreview: true }),
+  ]);
+  assert.deepEqual([...getRanCountsBySku(view)], [["TEE-M", 1]]);
+});
+
+test("grouped ran sums exact size SKUs and retains existing item/style group boundaries", () => {
+  const inventory = [
+    { sku: "TEE-S", item: "Tee", style: "Red", size: "S" },
+    { sku: "TEE-M", item: "Tee", style: "Red", size: "M" },
+    { sku: "TEE-L", item: "Tee", style: "Red", size: "L" },
+    { sku: "TEE-BLUE-M", item: "Tee", style: "Blue", size: "M" },
+  ];
+  const groups = groupInventoryEntries(inventory);
+  const counts = getRanCountsBySku(ranView([
+    ranVariation(1, "TEE-S"), ranVariation(2, "TEE-M"), ranVariation(3, "TEE-L"),
+    ranVariation(4, "TEE-BLUE-M"), ranVariation(5, "OTHER-ITEM"),
+  ]));
+  assert.equal(getInventoryGroupRanCount(groups[0], counts), 3);
+  assert.equal(getInventoryGroupRanCount(groups[1], counts), 1);
+  assert.equal(getInventoryGroupRanCount({ entries: [{ sku: "TEE-OS" }] }, counts), 0);
+  assert.deepEqual([...counts], [["TEE-S", 1], ["TEE-M", 1], ["TEE-L", 1], ["TEE-BLUE-M", 1], ["OTHER-ITEM", 1]]);
+});
+
+test("ran excludes the actual live marker rather than selected, current, or history navigation markers", () => {
+  const variations = [ranVariation(1), ranVariation(2), ranVariation(3)];
+  for (const selectedVariationNumber of [1, 2, 3, 99]) {
+    const view = ranView(variations, {
+      activeBiddingVariationNumber: 3, currentVariationNumber: 1, selectedVariationNumber,
+      isReviewingHistory: selectedVariationNumber !== 3, isReviewingPreset: selectedVariationNumber === 99,
+    });
+    assert.equal(getRanCountsBySku(view).get("TEE-M"), 2);
+  }
+});
+
+test("last ended or processing auction counts immediately without a newer variation", () => {
+  for (const observedPaymentStatus of ["payment_processing", "payment_complete", "canceled", "unrecognized"]) {
+    const view = ranView([ranVariation(20, "TEE-M", { observedPaymentStatus })], {
+      currentVariationNumber: 20, selectedVariationNumber: 20,
+    });
+    assert.equal(getRanCountsBySku(view).get("TEE-M"), 1);
+  }
+});
+
+test("live advancement counts the previous mapped auction once and excludes the newly active one", () => {
+  const before = ranView([ranVariation(1), ranVariation(2)], { activeBiddingVariationNumber: 2 });
+  assert.equal(getRanCountsBySku(before).get("TEE-M"), 1);
+  const after = { ...before, variations: [...before.variations, ranVariation(3)], activeBiddingVariationNumber: 3 };
+  assert.equal(getRanCountsBySku(after).get("TEE-M"), 2);
+  assert.equal(getRanCountsBySku(after).get("TEE-M"), 2, "repeated renders do not increment persistent counters");
+  assert.equal(getRanCountsBySku(before).get("TEE-M"), 1, "no accumulation leaks into older view snapshots");
+});
+
+test("duplicate variation rows count once, and gaps never become inferred runs", () => {
+  const counts = getRanCountsBySku(ranView([
+    ranVariation(2), ranVariation(2), ranVariation(2, "TEE-L"),
+    ranVariation(50, "TEE-L"), ranVariation(50, "TEE-L"), ranVariation(200),
+  ], { activeBiddingVariationNumber: 200 }));
+  assert.deepEqual([...counts], [["TEE-M", 1], ["TEE-L", 1]]);
+  assert.equal(getInventoryGroupRanCount({ entries: [{ sku: "TEE-M" }, { sku: "TEE-M" }] }, counts), 1,
+    "a repeated group entry must not double the SKU total");
+});
+
+test("ran recalculates when historical mapping is added, changed, or removed", () => {
+  const source = ranView([ranVariation(1), ranVariation(2, null)]);
+  assert.deepEqual([...getRanCountsBySku(source)], [["TEE-M", 1]]);
+  const mapped = { ...source, variations: [source.variations[0], ranVariation(2, "TEE-L")] };
+  assert.deepEqual([...getRanCountsBySku(mapped)], [["TEE-M", 1], ["TEE-L", 1]]);
+  const remapped = { ...mapped, variations: [ranVariation(1, "TEE-L"), mapped.variations[1]] };
+  assert.deepEqual([...getRanCountsBySku(remapped)], [["TEE-L", 2]]);
+  const unmapped = { ...remapped, variations: [ranVariation(1, null), remapped.variations[1]] };
+  assert.deepEqual([...getRanCountsBySku(unmapped)], [["TEE-L", 1]]);
+});
+
+test("ran counts remain exact-SKU based rather than matching item text or normalizing SKU names", () => {
+  const counts = getRanCountsBySku(ranView([
+    ranVariation(1, "SKU-M", { item: "Repeated", style: "Same" }),
+    ranVariation(2, "SKU-MISC", { item: "Repeated", style: "Same" }),
+    ranVariation(3, "sku-m", { item: "Repeated", style: "Same" }),
+  ]));
+  assert.equal(getInventoryGroupRanCount({ entries: [{ sku: "SKU-M" }] }, counts), 1);
+  assert.equal(getInventoryGroupRanCount({ entries: [{ sku: "SKU-MISC" }] }, counts), 1);
+  assert.equal(getInventoryGroupRanCount({ entries: [{ sku: "sku-m" }] }, counts), 1);
+});
+
+test("empty or malformed view rows do not fabricate ran totals", () => {
+  for (const view of [null, undefined, {}, ranView([]), { variations: {} }]) {
+    assert.equal(getRanCountsBySku(view).size, 0);
+  }
+  assert.equal(getRanCountsBySku(ranView([
+    null, undefined, ranVariation(0), ranVariation(-1), ranVariation(1.5), ranVariation("2"),
+    ranVariation(Infinity), ranVariation(3, " SKU-M "), ranVariation(4, 100),
+  ])).size, 0);
+  assert.equal(getInventoryGroupRanCount(null, new Map()), 0);
+  assert.equal(getInventoryGroupRanCount({ entries: [] }, null), 0);
+  const group = { entries: [{ sku: "TEE-M" }] };
+  for (const count of [-1, 1.5, NaN, Infinity, "2", null]) {
+    assert.equal(getInventoryGroupRanCount(group, new Map([["TEE-M", count]])), 0);
+  }
+});
+
+test("ran projection does not mutate rows, grouped stock, canonical metrics, or caller-owned maps", () => {
+  const entries = Object.freeze([
+    Object.freeze({ sku: "TEE-M", item: "Tee", style: "Red", size: "M", quantityReceived: 10,
+      remainingQuantity: 8, reservedQuantity: 1, availableToTagQuantity: 7 }),
+  ]);
+  const group = Object.freeze({ entries });
+  const variations = Object.freeze([Object.freeze(ranVariation(1)), Object.freeze(ranVariation(2))]);
+  const view = Object.freeze(ranView(variations, { inventory: entries, totals: Object.freeze({ completedPaymentCount: 2 }) }));
+  const before = structuredClone(view);
+  const stock = getInventoryGroupStockDisplay(group);
+  const counts = getRanCountsBySku(view);
+  assert.equal(getInventoryGroupRanCount(group, counts), 2);
+  assert.deepEqual(getInventoryGroupStockDisplay(group), stock);
+  assert.deepEqual(view, before);
+  counts.set("TEE-M", 999);
+  assert.equal(getRanCountsBySku(view).get("TEE-M"), 2, "returned maps are fresh derived values");
+});
+
+test("real canonical stream views keep ran local even when inventory totals share a baseline", () => {
+  const reconciliation = require("../extension/shared/reconciliation.js");
+  const mappingWorkflow = require("../extension/tagger/mapping-workflow.js");
+  const state = reconciliation.createReconciliationState(TEST_INVENTORY);
+  const sku = TEST_INVENTORY[0].sku;
+  for (const streamId of ["prior-stream", "current-stream"]) {
+    reconciliation.pinStreamToInventoryBaseline(state, { streamId });
+    reconciliation.recordPaymentComplete(state, { streamId, variationNumber: 1, soldPriceCents: 2500 });
+    reconciliation.mapVariation(state, { streamId, variationNumber: 1, sku });
+  }
+  const before = structuredClone(state);
+  const buildView = (streamId) => mappingWorkflow.createMappingSession({
+    inventory: TEST_INVENTORY, reconciliation, state, streamId, variationNumber: 1, variationNumbers: [1],
+  }).getViewState();
+  const current = buildView("current-stream");
+  assert.equal(current.inventory.find((entry) => entry.sku === sku).soldQuantity, 2);
+  assert.equal(getRanCountsBySku(current).get(sku), 1);
+  assert.equal(getRanCountsBySku(buildView("prior-stream")).get(sku), 1);
+  assert.deepEqual(state, before);
+  reconciliation.pinStreamToInventoryBaseline(state, { streamId: "new-stream" });
+  assert.equal(getRanCountsBySku(buildView("new-stream")).size, 0, "new stream starts at zero without resetting counters");
+});
+
+test("preset and manual-queue projections preserve canonical ran counts for any viewed entry", () => {
+  const presetView = require("../extension/tagger/variation-presets-view.js");
+  const inventory = [{ sku: "TEE-M", item: "Tee", style: "Red", size: "M" }];
+  const raw = ranView([ranVariation(1), ranVariation(2)], {
+    inventory, inventoryBaselineId: "baseline", activeBiddingVariationNumber: 2,
+    currentVariationNumber: 2, selectedVariationNumber: 2,
+  });
+  const presets = { streamId: raw.streamId, baselineId: "baseline", revision: "revision", total: 5,
+    assignments: [{ variationNumber: 4, sku: "TEE-M" }] };
+  const queue = { streamId: raw.streamId, baselineId: "baseline", queuedSku: "TEE-M", armedAfterVariationNumber: 2 };
+  for (const selection of [null, 1, 4, 5]) {
+    const planned = presetView.project(raw, presets, selection);
+    const queued = presetView.projectQueuedItem(planned, queue, 3);
+    assert.deepEqual([...getRanCountsBySku(planned)], [["TEE-M", 1]]);
+    assert.deepEqual([...getRanCountsBySku(queued)], [["TEE-M", 1]]);
+  }
 });

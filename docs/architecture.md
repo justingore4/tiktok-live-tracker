@@ -851,6 +851,21 @@ Shared tagger behavior includes:
   the exact size-level stock display. Mapping during bidding shows a pending reservation
   until completion or cancellation. Zero-stock sizes remain enabled and show `Oversold
   by N` when over-allocated.
+- A positive **X ran** label appears directly above the card's existing stock count,
+  using the same stock styling; zero is hidden. The pure
+  `inventory-view-model.getRanCountsBySku(view)` counts each recorded, mapped variation
+  in the current stream once, excluding only the actual `activeBiddingVariationNumber`
+  and unrecorded preset/queue projections. Payment status does not filter this count:
+  completed, canceled, processing, fixing, and unknown outcomes all qualify once no
+  longer actively bidding. The last ended variation counts before another auction starts;
+  the current/newest fallback or browsed variation is not used as an exclusion.
+  `getInventoryGroupRanCount(group, counts)` sums exact SKUs across the existing normalized
+  item/style card's sizes. Counts and cards use the same rendered view, not mixed saved
+  snapshots, baseline-wide totals, or selected-size labels. Remapping moves the count;
+  unmapping removes it. Search, pins, and navigation do not change it. Reopening recomputes
+  it, and a new empty stream starts at zero even on a reused inventory baseline.
+  This display-only derivation adds no persistent counter, capture event, inventory
+  allocation, accounting value, report field, or export change.
 - Direct mapping and correction of a singleton, or exact-size mapping and correction from
   a multi-size list, on the selected current or previous variation. Choosing the exact
   selected SKU again removes that mapping; choosing another size remaps to its SKU.

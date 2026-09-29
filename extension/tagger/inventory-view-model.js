@@ -468,6 +468,36 @@
       };
     }
 
+    function getRanCountsBySku(view) {
+      const counts = new Map();
+      const seenVariations = new Set();
+      // Use the current stream's recorded view, not baseline-wide sales totals
+      // or projected preset/queue rows. "Current" can fall back to the last
+      // ended auction, so only the actual bidding marker excludes a real row.
+      for (const variation of Array.isArray(view?.variations) ? view.variations : []) {
+        const number = variation?.variationNumber;
+        const sku = variation?.sku;
+        if (variation?.recorded !== true || variation.preset === true ||
+            variation.queuedPreview === true || !Number.isSafeInteger(number) || number < 1 ||
+            number === view.activeBiddingVariationNumber || seenVariations.has(number)) continue;
+        seenVariations.add(number);
+        if (typeof sku !== "string" || !sku || sku !== sku.trim()) continue;
+        counts.set(sku, (counts.get(sku) ?? 0) + 1);
+      }
+      return counts;
+    }
+
+    function getInventoryGroupRanCount(group, counts) {
+      if (!Array.isArray(group?.entries) || typeof counts?.get !== "function") return 0;
+      const skus = new Set(group.entries.map((entry) => entry?.sku));
+      let total = 0;
+      for (const sku of skus) {
+        const count = typeof sku === "string" ? counts.get(sku) : null;
+        if (Number.isSafeInteger(count) && count > 0) total += count;
+      }
+      return total;
+    }
+
     function getPreferredInventoryGroupEntry(
       group,
       { selectedSku = null, currentMappedSku = null, queuedSku = null } = {},
@@ -586,9 +616,11 @@
       formatGrossMarginPercentage,
       formatUsdCents,
       getAvailableToTagQuantity,
+      getInventoryGroupRanCount,
       getInventoryGroupStockDisplay,
       getPreferredInventoryGroupEntry,
       getProfitDisplay,
+      getRanCountsBySku,
       getRemainingQuantity,
       getStockDisplay,
       groupInventoryEntries,

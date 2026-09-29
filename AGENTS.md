@@ -17,6 +17,12 @@ These repository rules apply on Windows and macOS, regardless of Codex account.
 - Follow the requested scope and wait when asked not to begin. Explanations,
   reviews, prompts, and requests for Git commands do not authorize implementation
   or execution of the proposed commands; relevant read-only inspection is allowed.
+- "git me commands" means respond only with one paste-ready code block containing
+  `git add -A`, `git commit -m "<descriptive message>"` with a real summary of the
+  changes, and the appropriate `git push` command for the current branch. Include
+  all repository changes, not only the current task's files; respect ignored files.
+  Do not add review/test commands or surrounding narration. Never execute staging,
+  committing, or pushing for this request; the user will paste the commands.
 - Preserve unrelated work. Do not commit, push, switch branches, discard changes,
   or perform destructive Git operations without explicit authorization.
 - Do not access real reports, Chrome profiles, live tracker state, Sheet contents,

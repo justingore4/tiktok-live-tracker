@@ -215,6 +215,97 @@ test("header count stays the same when pinning changes the displayed group order
   assert.deepEqual(inventory, original);
 });
 
+function ranViewFixture() {
+  return {
+    streamId: "synthetic-ran-stream", inventoryBaselineId: "synthetic-baseline",
+    inventory: inventoryFixture(10),
+    activeBiddingVariationNumber: 6, currentVariationNumber: 6, selectedVariationNumber: 6,
+    variations: [
+      { variationNumber: 1, recorded: true, sku: "SYNTHETIC-0-M", status: "committed" },
+      { variationNumber: 2, recorded: true, sku: "SYNTHETIC-0-L", status: "canceled" },
+      { variationNumber: 3, recorded: true, sku: "SYNTHETIC-0-M", status: "pending" },
+      { variationNumber: 5, recorded: true, sku: "SYNTHETIC-1-M", status: "unrecognized" },
+      { variationNumber: 6, recorded: true, sku: "SYNTHETIC-0-L", bidding: true },
+    ],
+  };
+}
+
+test("inventory rendering derives full-group ran counts once without mutating the view or inventory", () => {
+  const harness = createRenderHarness();
+  const view = ranViewFixture();
+  const before = structuredClone(view);
+  let countReads = 0;
+  harness.viewModel = { ...viewModel, getRanCountsBySku(view) {
+    countReads += 1;
+    return viewModel.getRanCountsBySku(view);
+  } };
+  harness.renderInventory(view);
+  assert.equal(countReads, 1, "Count captured rows once per render, not once per visible card");
+  assert.equal(harness.inventoryGrid.children[0].group.ranCount, 3);
+  assert.equal(harness.inventoryGrid.children[1].group.ranCount, 1);
+  assert.equal(harness.inventoryGrid.children[2].group.ranCount, 0);
+  assert.deepEqual(view, before);
+});
+
+test("ran count survives size-specific search, navigation, pinning, and expansion", () => {
+  const harness = createRenderHarness();
+  const view = ranViewFixture();
+  for (const selectedVariationNumber of [6, 1]) {
+    const selectedView = { ...view, selectedVariationNumber,
+      isReviewingHistory: selectedVariationNumber !== 6 };
+    for (const search of ["", "SYNTHETIC-0-L", "Product 0"]) {
+      harness.searchInput.value = search;
+      harness.inventoryListExpanded = true;
+      harness.inventoryGroupOrderController.togglePinnedGroup(
+        viewModel.createInventoryGroupKey("Product 0", "Tee"));
+      harness.renderInventory(selectedView);
+      const group = harness.inventoryGrid.children.find(({ group }) => group.item === "Product 0").group;
+      assert.equal(group.ranCount, 3, "Matching L still includes all M auctions in that card");
+      assert.equal(group.entries.length, 2);
+    }
+  }
+});
+
+test("future presets and manual queue projections neither add ran counts nor change the active exclusion", () => {
+  const harness = createRenderHarness();
+  const projection = require("../extension/tagger/variation-presets-view.js");
+  const view = ranViewFixture();
+  const presets = { streamId: view.streamId, baselineId: view.inventoryBaselineId,
+    revision: "synthetic-revision", total: 9, assignments: [{ variationNumber: 8, sku: "SYNTHETIC-0-L" }] };
+  for (const selected of [6, 8]) {
+    const future = projection.project(view, presets, selected);
+    const preview = projection.projectQueuedItem(future, {
+      streamId: view.streamId, baselineId: view.inventoryBaselineId,
+      armedAfterVariationNumber: 6, queuedSku: "SYNTHETIC-0-M", queueToken: "synthetic-token",
+    }, 7);
+    for (const rendered of [future, preview]) {
+      harness.renderInventory(rendered);
+      assert.equal(harness.inventoryGrid.children[0].group.ranCount, 3);
+    }
+  }
+  const beforeCapture = { ...view, activeBiddingVariationNumber: null, variations: [] };
+  harness.renderInventory(projection.project(beforeCapture, presets, 8));
+  assert.equal(harness.inventoryGrid.children[0].group.ranCount, 0);
+});
+
+test("size-picker render deferral keeps only the latest view and rebuilds ran counts on release", () => {
+  const harness = createRenderHarness();
+  const view = ranViewFixture();
+  harness.renderInventory(view);
+  harness.inventorySizeMenuState = {};
+  harness.renderInventory({ ...view, activeBiddingVariationNumber: null });
+  const advanced = { ...view, activeBiddingVariationNumber: 7,
+    variations: [...view.variations, { variationNumber: 7, recorded: true, sku: "SYNTHETIC-0-M" }] };
+  harness.renderInventory(advanced);
+  assert.equal(harness.inventoryGrid.children[0].group.ranCount, 3, "Open picker retains the existing frozen card");
+  assert.equal(harness.deferredInventoryRender.view, advanced);
+  harness.inventorySizeMenuState = null;
+  harness.renderInventory(harness.deferredInventoryRender.view);
+  assert.equal(harness.inventoryGrid.children[0].group.ranCount, 4);
+  harness.renderInventory({ ...view, streamId: "synthetic-new-stream", variations: [], activeBiddingVariationNumber: null });
+  assert.equal(harness.inventoryGrid.children[0].group.ranCount, 0, "Do not reuse the previous session's count");
+});
+
 test("the relocated SKU button retains availability, busy, and form visibility safeguards", () => {
   const sandbox = {
     streamSnapshot: { activeSession: null, resumed: false },

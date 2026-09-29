@@ -89,6 +89,11 @@ data in A:F beyond that limit is rejected, not silently truncated.
   end or while controls are locked. Navigation does not change item assignments.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
+- **X ran**, directly above a card's stock count, shows how many mapped auctions
+  have already run for that item this stream, across all its sizes. It includes
+  pending and canceled orders, not just sales; the currently bidding variation and
+  uncaptured presets/queue previews do not count. Zero is hidden. Correcting or
+  removing a mapping updates it. This label does not change stock or sales totals.
 - On a captured variation, left-click selects or unmaps the item being viewed.
 - On the live variation, right-click maps an unassigned variation; if it is already
   mapped, right-click toggles the next-item queue.
@@ -419,6 +424,12 @@ The root [AGENTS.md](AGENTS.md) contains shared working rules for both Mac and W
 The [developer handoff](docs/LLM_HANDOFF.txt) holds implementation details, decisions,
 and verification notes. Keep both with the source; neither transfers chat history or
 Chrome's saved tracker data. The committed `.gitattributes` normalizes text files to LF.
+
+When the maintainer says **git me commands**, respond only with a paste-ready code
+block to stage **all repository changes** (`git add -A`), commit with a descriptive
+message, and push the current branch. Do not limit it to the latest task's files,
+add review/test commands, or execute these commands; the maintainer pastes them.
+Ignored files stay ignored.
 
 When you choose to switch devices:
 

@@ -1116,7 +1116,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   );
   assert.match(
     panelSource,
-    /const stockAriaLabel = stock\.ariaLabel \?\? stock\.label/,
+    /const stockAriaLabel = \[\s*stock\.ariaLabel \?\? stock\.label,[\s\S]*?\]\.filter\(Boolean\)\.join\(", "\)/,
   );
   assert.match(
     panelSource,
@@ -1780,11 +1780,13 @@ function createInventoryCardBadgeHarness() {
       presetAssignments = null,
       prestream = false,
       manualPreview = false,
+      ranCount = 0,
     } = {}) {
       const group = {
         key: "test-tee-black",
         item: "Test tee",
         style: "Black",
+        ranCount,
         entries: sizes.map((size) => ({
           sku: `TEE-${size}`,
           size,
@@ -1832,10 +1834,54 @@ function createInventoryCardBadgeHarness() {
         live: wrapper.querySelector('[data-field="current-mapped"]'),
         queued: wrapper.querySelector('[data-field="queued"]'),
         size: wrapper.querySelector('[data-field="size"]'),
+        ran: wrapper.querySelector('[data-field="ran"]'),
+        stock: wrapper.querySelector('[data-field="stock-primary"]'),
       };
     },
   };
 }
+
+test("inventory ran label is hidden and empty at zero, without changing the stock label", () => {
+  const card = createInventoryCardBadgeHarness().render();
+  assert.equal(card.ran.hidden, true);
+  assert.equal(card.ran.textContent, "");
+  assert.equal(card.stock.textContent, "3 left");
+  assert.doesNotMatch(card.button.getAttribute("aria-label"), /ran this session|0 ran/);
+});
+
+test("inventory ran label and accessible count coexist with size, selected, canceled, preset, and queue roles", () => {
+  const harness = createInventoryCardBadgeHarness();
+  for (const options of [
+    { ranCount: 1, sizes: ["M"] },
+    { ranCount: 3, sizes: ["S", "M", "L"], selectedSku: "TEE-M", liveSku: "TEE-L", queuedSku: "TEE-S" },
+    { ranCount: 3, status: "canceled", paymentStatus: "canceled", selectedSku: "TEE-M" },
+    { ranCount: 3, reviewingPreset: true },
+    { ranCount: 3, manualPreview: true, queuedSku: "TEE-M" },
+  ]) {
+    const card = harness.render(options);
+    assert.equal(card.ran.hidden, false);
+    assert.equal(card.ran.textContent, `${options.ranCount} ran`);
+    assert.equal(card.stock.textContent, "3 left", "Do not replace available/baseline quantities");
+    assert.match(card.button.getAttribute("aria-label"),
+      new RegExp(`${options.ranCount} ${options.ranCount === 1 ? "auction" : "auctions"} ran this session`));
+  }
+});
+
+test("inventory ran line sits immediately above quantity and inherits its responsive stock typography", () => {
+  const html = fs.readFileSync(path.join(extensionDirectory, "tagger", "sidepanel.html"), "utf8");
+  const css = fs.readFileSync(path.join(extensionDirectory, "tagger", "sidepanel.css"), "utf8");
+  assert.match(html, /class="stock-label" data-field="stock">\s*<span class="stock-line" data-field="ran" hidden><\/span>\s*<span class="stock-line" data-field="stock-primary"><\/span>/);
+  const stockRule = css.match(/\n\.stock-label\s*\{([^}]+)\}/)?.[1];
+  assert.match(stockRule, /flex-direction: column/);
+  assert.match(stockRule, /align-items: flex-end/);
+  assert.match(stockRule, /text-align: right/);
+  assert.match(stockRule, /font-size: 11px/);
+  assert.match(stockRule, /font-weight: 690/);
+  assert.match(stockRule, /color: #9df0df/);
+  assert.match(css, /\.stock-line\s*\{[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\[hidden\]\s*\{\s*display: none !important/);
+  assert.doesNotMatch(css, /\[data-field=["']ran["']\]/, "No divergent ran-only style or reserved height");
+});
 
 test("live upcoming preset uses the existing selected-plus-queued card state and exact queued-size description", () => {
   const harness = createInventoryCardBadgeHarness();
@@ -2287,7 +2333,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
       "viewModel.filterInventoryGroups(",
       "const visibleInventory = inventoryListExpanded",
       "visibleInventory.forEach((group)",
-      "createInventoryCard(group, view)",
+      "createInventoryCard(cardGroup, view)",
     ],
     "inventory rows must be grouped, pin-ordered, and filtered before visible whole groups render",
   );

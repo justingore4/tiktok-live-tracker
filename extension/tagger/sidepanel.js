@@ -3462,7 +3462,11 @@
     const currentLabel = wrapper.querySelector('[data-field="current-mapped"]');
     const queuedLabel = wrapper.querySelector('[data-field="queued"]');
     const stock = viewModel.getInventoryGroupStockDisplay(group);
-    const stockAriaLabel = stock.ariaLabel ?? stock.label;
+    const ranCount = group.ranCount ?? 0;
+    const stockAriaLabel = [
+      stock.ariaLabel ?? stock.label,
+      ranCount > 0 ? `${ranCount} ${ranCount === 1 ? "auction" : "auctions"} ran this session` : "",
+    ].filter(Boolean).join(", ");
     const selectedEntry = group.entries.find((entry) => entry.selected) ?? null;
     const selected = selectedEntry !== null;
     const queuedPresentation = getQueuedItemPresentation(view);
@@ -3678,6 +3682,9 @@
         ? preferredEntry.size || "No size"
         : "Choose size"
       : representativeEntry?.size ?? "";
+    const ranLabel = wrapper.querySelector('[data-field="ran"]');
+    ranLabel.textContent = ranCount > 0 ? `${ranCount} ran` : "";
+    ranLabel.hidden = ranCount === 0;
     wrapper.querySelector('[data-field="stock-primary"]').textContent =
       stock.primaryLabel ?? stock.label;
 
@@ -4590,8 +4597,15 @@
       : filteredInventory.slice(0, COLLAPSED_INVENTORY_ITEM_LIMIT);
     const fragment = document.createDocumentFragment();
 
+    // Use this render's canonical-backed rows, not selection, stock deductions,
+    // or another snapshot that may have advanced while a size picker was open.
+    const ranCountsBySku = viewModel.getRanCountsBySku(view);
     visibleInventory.forEach((group) => {
-      fragment.append(createInventoryCard(group, view));
+      const cardGroup = {
+        ...group,
+        ranCount: viewModel.getInventoryGroupRanCount(group, ranCountsBySku),
+      };
+      fragment.append(createInventoryCard(cardGroup, view));
     });
 
     inventoryGrid.replaceChildren(fragment);
