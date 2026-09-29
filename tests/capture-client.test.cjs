@@ -323,3 +323,42 @@ test("requires explicit protocol/runtime dependencies and remains storage-free",
     /chrome\.storage|localStorage|sessionStorage|\bfetch\s*\(|XMLHttpRequest|sendBeacon/,
   );
 });
+
+test("processing price context is a strict independent read with a bounded timeout", async () => {
+  const blocked = deferred();
+  const runtime = createRuntime((message) => message.event.type === "get_processing_price_context"
+    ? blocked.promise : ACCEPTED);
+  const timers = new Map();
+  const client = createCaptureClient({ protocol, runtime,
+    setTimeoutFn: (callback, delay) => { timers.set(1, { callback, delay }); return 1; },
+    clearTimeoutFn: (id) => timers.delete(id),
+  });
+  const context = client.getProcessingPriceContext();
+  assert.deepEqual(await client.observeVariations([17]), { status: "accepted" });
+  assert.equal(timers.get(1).delay, 3000);
+  timers.get(1).callback();
+  await assert.rejects(context, { code: "CAPTURE_TRANSPORT_ERROR" });
+  assert.equal(timers.size, 0);
+  blocked.resolve({ ok: true, data: { processingPriceContext: "late-context" } });
+});
+
+test("processing price context accepts only a bounded token or null and forwards paired detached evidence", async () => {
+  for (const processingPriceContext of [null, "stream-baseline-document-token"]) {
+    const client = createCaptureClient({ protocol,
+      runtime: createRuntime(() => ({ ok: true, data: { processingPriceContext } })),
+    });
+    assert.equal(await client.getProcessingPriceContext(), processingPriceContext);
+  }
+  for (const data of [{ status: "accepted" }, { processingPriceContext: "" }, { processingPriceContext: "x".repeat(513) }, { processingPriceContext: "token", privateData: "no" }]) {
+    const client = createCaptureClient({ protocol, runtime: createRuntime(() => ({ ok: true, data })) });
+    await assert.rejects(client.getProcessingPriceContext(), { code: "INVALID_CAPTURE_RESPONSE" });
+  }
+  const runtime = createRuntime();
+  const client = createCaptureClient({ protocol, runtime });
+  const status = { variationNumber: 17, observedPaymentStatus: "payment_processing", processingPriceCents: 1825, processingPriceContext: "context-a" };
+  const request = client.observePaymentStatuses([status]);
+  status.processingPriceCents = 5;
+  status.processingPriceContext = "context-b";
+  await request;
+  assert.deepEqual(runtime.calls[0].event.statuses, [{ variationNumber: 17, observedPaymentStatus: "payment_processing", processingPriceCents: 1825, processingPriceContext: "context-a" }]);
+});

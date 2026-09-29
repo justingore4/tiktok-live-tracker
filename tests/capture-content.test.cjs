@@ -367,6 +367,7 @@ function createHarness({
     ok: true,
     data: { status: "accepted" },
   }),
+  processingPriceContextHandler = async () => ({ ok: true, data: { processingPriceContext: null } }),
   scanOnRequest = false,
   schedulerCreateFailures = 0,
   bodyObserveFailures = 0,
@@ -384,6 +385,7 @@ function createHarness({
   const observerInstances = [];
   const schedulerSessions = [];
   const captureMessages = [];
+  const processingPriceContextRequests = [];
   const documentElement = { name: "documentElement" };
   const location = { origin, pathname };
   const intervals = new Map();
@@ -596,6 +598,10 @@ function createHarness({
     chrome: {
       runtime: {
         async sendMessage(message) {
+          if (message.event.type === "get_processing_price_context") {
+            processingPriceContextRequests.push(message);
+            return processingPriceContextHandler(message, processingPriceContextRequests.length - 1);
+          }
           captureMessages.push(message);
           return captureResponseHandler(message, captureMessages.length - 1);
         },
@@ -656,6 +662,7 @@ function createHarness({
   const harness = {
     calls,
     captureMessages,
+    processingPriceContextRequests,
     documentElement,
     errors,
     infos,
@@ -1278,6 +1285,227 @@ for (const [label, observedPaymentStatus] of [
       harness.captureMessages.some(({ event }) => event.type === "payment_complete"),
       false,
     );
+  });
+}
+
+function processingPricePayloads(harness) {
+  return harness.captureMessages.flatMap(({ event }) => event.statuses ?? [])
+    .filter((status) => Object.hasOwn(status, "processingPriceCents"));
+}
+
+test("a processing price arriving after the unchanged status is delivered once with its exact worker context", async () => {
+  const sale = createSaleRow("Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "context-a" } }),
+  });
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+  assert.equal(harness.processingPriceContextRequests.length, 0);
+  sale.summaryText.textContent = "Buyer has won: $18.25 ";
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness), [{ variationNumber: 44,
+    observedPaymentStatus: "payment_processing", processingPriceCents: 1825, processingPriceContext: "context-a" }]);
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  assert.equal(processingPricePayloads(harness).length, 1);
+  assert.equal(harness.captureMessages.length, 3);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.timeouts.size, 0);
+  assert.doesNotMatch(JSON.stringify(harness.captureMessages), /Buyer|has won/);
+});
+
+test("processing price is resampled after context lookup rather than binding an earlier DOM value", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Order processing");
+  let finishContext;
+  const context = new Promise((resolve) => { finishContext = resolve; });
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: () => context,
+  });
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2, "status capture does not wait for context");
+  sale.summaryText.textContent = "Buyer has won: $19.50 ";
+  finishContext({ ok: true, data: { processingPriceContext: "context-a" } });
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness).map(({ processingPriceCents }) => processingPriceCents), [1950]);
+});
+
+test("both conflicting processing prices survive coalescing behind an in-flight status delivery", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment fixing");
+  let finishStatus;
+  const statusGate = new Promise((resolve) => { finishStatus = resolve; });
+  let held = false;
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "context-a" } }),
+    captureResponseHandler: async (message) => {
+      if (message.event.type === "observe_payment_statuses" && !held) {
+        held = true;
+        return statusGate;
+      }
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  await flushAsync();
+  sale.summaryText.textContent = "Buyer has won: $20 ";
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  finishStatus({ ok: true, data: { status: "accepted" } });
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness).map(({ processingPriceCents }) => processingPriceCents), [1000, 2000]);
+  assert.ok(processingPricePayloads(harness).every(({ observedPaymentStatus }) => observedPaymentStatus === "payment_fixing"));
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("failed processing-price delivery retains conflict evidence for bounded retries", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  let priceAttempts = 0;
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "context-a" } }),
+    captureResponseHandler: async (message) => {
+      if (message.event.statuses?.some((status) => status.processingPriceCents) && priceAttempts++ === 0) {
+        return { ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } };
+      }
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  await flushAsync();
+  sale.summaryText.textContent = "Buyer has won: $20 ";
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness).map(({ processingPriceCents }) => processingPriceCents), [1000, 1000, 2000]);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+test("a new price context resets evidence and dedup without restamping the old context's conflicting amounts", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  let token = "context-a";
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: token } }),
+  });
+  await flushAsync();
+  sale.summaryText.textContent = "Buyer has won: $20 ";
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  token = "context-b";
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.summaryText }]);
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness).map(({ processingPriceCents, processingPriceContext }) => [processingPriceContext, processingPriceCents]), [
+    ["context-a", 1000], ["context-a", 2000], ["context-b", 2000],
+  ]);
+});
+
+for (const finalStatus of ["Payment complete", "Payment failed", "Unknown final state"]) {
+  test(`a delayed price context cannot revert a newer ${finalStatus} observation`, async () => {
+    const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+    setPaymentText(sale, "Payment processing");
+    let finishContext;
+    const context = new Promise((resolve) => { finishContext = resolve; });
+    const harness = createHarness({ rows: [sale], scanOnRequest: true, processingPriceContextHandler: () => context });
+    await flushAsync();
+    setPaymentText(sale, finalStatus);
+    latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.statusText }]);
+    await flushAsync();
+    const messageCount = harness.captureMessages.length;
+    finishContext({ ok: true, data: { processingPriceContext: "context-a" } });
+    await flushAsync();
+    assert.equal(harness.captureMessages.length, messageCount);
+    assert.deepEqual(processingPricePayloads(harness), []);
+  });
+}
+
+test("a failed queued auxiliary price cannot supersede a later cancellation", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  let first = true;
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "context-a" } }),
+    captureResponseHandler: async (message) => {
+      if (first && message.event.statuses?.some((status) => status.processingPriceCents)) {
+        first = false;
+        return { ok: false, error: { code: "NO_ACTIVE_STREAM", message: "No active stream." } };
+      }
+      return { ok: true, data: { status: "accepted" } };
+    },
+  });
+  await flushAsync();
+  setPaymentText(sale, "Payment failed");
+  latestCaptureObserver(harness).trigger([{ type: "characterData", target: sale.statusText }]);
+  await flushAsync();
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(processingPricePayloads(harness).length, 1, "stale auxiliary payload was not retried");
+  assert.deepEqual(harness.captureMessages.at(-1).event.statuses, [{ variationNumber: 44, observedPaymentStatus: "canceled" }]);
+});
+
+test("missing or timed-out price context does not block status capture and late responses after navigation are ignored", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  let finishContext;
+  const context = new Promise((resolve) => { finishContext = resolve; });
+  const harness = createHarness({ rows: [sale], processingPriceContextHandler: () => context });
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 1, "successful status capture permits one deferred context retry");
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.equal(harness.timeouts.size, 0);
+  harness.location.pathname = "/other";
+  harness.tickIntervals();
+  finishContext({ ok: true, data: { processingPriceContext: "context-a" } });
+  await flushAsync();
+  assert.equal(processingPricePayloads(harness).length, 0);
+  assert.equal(harness.errors.length, 0);
+});
+
+test("successful normal capture retry gets a fresh processing price context after Start without a DOM mutation", async () => {
+  const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing");
+  let active = false;
+  const harness = createHarness({ rows: [sale],
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: active ? "active-context" : null } }),
+    captureResponseHandler: async () => active
+      ? { ok: true, data: { status: "accepted" } }
+      : { ok: false, error: { code: "NO_ACTIVE_STREAM", message: "Start tracking first." } },
+  });
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness), []);
+  active = true;
+  harness.tickTimeouts();
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness), [{ variationNumber: 44,
+    observedPaymentStatus: "payment_processing", processingPriceCents: 1000, processingPriceContext: "active-context" }]);
+  assert.equal(harness.timeouts.size, 0);
+});
+
+for (const staleSurface of ["route", "root", "body"]) {
+  test(`an unfinished processing-price read is discarded when the capture ${staleSurface} changes`, async () => {
+    const sale = createSaleRow("Buyer has won: $10 Variation: #44 Awaiting payment");
+    setPaymentText(sale, "Payment processing");
+    let finishContext;
+    const context = new Promise((resolve) => { finishContext = resolve; });
+    const harness = createHarness({ rows: [sale], processingPriceContextHandler: () => context });
+    await flushAsync();
+    if (staleSurface === "route") harness.setPathname("/other");
+    if (staleSurface === "root") {
+      const oldRoot = harness.currentRoot();
+      oldRoot.parentNode = null;
+      harness.currentBody().children = harness.currentBody().children.filter((child) => child !== oldRoot);
+      harness.currentBody().append(new FakeElement({ dataTid: "m4b_space" }));
+    }
+    if (staleSurface === "body") harness.setBody(createBody("replacement"));
+    finishContext({ ok: true, data: { processingPriceContext: "context-a" } });
+    await flushAsync();
+    assert.equal(processingPricePayloads(harness).length, 0);
+    assert.equal(harness.timeouts.size, 0);
   });
 }
 

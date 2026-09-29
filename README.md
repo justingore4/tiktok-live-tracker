@@ -67,6 +67,8 @@ copy or CSV export to update the Sheet manually.
 6. Choose **End Stream Tracking → End and create report** to save the report and
    end local tracking. This does not end the TikTok broadcast. If the report cannot
    be saved, tracking stays active; resolve the error and retry.
+   The existing warning lists unresolved variation numbers beside their count,
+   for example **Count 3: var #5, 32, 98**, and updates as capture finishes.
 
 Closing the panel does not end the session. After reloading/updating the extension,
 refresh the TikTok dashboard to load its current capture scripts.
@@ -285,10 +287,21 @@ individual cancellation details show an explanatory notice instead of guessed SK
 
 These actions have different effects:
 
-- **Finish unresolved payments** resolves eligible temporary payment errors on the
-  newest eligible report, with no active tracker and the same current inventory
-  baseline/session. This changes the underlying payment and inventory state and
-  regenerates the report.
+- **Finish unresolved payments** lists every captured order still awaiting a final
+  outcome, including missing or unrecognized payment statuses. Each row shows its
+  variation and item/SKU/size. Verify the outcome, then **Mark complete** with a
+  positive final sold price or **Mark canceled** without entering a price. When
+  captured, that exact order's processing-row auction price prefills the editable
+  box; verify it before confirming. Older orders, missing prices, or conflicting
+  price observations leave it blank. The tracker never substitutes a live bid.
+  Remembering this price alone does not complete payment or deduct inventory.
+  This fallback requires the newest eligible ended report, no active tracker, and
+  the same current inventory baseline/session; unavailable corrections show why.
+  It updates payment/inventory state and rebuilds the report while preserving saved
+  cost corrections. Handoff remains blocked until its required issues are cleared.
+  Captured completions and cancellations need no action; presets and queued previews
+  are excluded. This does not change automatic payment outcomes, repair missed
+  status capture, or allow reversing a completed sale.
 - **Correct Item Mapping** changes completed/canceled variation mappings in an
   eligible finalized report, with no active tracker or unresolved/pending report
   conditions. Changes apply to that saved report and its inventory export only,

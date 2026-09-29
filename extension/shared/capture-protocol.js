@@ -38,6 +38,7 @@
       OBSERVED_PAYMENT_STATUSES.UNRECOGNIZED,
     ]);
     const EVENT_TYPES = Object.freeze({
+      GET_PROCESSING_PRICE_CONTEXT: "get_processing_price_context",
       OBSERVE_ATTRIBUTED_GMV: "observe_attributed_gmv",
       OBSERVE_BIDDING_PRICE: "observe_bidding_price",
       OBSERVE_BIDDING_VARIATION: "observe_bidding_variation",
@@ -46,6 +47,7 @@
       PAYMENT_COMPLETE: "payment_complete",
     });
     const EVENT_KEYS = Object.freeze({
+      [EVENT_TYPES.GET_PROCESSING_PRICE_CONTEXT]: ["type"],
       [EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV]: [
         "attributedGmvDisplay",
         "type",
@@ -129,6 +131,10 @@
 
       requireExactKeys(event, expectedKeys, `Capture event ${event.type}`);
 
+      if (event.type === EVENT_TYPES.GET_PROCESSING_PRICE_CONTEXT) {
+        return event;
+      }
+
       if (event.type === EVENT_TYPES.OBSERVE_ATTRIBUTED_GMV) {
         if (
           typeof event.attributedGmvDisplay !== "string" ||
@@ -207,9 +213,12 @@
             );
           }
 
+          const hasProcessingPrice = Object.hasOwn(status, "processingPriceCents");
           requireExactKeys(
             status,
-            ["observedPaymentStatus", "variationNumber"],
+            hasProcessingPrice
+              ? ["observedPaymentStatus", "processingPriceCents", "processingPriceContext", "variationNumber"]
+              : ["observedPaymentStatus", "variationNumber"],
             `statuses[${index}]`,
           );
           const variationNumber = requireVariationNumber(
@@ -229,6 +238,17 @@
               "INVALID_CAPTURE_MESSAGE",
               `statuses[${index}].observedPaymentStatus is not supported for capture.`,
             );
+          }
+
+          if (hasProcessingPrice && (
+            !["payment_processing", "order_processing", "payment_fixing", "payment_failed"]
+              .includes(status.observedPaymentStatus) ||
+            !Number.isSafeInteger(status.processingPriceCents) || status.processingPriceCents < 1 ||
+            typeof status.processingPriceContext !== "string" ||
+            status.processingPriceContext.length === 0 || status.processingPriceContext.length > 512
+          )) {
+            fail("INVALID_CAPTURE_MESSAGE",
+              `statuses[${index}].processingPriceCents requires a processing/fixing status, positive safe integer, and processingPriceContext.`);
           }
 
           seenVariationNumbers.add(variationNumber);

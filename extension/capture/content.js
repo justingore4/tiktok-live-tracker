@@ -96,6 +96,8 @@
     captureClient = captureClientModule.createCaptureClient({
       protocol: captureProtocol,
       runtime: globalThis.chrome?.runtime,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
     });
   } catch (error) {
     console.error(`${LOG_PREFIX} Capture client failed to initialize.`, error);
@@ -288,6 +290,8 @@
       deliveryRetryTimerId: null,
       deliveryRunning: false,
       latestObservedPaymentStatuses: new Map(),
+      processingPriceEvidence: new Map(),
+      deliveredProcessingPrices: new Map(),
       queuedPayments: new Map(),
       queuedPaymentStatuses: new Map(),
       queuedVariations: new Set(),
@@ -421,6 +425,46 @@
     return status.observedPaymentStatus === "payment_complete";
   }
 
+  function paymentStatusFingerprint(status) {
+    return `${status.observedPaymentStatus}:${status.processingPriceCents ?? ""}:${status.processingPriceContext ?? ""}`;
+  }
+
+  function isProcessingPriceStatus(status) {
+    return ["payment_processing", "order_processing", "payment_fixing", "payment_failed"]
+      .includes(status.observedPaymentStatus);
+  }
+
+  function refreshQueuedPaymentStatus(delivery, status) {
+    const variationNumber = status.variationNumber;
+    if (!isCompletedStatus(status) && delivery.stickyCompletedVariations.has(variationNumber)) {
+      delivery.queuedPaymentStatuses.delete(variationNumber);
+      return false;
+    }
+    if (isCompletedStatus(status) && [...delivery.queuedPayments.values()]
+      .some((sale) => sale.variationNumber === variationNumber)) {
+      delivery.queuedPaymentStatuses.delete(variationNumber);
+      return false;
+    }
+    let queuedStatus = status;
+    if (isProcessingPriceStatus(status)) {
+      const evidence = delivery.processingPriceEvidence.get(variationNumber);
+      const delivered = delivery.deliveredProcessingPrices.get(variationNumber);
+      const pendingPrice = evidence?.prices.find((price) => !delivered?.has(price));
+      if (pendingPrice !== undefined) {
+        queuedStatus = { ...status, processingPriceCents: pendingPrice, processingPriceContext: evidence.context };
+      }
+    }
+    const fingerprint = paymentStatusFingerprint(queuedStatus);
+    if (delivery.deliveredPaymentStatuses.get(variationNumber) === fingerprint) {
+      delivery.queuedPaymentStatuses.delete(variationNumber);
+      return false;
+    }
+    const changed = !delivery.queuedPaymentStatuses.has(variationNumber) ||
+      paymentStatusFingerprint(delivery.queuedPaymentStatuses.get(variationNumber)) !== fingerprint;
+    delivery.queuedPaymentStatuses.set(variationNumber, queuedStatus);
+    return changed;
+  }
+
   function queueLatestPaymentStatus(delivery, status) {
     const variationNumber = status.variationNumber;
 
@@ -431,27 +475,30 @@
       return false;
     }
 
-    delivery.latestObservedPaymentStatuses.set(
-      variationNumber,
-      status.observedPaymentStatus,
-    );
-
-    const queued = delivery.queuedPaymentStatuses.get(variationNumber);
-
-    if (queued?.observedPaymentStatus === status.observedPaymentStatus) {
-      return false;
+    const previous = delivery.latestObservedPaymentStatuses.get(variationNumber);
+    if (isProcessingPriceStatus(status) && status.processingPriceContext === undefined &&
+        previous?.processingPriceContext !== undefined) {
+      // A status-only scan cannot erase already queued price evidence. Its
+      // original context travels with it; never stamp it with a newer token.
+      status = { ...status, processingPriceCents: previous.processingPriceCents,
+        processingPriceContext: previous.processingPriceContext };
     }
-
-    if (
-      delivery.deliveredPaymentStatuses.get(variationNumber) ===
-      status.observedPaymentStatus
-    ) {
-      delivery.queuedPaymentStatuses.delete(variationNumber);
-      return false;
+    if (isProcessingPriceStatus(status) && Number.isSafeInteger(status.processingPriceCents) &&
+        status.processingPriceCents > 0 && typeof status.processingPriceContext === "string") {
+      let evidence = delivery.processingPriceEvidence.get(variationNumber);
+      if (!evidence || evidence.context !== status.processingPriceContext) {
+        evidence = { context: status.processingPriceContext, prices: [] };
+        delivery.processingPriceEvidence.set(variationNumber, evidence);
+        delivery.deliveredProcessingPrices.delete(variationNumber);
+      }
+      // Two distinct values are enough to preserve conflict evidence. Keep the
+      // bounded evidence through coalescing/retries, not only the latest price.
+      if (evidence.prices.length < 2 && !evidence.prices.includes(status.processingPriceCents)) {
+        evidence.prices.push(status.processingPriceCents);
+      }
     }
-
-    delivery.queuedPaymentStatuses.set(variationNumber, status);
-    return true;
+    delivery.latestObservedPaymentStatuses.set(variationNumber, status);
+    return refreshQueuedPaymentStatus(delivery, status);
   }
 
   function requeuePaymentStatusUnlessNewer(delivery, status) {
@@ -462,20 +509,8 @@
       return;
     }
 
-    if (
-      delivery.latestObservedPaymentStatuses.get(status.variationNumber) !==
-      status.observedPaymentStatus
-    ) {
-      return;
-    }
-
-    if (
-      !delivery.queuedPaymentStatuses.has(status.variationNumber) &&
-      delivery.deliveredPaymentStatuses.get(status.variationNumber) !==
-        status.observedPaymentStatus
-    ) {
-      delivery.queuedPaymentStatuses.set(status.variationNumber, status);
-    }
+    const latest = delivery.latestObservedPaymentStatuses.get(status.variationNumber);
+    if (latest) refreshQueuedPaymentStatus(delivery, latest);
   }
 
   function reportDeliveryError(delivery, message, error) {
@@ -623,7 +658,7 @@
         ].filter(
           (status) =>
             delivery.deliveredPaymentStatuses.get(status.variationNumber) !==
-            status.observedPaymentStatus,
+            paymentStatusFingerprint(status),
         );
 
         delivery.queuedVariations.clear();
@@ -677,6 +712,9 @@
               paymentStatuses.map((status) => ({
                 variationNumber: status.variationNumber,
                 observedPaymentStatus: status.observedPaymentStatus,
+                ...(Number.isSafeInteger(status.processingPriceCents)
+                  ? { processingPriceCents: status.processingPriceCents,
+                    processingPriceContext: status.processingPriceContext } : {}),
               })),
             );
 
@@ -687,10 +725,27 @@
             paymentStatuses.forEach((status) => {
               delivery.deliveredPaymentStatuses.set(
                 status.variationNumber,
-                status.observedPaymentStatus,
+                paymentStatusFingerprint(status),
               );
+              if (Number.isSafeInteger(status.processingPriceCents) &&
+                  delivery.processingPriceEvidence.get(status.variationNumber)?.context === status.processingPriceContext) {
+                const delivered = delivery.deliveredProcessingPrices.get(status.variationNumber) ?? new Set();
+                if (delivered.size < 2) delivered.add(status.processingPriceCents);
+                delivery.deliveredProcessingPrices.set(status.variationNumber, delivered);
+              }
+              const latest = delivery.latestObservedPaymentStatuses.get(status.variationNumber);
+              if (latest) refreshQueuedPaymentStatus(delivery, latest);
             });
             delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
+            if (isCurrentSession(captureSession) && captureSession.delivery === delivery &&
+                captureSession.processingPriceCandidateAvailable &&
+                paymentStatuses.some((status) => isProcessingPriceStatus(status) &&
+                  !Number.isSafeInteger(status.processingPriceCents))) {
+              // A status retry may be the first successful capture after Start.
+              // Retry the optional context read from this existing success hook
+              // even if the processing row itself has not mutated since then.
+              void captureProcessingPrices(captureSession, true);
+            }
           } catch (error) {
             statusesDelivered = false;
             paymentStatuses.forEach((status) => {
@@ -732,12 +787,12 @@
             delivery.deliveredPayments.add(fingerprint);
             delivery.deliveredPaymentStatuses.set(
               sale.variationNumber,
-              "payment_complete",
+              "payment_complete::",
             );
             delivery.stickyCompletedVariations.add(sale.variationNumber);
             delivery.latestObservedPaymentStatuses.set(
               sale.variationNumber,
-              "payment_complete",
+              { variationNumber: sale.variationNumber, observedPaymentStatus: "payment_complete" },
             );
             delivery.queuedPaymentStatuses.delete(sale.variationNumber);
             delivery.deliveryRetryDelayMs = DELIVERY_RETRY_DELAY_MS;
@@ -1153,7 +1208,7 @@
 
       delivery.latestObservedPaymentStatuses.set(
         sale.variationNumber,
-        "payment_complete",
+        { variationNumber: sale.variationNumber, observedPaymentStatus: "payment_complete" },
       );
 
       if (!delivery.deliveredPayments.has(fingerprint)) {
@@ -1428,6 +1483,42 @@
     return startCapture(targetBody, locatedRoot.root);
   }
 
+  async function captureProcessingPrices(session, refreshAfterPending = false) {
+    if (!isCurrentSession(session) || typeof captureClient.getProcessingPriceContext !== "function") return;
+    if (session.processingPriceReadRunning) {
+      if (refreshAfterPending) session.processingPriceRefreshRequested = true;
+      return;
+    }
+    session.processingPriceReadRunning = true;
+    try {
+      // Read the worker's stream/baseline/document binding before sampling any
+      // auxiliary price. Never bind a queued DOM price to a later session.
+      const processingPriceContext = await captureClient.getProcessingPriceContext();
+      if (!processingPriceContext || !isCurrentSession(session)) return;
+      const statuses = candidateLocator.locatePaymentStatuses(session.root, parser)
+        .filter((status) => Number.isSafeInteger(status.processingPriceCents) &&
+          status.processingPriceCents > 0)
+        .map((status) => ({
+          variationNumber: status.variationNumber,
+          observedPaymentStatus: status.observedPaymentStatus,
+          processingPriceCents: status.processingPriceCents,
+          processingPriceContext,
+        }));
+      if (statuses.length > 0 && isCurrentSession(session)) {
+        queueCaptureBatch(session, [], statuses, []);
+      }
+    } catch {
+      // Price prefill is optional. A missing context or unreadable row must not
+      // block status capture, change readiness, or infer an auction price.
+    } finally {
+      session.processingPriceReadRunning = false;
+      if (session.processingPriceRefreshRequested) {
+        session.processingPriceRefreshRequested = false;
+        void captureProcessingPrices(session);
+      }
+    }
+  }
+
   function scanSoldItems(session) {
     if (
       !session ||
@@ -1496,12 +1587,17 @@
       }
     });
 
+    session.processingPriceCandidateAvailable = locatedPaymentStatuses
+      .some((status) => Number.isSafeInteger(status.processingPriceCents));
     queueCaptureBatch(
       session,
       variationNumbers,
       paymentStatuses,
       completedSales,
     );
+    if (session.processingPriceCandidateAvailable) {
+      void captureProcessingPrices(session);
+    }
     // Evidence belongs to this completed scan, not a new DOM row that has not
     // yet passed through the normal capture scheduler and delivery queues.
     session.startupEvidenceReady = hasInitialSoldItemsEvidence(session.root, observedVariations);

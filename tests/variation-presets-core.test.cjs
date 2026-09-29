@@ -287,7 +287,9 @@ test("future assignments change only preset state, allow repeated SKU plans, and
   ]);
   assert.deepEqual(h.getState(), before);
   assert.equal(streamReport.serializeInventoryCsv(report(h.getState())), exported);
-  assert.deepEqual(reconciliation.listPaymentFixingOrders(h.getState(), { streamId: STREAM }), []);
+  assert.deepEqual(reconciliation.listPaymentFixingOrders(h.getState(), { streamId: STREAM }),
+    reconciliation.listPaymentFixingOrders(before, { streamId: STREAM }),
+    "future plans never add recovery orders beyond the captured canonical variations");
   const noticesBefore = h.notices.length;
   assert.deepEqual(await h.assign(80), assigned);
   assert.equal(h.notices.length, noticesBefore, "no-op plans and GETs do not cause notification loops");
@@ -753,7 +755,9 @@ test("sequential first click fills its empty source; later clicks move forward w
   assert.deepEqual(h.getState(), canonical);
   assert.deepEqual(report(h.getState()), initialReport);
   assert.equal(streamReport.serializeInventoryCsv(report(h.getState())), initialExport);
-  assert.deepEqual(reconciliation.listPaymentFixingOrders(h.getState(), { streamId: STREAM }), []);
+  assert.deepEqual(reconciliation.listPaymentFixingOrders(h.getState(), { streamId: STREAM }),
+    reconciliation.listPaymentFixingOrders(canonical, { streamId: STREAM }),
+    "sequential planning does not add unresolved orders");
   assert.equal(h.canonicalWrites.length, 0);
   assert.equal(reconciliation.getInventoryAvailability(h.getState(), { sku: "LA-M" }).reservedQuantity, 0);
   assert.equal(h.getQueue(), "TEE-OS", "distant plans do not clear the actual next-item queue");

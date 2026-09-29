@@ -39,6 +39,13 @@ nonempty tag text is reduced to `unrecognized`; raw tag text is never transmitte
 saved. A canonical completion additionally requires the shared parser to resolve that
 same variation and one price.
 
+For processing/fixing orders, a separate narrow parser can also retain the ended
+auction's explicit `has won: $...` price from that exact Sold Items row. This is auxiliary
+prefill data, not payment completion. It requires one unambiguous variation and one
+valid positive winner amount; live bids, arbitrary dollar amounts, shipping, totals,
+and neighboring rows are not fallbacks. Missing or ambiguous price evidence leaves
+ordinary payment-status capture intact.
+
 Generated CSS classes are not selectors. The exact `auction-pin-card` class token is a
 narrow current-auction boundary. Within it, only the unique direct-own-text variation and
 unique direct-own-text `Bids: $...` value are capture fields. The bid is converted to
@@ -123,18 +130,33 @@ bid can reach the tracker before the auction appears in Sold Items.
 
 ### Runtime message boundary
 
-The page sends one of six strict event shapes:
+The page sends one of seven strict event shapes, including a read-only price-context query:
 
 ```text
 { type: "observe_variations", variationNumbers: [37, 38, ...] }
 { type: "observe_bidding_variation", variationNumber: 39 }
 { type: "observe_bidding_price", variationNumber: 39, bidPriceCents: 2800 }
+{ type: "get_processing_price_context" }
 { type: "observe_payment_statuses", statuses: [
-    { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
+    { variationNumber: 37, observedPaymentStatus: "payment_fixing",
+      processingPriceCents: 700, processingPriceContext: "<opaque worker token>" }, ...
 ] }
 { type: "payment_complete", variationNumber: 37, soldPriceCents: 700 }
 { type: "observe_attributed_gmv", attributedGmvDisplay: "$4.64K" }
 ```
+
+The optional `processingPriceCents` field is a positive safe integer paired with
+`processingPriceContext`, accepted only on `payment_processing`, `order_processing`,
+`payment_fixing`, or legacy countdown-backed `payment_failed` observations. It does not
+broaden recognized payment badges. Plain terminal `Payment failed` still uses cancellation,
+not this prefill path. No raw row, winner identity, or price text crosses the boundary.
+
+`get_processing_price_context` returns an opaque worker-issued context token or null.
+It binds price evidence to the active local stream, pinned baseline, sender tab, and
+dashboard document. Content reads that context and then rescans the exact row for a fresh
+price; normal status delivery remains independent and does not wait. The worker strips
+auxiliary price metadata with a stale context while preserving existing status capture.
+Tokens are transient, not stored with orders, and are not verified TikTok stream IDs.
 
 It sends no `streamId`, raw payment or auction-card text, buyer identity, product title,
 observation timestamp, source HTML, or other DOM content. The bidding-identity event
@@ -150,6 +172,7 @@ the top frame of the exact product-dashboard URL. It resolves the currently acti
 - every observed variation as an unmapped auction;
 - the latest active on-video bidding variation as one nullable stream marker;
 - the latest sanitized observed payment status for each variation;
+- an optional same-row processing auction price as separate auxiliary metadata;
 - exact terminal `Payment failed`, `Canceled`, or `Cancelled` as canonical cancellation;
 - every exact green completion with a parsed price as authoritative payment truth; and
 - the latest sanitized Attributed GMV display on the worker-resolved active stream.
@@ -182,6 +205,14 @@ changes are still accepted until a priced completion is durably saved. Exact can
 and priced completion are terminal mutually exclusive results, so later contradictory
 observations are ignored. Repeated observations are no-ops. A conflicting later completed price retains the
 first price and creates a reconciliation conflict.
+
+The processing price is stored separately from `soldPriceCents`; saving it alone does not
+complete payment, consume inventory, release reservations, or affect money. Repeating the
+same value is a no-op. Different valid processing-price observations retain the first
+value with sticky `processingPriceConflict`, suppressing prefill without creating an
+accounting conflict or another handoff blocker. Captured completed-sale prices remain
+authoritative even if they differ. Existing stream/baseline, End, and terminal-state
+safeguards still apply.
 
 The Metrics section keeps ten different current-stream values. **Gross Item Sales** is
 the exact integer-cent sum of every priced `Payment complete` order, including completed
@@ -295,10 +326,22 @@ bidding variation, unresolved order, pending reservation, payment-error order, u
 completed sale, conflict, or oversold/recount condition adds a specific attention notice
 but never blocks End. The employee UI does not show Final/Provisional state wording. The
 report does not reopen its ended stream in the tagger. The newest safely eligible report
-can instead resolve canonical-unresolved processing, fixing, or legacy `payment_failed`
-orders after End. Captured terminal failures are excluded. Payment completion requires
-the seller-verified final sold price;
-cancellation releases the reservation. Separately, every finalized current or archived
+can instead resolve every captured canonical-unknown order after End: processing, fixing,
+legacy `payment_failed`, `not_observed`, `unrecognized`, and observed completion without
+a parsed final price. Captured terminal outcomes and uncaptured presets/queue previews
+are excluded. Each row identifies its variation and exact mapped SKU/size. A trustworthy
+saved processing-row auction price prefills its editable price input; older records,
+missing captures, or conflicting price observations leave it blank. Live bids are never
+used. Refreshes preserve a typed draft within the same report and variation. Completion
+still requires confirming a seller-verified positive price; cancellation needs no price
+and releases the reservation. The newest
+ended report/current stream/current baseline/no-active-tracker guards still apply and
+unavailable corrections show their reason. Failed saves reload authoritative state;
+report replacement and read-time repair preserve saved cost corrections. Independent
+mapping and quantity-handoff checks remain. This fallback and price convenience change
+neither automatic payment outcomes nor terminal-state guards and do not fix or establish
+the cause of a missed status update.
+Separately, every finalized current or archived
 report exposes a collapsed unit-cost control listing every SKU saved in that report,
 including unsold ones. It accepts nonnegative integer-cent values and requires
 confirmation. A cost correction reprices only that report's mapped completed rows and
@@ -323,6 +366,15 @@ completion-after-cancellation conflict becomes canonical terminal cancellation, 
 stale completed price and cost allocation cleared; canonical version 7 rejects that
 contradiction. Versions 1 through 6 all migrate to the strict version-7 shape.
 
+Current variation records optionally retain positive integer `processingPriceCents` and
+boolean `processingPriceConflict` alongside, never in place of, confirmed sold-price data.
+The conflict flag requires a saved processing price. Existing records without these fields
+remain valid with no prefill; no broad migration, envelope bump, or state-version bump is
+needed. The guarded post-stream list reads the retained canonical metadata after End;
+report accounting and export schemas do not gain a processing-price field.
+Do not assume an older extension build can read snapshots after these fields are saved;
+its strict validator does not recognize the added keys.
+
 The content client marks an event delivered only after the worker acknowledges it. A
 failed observation, payment, bidding number/price, or aggregate display is requeued with a
 delay that backs off from one to five seconds. The Sold Items, current-bidding, and
@@ -336,6 +388,13 @@ queues apply the same newest-value rule to variation identity and complete
 bids may be coalesced, and retry always targets the latest pair. Route exit or body
 replacement discards all three outboxes, and persisted reconciliation state makes
 repeated delivery safe.
+
+Sold Items status deduplication includes available processing-price metadata, so a price
+that appears after its unchanged badge can still be delivered. Same-value retries remain
+idempotent. It preserves up to two distinct prices per variation/context through retries,
+so contradictory evidence is not hidden by a latest-only queue. This does not change
+scan/retry timing or the requirement for acknowledged persistence before a fact is
+considered delivered. Context lookup failure cannot block ordinary status/completion work.
 
 If no local tracker stream is active, no nonempty active inventory baseline exists, or
 saved session/state/pin cannot be verified, no canonical write occurs. The current
@@ -689,6 +748,11 @@ distribution; reassess Google's requirements before expanding the audience.
 14. Select **End Stream Tracking**. Confirm the compact panel lists each pending, fixing,
     unmapped, conflicting, or oversold attention count without a Final/Provisional label,
     and offers two full-width buttons: **Keep stream active** above **End and create report**.
+    The unresolved count must include its sorted unique variation numbers inline, such as
+    **Count 3: var #5, 32, 98**, excluding uncaptured presets and queued previews. Check
+    one and thirteen unresolved variations, normal wrapping at narrow widths, and no
+    empty list when all orders resolve. Leave the confirmation open while an order resolves:
+    its number and the count should update without moving focus or changing other warnings.
     Select **Keep stream active** once, then reopen and
     select **End and create report**. The local stream must end only after its report is
     saved; TikTok LIVE must not change. If report persistence is deliberately failed,
@@ -726,20 +790,35 @@ distribution; reassess Google's requirements before expanding the audience.
     Confirm Save as PDF suggests the saved report name (with filename-unsafe characters
     cleaned up), including after renaming in the report. Cancel and retry without changing
     the report name; the suggested filename should remain the same. CSV naming is unchanged.
-    End a synthetic test stream with one mapped processing, fixing, or legacy unresolved
-    `payment_failed` order (not a newly captured terminal failure). In
+    End a synthetic test stream with mapped and unmapped unresolved orders covering
+    processing, fixing, legacy `payment_failed`, `not_observed`, `unrecognized`, and
+    observed `payment_complete` without a captured final price. In
     **Finish unresolved payments**, cancel the confirmation once and verify nothing
-    changes. Then mark it complete with an invalid price and confirm validation fails;
+    changes. Check each row's variation, exact SKU/size, and unmapped fallback. Orders with
+    an exact captured processing-row winner price should show that editable amount;
+    older/no-price records and conflicting observations should stay blank, never filled
+    from live bids. Leave one price absent until a later scan without changing its status,
+    then verify the newly captured price survives reopening and End. Type a different
+    price, refresh the same report, and verify the draft is not replaced; switching reports
+    must not carry it into a different order. Before resolving anything, confirm capturing
+    these prices alone changed no inventory, reservations, revenue, or profit.
+    Then mark an order complete with an invalid price and confirm validation fails;
     enter the seller-verified final price, confirm, and verify pending/fixing clears while
     completed sales, inventory, COGS, profit, warnings, and CSV all recalculate. In a
     separate run, mark the order canceled and verify the reservation is released, Canceled
-    Orders increases, and the order never enters completed sales. Confirm processing and
-    other statuses never appear. Also confirm controls disappear for older reports, an
-    older inventory baseline, a later tracker stream, or while a tracker is
-    active.
+    Orders increases, and the order never enters completed sales; no price is required.
+    Repeat completion with the unchanged prefill and with an edited price. Automatic
+    completion must remain authoritative and remove that order from manual recovery even
+    if its final captured price differs from the saved processing observation.
+    Finalized completed/canceled orders and uncaptured presets/queue previews must never
+    appear in the resolution list. Older reports, an older inventory baseline, a later
+    tracker stream, or an active tracker must retain disabled correction eligibility and
+    explain why. Inventory handoff must remain blocked until all its issues are resolved.
     Fail report replacement after the canonical correction saves, then reload the report;
     confirm the read-time repair regenerates the report and does not ask for a second
-    payment decision.
+    payment decision, including when the saved payment-error count was zero. Repeat with
+    report-only cost corrections and verify they survive. A failed save must refresh the
+    authoritative list and show its error; retries must not deduct inventory twice.
     Expand **Correct SKU Unit Cost** and verify every report inventory SKU appears, including one
     with no completed sale in this stream. Cancel a correction and confirm nothing changes.
     Correct a sold SKU and verify the same report recalculates completed-order unit cost
@@ -1288,6 +1367,9 @@ Validate the existing implementation and its capture boundaries:
 - current processing-to-terminal-failure transitions and row association, plus visibility
   changes and the legacy explicit-countdown exception; mapped unresolved orders stay
   reserved until a captured terminal cancellation or priced completion;
+- exact processing-row auction-price capture/prefill, including price appearing after an
+  unchanged status, blank/malformed/conflicting evidence, persistence after End/reopening,
+  and unchanged accounting until the existing final-payment decision;
 - the documented new-stream workflow: reload the dashboard and confirm Sold Items
   belongs to the new stream before starting a new local session;
 - whether `m4b_space` stays unique across accounts, modes, streams, scrolling, and TikTok
@@ -1355,8 +1437,10 @@ Automatic outbound Sheets writes remain intentionally absent.
 - A report is limited to facts durably captured before End. It cannot recover a Sold
   Items row TikTok did not render. Internal completeness metadata does not independently
   verify TikTok's full stream totals and is not shown as a customer-facing state label.
-- The narrow canonical payment correction resolves processing, fixing, and legacy
-  temporary-failed payments only on the newest safe ended stream. Report-only item-mapping correction supports
+- The canonical payment correction resolves captured canonical-unknown orders only on
+  the newest safe ended stream, including missing/unrecognized status and price-less
+  completion observations. It cannot add wholly uncaptured orders or reverse a saved
+  terminal outcome. Report-only item-mapping correction supports
   completed/canceled variations in an eligible finalized report, with no active tracker
   or unfinished/pending report conditions. Unit cost can be corrected in any finalized
   current or archived report. The mapping and cost paths change only the selected report

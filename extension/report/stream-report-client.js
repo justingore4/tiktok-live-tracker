@@ -558,6 +558,7 @@
       let priorVariationNumber = 0;
       const orders = data.orders.map((order, index) => {
         const path = `orders[${index}]`;
+        const hasProcessingPrice = Object.prototype.hasOwnProperty.call(order ?? {}, "processingPriceCents");
 
         if (
           !hasExactKeys(order, [
@@ -568,7 +569,10 @@
             "sku",
             "style",
             "variationNumber",
+            ...(hasProcessingPrice ? ["processingPriceCents"] : []),
           ]) ||
+          (hasProcessingPrice && order.processingPriceCents !== null &&
+            (!Number.isSafeInteger(order.processingPriceCents) || order.processingPriceCents < 1)) ||
           !Number.isSafeInteger(order.variationNumber) ||
           order.variationNumber < 1 ||
           order.variationNumber <= priorVariationNumber ||
@@ -577,6 +581,9 @@
             "order_processing",
             "payment_fixing",
             "payment_failed",
+            "not_observed",
+            "unrecognized",
+            "payment_complete",
           ].includes(
             order.observedPaymentStatus,
           ) ||
@@ -615,6 +622,7 @@
           item: order.item,
           style: order.style,
           size: order.size,
+          ...(hasProcessingPrice ? { processingPriceCents: order.processingPriceCents } : {}),
         };
       });
 

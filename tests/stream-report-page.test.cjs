@@ -42,6 +42,18 @@ class FakeElement {
     this.children = [...children];
   }
 
+  removeChild(child) {
+    this.children.splice(this.children.indexOf(child), 1);
+    return child;
+  }
+
+  insertBefore(child, reference) {
+    if (this.children.includes(child)) this.removeChild(child);
+    const index = reference === null ? this.children.length : this.children.indexOf(reference);
+    this.children.splice(index, 0, child);
+    return child;
+  }
+
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
   }
@@ -5289,6 +5301,339 @@ test("failed report payment correction preserves the row and input for retry", a
   );
 });
 
+function unresolvedOrder(variationNumber, observedPaymentStatus = "not_observed") {
+  return { variationNumber, observedPaymentStatus, mapped: true,
+    sku: "SKU-A", item: "Example tee", style: "black", size: "L" };
+}
+
+test("saved processing prices prefill only their exact unresolved rows as editable decimal cents", () => {
+  const document = new FakeDocument();
+  const actions = [];
+  const orders = [
+    { ...unresolvedOrder(5, "payment_processing"), processingPriceCents: 1825 },
+    { ...unresolvedOrder(7, "unrecognized"), mapped: false, sku: null, item: null,
+      style: null, size: null, processingPriceCents: 1 },
+    unresolvedOrder(8),
+    { ...unresolvedOrder(9), processingPriceCents: null },
+    { ...unresolvedOrder(10), processingPriceCents: Number.MAX_SAFE_INTEGER },
+  ];
+  reportPage.renderPaymentFixingOrders(document, orders, (action) => actions.push(action), REPORT_ID);
+  const rows = document.querySelector("#payment-resolution-orders").children;
+  assert.deepEqual(rows.map((row) => row.children[1].children[1].value),
+    ["18.25", "0.01", "", "", "90071992547409.91"]);
+  assert.equal(reportPage.parsePositiveUsdCents(rows[4].children[1].children[1].value), Number.MAX_SAFE_INTEGER);
+  assert.match(allText(rows[0]), /Variation #5.*SKU-A/);
+  assert.match(allText(rows[1]), /Variation #7.*No inventory item selected/);
+  rows[0].children[2].click();
+  rows[1].children[3].click();
+  assert.equal(actions[0].soldPriceText, "18.25");
+  assert.equal(actions[0].order.variationNumber, 5);
+  assert.equal(actions[1].soldPriceText, null);
+  assert.equal(actions[1].resolution, "canceled");
+});
+
+test("price-only and status refreshes preserve edited drafts and focus, while untouched prefills follow saved evidence", () => {
+  const document = new FakeDocument();
+  const resolve = () => {};
+  const render = (price, status = "payment_processing") => reportPage.renderPaymentFixingOrders(
+    document, [1, 2, 3].map((number) => ({ ...unresolvedOrder(number, status), processingPriceCents: price })),
+    resolve, REPORT_ID,
+  );
+  render(null);
+  const rows = [...document.querySelector("#payment-resolution-orders").children];
+  const inputs = rows.map((row) => row.children[1].children[1]);
+  inputs[0].value = "22.75";
+  inputs[0].dispatch("input");
+  inputs[0].focus();
+  render(1800, "payment_fixing");
+  assert.deepEqual(inputs.map((input) => input.value), ["22.75", "18.00", "18.00"]);
+  assert.equal(inputs[0].focused, true);
+  assert.match(allText(rows[0]), /Payment fixing/);
+  inputs[1].value = "";
+  inputs[1].dispatch("input");
+  render(null, "unrecognized");
+  assert.deepEqual(inputs.map((input) => input.value), ["22.75", "", ""]);
+  assert.deepEqual(document.querySelector("#payment-resolution-orders").children, rows);
+  render(2000);
+  assert.deepEqual(inputs.map((input) => input.value), ["22.75", "", "20.00"]);
+});
+
+test("processing-price drafts never move between variations or report/stream/baseline contexts", () => {
+  const document = new FakeDocument();
+  const resolve = () => {};
+  const render = (number, context) => reportPage.renderPaymentFixingOrders(document,
+    [{ ...unresolvedOrder(number), processingPriceCents: 1200 }], resolve, context);
+  render(5, "report-a/stream-a/baseline-a");
+  const container = document.querySelector("#payment-resolution-orders");
+  for (const [number, context] of [
+    [5, "report-b/stream-b/baseline-a"],
+    [5, "report-b/stream-b/baseline-b"],
+    [6, "report-b/stream-b/baseline-b"],
+  ]) {
+    const oldRow = container.children[0];
+    oldRow.children[1].children[1].value = "99.99";
+    render(number, context);
+    assert.notEqual(container.children[0], oldRow);
+    assert.equal(container.children[0].children[1].children[1].value, "12.00");
+  }
+});
+
+test("report client accepts missing/null/positive processing prices and rejects unsafe prefill data", async (t) => {
+  for (const [label, extra, valid] of [
+    ["legacy", {}, true], ["missing/conflicted", { processingPriceCents: null }, true],
+    ["positive", { processingPriceCents: 1825 }, true],
+    ["zero", { processingPriceCents: 0 }, false],
+    ["negative", { processingPriceCents: -1 }, false],
+    ["fractional", { processingPriceCents: 12.5 }, false],
+    ["unsafe", { processingPriceCents: Number.MAX_SAFE_INTEGER + 1 }, false],
+    ["string", { processingPriceCents: "18.25" }, false],
+    ["boolean", { processingPriceCents: false }, false],
+    ["unexpected", { processingPriceCents: 1825, bidPriceCents: 9999 }, false],
+  ]) {
+    await t.test(label, async () => {
+      const order = { ...unresolvedOrder(5), ...extra };
+      const client = createClient({ runtime: { sendMessage: async () => ({ ok: true,
+        data: { reportId: REPORT_ID, orders: [order] } }) } });
+      if (valid) assert.deepEqual((await client.listPaymentFixingOrders({ reportId: REPORT_ID })).orders, [order]);
+      else await assert.rejects(client.listPaymentFixingOrders({ reportId: REPORT_ID }),
+        (error) => error.code === "INVALID_RESPONSE");
+    });
+  }
+});
+
+test("mounted recovery completes with a prefilled or edited price and cancels without using it", async (t) => {
+  for (const mode of ["prefilled", "edited", "canceled"]) {
+    await t.test(mode, async () => {
+      let orders = [{ ...unresolvedOrder(5, "payment_processing"), processingPriceCents: 1825 }];
+      const requests = [];
+      const confirmations = [];
+      const fixture = mountReportNameEditor({ confirm: (message) => { confirmations.push(message); return true; }, client: {
+        listPaymentFixingOrders: async () => ({ orders }),
+        resolvePaymentFixingOrder: async (command) => {
+          requests.push(command);
+          orders = [];
+          return { reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport() };
+        },
+      } });
+      await fixture.ready;
+      const row = fixture.document.querySelector("#payment-resolution-orders").children[0];
+      assert.equal(row.children[1].children[1].value, "18.25");
+      assert.equal(requests.length, 0, "prefilling never resolves the order");
+      if (mode === "edited") { row.children[1].children[1].value = "19.50"; row.children[1].children[1].dispatch("input"); }
+      if (mode === "canceled") row.children[1].children[1].value = "invalid";
+      row.children[mode === "canceled" ? 3 : 2].click();
+      await new Promise(setImmediate);
+      assert.deepEqual(requests, [{ reportId: REPORT_ID, variationNumber: 5,
+        resolution: mode === "canceled" ? "canceled" : "payment_complete",
+        soldPriceCents: mode === "canceled" ? null : mode === "edited" ? 1950 : 1825 }]);
+      assert.equal(confirmations.length, 1);
+      assert.equal(fixture.document.querySelector("#payment-resolution-section").hidden, true);
+      fixture.mounted.dispose();
+    });
+  }
+});
+
+test("failed saves preserve an edited prefill through authoritative status and price refresh", async () => {
+  let refresh = false;
+  const fixture = mountReportNameEditor({ confirm: () => true, client: {
+    listPaymentFixingOrders: async () => ({ orders: [{ ...unresolvedOrder(5, refresh ? "unrecognized" : "payment_processing"),
+      processingPriceCents: refresh ? null : 1825 }] }),
+    resolvePaymentFixingOrder: async () => { refresh = true; throw new Error("Synthetic save failure"); },
+  } });
+  await fixture.ready;
+  const container = fixture.document.querySelector("#payment-resolution-orders");
+  const row = container.children[0];
+  const input = row.children[1].children[1];
+  input.value = "19.25";
+  input.dispatch("input");
+  row.children[2].click();
+  await new Promise(setImmediate);
+  assert.equal(container.children[0], row);
+  assert.equal(input.value, "19.25");
+  assert.equal(input.disabled, false);
+  assert.match(allText(row), /Payment status not recognized/);
+  assert.match(fixture.document.querySelector("#payment-resolution-feedback").textContent, /Synthetic save failure/);
+  fixture.mounted.dispose();
+});
+
+test("all new unresolved categories show accurate labels, blank prices, and both explicit outcomes", async (t) => {
+  for (const [status, label] of [
+    ["not_observed", "Payment status not captured"],
+    ["unrecognized", "Payment status not recognized"],
+    ["payment_complete", "Payment complete observed; final sold price not saved"],
+  ]) {
+    for (const resolution of ["payment_complete", "canceled"]) {
+      await t.test(`${status}: ${resolution}`, async () => {
+        let orders = [unresolvedOrder(7, status)];
+        const requests = [];
+        const fixture = mountReportNameEditor({ confirm: () => true, client: {
+          listPaymentFixingOrders: async () => ({ orders }),
+          resolvePaymentFixingOrder: async (input) => {
+            requests.push(input);
+            orders = [];
+            return { reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport() };
+          },
+        } });
+        await fixture.ready;
+        const section = fixture.document.querySelector("#payment-resolution-section");
+        const row = fixture.document.querySelector("#payment-resolution-orders").children[0];
+        const price = row.children[1].children[1];
+        assert.match(allText(row), new RegExp(label));
+        assert.match(allText(row), /Example tee - black - L \(SKU-A\)/);
+        assert.equal(price.value, "");
+        assert.equal(price.attributes.get("aria-label"), "Sold price for variation 7");
+        if (resolution === "payment_complete") {
+          for (const invalid of ["", "0", "-2", "1.005"]) {
+            price.value = invalid;
+            row.children[2].click();
+            assert.equal(requests.length, 0);
+            assert.match(fixture.document.querySelector("#payment-resolution-feedback").textContent, /positive dollar amount/);
+          }
+          price.value = "12.50";
+        } else {
+          price.value = "not a price";
+        }
+        row.children[resolution === "payment_complete" ? 2 : 3].click();
+        await new Promise(setImmediate);
+        assert.deepEqual(requests, [{ reportId: REPORT_ID, variationNumber: 7,
+          resolution, soldPriceCents: resolution === "payment_complete" ? 1250 : null }]);
+        assert.equal(section.hidden, true);
+        fixture.mounted.dispose();
+      });
+    }
+  }
+});
+
+test("unaffected recovery rows retain drafts and focus without detaching on authoritative refresh", () => {
+  const document = new FakeDocument();
+  const resolve = () => {};
+  reportPage.renderPaymentFixingOrders(document, [unresolvedOrder(5), unresolvedOrder(7)], resolve);
+  const container = document.querySelector("#payment-resolution-orders");
+  const remainingRow = container.children[1];
+  const input = remainingRow.children[1].children[1];
+  input.value = "18.25";
+  input.focus();
+  const remove = container.removeChild.bind(container);
+  container.removeChild = (row) => { assert.notEqual(row, remainingRow); return remove(row); };
+  reportPage.renderPaymentFixingOrders(document, [unresolvedOrder(7)], resolve);
+  assert.equal(container.children[0], remainingRow);
+  assert.equal(input.value, "18.25");
+  assert.equal(input.focused, true);
+});
+
+test("unavailable recovery remains visible with the worker's reason instead of an empty list", async (t) => {
+  for (const message of [
+    "End the active tracker stream before correcting a saved report.",
+    "Only the newest ended-stream report can resolve unfinished orders.",
+    "This report uses an older inventory baseline.",
+    "This report no longer matches the current canonical stream.",
+  ]) {
+    await t.test(message, async () => {
+      const fixture = mountReportNameEditor({
+        report: createReport({ totals: { unresolvedOrderCount: 3 } }),
+        client: { listPaymentFixingOrders: async () => { throw new Error(message); } },
+      });
+      await fixture.ready;
+      assert.equal(fixture.document.querySelector("#payment-resolution-section").hidden, false);
+      assert.equal(fixture.document.querySelector("#payment-resolution-count").textContent, "3 unresolved orders");
+      assert.equal(fixture.document.querySelector("#payment-resolution-feedback").textContent, message);
+      assert.equal(fixture.document.querySelector("#payment-resolution-orders").children.length, 0);
+      fixture.mounted.dispose();
+    });
+  }
+});
+
+test("duplicate payment clicks make one mutation and stale removed row handlers cannot submit", async () => {
+  const gate = createDeferred();
+  let orders = [unresolvedOrder(5), unresolvedOrder(7)];
+  let requests = 0;
+  const fixture = mountReportNameEditor({ confirm: () => true, client: {
+    listPaymentFixingOrders: async () => ({ orders: structuredClone(orders) }),
+    resolvePaymentFixingOrder: async () => {
+      requests += 1;
+      await gate.promise;
+      orders = [unresolvedOrder(7)];
+      return { reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport() };
+    },
+  } });
+  await fixture.ready;
+  const container = fixture.document.querySelector("#payment-resolution-orders");
+  const staleRow = container.children[0];
+  const remaining = container.children[1];
+  remaining.children[1].children[1].value = "19.99";
+  staleRow.children[3].click();
+  staleRow.children[3].click();
+  remaining.children[3].click();
+  assert.equal(requests, 1);
+  assert.equal(remaining.children[3].disabled, true);
+  gate.resolve();
+  await new Promise(setImmediate);
+  staleRow.children[3].click();
+  assert.equal(requests, 1);
+  assert.equal(container.children[0], remaining);
+  assert.equal(remaining.children[1].children[1].value, "19.99");
+  assert.equal(remaining.children[3].disabled, false);
+  fixture.mounted.dispose();
+});
+
+test("late resolution responses cannot replace a navigated, reloaded, or disposed report", async (t) => {
+  for (const mode of ["navigate", "reload", "url", "dispose"]) {
+    await t.test(mode, async () => {
+      const gate = createDeferred();
+      const fixture = mountReportNameEditor({ confirm: () => true, client: {
+        listPaymentFixingOrders: async () => ({ orders: [unresolvedOrder(5)] }),
+        resolvePaymentFixingOrder: () => gate.promise,
+      } });
+      await fixture.ready;
+      fixture.document.querySelector("#payment-resolution-orders").children[0].children[3].click();
+      if (mode === "navigate" || mode === "url") fixture.location.search = `?reportId=${encodeURIComponent(SECOND_REPORT_ID)}`;
+      if (mode === "reload" || mode === "navigate") await fixture.mounted.load();
+      if (mode === "dispose") fixture.mounted.dispose();
+      const before = allText(fixture.document.querySelector("#summary-grid"));
+      gate.resolve({ reportId: REPORT_ID, lifecycleStatus: "finalized",
+        report: createReport({ totals: { completedPaymentCount: 999 } }) });
+      await new Promise(setImmediate);
+      assert.equal(allText(fixture.document.querySelector("#summary-grid")), before);
+      assert.doesNotMatch(fixture.document.querySelector("#action-feedback").textContent, /was marked/);
+      fixture.mounted.dispose();
+    });
+  }
+});
+
+test("failed resolution reloads repaired authoritative state without asking to resolve it twice", async () => {
+  let resolved = false;
+  let reads = 0;
+  let costReads = 0;
+  const fixture = mountReportNameEditor({ confirm: () => true, client: {
+    getReport: async () => {
+      reads += 1;
+      return { reportId: REPORT_ID, lifecycleStatus: "finalized", report: createReport({
+        totals: { completedPaymentCount: resolved ? 3 : 2, unresolvedOrderCount: resolved ? 0 : 1 },
+      }) };
+    },
+    listPaymentFixingOrders: async () => ({ orders: resolved ? [] : [unresolvedOrder(7)] }),
+    listReportUnitCosts: async () => {
+      costReads += 1;
+      return { skus: [{ sku: "SKU-A", item: "Example tee", style: "black", size: "L",
+        unitCostCents: 600, completedSaleCount: resolved ? 1 : 0 }] };
+    },
+    resolvePaymentFixingOrder: async () => { resolved = true; throw new Error("Report write failed."); },
+  } });
+  await fixture.ready;
+  fixture.document.querySelector("#completed-sales-disclosure").open = true;
+  const row = fixture.document.querySelector("#payment-resolution-orders").children[0];
+  row.children[1].children[1].value = "8.25";
+  row.children[2].click();
+  await new Promise(setImmediate);
+  assert.equal(reads, 2);
+  assert.equal(costReads, 2);
+  assert.match(fixture.document.querySelector("#unit-cost-preview").textContent, /1 completed sale/);
+  assert.equal(fixture.document.querySelector("#payment-resolution-section").hidden, true);
+  assert.equal(fixture.document.querySelector("#completed-sales-disclosure").open, true);
+  assert.match(allText(fixture.document.querySelector("#summary-grid")), /Completed \/ Total sales 3\//);
+  fixture.mounted.dispose();
+});
+
 test("post-stream AOV uses Gross Item Sales divided by completed sales", () => {
   const metrics = reportPage.createSummaryMetrics(createReport({
     totals: {
@@ -5817,7 +6162,7 @@ test("stream report client strictly lists and resolves post-stream payment-fixin
   );
 });
 
-test("stream report client rejects terminal payment statuses in unresolved-order responses", async () => {
+test("stream report client rejects canceled statuses in unresolved-order responses", async () => {
   const client = createClient({
     runtime: {
       async sendMessage() {
@@ -5828,7 +6173,7 @@ test("stream report client rejects terminal payment statuses in unresolved-order
             orders: [
               {
                 variationNumber: 220,
-                observedPaymentStatus: "payment_complete",
+                observedPaymentStatus: "canceled",
                 mapped: false,
                 sku: null,
                 item: null,

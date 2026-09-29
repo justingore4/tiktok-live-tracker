@@ -100,7 +100,7 @@
       );
     }
 
-    function createCaptureClient({ runtime, protocol }) {
+    function createCaptureClient({ runtime, protocol, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout }) {
       const trustedRuntime = requireRuntime(runtime);
       const trustedProtocol = requireProtocol(protocol);
       let queue = Promise.resolve();
@@ -166,6 +166,37 @@
         });
       }
 
+      async function getProcessingPriceContext() {
+        const message = trustedProtocol.createCaptureMessage({
+          type: trustedProtocol.EVENT_TYPES.GET_PROCESSING_PRICE_CONTEXT,
+        });
+        let timeout;
+        try {
+          const response = await Promise.race([
+            trustedRuntime.sendMessage(message),
+            new Promise((_, reject) => {
+              timeout = setTimeoutFn(() => reject(new CaptureClientError(
+                "CAPTURE_TRANSPORT_ERROR", "The processing-price context request timed out.",
+              )), 3000);
+            }),
+          ]);
+          if (!hasExactKeys(response, ["ok", "data"]) || response.ok !== true ||
+              !hasExactKeys(response.data, ["processingPriceContext"]) ||
+              !(response.data.processingPriceContext === null ||
+                (typeof response.data.processingPriceContext === "string" &&
+                 response.data.processingPriceContext.trim() !== "" &&
+                 response.data.processingPriceContext.length <= 512))) {
+            throw new CaptureClientError("INVALID_CAPTURE_RESPONSE", "The processing-price context response was not recognized.");
+          }
+          return response.data.processingPriceContext;
+        } catch (error) {
+          if (error instanceof CaptureClientError) throw error;
+          throw new CaptureClientError("CAPTURE_TRANSPORT_ERROR", "The processing-price context could not be delivered.");
+        } finally {
+          if (timeout !== undefined) clearTimeoutFn(timeout);
+        }
+      }
+
       function recordPaymentComplete({ variationNumber, soldPriceCents } = {}) {
         return enqueue({
           type: trustedProtocol.EVENT_TYPES.PAYMENT_COMPLETE,
@@ -179,6 +210,7 @@
         observeBiddingPrice,
         observeBiddingVariation,
         observePaymentStatuses,
+        getProcessingPriceContext,
         observeVariations,
         recordPaymentComplete,
       });

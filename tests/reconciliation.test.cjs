@@ -1147,6 +1147,15 @@ test("lists unresolved confirmable payments with deterministic inventory identit
       style: "",
       size: "M",
     },
+    {
+      variationNumber: 10,
+      observedPaymentStatus: "unrecognized",
+      mapped: false,
+      sku: null,
+      item: null,
+      style: null,
+      size: null,
+    },
   ]);
 });
 
@@ -1275,11 +1284,6 @@ test("manual payment resolution accepts processing and validates its outcome", (
 
   for (const input of [
     {
-      ...auctionInput(73),
-      resolution: "payment_complete",
-      soldPriceCents: 1000,
-    },
-    {
       ...auctionInput(999),
       resolution: "canceled",
       soldPriceCents: null,
@@ -1300,6 +1304,67 @@ test("manual payment resolution accepts processing and validates its outcome", (
     "INVALID_ARGUMENT",
   );
   assert.equal(getAuction(state, auctionInput(73)).paymentStatus, "unknown");
+});
+
+for (const observedPaymentStatus of [
+  "not_observed", "unrecognized", "payment_complete", "payment_processing",
+  "order_processing", "payment_fixing", "payment_failed",
+]) {
+  for (const resolution of ["payment_complete", "canceled"]) {
+    test(`manual recovery resolves captured ${observedPaymentStatus} as ${resolution} exactly once`, () => {
+      const state = createState();
+      observeVariations(state, { streamId: STREAM_ONE, variationNumbers: [73] });
+      mapVariation(state, auctionInput(73, { sku: "BLACK-TEE-M" }));
+      if (observedPaymentStatus !== "not_observed") {
+        observePendingPayment(state, 73, observedPaymentStatus);
+      }
+      const before = calculateSummary(state, { streamId: STREAM_ONE });
+      assert.equal(getAuction(state, auctionInput(73)).soldPriceCents, null,
+        "unknown canonical payments retain no reliable final price to prefill");
+      assert.equal(before.totals.pendingMappedCount, 1);
+      assert.equal(before.totals.paymentFixingCount,
+        ["payment_processing", "order_processing", "payment_fixing", "payment_failed"]
+          .includes(observedPaymentStatus) ? 1 : 0);
+      assert.deepEqual(listPaymentFixingOrders(state, { streamId: STREAM_ONE }), [{
+        variationNumber: 73, observedPaymentStatus, mapped: true,
+        sku: "BLACK-TEE-M", item: "Black Tee", style: "", size: "M",
+      }]);
+      const command = { ...auctionInput(73), resolution,
+        soldPriceCents: resolution === "payment_complete" ? 2500 : null };
+      const result = resolvePaymentFixingOrder(state, command);
+      const saved = structuredClone(state);
+      assert.deepEqual(resolvePaymentFixingOrder(state, command), result);
+      assert.deepEqual(state, saved);
+      assert.deepEqual(hydrateReconciliationState(state), state);
+      const summary = calculateSummary(state, { streamId: STREAM_ONE });
+      assert.equal(summary.totals.pendingMappedCount, 0);
+      assert.equal(summary.totals.paymentFixingCount, 0);
+      assert.equal(summary.totals.completedPaymentCount, resolution === "payment_complete" ? 1 : 0);
+      assert.equal(summary.totals.canceledOrderCount, resolution === "canceled" ? 1 : 0);
+      assert.equal(summary.totals.costOfGoodsCents, resolution === "payment_complete" ? 1200 : 0);
+      assert.equal(summary.totals.completedGmvCents, resolution === "payment_complete" ? 2500 : 0);
+      assert.equal(inventoryItem(summary, "BLACK-TEE-M").remainingQuantity,
+        resolution === "payment_complete" ? 1 : 2);
+      assert.deepEqual(listPaymentFixingOrders(state, { streamId: STREAM_ONE }), []);
+      assert.deepEqual(state.inventoryBaselines, saved.inventoryBaselines);
+    });
+  }
+}
+
+test("unresolved recovery never fabricates absent variations or accepts an invalid completion price", () => {
+  const state = createState();
+  observeVariations(state, { streamId: STREAM_ONE, variationNumbers: [4] });
+  const before = structuredClone(state);
+  for (const soldPriceCents of [null, undefined, 0, -1, 1.5, "2500", Number.MAX_SAFE_INTEGER + 1]) {
+    assertErrorCode(() => resolvePaymentFixingOrder(state, {
+      ...auctionInput(4), resolution: "payment_complete", soldPriceCents,
+    }), "INVALID_ARGUMENT");
+  }
+  assertErrorCode(() => resolvePaymentFixingOrder(state, {
+    ...auctionInput(5), resolution: "canceled", soldPriceCents: null,
+  }), "PAYMENT_ORDER_NOT_RESOLVABLE");
+  assert.deepEqual(state, before);
+  assert.equal(listPaymentFixingOrders(state, { streamId: STREAM_ONE }).length, 1);
 });
 
 test("canonical cancellation ignores later priced completion and remains terminal", () => {

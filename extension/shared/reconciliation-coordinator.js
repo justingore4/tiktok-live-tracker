@@ -284,11 +284,19 @@
             }
 
             const keys = Object.keys(status).sort();
+            const hasProcessingPrice = Object.hasOwn(status, "processingPriceCents");
+            const expectedKeys = hasProcessingPrice
+              ? ["observedPaymentStatus", "processingPriceCents", "variationNumber"]
+              : ["observedPaymentStatus", "variationNumber"];
 
             return (
-              keys.length === 2 &&
-              keys[0] === "observedPaymentStatus" &&
-              keys[1] === "variationNumber" &&
+              keys.length === expectedKeys.length &&
+              keys.every((key, index) => key === expectedKeys[index]) &&
+              (!hasProcessingPrice || (
+                ["payment_processing", "order_processing", "payment_fixing", "payment_failed"]
+                  .includes(status.observedPaymentStatus) &&
+                Number.isSafeInteger(status.processingPriceCents) && status.processingPriceCents > 0
+              )) &&
               Number.isSafeInteger(status.variationNumber) &&
               status.variationNumber >= 1 &&
               OBSERVABLE_PAYMENT_STATUSES.has(

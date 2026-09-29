@@ -240,6 +240,88 @@ test("exports the single verified payment-tag selector and ancestor limit", () =
   assert.equal(MAX_ROW_ANCESTORS, 12);
 });
 
+test("processing/fixing rows expose only their own positive winning price without completing payment", () => {
+  for (const badgeText of ["Payment processing", "Payment processing...", "Payment processing\u2026", "Order processing", "Order processing...", "Order processing\u2026", "Payment fixing"]) {
+    const fixture = createStatusRow({ variationNumber: 17, soldPrice: "18.25", badgeText });
+    const { boundary } = withinBoundary(fixture.row);
+    const [result] = locatePaymentStatuses(boundary, parser);
+    assert.equal(result.processingPriceCents, 1825, badgeText);
+    assert.equal(result.soldPriceCents, null);
+    assert.notEqual(result.observedPaymentStatus, "payment_complete");
+    assert.equal(result.variationNumber, 17);
+  }
+});
+
+test("missing, ambiguous, malformed, hidden or unrelated amounts do not prevent status capture", () => {
+  for (const winnerText of ["", "Shipping: $5 Total: $12 Unit cost: $3 Bids: $9 ", "Buyer has won: $0 ", "Buyer has won: $10.999 ", "Buyer has won: $1,00 ", "Buyer has won: $10 Buyer has won: $20 "]) {
+    const fixture = createStatusRow({ variationNumber: 17 });
+    fixture.summary.ownText = winnerText;
+    const { boundary } = withinBoundary(fixture.row);
+    const [result] = locatePaymentStatuses(boundary, parser);
+    assert.equal(result.observedPaymentStatus, "payment_processing");
+    assert.equal(Object.hasOwn(result, "processingPriceCents"), false, winnerText);
+  }
+  const hidden = createStatusRow({ variationNumber: 17 });
+  hidden.summary.hidden = true;
+  assert.equal(Object.hasOwn(locatePaymentStatuses(withinBoundary(hidden.row).boundary, parser)[0], "processingPriceCents"), false);
+});
+
+test("processing price never crosses a neighboring row and duplicate variation associations remain excluded", () => {
+  const missing = createStatusRow({ variationNumber: 17 });
+  missing.summary.ownText = "";
+  const priced = createStatusRow({ variationNumber: 18, soldPrice: "50" });
+  const { boundary, list } = withinBoundary(missing.row);
+  list.append(priced.row);
+  const results = locatePaymentStatuses(boundary, parser);
+  assert.equal(Object.hasOwn(results[0], "processingPriceCents"), false);
+  assert.equal(results[1].processingPriceCents, 5000);
+  list.append(createStatusRow({ variationNumber: 18, soldPrice: "60" }).row);
+  assert.deepEqual(locatePaymentStatuses(boundary, parser).map(({ variationNumber }) => variationNumber), [17]);
+});
+
+test("legacy failed countdown can retain a processing price but terminal and unknown statuses cannot", () => {
+  const legacy = createStatusRow({ badgeText: "Payment failed", soldPrice: "18.25" });
+  legacy.row.append(element({ ownText: "Transaction will cancel in 02:30" }));
+  const [result] = locatePaymentStatuses(withinBoundary(legacy.row).boundary, parser);
+  assert.equal(result.observedPaymentStatus, "payment_failed");
+  assert.equal(result.processingPriceCents, 1825);
+  for (const badgeText of ["Payment failed", "Canceled", "Cancelled", "Payment complete", "Pending seller check"]) {
+    const row = createStatusRow({ badgeText }).row;
+    assert.equal(Object.hasOwn(locatePaymentStatuses(withinBoundary(row).boundary, parser)[0], "processingPriceCents"), false, badgeText);
+  }
+});
+
+test("unavailable processing price in a hidden outer ancestor never suppresses a valid legacy countdown status", () => {
+  const legacy = createStatusRow({ badgeText: "Payment failed" });
+  legacy.summary.ownText = "";
+  legacy.row.append(element({ ownText: "Transaction will cancel in 02:30" }));
+  const outer = element({ hidden: true, ownText: "Buyer has won: $15 " }).append(legacy.row);
+  const [result] = locatePaymentStatuses(withinBoundary(outer).boundary, parser);
+  assert.equal(result.observedPaymentStatus, "payment_failed");
+  assert.equal(Object.hasOwn(result, "processingPriceCents"), false);
+});
+
+test("auxiliary price parser failure leaves the exact status association intact", () => {
+  const fixture = createStatusRow();
+  const failingParser = { ...parser, parseProcessingItemText() { throw new Error("unreadable price"); } };
+  const [result] = locatePaymentStatuses(withinBoundary(fixture.row).boundary, failingParser);
+  assert.equal(result.observedPaymentStatus, "payment_processing");
+  assert.equal(Object.hasOwn(result, "processingPriceCents"), false);
+});
+
+test("processing price lookup preserves the existing twelve-ancestor bound", () => {
+  for (const distance of [12, 13]) {
+    const fixture = createStatusRow();
+    fixture.summary.ownText = "";
+    let row = fixture.row;
+    for (let depth = 1; depth < distance; depth += 1) row = element().append(row);
+    row.ownText = "Buyer has won: $20 ";
+    const [result] = locatePaymentStatuses(withinBoundary(row).boundary, parser);
+    assert.equal(result.observedPaymentStatus, "payment_processing");
+    assert.equal(result.processingPriceCents, distance === 12 ? 2000 : undefined);
+  }
+});
+
 test("selects exactly one visible Sold Items root and ignores hidden matches", () => {
   const body = element({ name: "body" });
   const hiddenRoot = element({

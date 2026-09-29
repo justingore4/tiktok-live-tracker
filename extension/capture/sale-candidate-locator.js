@@ -43,6 +43,12 @@
       ["order processing\u2026", OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING],
     ]);
     const MAX_ROW_ANCESTORS = 12;
+    const PROCESSING_PRICE_STATUSES = new Set([
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_PROCESSING,
+      OBSERVED_PAYMENT_STATUSES.ORDER_PROCESSING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FIXING,
+      OBSERVED_PAYMENT_STATUSES.PAYMENT_FAILED,
+    ]);
     const CANCELLATION_COUNTDOWN_PATTERN =
       /^Transaction will cancel in \d{1,2}:[0-5]\d$/i;
     const TRUNCATED_COUNTDOWN_PATTERN =
@@ -299,18 +305,18 @@
       }
     }
 
-    function hasObservableCountdownText(node, visited = new Set(), depth = 0) {
-      if (!node || visited.has(node) || depth >= MAX_ROW_ANCESTORS ||
+    function hasObservableText(node, visited = new Set(), depth = 0, maxDepth = MAX_ROW_ANCESTORS) {
+      if (!node || visited.has(node) || depth >= maxDepth ||
           !isObservableFailureElement(node)) {
         return false;
       }
       visited.add(node);
       // textContent includes hidden descendants. Text nodes inherit their
-      // parent's visibility; every element supplying countdown text must be
-      // observable before a retained wrapper can count as a live indicator.
+      // parent's visibility; every element supplying parsed text must be
+      // observable before a retained wrapper can count as current evidence.
       for (const child of node.children ?? []) {
         if (child.nodeType === 1 && normalizeText(child.textContent) !== "" &&
-            !hasObservableCountdownText(child, visited, depth + 1)) {
+            !hasObservableText(child, visited, depth + 1, maxDepth)) {
           return false;
         }
       }
@@ -327,10 +333,10 @@
       // A countdown is only a veto against terminal failure, never a local
       // cancellation clock. Even 00:00 waits for the dashboard to remove it.
       if (CANCELLATION_COUNTDOWN_PATTERN.test(text) &&
-          hasObservableCountdownText(node)) return true;
+          hasObservableText(node)) return true;
       if (TRUNCATED_COUNTDOWN_PATTERN.test(text) &&
           CANCELLATION_COUNTDOWN_PATTERN.test(normalizeText(node.getAttribute?.("title"))) &&
-          hasObservableCountdownText(node)) {
+          hasObservableText(node)) {
         return true;
       }
       // Permit transparent status-detail wrappers, not arbitrary descendant
@@ -359,6 +365,40 @@
         branch = parent;
       }
       return false;
+    }
+
+    function locateProcessingPrice(row, boundary, parser, variationNumber, tag) {
+      try {
+        if (typeof parser.parseProcessingItemText !== "function") return null;
+        let rowDepth = 0;
+        let branch = tag.parentElement;
+        while (branch && branch !== row && rowDepth < MAX_ROW_ANCESTORS) {
+          rowDepth += 1;
+          branch = branch.parentElement;
+        }
+        if (branch !== row) return null;
+        let candidate = row;
+        const visited = new Set();
+        while (candidate && candidate !== boundary && visited.size + rowDepth < MAX_ROW_ANCESTORS) {
+          if (visited.has(candidate) || !isInsideBoundary(candidate, boundary)) break;
+          visited.add(candidate);
+          const labels = exactVariationLabels(candidate);
+          const tags = exactPaymentTags(candidate);
+          if (labels.length !== 1 || labels[0].variationNumber !== variationNumber ||
+              tags.length !== 1 || tags[0] !== tag ||
+              !hasObservableText(candidate, new Set(), 0, MAX_ROW_ANCESTORS * 2)) break;
+          const price = parser.parseProcessingItemText(candidate.textContent ?? "");
+          if (price?.variationNumber === variationNumber &&
+              Number.isSafeInteger(price.processingPriceCents) && price.processingPriceCents > 0) {
+            return price.processingPriceCents;
+          }
+          candidate = candidate.parentElement;
+        }
+        return null;
+      } catch {
+        // Auxiliary metadata must not suppress the already associated status.
+        return null;
+      }
     }
 
     function locatePaymentStatuses(boundary, parser) {
@@ -484,11 +524,15 @@
         }
 
         const { row, variationNumber } = locatedAssociation;
+        const processingPriceCents = PROCESSING_PRICE_STATUSES.has(observedPaymentStatus)
+          ? locateProcessingPrice(row, boundary, parser, variationNumber, tag) : null;
         const result = Object.freeze({
           row,
           variationNumber,
           observedPaymentStatus,
           soldPriceCents,
+          ...(PROCESSING_PRICE_STATUSES.has(observedPaymentStatus) && processingPriceCents !== null
+            ? { processingPriceCents } : {}),
         });
 
         if (!candidatesByVariation.has(variationNumber)) {

@@ -1142,7 +1142,7 @@ function createWorkerHarness(options = {}) {
       : setTimeout,
     crypto: {
       randomUUID() {
-        return "11111111-1111-4111-8111-111111111111";
+        return options.randomUUID?.() ?? "11111111-1111-4111-8111-111111111111";
       },
     },
     chrome: {
@@ -1336,6 +1336,7 @@ function createWorkerHarness(options = {}) {
     sidePanelUrl,
     streamReportProtocol,
     stateStore,
+    storageModule,
     streamCoordinator,
     streamCoordinatorModule,
     streamSession,
@@ -4503,21 +4504,37 @@ function createRealPaymentCorrectionHarness(options = {}) {
   completedSale(olderStreamId);
   const olderRecord = buildRecord(olderStreamId, "18", true, "Earlier stream");
   completedSale(streamId);
-  reconciliation.mapVariation(state, {
-    streamId, variationNumber: 2, sku: paymentSku,
-  });
-  reconciliation.observePaymentStatuses(state, {
-    streamId,
-    statuses: [{ variationNumber: 2, observedPaymentStatus: "payment_failed" }],
-  });
+  for (const [index, observedPaymentStatus] of
+    (options.pendingStatuses ?? ["payment_failed"]).entries()) {
+    const variationNumber = index + 2;
+    reconciliation.observeVariations(state, { streamId, variationNumbers: [variationNumber] });
+    if (options.unmapped !== true) {
+      reconciliation.mapVariation(state, { streamId, variationNumber, sku: paymentSku });
+    }
+    if (observedPaymentStatus !== "not_observed") {
+      reconciliation.observePaymentStatuses(state, {
+        streamId, statuses: [{ variationNumber, observedPaymentStatus,
+          ...(options.processingPrices?.[index] !== undefined
+            ? { processingPriceCents: options.processingPrices[index] } : {}),
+        }],
+      });
+      if (options.conflictingProcessingPrices?.[index] !== undefined) {
+        reconciliation.observePaymentStatuses(state, {
+          streamId, statuses: [{ variationNumber, observedPaymentStatus,
+            processingPriceCents: options.conflictingProcessingPrices[index] }],
+        });
+      }
+    }
+  }
   const record = buildRecord(streamId, "19", false, "Corrected stream");
   if (options.pending) record.lifecycleStatus = "pending_end";
   let canonicalState = clone(state);
   let archive = clone({
     schemaVersion: reportStorage.STORAGE_SCHEMA_VERSION,
-    records: [olderRecord, record],
+    records: options.activeCapture ? [olderRecord] : [olderRecord, record],
   });
   let failNextReportSave = false;
+  let failNextCanonicalSave = false;
   const reportSaves = [];
   const canonicalSaves = [];
   const realStateCoordinator = reconciliationCoordinator.createReconciliationCoordinator({
@@ -4525,6 +4542,12 @@ function createRealPaymentCorrectionHarness(options = {}) {
     stateStore: {
       async loadState() { return clone(canonicalState); },
       async saveState(candidate) {
+        await options.beforeCanonicalSave?.();
+        if (failNextCanonicalSave) {
+          failNextCanonicalSave = false;
+          throw new harness.storageModule.ReconciliationStorageError(
+            "STORAGE_WRITE_FAILED", "Could not save the payment resolution.");
+        }
         canonicalState = clone(candidate);
         canonicalSaves.push(clone(candidate));
       },
@@ -4555,7 +4578,7 @@ function createRealPaymentCorrectionHarness(options = {}) {
       },
     }),
   });
-  const harness = createWorkerHarness();
+  const harness = createWorkerHarness(options.workerOptions);
   // Keep the worker boundary, real coordinators, and real report validation/storage;
   // only browser APIs and persistence are private in-memory test doubles.
   Object.assign(harness.reportStorageModule, reportStorage);
@@ -4572,11 +4595,28 @@ function createRealPaymentCorrectionHarness(options = {}) {
   for (const [method, implementation] of Object.entries(realReportCoordinator)) {
     harness.reportCoordinator[method] = (...args) => implementation(...args.map(clone));
   }
+  if (options.activeCapture) {
+    const integrationModule = require("../extension/shared/capture-integration.js");
+    Object.assign(harness.captureIntegrationModule, integrationModule);
+    const realCapture = integrationModule
+      .createCaptureIntegration({ ...harness.getCaptureIntegrationOptions(),
+        liveBidCoordinator: undefined, nextItemQueueCoordinator: undefined, variationPresetsCoordinator: undefined });
+    for (const [method, implementation] of Object.entries(realCapture)) {
+      harness.captureEventIntegration[method] = (...args) => implementation(...args.map(clone));
+    }
+  }
   const sender = harness.createSender({
     url: `${harness.reportPageUrl}?reportId=${record.reportId}`,
   });
+  const client = require("../extension/report/stream-report-client.js").createStreamReportClient({
+    runtime: { sendMessage: (message) => harness.send(message, sender).response },
+    protocol: streamReportProtocol,
+    streamReport,
+  });
   return {
     ...harness,
+    client,
+    streamId,
     correctedSku,
     paymentSku,
     record,
@@ -4594,6 +4634,7 @@ function createRealPaymentCorrectionHarness(options = {}) {
       (candidate) => candidate.reportId !== record.reportId,
     )),
     failNextReportSave() { failNextReportSave = true; },
+    failNextCanonicalSave() { failNextCanonicalSave = true; },
     sendReportCommand(command) {
       return harness.send(harness.createReportMessage({
         reportId: record.reportId, ...command,
@@ -4769,6 +4810,378 @@ for (const resolution of ["payment_complete", "canceled"]) {
     assert.equal(harness.reportSaves.length, 3, "GET makes one successful repair save");
     assert.deepEqual(await harness.sendReportCommand({ type: "get_report" }), repaired);
     assert.equal(harness.reportSaves.length, 3, "subsequent GET is read-only");
+  });
+}
+
+for (const resolution of ["payment_complete", "canceled"]) {
+  test(`real client/worker exposes saved processing prices and resolves ${resolution} without changing guards`, async () => {
+    const harness = createRealPaymentCorrectionHarness({
+      pendingStatuses: ["payment_processing", "order_processing", "payment_fixing"],
+      processingPrices: [1700, 1800], conflictingProcessingPrices: [undefined, 1900],
+    });
+    const { reportId } = harness.record;
+    const before = harness.getCanonicalState();
+    const listed = await harness.client.listPaymentFixingOrders({ reportId });
+    assert.equal(listed.orders[0].processingPriceCents, 1700);
+    assert.equal(listed.orders[1].processingPriceCents, null);
+    assert.equal(Object.hasOwn(listed.orders[2], "processingPriceCents"), false);
+    assert.deepEqual(harness.getCanonicalState(), before);
+    assert.equal(harness.canonicalSaves.length, 0);
+    assert.equal(harness.reportSaves.length, 0);
+    const result = await harness.client.resolvePaymentFixingOrder({ reportId,
+      variationNumber: 2, resolution, soldPriceCents: resolution === "payment_complete" ? 1750 : null });
+    assert.equal(result.report.totals.completedGmvCents, resolution === "payment_complete" ? 3750 : 2000);
+    assert.deepEqual((await harness.client.listPaymentFixingOrders({ reportId })).orders
+      .map((row) => row.variationNumber), [3, 4]);
+    const saved = harness.getCanonicalState();
+    assert.equal(saved.streams.at(-1).variations.find((row) => row.variationNumber === 2).processingPriceCents, 1700);
+    await harness.client.resolvePaymentFixingOrder({ reportId,
+      variationNumber: 2, resolution, soldPriceCents: resolution === "payment_complete" ? 1750 : null });
+    assert.deepEqual(harness.getCanonicalState(), saved);
+  });
+}
+
+function createProcessingPriceWorker(options = {}) {
+  let contextSequence = 0;
+  const harness = createRealPaymentCorrectionHarness({
+    activeCapture: true, pendingStatuses: ["payment_processing"],
+    workerOptions: {
+      initialActiveSession: {
+        streamId: "local-stream:11111111-1111-4111-8111-111111111111",
+        startedAt: "2026-08-19T10:00:00.000Z", identitySource: "local_session",
+      },
+      randomUUID: () => `${options.tokenPrefix ?? "context"}-${++contextSequence}`,
+    },
+  });
+  const sender = harness.createCaptureSender({ documentId: "processing-document" });
+  return Object.assign(harness, {
+    sender,
+    async getContext(source = sender) {
+      const response = await harness.send(harness.createCaptureMessage({ type: "get_processing_price_context" }), source).response;
+      assert.equal(response.ok, true, JSON.stringify(response));
+      return response.data.processingPriceContext;
+    },
+    sendPrice(token, price = 1700, source = sender) {
+      return harness.send(harness.createCaptureMessage({ type: "observe_payment_statuses",
+        statuses: [{ variationNumber: 2, observedPaymentStatus: "payment_processing",
+          processingPriceCents: price, processingPriceContext: token }],
+      }), source).response;
+    },
+  });
+}
+
+test("actual worker context, capture persistence, End, and report client preserve the processing price", async () => {
+  const harness = createProcessingPriceWorker();
+  const captureClient = require("../extension/capture/capture-client.js").createCaptureClient({
+    protocol: captureProtocol,
+    runtime: { sendMessage: (message) => harness.send(message, harness.sender).response },
+  });
+  const before = harness.getCanonicalState();
+  const token = await captureClient.getProcessingPriceContext();
+  assert.match(token, /^processing-price:/);
+  assert.equal(await harness.getContext(), token);
+  assert.deepEqual(harness.getCanonicalState(), before);
+  assert.equal(harness.canonicalSaves.length, 0, "context query is read-only");
+  assert.equal(harness.reportSaves.length, 0);
+  assert.equal(harness.runtimeSendMessages.length, 0, "context query sends no capture-ready invalidation");
+  await captureClient.observePaymentStatuses([{ variationNumber: 2, observedPaymentStatus: "payment_processing",
+    processingPriceCents: 1700, processingPriceContext: token }]);
+  const captured = harness.getCanonicalState();
+  assert.equal(captured.streams.at(-1).variations.at(-1).processingPriceCents, 1700);
+  assert.equal(captured.streams.at(-1).variations.at(-1).soldPriceCents, null);
+  assert.equal((await harness.sendPrice(token)).ok, true);
+  assert.equal(harness.canonicalSaves.length, 1);
+  const ended = await harness.send(harness.createStreamMessage({ type: "end_stream", streamId: harness.streamId })).response;
+  assert.equal(ended.ok, true, JSON.stringify(ended));
+  const { reportId } = harness.record;
+  const report = await harness.client.getReport({ reportId });
+  assert.equal(report.report.totals.completedGmvCents, 2000);
+  assert.equal(report.report.totals.unresolvedOrderCount, 1);
+  assert.equal((await harness.client.listPaymentFixingOrders({ reportId })).orders[0].processingPriceCents, 1700);
+  assert.equal(await harness.getContext(), null);
+  const late = await harness.sendPrice(token, 9000);
+  assert.equal(late.ok, false);
+  assert.equal(late.error.code, "NO_ACTIVE_STREAM");
+  assert.deepEqual(harness.getCanonicalState(), captured);
+});
+
+test("processing-price capture requires a token and trustworthy source document but status-only capture is unchanged", async () => {
+  const harness = createProcessingPriceWorker();
+  const token = await harness.getContext();
+  const noDocument = harness.createCaptureSender();
+  assert.equal(await harness.getContext(noDocument), null);
+  assert.equal((await harness.sendPrice(token, 1700, noDocument)).ok, true);
+  assert.equal(harness.getCanonicalState().streams.at(-1).variations.at(-1).processingPriceCents, undefined);
+  assert.equal((await harness.send(harness.createCaptureMessage({ type: "observe_payment_statuses",
+    statuses: [{ variationNumber: 2, observedPaymentStatus: "order_processing" }],
+  }), noDocument).response).ok, true);
+  assert.equal(harness.getCanonicalState().streams.at(-1).variations.at(-1).observedPaymentStatus, "order_processing");
+  assert.throws(() => harness.createCaptureMessage({ type: "observe_payment_statuses",
+    statuses: [{ variationNumber: 2, observedPaymentStatus: "payment_processing", processingPriceCents: 1700 }],
+  }), { code: "INVALID_CAPTURE_MESSAGE" });
+});
+
+test("price tokens cannot cross documents and old tokens disappear on worker restart", async () => {
+  const original = createProcessingPriceWorker({ tokenPrefix: "original" });
+  const token = await original.getContext();
+  const replacementSender = original.createCaptureSender({ documentId: "replacement-document" });
+  const replacementToken = await original.getContext(replacementSender);
+  assert.notEqual(replacementToken, token);
+  assert.equal((await original.sendPrice(token, 1700, replacementSender)).ok, true);
+  assert.equal(original.canonicalSaves.length, 0);
+  assert.equal((await original.sendPrice(replacementToken, 1700, replacementSender)).ok, true);
+  assert.equal(original.canonicalSaves.length, 1);
+  const restarted = createProcessingPriceWorker({ tokenPrefix: "restarted" });
+  assert.equal((await restarted.sendPrice(token)).ok, true);
+  assert.equal(restarted.canonicalSaves.length, 0);
+  const restartedToken = await restarted.getContext();
+  assert.notEqual(restartedToken, token);
+  assert.equal((await restarted.sendPrice(restartedToken)).ok, true);
+  assert.equal(restarted.canonicalSaves.length, 1);
+});
+
+test("price context is bounded and evicted tokens cannot prefill newly delivered observations", async () => {
+  const harness = createProcessingPriceWorker();
+  const token = await harness.getContext();
+  for (let index = 0; index < 8; index += 1) {
+    await harness.getContext(harness.createCaptureSender({ tab: { id: index + 30 }, documentId: `doc-${index}` }));
+  }
+  assert.equal((await harness.sendPrice(token)).ok, true);
+  assert.equal(harness.canonicalSaves.length, 0);
+  const freshToken = await harness.getContext();
+  assert.notEqual(freshToken, token);
+  assert.equal((await harness.sendPrice(freshToken)).ok, true);
+  assert.equal(harness.canonicalSaves.length, 1);
+});
+
+for (const change of ["stream", "baseline"]) {
+  test(`price tokens reject a delayed old ${change} price while preserving ordinary status delivery`, async () => {
+    const harness = createProcessingPriceWorker();
+    const token = await harness.getContext();
+    if (change === "stream") {
+      const nextStreamId = "local-stream:33333333-3333-4333-8333-333333333333";
+      const previousDispatch = harness.streamCoordinator.dispatch;
+      harness.streamCoordinator.dispatch = async (command) => command.type === "get_stream_session"
+        ? { state: { version: 1, activeSession: { streamId: nextStreamId,
+          startedAt: "2026-08-20T10:00:00.000Z", identitySource: "local_session" } }, result: null }
+        : previousDispatch(command);
+      await harness.coordinator.dispatch({ type: "pin_stream_to_inventory_baseline", streamId: nextStreamId });
+    } else {
+      const canonical = harness.getCanonicalState();
+      const baseline = canonical.inventoryBaselines[0];
+      await harness.coordinator.dispatch({ type: "extend_stream_inventory_baseline", streamId: harness.streamId,
+        expectedBaselineId: baseline.baselineId,
+        baselineId: "inventory-baseline:33333333-3333-4333-8333-333333333333",
+        sourceFingerprint: "fnv1a64:0123456789abcdef",
+        inventory: [...baseline.inventory, { sku: "NEW-M", item: "New", style: "", size: "M",
+          quantityOnHandAtImport: 2, unitCostCents: 500 }],
+      });
+    }
+    const freshToken = await harness.getContext();
+    assert.notEqual(freshToken, token);
+    assert.equal((await harness.sendPrice(token)).ok, true);
+    const stream = harness.getCanonicalState().streams.at(-1);
+    const row = stream.variations.find((entry) => entry.variationNumber === 2);
+    assert.equal(row.observedPaymentStatus, "payment_processing");
+    assert.equal(row.processingPriceCents, undefined);
+    assert.equal((await harness.sendPrice(freshToken, 1900)).ok, true);
+    assert.equal(harness.getCanonicalState().streams.at(-1).variations.find((entry) => entry.variationNumber === 2).processingPriceCents, 1900);
+  });
+}
+
+test("real client and worker list every unresolved category without inventing a final price", async () => {
+  const pendingStatuses = ["not_observed", "unrecognized", "payment_complete",
+    "payment_processing", "order_processing", "payment_fixing", "payment_failed"];
+  const harness = createRealPaymentCorrectionHarness({ pendingStatuses });
+  const before = harness.getCanonicalState();
+  const listed = await harness.client.listPaymentFixingOrders({ reportId: harness.record.reportId });
+  assert.deepEqual(listed.orders, pendingStatuses.map((observedPaymentStatus, index) => ({
+    variationNumber: index + 2, observedPaymentStatus, mapped: true,
+    sku: harness.paymentSku, item: "Other", style: "tee", size: "M",
+  })));
+  assert.equal(harness.record.report.totals.unresolvedOrderCount, 7);
+  assert.equal(harness.record.report.totals.paymentFixingCount, 4);
+  assert.deepEqual(harness.getCanonicalState(), before);
+  assert.equal(harness.canonicalSaves.length, 0);
+  assert.equal(harness.reportSaves.length, 0);
+  const reopened = await harness.client.getReport({ reportId: harness.record.reportId });
+  assert.equal(reopened.report.totals.unresolvedOrderCount, 7);
+  assert.equal(harness.reportSaves.length, 0, "broader list does not falsely trigger payment repair");
+});
+
+for (const observedPaymentStatus of ["not_observed", "unrecognized", "payment_complete"]) {
+  for (const resolution of ["payment_complete", "canceled"]) {
+    test(`real client/worker recovers ${observedPaymentStatus} as ${resolution} and repairs report save failure`, async () => {
+      const harness = createRealPaymentCorrectionHarness({ pendingStatuses: [observedPaymentStatus] });
+      const { reportId } = harness.record;
+      await harness.client.updateReportUnitCost({ reportId, sku: harness.correctedSku, unitCostCents: 900 });
+      const before = harness.getSavedRecord();
+      assert.equal(before.report.totals.paymentFixingCount, 0,
+        "new recovery eligibility does not change payment-fixing classification");
+      harness.failNextReportSave();
+      await assert.rejects(harness.client.resolvePaymentFixingOrder({
+        reportId, variationNumber: 2, resolution,
+        soldPriceCents: resolution === "payment_complete" ? 2800 : null,
+      }), { code: "STORAGE_WRITE_FAILED" });
+      assert.deepEqual(harness.getSavedRecord(), before);
+      assert.equal(harness.canonicalSaves.length, 1);
+      const repaired = await harness.client.getReport({ reportId });
+      assertPreservedWorkerReportCost(harness, repaired, resolution);
+      assert.equal(repaired.report.totals.unresolvedOrderCount, 0);
+      assert.equal(repaired.report.totals.pendingMappedCount, 0);
+      assert.equal(harness.canonicalSaves.length, 1);
+      assert.deepEqual(await harness.client.listPaymentFixingOrders({ reportId }), { reportId, orders: [] });
+      const saveCount = harness.reportSaves.length;
+      assert.deepEqual(await harness.client.getReport({ reportId }), repaired);
+      assert.equal(harness.reportSaves.length, saveCount, "repaired report does not repeatedly write");
+    });
+  }
+}
+
+test("real worker unresolved canonical-save failure preserves report, mappings, reservations and allows retry", async () => {
+  const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["unrecognized"] });
+  const { reportId } = harness.record;
+  const before = harness.getCanonicalState();
+  const saved = harness.getSavedRecords();
+  const command = { reportId, variationNumber: 2, resolution: "payment_complete", soldPriceCents: 2800 };
+  harness.failNextCanonicalSave();
+  await assert.rejects(harness.client.resolvePaymentFixingOrder(command), { code: "STORAGE_WRITE_FAILED" });
+  assert.deepEqual(harness.getCanonicalState(), before);
+  assert.deepEqual(harness.getSavedRecords(), saved);
+  assert.equal(harness.canonicalSaves.length, 0);
+  assert.equal(harness.reportSaves.length, 0);
+  assert.equal((await harness.client.listPaymentFixingOrders({ reportId })).orders.length, 1);
+  const success = await harness.client.resolvePaymentFixingOrder(command);
+  assert.equal(success.report.totals.completedPaymentCount, 2);
+  assert.equal(success.report.totals.unresolvedOrderCount, 0);
+  assert.equal(harness.canonicalSaves.length, 1);
+});
+
+test("real worker serializes rapid unresolved resolutions through delayed persistence without double deductions", async () => {
+  const saving = createDeferred();
+  const release = createDeferred();
+  const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["not_observed"],
+    beforeCanonicalSave: async () => { saving.resolve(); await release.promise; } });
+  const command = { type: "resolve_payment_fixing_order", variationNumber: 2,
+    resolution: "payment_complete", soldPriceCents: 2800 };
+  const first = harness.sendReportCommand(command);
+  await saving.promise;
+  const duplicate = harness.sendReportCommand(command);
+  const conflicting = harness.sendReportCommand({ ...command, resolution: "canceled", soldPriceCents: null });
+  assert.deepEqual(harness.getCanonicalState(), harness.originalCanonicalState);
+  assert.equal(harness.reportSaves.length, 0);
+  release.resolve();
+  assert.equal((await first).ok, true);
+  assert.equal((await duplicate).ok, true);
+  assert.equal((await conflicting).error.code, "PAYMENT_RESOLUTION_CONFLICT");
+  assert.equal(harness.canonicalSaves.length, 1);
+  const report = harness.getSavedRecord().report;
+  assert.equal(report.totals.completedPaymentCount, 2);
+  assert.equal(report.inventory.find((row) => row.sku === harness.paymentSku).replacementQuantity, 4);
+  assert.equal(report.totals.unresolvedOrderCount, 0);
+});
+
+for (const resolution of ["payment_complete", "canceled"]) {
+  test(`duplicate ${resolution} recovery preserves later report-only mapping and cost corrections`, async () => {
+    const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["unrecognized"] });
+    const command = { type: "resolve_payment_fixing_order", variationNumber: 2, resolution,
+      soldPriceCents: resolution === "payment_complete" ? 2800 : null };
+    assert.equal((await harness.sendReportCommand(command)).ok, true);
+    const mapping = await harness.sendReportCommand({ type: "save_offline_editor_mappings", changes: [{
+      variationNumber: 2, expectedStatus: resolution, expectedSku: harness.paymentSku, sku: harness.correctedSku,
+    }] });
+    assert.equal(mapping.ok, true, JSON.stringify(mapping));
+    assert.equal((await harness.sendReportCommand({ type: "update_report_unit_cost",
+      sku: harness.correctedSku, unitCostCents: 900 })).ok, true);
+    const canonical = harness.getCanonicalState();
+    const saved = harness.getSavedRecord();
+    const reportSaveCount = harness.reportSaves.length;
+    const canonicalSaveCount = harness.canonicalSaves.length;
+    const repeated = await harness.sendReportCommand(command);
+    assert.equal(repeated.ok, true);
+    assert.deepEqual(repeated.data.report, saved.report);
+    assert.deepEqual(harness.getSavedRecord(), saved);
+    assert.deepEqual(harness.getCanonicalState(), canonical);
+    assert.equal(harness.reportSaves.length, reportSaveCount, "duplicate never rebuilds corrected mappings");
+    assert.equal(harness.canonicalSaves.length, canonicalSaveCount);
+  });
+
+  test(`duplicate ${resolution} recovery still repairs a failed report write`, async () => {
+    const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["not_observed"] });
+    const { reportId } = harness.record;
+    await harness.client.updateReportUnitCost({ reportId, sku: harness.correctedSku, unitCostCents: 900 });
+    const command = { reportId, variationNumber: 2, resolution,
+      soldPriceCents: resolution === "payment_complete" ? 2800 : null };
+    harness.failNextReportSave();
+    await assert.rejects(harness.client.resolvePaymentFixingOrder(command), { code: "STORAGE_WRITE_FAILED" });
+    const repeated = await harness.client.resolvePaymentFixingOrder(command);
+    assertPreservedWorkerReportCost(harness, repeated, resolution);
+    assert.equal(harness.canonicalSaves.length, 1);
+    assert.equal(repeated.report.totals.unresolvedOrderCount, 0);
+    assert.equal(harness.reportSaves.length, 3, "cost correction, failed report write, one successful retry repair");
+  });
+}
+
+test("real client rejects a stale conflicting resolution after the listed variation finalizes", async () => {
+  const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["payment_complete"] });
+  const { reportId } = harness.record;
+  assert.equal((await harness.client.listPaymentFixingOrders({ reportId })).orders.length, 1);
+  await harness.coordinator.dispatch({ type: "record_payment_complete", streamId: harness.streamId,
+    variationNumber: 2, soldPriceCents: 2800 });
+  const finalized = harness.getCanonicalState();
+  await assert.rejects(harness.client.resolvePaymentFixingOrder({ reportId, variationNumber: 2,
+    resolution: "canceled", soldPriceCents: null }), { code: "PAYMENT_RESOLUTION_CONFLICT" });
+  assert.deepEqual(harness.getCanonicalState(), finalized);
+  const repaired = await harness.client.getReport({ reportId });
+  assert.equal(repaired.report.totals.completedPaymentCount, 2);
+  assert.equal(repaired.report.totals.canceledOrderCount, 0);
+});
+
+test("real client unresolved completion remains unmapped until existing mapping correction workflow is used", async () => {
+  const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["unrecognized"], unmapped: true });
+  const { reportId } = harness.record;
+  assert.deepEqual((await harness.client.listPaymentFixingOrders({ reportId })).orders[0], {
+    variationNumber: 2, observedPaymentStatus: "unrecognized", mapped: false,
+    sku: null, item: null, style: null, size: null,
+  });
+  const response = await harness.client.resolvePaymentFixingOrder({ reportId, variationNumber: 2,
+    resolution: "payment_complete", soldPriceCents: 2800 });
+  assert.equal(response.report.totals.unmappedCompletedCount, 1);
+  assert.equal(response.report.totals.completedGmvCents, 4800);
+  assert.equal(response.report.inventory.find((row) => row.sku === harness.paymentSku).replacementQuantity, 5);
+  const handoff = await harness.sendReportCommand({ type: "prepare_quantity_handoff",
+    spreadsheetId: "synthetic-sheet-id-111111111111111111111111" });
+  assert.equal(handoff.ok, false);
+  assert.equal(handoff.error.code, "QUANTITY_REPORT_NOT_READY");
+});
+
+for (const change of ["active session", "newer stream", "new baseline"]) {
+  test(`real client rejects listed unresolved recovery after ${change} changes`, async () => {
+    const harness = createRealPaymentCorrectionHarness({ pendingStatuses: ["not_observed"] });
+    const { reportId } = harness.record;
+    assert.equal((await harness.client.listPaymentFixingOrders({ reportId })).orders.length, 1);
+    let code;
+    if (change === "active session") {
+      code = "ACTIVE_STREAM_ALREADY_EXISTS";
+      await harness.streamCoordinator.dispatch({ type: "start_stream" });
+    } else if (change === "newer stream") {
+      code = "REPORT_NOT_LATEST_STREAM";
+      await harness.coordinator.dispatch({ type: "pin_stream_to_inventory_baseline",
+        streamId: "local-stream:33333333-3333-4333-8333-333333333333" });
+    } else {
+      code = "REPORT_INVENTORY_BASELINE_STALE";
+      await harness.coordinator.dispatch({ type: "create_inventory_baseline",
+        baselineId: "inventory-baseline:33333333-3333-4333-8333-333333333333",
+        sourceFingerprint: "fnv1a64:3333333333333333",
+        inventory: harness.getCanonicalState().inventoryBaselines[0].inventory });
+    }
+    const stateBefore = harness.getCanonicalState();
+    const reportsBefore = harness.getSavedRecords();
+    await assert.rejects(harness.client.listPaymentFixingOrders({ reportId }), { code });
+    await assert.rejects(harness.client.resolvePaymentFixingOrder({ reportId, variationNumber: 2,
+      resolution: "canceled", soldPriceCents: null }), { code });
+    assert.deepEqual(harness.getCanonicalState(), stateBefore);
+    assert.deepEqual(harness.getSavedRecords(), reportsBefore);
   });
 }
 
@@ -5006,7 +5419,7 @@ test("GET with no fixing orders returns the saved report without reading canonic
   );
 });
 
-test("hides unsafe payment controls and rejects stale payment mutations", async () => {
+test("explains unsafe payment controls and rejects stale payment mutations", async () => {
   for (const unsafe of [
     { activeBaselineId:
       "inventory-baseline:99999999-9999-4999-8999-999999999999" },
@@ -5040,11 +5453,8 @@ test("hides unsafe payment controls and rejects stale payment mutations", async 
       sender,
     );
 
-    assert.deepEqual(await listed.response, {
-      ok: true,
-      data: { reportId: fixture.reportId, orders: [] },
-    });
     const resolutionResponse = await resolved.response;
+    assert.deepEqual(await listed.response, resolutionResponse);
 
     assert.equal(resolutionResponse.ok, false);
     assert.equal(
@@ -5107,11 +5517,8 @@ test("blocks payment correction during an active stream and for non-newest repor
       sender,
     );
 
-    assert.deepEqual(await listed.response, {
-      ok: true,
-      data: { reportId: fixture.reportId, orders: [] },
-    });
     const resolutionResponse = await resolved.response;
+    assert.deepEqual(await listed.response, resolutionResponse);
 
     assert.equal(resolutionResponse.ok, false);
     assert.equal(

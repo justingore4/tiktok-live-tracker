@@ -615,10 +615,14 @@
         return "Payment failed - fixing period";
       }
 
-      return "Payment fixing";
+      if (status === "payment_fixing") return "Payment fixing";
+      if (status === "not_observed") return "Payment status not captured";
+      if (status === "unrecognized") return "Payment status not recognized";
+      if (status === "payment_complete") return "Payment complete observed; final sold price not saved";
+      return "Unresolved payment";
     }
 
-    function renderPaymentFixingOrders(document, ordersValue, onResolve) {
+    function renderPaymentFixingOrders(document, ordersValue, onResolve, contextKey = null) {
       const section = document.querySelector("#payment-resolution-section");
       const container = document.querySelector("#payment-resolution-orders");
       const count = document.querySelector("#payment-resolution-count");
@@ -629,7 +633,34 @@
         return controls;
       }
 
+      const existingRows = new Map(Array.from(container.children).map((row) => [
+        row.dataset.variationNumber, row,
+      ]));
+      const processingPriceText = (order) => {
+        const cents = order?.processingPriceCents;
+        return Number.isSafeInteger(cents) && cents > 0
+          ? `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`
+          : "";
+      };
       const rows = orders.map((order) => {
+        const identity = JSON.stringify([contextKey, safeInteger(order?.variationNumber)]);
+        const itemDescription = order?.mapped
+          ? `Selected inventory: ${getItemDescription(order)} (${order.sku})`
+          : "No inventory item selected.";
+        const existing = existingRows.get(String(safeInteger(order?.variationNumber)));
+        if (existing?.paymentResolutionIdentity === identity && existing.paymentResolutionCallback === onResolve) {
+          const input = existing.paymentResolutionControls[0];
+          existing.paymentResolutionPriceDirty ||= input.value !== existing.paymentResolutionPrefill;
+          if (!existing.paymentResolutionPriceDirty) {
+            input.value = processingPriceText(order);
+            existing.paymentResolutionPrefill = input.value;
+          }
+          existing.children[0].children[1].textContent = getObservedPaymentLabel(order?.observedPaymentStatus);
+          existing.children[0].children[2].textContent = itemDescription;
+          existing.paymentResolutionOrder = order;
+          controls.push(...existing.paymentResolutionControls);
+          return existing;
+        }
         const row = document.createElement("article");
         const copy = document.createElement("div");
         const priceField = document.createElement("label");
@@ -641,6 +672,9 @@
 
         row.className = "payment-resolution-order";
         row.dataset.variationNumber = String(variationNumber);
+        row.paymentResolutionIdentity = identity;
+        row.paymentResolutionCallback = onResolve;
+        row.paymentResolutionOrder = order;
         copy.className = "payment-resolution-copy";
         appendTextElement(
           document,
@@ -660,9 +694,7 @@
           document,
           copy,
           "p",
-          order?.mapped
-            ? `Selected inventory: ${getItemDescription(order)} (${order.sku})`
-            : "No inventory item selected.",
+          itemDescription,
           "payment-resolution-item",
         );
 
@@ -680,6 +712,10 @@
         priceInput.inputMode = "decimal";
         priceInput.autocomplete = "off";
         priceInput.placeholder = "0.00";
+        priceInput.value = processingPriceText(order);
+        row.paymentResolutionPrefill = priceInput.value;
+        row.paymentResolutionPriceDirty = false;
+        priceInput.addEventListener("input", () => { row.paymentResolutionPriceDirty = true; });
         priceInput.setAttribute("aria-label", `Sold price for variation ${variationNumber}`);
         priceField.append(priceInput);
 
@@ -688,7 +724,7 @@
         completeButton.textContent = "Mark complete";
         completeButton.addEventListener("click", () => {
           onResolve?.({
-            order,
+            order: row.paymentResolutionOrder,
             priceInput,
             resolution: "payment_complete",
             soldPriceText: priceInput.value,
@@ -700,7 +736,7 @@
         cancelButton.textContent = "Mark canceled";
         cancelButton.addEventListener("click", () => {
           onResolve?.({
-            order,
+            order: row.paymentResolutionOrder,
             priceInput,
             resolution: "canceled",
             soldPriceText: null,
@@ -708,11 +744,19 @@
         });
 
         controls.push(priceInput, completeButton, cancelButton);
+        row.paymentResolutionControls = [priceInput, completeButton, cancelButton];
         row.append(copy, priceField, completeButton, cancelButton);
         return row;
       });
 
-      replaceChildren(container, rows);
+      // Preserve drafts and focus for the same report/stream/baseline/variation.
+      // Only untouched fields follow newly available or invalidated saved prices.
+      for (const row of Array.from(container.children)) {
+        if (!rows.includes(row)) container.removeChild(row);
+      }
+      rows.forEach((row, index) => {
+        if (container.children[index] !== row) container.insertBefore(row, container.children[index] ?? null);
+      });
       count.textContent = `${rows.length} unresolved order${rows.length === 1 ? "" : "s"}`;
       section.hidden = rows.length === 0;
       section.setAttribute("aria-busy", "false");
@@ -1387,6 +1431,8 @@
       let currentPaymentFixingOrders = [];
       let paymentResolutionControls = [];
       let paymentResolutionBusy = false;
+      let paymentResolutionRequest = null;
+      let paymentResolutionUnavailable = false;
       let currentUnitCostEntries = [];
       let unitCostCorrectionBusy = false;
       let unitCostRefreshFailure = null;
@@ -1451,6 +1497,8 @@
         isQuantityReportLocationCurrent() && !inventoryCopying && !quantityBusy &&
         !paymentResolutionBusy && !unitCostCorrectionBusy && !unitCostRefreshFailure && !reportNameSave &&
         !mappingCorrectionController?.getState()?.busy && !mappingCorrectionController?.getState()?.loading;
+      const canResolvePayments = () => canUseInventoryExports() && !paymentResolutionUnavailable &&
+        typeof client.resolvePaymentFixingOrder === "function";
       const syncInventoryOptions = () => {
         const unavailable = !canUseInventoryExports();
         if (inventoryOptionsButton) inventoryOptionsButton.disabled = unavailable;
@@ -1479,6 +1527,7 @@
         // that read. Clipboard delivery temporarily locks all local edits.
         if (quantitySheetInput) quantitySheetInput.disabled = panelClosed || disposed || quantityLoading || inventoryCopying;
         syncInventoryOptions();
+        paymentResolutionControls.forEach((control) => { control.disabled = !canResolvePayments(); });
       };
       const setQuantityPanelOpen = (open) => {
         if (quantityPanel) quantityPanel.hidden = !open;
@@ -1731,19 +1780,32 @@
         if (busy) invalidateQuantities("Finish the payment correction, then check the Sheet again.");
         syncQuantityControls();
         section?.setAttribute("aria-busy", busy ? "true" : "false");
-        paymentResolutionControls.forEach((control) => {
-          control.disabled = busy || inventoryCopying;
-        });
       };
 
       const displayPaymentFixingOrders = (orders, onResolve) => {
+        paymentResolutionUnavailable = false;
         currentPaymentFixingOrders = Array.isArray(orders) ? orders : [];
         paymentResolutionControls = renderPaymentFixingOrders(
           document,
           currentPaymentFixingOrders,
           onResolve,
+          JSON.stringify([currentRecord?.reportId, currentRecord?.report?.metadata?.streamId,
+            currentRecord?.report?.metadata?.inventoryBaselineId]),
         );
         setResolutionBusy(paymentResolutionBusy);
+      };
+
+      const showPaymentResolutionUnavailable = (message) => {
+        paymentResolutionUnavailable = true;
+        const count = Math.max(currentPaymentFixingOrders.length,
+          safeInteger(currentRecord?.report?.totals?.unresolvedOrderCount),
+          safeInteger(currentRecord?.report?.totals?.paymentFixingCount));
+        const section = document.querySelector("#payment-resolution-section");
+        if (section) section.hidden = count === 0;
+        const countElement = document.querySelector("#payment-resolution-count");
+        if (countElement) countElement.textContent = `${count} unresolved order${count === 1 ? "" : "s"}`;
+        resolutionFeedback(message, true);
+        syncQuantityControls();
       };
 
       const setUnitCostBusy = (busy) => {
@@ -2041,7 +2103,9 @@
         resolution,
         soldPriceText,
       }) => {
-        if (disposed || inventoryCopying || !currentRecord || typeof client.resolvePaymentFixingOrder !== "function") {
+        const isCurrentOrder = () => currentPaymentFixingOrders.includes(order) &&
+          paymentResolutionControls.includes(priceInput);
+        if (!canResolvePayments() || !isCurrentOrder()) {
           return;
         }
 
@@ -2075,8 +2139,14 @@
           return;
         }
 
+        if (!canResolvePayments() || !isCurrentOrder()) return;
         const reportId = currentRecord.reportId;
         const mutationSequence = loadSequence;
+        const request = { locationSearch: location?.search };
+        paymentResolutionRequest = request;
+        const isCurrentResolution = () => paymentResolutionRequest === request &&
+          request.locationSearch === location?.search && isQuantityReportLocationCurrent() &&
+          isCurrentReportView(reportId, mutationSequence);
         setResolutionBusy(true);
         resolutionFeedback(`Saving variation #${variationNumber}...`);
 
@@ -2088,7 +2158,7 @@
             soldPriceCents,
           });
 
-          if (!isCurrentReportView(reportId, mutationSequence)) {
+          if (!isCurrentResolution()) {
             return;
           }
 
@@ -2111,29 +2181,27 @@
           try {
             const orders = await getPaymentFixingOrders(currentRecord.reportId);
 
-            if (!isCurrentReportView(reportId, mutationSequence)) {
+            if (!isCurrentResolution()) {
               return;
             }
 
             displayPaymentFixingOrders(orders, resolvePaymentOrder);
-          } catch (_refreshError) {
-            if (isCurrentReportView(reportId, mutationSequence)) {
-              feedback(
-                `${successMessage} Reload the report to recheck unfinished payments.`,
-              );
+          } catch (refreshError) {
+            if (isCurrentResolution()) {
+              showPaymentResolutionUnavailable(`${successMessage} ${refreshError?.message ?? "Reload the report to recheck unfinished payments."}`);
             }
           }
 
           try {
             const entries = await getReportUnitCosts(currentRecord.reportId);
 
-            if (!isCurrentReportView(reportId, mutationSequence)) {
+            if (!isCurrentResolution()) {
               return;
             }
 
             displayReportUnitCosts(entries);
           } catch (_refreshError) {
-            if (isCurrentReportView(reportId, mutationSequence)) {
+            if (isCurrentResolution()) {
               displayReportUnitCosts([]);
             }
           }
@@ -2142,14 +2210,43 @@
             preserveDraft: true,
           });
         } catch (error) {
-          if (isCurrentReportView(reportId, mutationSequence)) {
+          if (isCurrentResolution()) {
             const message = error?.message ??
               "The unfinished payment could not be updated.";
             resolutionFeedback(message, true);
             feedback(message);
+            // A canonical save can succeed before the saved report write fails.
+            // Reload through the worker's repair path, never infer an outcome here.
+            try {
+              const response = await client.getReport({ reportId });
+              if (!isCurrentResolution()) return;
+              if (!response?.report || response.reportId !== reportId) throw new Error("Reload the report to recheck unfinished payments.");
+              currentRecord = hydrateRecord(response);
+              renderCurrentReport();
+              const orders = await getPaymentFixingOrders(reportId);
+              if (!isCurrentResolution()) return;
+              displayPaymentFixingOrders(orders, resolvePaymentOrder);
+              try {
+                const entries = await getReportUnitCosts(reportId);
+                if (!isCurrentResolution()) return;
+                displayReportUnitCosts(entries);
+              } catch (_costRefreshError) {
+                if (!isCurrentResolution()) return;
+                showUnitCostRefreshFailure(reportId,
+                  "The saved report was reloaded, but unit-cost correction data could not refresh. Reload this report before correcting a unit cost.");
+              }
+              refreshMappingCorrection(reportId, { preserveDraft: true });
+            } catch (refreshError) {
+              if (isCurrentResolution()) showPaymentResolutionUnavailable(
+                `${message} ${refreshError?.message ?? "Reload the report to recheck unfinished payments."}`,
+              );
+            }
           }
         } finally {
-          setResolutionBusy(false);
+          if (paymentResolutionRequest === request) {
+            paymentResolutionRequest = null;
+            setResolutionBusy(false);
+          }
         }
       };
 
@@ -2329,6 +2426,8 @@
 
       const load = async () => {
         if (disposed || inventoryCopying) return;
+        paymentResolutionRequest = null;
+        paymentResolutionBusy = false;
         setInventoryOptionsOpen(false);
         quantityLoading = true;
         setQuantityPanelOpen(false);
@@ -2404,11 +2503,10 @@
               return;
             }
 
-            displayPaymentFixingOrders([], resolvePaymentOrder);
-            feedback(
-              error?.message ??
-                "Unfinished payments could not be checked. Reload the report to try again.",
-            );
+            const message = error?.message ??
+              "Unfinished payments could not be checked. Reload the report to try again.";
+            showPaymentResolutionUnavailable(message);
+            feedback(message);
           }
 
           try {

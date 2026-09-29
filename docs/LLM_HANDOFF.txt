@@ -1,10 +1,13 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 24, 2026
+Snapshot date: September 29, 2026
 Repository branch at this update: main
-Most recent implementation commit at this snapshot: 6742457
-Commit subject: Tracker reads A-F only, g sheet metrics added
+Most recent implementation commit at this snapshot: 7540b1d
+Commit subject: Accept quantity as inventory sheet header
+Current uncommitted implementation: all-captured-unresolved post-stream recovery
+and inline unresolved variation numbers in the existing End warning, plus saved
+processing-row prices for editable report prefills. See sections 6, 7, and 11.
 Preset work, documentation, variation arrows, startup planning, shared tracker-entry
 scrolling, the future-preset mouse-button swap, offline Resume's
 saved-preset #1 selection, centered variation arrows, 1.3-second blue planning
@@ -22,7 +25,7 @@ The root AGENTS.md now provides shared Mac/Windows development rules; this addit
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,065 passed, 0 failed
+Latest full synthetic test run: 2,196 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -256,6 +259,11 @@ completeness certificate. Tokens/raw DOM/buyer identity are not report fields.
 - Canonical canceled and payment_complete are mutually exclusive terminal results.
   Later contradictory observations do not reverse either automatically. This is
   not a refund or post-completion cancellation system.
+- Optional processingPriceCents is separate auxiliary ended-order price evidence,
+  never sale truth or a live bid. A sticky processingPriceConflict suppresses the
+  suggested price after contradictory observations without creating an accounting
+  conflict or changing handoff eligibility. Only confirmed soldPriceCents contributes
+  to accounting. Unresolved soldPriceCents remains null.
 - Payment complete requires a successfully parsed positive final sold price before
   capture can create a completed sale. A live bid is never the sold price.
 - Every priced completed auction contributes to Gross Item Sales and AOV, even
@@ -370,14 +378,14 @@ website represents both texts as m4b_tag elements, the current one-tag associati
 can reject the row. Rows absent from the rendered DOM or a capture/delivery cutoff
 also fit. None of these was proved for the affected session.
 
-The report's manual-resolution list reads current canonical unknown orders whose
-observed status is payment_processing, order_processing, payment_fixing, or
-legacy payment_failed. Already-canonical canceled orders are excluded. A successfully
-saved unrecognized observation also removes an order from that particular list;
-therefore a simple label mismatch delivered as unrecognized does NOT alone explain
-continued manual-cancel prompts. The old plain-failure mapping or missing observations
-retaining an older pending status can do so. The Cancelled spelling alias alone did not
-address the newly reported terminal Payment failed wording.
+Before the September 28 recovery expansion, the report's manual-resolution list
+only included canonical unknown orders observed as payment_processing,
+order_processing, payment_fixing, or legacy payment_failed. That excluded saved
+unrecognized/not_observed observations and payment_complete without a committed
+price. The current list includes every actual captured canonical unknown order;
+already-canonical completed/canceled orders remain excluded. This recovery change
+does not diagnose or change capture behavior. The Cancelled spelling alias alone
+did not address the previously reported terminal Payment failed wording.
 
 Regression coverage includes the real locator/content delivery and synthetic canonical
 storage/report paths: processing -> failure, mapped/unmapped reservation release,
@@ -396,6 +404,28 @@ relevant row HTML/association, extension build identity, health reason, and timi
 before End. Use synthetic reproductions. Do not invent wider status aliases or
 automatic cancellation timers without a request and actual evidence.
 
+Saved processing-price prefill (September 29):
+- A separate strict processing-price parser recognizes a single positive exact USD
+  "has won" price, within the existing exact same-variation/single-payment-badge
+  Sold Items association. Eligible badges are existing payment_processing,
+  order_processing, payment_fixing, and legacy payment_failed-with-countdown.
+- No new payment aliases, terminal transitions, selector roots, or automatic
+  cancellation timers. Missing/malformed/ambiguous price does not suppress status
+  capture. Live bid, shipping/total/cost values, neighboring rows, and inferred
+  amounts cannot be used as the prefill source.
+- Canonical version 7 accepts optional positive processingPriceCents and optional
+  boolean processingPriceConflict (the latter requires a saved price). Legacy
+  records lacking these fields remain valid without a broad migration or write on
+  read. Persist only sanitized cents/flags, never raw row or buyer text.
+- First trusted price is retained. A differing trusted observation sets a sticky
+  auxiliary conflict and the unresolved-list API returns null instead of a prefill.
+  Missing/unrecognized later status does not invent a new price. Terminal records
+  retain metadata but reject later auxiliary price updates; automatic final payment
+  remains authoritative and uses its own final soldPriceCents.
+- This is backward-compatible reading by the new code, not rollback compatibility:
+  older strict binaries do not accept snapshots containing the added optional fields.
+  Do not advise downgrading or clearing saved data to remove the metadata.
+
 7. CAPTURE DELIVERY AND HEALTH
 ------------------------------
 Capture implementation:
@@ -408,6 +438,27 @@ Capture implementation:
 - Failed delivery retries back off 1, 2, 4, then 5 seconds, capped at 5 seconds.
 - Acknowledgment follows persistence. Stale failed retries must not overwrite newer
   observed statuses. Diagnostic event deduplication is not durable reconciliation.
+- Auxiliary processing prices use a separate read-only get_processing_price_context
+  request before a fresh exact-row price scan. The worker's opaque, in-memory token
+  is bound to the active stream, pinned baseline, and sender tab/document; each
+  price-bearing status includes processingPriceContext. The token cache is bounded
+  to eight entries and does not write storage or alter startup-health contexts.
+  The auxiliary context lookup has its own bounded three-second request deadline,
+  outside the ordinary capture client queue. Existing capture scheduling, retry
+  intervals, and startup-readiness rules are unchanged; actual metadata deliveries
+  use the existing persisted-delivery queue and therefore its normal startup accounting.
+  A successful ordinary status delivery retries an initially unavailable context,
+  including a static row first seen before Start, without adding polling or changing
+  readiness. A pending lookup can defer one fresh request; old route/root/body replies
+  cannot supply prices to the current view.
+  Stale tokens lose only their auxiliary price fields; ordinary status delivery
+  remains independent. After End no active stream can accept capture. Worker restart
+  requires a fresh context/scan; buffered old prices cannot acquire a new token.
+- Status-price deduplication includes the auxiliary price/context. Up to two distinct
+  price observations per variation/context are retained through batching/retries so
+  conflicting evidence reaches canonical conflict suppression instead of silently
+  choosing the latest amount. New context resets only that scoped price evidence;
+  later terminal/status observations preserve the existing supersession safeguards.
 - Body/route changes invalidate stale delivery context. Same-body scoped root
   replacement preserves appropriate delivery state for recovery.
 - GMV uses exact guide-Step-2 and supported legacy guide-step-2 roots; active auction
@@ -974,7 +1025,32 @@ Three correction workflows, NOT interchangeable:
 1. Finish unresolved payments
    - Newest eligible finalized report, no active session, compatible baseline and
      latest canonical stream. Completion requires seller-verified final price.
+   - Every real captured canonical unknown order is included, including
+     not_observed, unrecognized, and observed payment_complete without a committed
+     final price. Future presets, manual queue previews, completed and canceled
+     canonical orders are excluded. Mapping is not required to resolve an order.
+   - Each row shows variation, observation, mapped item/SKU/size or the unmapped
+     fallback. Complete requires positive exact cents; canceled requires no price.
+     Unresolved soldPriceCents stays null. A separately saved trustworthy
+     processingPriceCents now prefills the editable field; missing/legacy/conflicted
+     evidence leaves it blank. Never use a live bid or turn a prefill into a sale.
+     Verify/edit the suggested price before explicitly marking complete. Cancellation
+     ignores the price. Canonical metadata persists through End/reopening; the latest
+     eligible report obtains it from the worker, not a new accounting/export field.
+   - List guards return a visible reason rather than a misleading empty list when
+     unresolved recovery is unavailable. Existing handoff/correction guards remain.
+   - UI rejects duplicate and stale row actions, retains unchanged input drafts
+     and focus on refresh, and ignores responses after report navigation/reload.
+     Price/status refreshes reuse the same report/stream/baseline/variation row;
+     dirty user edits (including clearing a prefill) survive. Untouched inputs follow
+     new/invalidated authoritative price evidence. Navigation to another report or
+     variation never carries a draft into it. Saved prices are strict integer cents,
+     formatted as editable USD decimals without a dollar sign.
+     Failed saves reload authoritative report/order/cost state through the worker;
+     failed refreshes disable stale recovery controls and preserve error feedback.
    - Saves canonical payment/inventory change first, then regenerates the report.
+   - Identical already-terminal retries return the saved/GET-repaired report;
+     they do not rebuild over later report-only mapping or cost corrections.
 2. Correct Item Mapping
    - Report-only, completed/canceled saved variations under existing eligibility
    rules (no active stream, no active-bidding marker at End, and no blocking
@@ -1002,11 +1078,33 @@ shared/stream-report-coordinator.js::replaceFinalizedReport now:
 
 Both direct payment resolution and getReportWithPaymentRepair use that shared path.
 If canonical resolution succeeds but the second report save fails, a later eligible
-report read requires a nonzero saved paymentFixingCount that differs from the current
-canonical unresolved count, then rebuilds while preserving corrected costs.
+report read compares saved unresolvedOrderCount with the current canonical unknown
+order count, then rebuilds while preserving corrected costs when they differ.
+Legacy reports without that total retain the paymentFixingCount comparison against
+only processing/fixing/legacy-failed orders; the payment-error metric is unchanged.
 This is deliberate recovery, not a transaction across both storage keys. Reimport,
 newer stream, incompatible baseline, or pending conditions can disable correction.
 Do not bypass those guards or propagate report-only costs globally.
+
+The existing End confirmation now lists sorted, unique actual unresolved variation
+numbers inline beside their count, for example:
+  unresolved orders -- Count 3: var #5, 32, 98
+Count and IDs come from the same canonical captured set; presets/queue placeholders
+are excluded. The existing snapshot refresh updates this line while confirmation
+is open. Layout, natural wrapping, other warnings, and End eligibility are unchanged.
+
+September 28 verification uses only synthetic core, actual worker/client, report UI,
+and End-warning fixtures: new unresolved categories and both outcomes; unmapped
+completion remaining blocked for handoff; exact price validation; conservation;
+canonical/report write failures and repair; duplicates, terminal races, old reports,
+active/new streams, baseline changes; retained report names/costs/mapping corrections;
+drafts, navigation, notices/tables, and existing disclosure behavior.
+Native Chrome checks are left to the user: verify both recovery actions, blank-price
+guidance, disabled controls during save, visible unavailable reasons, and End warning
+wrapping/refresh. No browser checks or real tracker/Sheet data were accessed. Capture
+parsing/timing, terminal classification, schemas, permissions, version, and dependencies
+were not changed. This does not add completed-to-canceled correction or infer outcomes
+for missing variations; missed capture remains a separate unconfirmed issue.
 
 12. PDF, CSV, AND REPORT EXPORTS
 ------------------------------
@@ -1159,7 +1257,23 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,065 tests passed, 0 failed, on Windows (September 24, 2026).
+Latest full verification: 2,196 tests passed, 0 failed, on Windows (September 29, 2026).
+The saved processing-price implementation adds 71 regressions over 2,125. Focused
+runs: parser/locator/capture client/content 183/183; core/worker/protocol/integration/
+storage/coordinator/reconciliation 344/344; report page/client 254/254. Coverage includes
+exact-row and ancestor boundaries, late prices, static rows after Start, conflicting
+evidence, retries, stale document/stream/baseline contexts, legacy loading, persistence
+through End, draft preservation, complete/cancel actions, and unchanged accounting.
+Full node --test and git diff --check pass. No browser checks or real-data access;
+no commit or push. The user should reload the extension/dashboard and manually check
+processing-row prefill after End, editing/confirming completion, canceling without a
+price, and blank fallback for unavailable/conflicted evidence. These tests do not
+verify native TikTok row capture or repair historical missed captures.
+The prior unresolved-recovery/End-warning implementation passed 2,125 tests on
+September 28 and added 60 regressions over 2,065.
+Focused runs: core/worker/client group 310/310; report page 235/235; End-warning group
+54/54. Full node --test and git diff --check pass. No browser checks were launched;
+user-performed Chrome checks are listed in section 11 and capture-development.md.
 The preferred `quantity` Sheet/header change adds four regressions over the 2,061-test
 baseline. The relevant eight-file focused group passes 342/342; the full suite passes
 2,065/2,065. Synthetic coverage checks preferred and legacy header acceptance, duplicate

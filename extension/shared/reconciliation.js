@@ -281,6 +281,16 @@
         expectedKeys.push("observedPaymentStatus");
       }
 
+      // Auxiliary processing-row prices are optional in current snapshots. They
+      // never satisfy the completed-payment money/allocation invariants below.
+      if (stateVersion === STATE_VERSION && isPlainRecord(auction)) {
+        for (const key of ["processingPriceCents", "processingPriceConflict"]) {
+          if (Object.hasOwn(auction, key)) {
+            expectedKeys.push(key);
+          }
+        }
+      }
+
       requirePersistedRecord(auction, path, expectedKeys);
       const streamId = requirePersistedString(
         auction.streamId,
@@ -442,6 +452,26 @@
         committedUnitCostCents,
         conflicts: [],
       };
+
+      if (Object.hasOwn(auction, "processingPriceCents")) {
+        hydratedAuction.processingPriceCents = requirePersistedInteger(
+          auction.processingPriceCents,
+          `${path}.processingPriceCents`,
+          1,
+        );
+        if (observedPaymentStatus === OBSERVED_PAYMENT_STATUSES.NOT_OBSERVED) {
+          failInvalidState(`${path}.processingPriceCents requires an observed order.`);
+        }
+      }
+      if (Object.hasOwn(auction, "processingPriceConflict")) {
+        if (
+          typeof auction.processingPriceConflict !== "boolean" ||
+          !Object.hasOwn(auction, "processingPriceCents")
+        ) {
+          failInvalidState(`${path}.processingPriceConflict requires a saved processing price and a boolean.`);
+        }
+        hydratedAuction.processingPriceConflict = auction.processingPriceConflict;
+      }
 
       hydratedAuction.conflicts = auction.conflicts.map((conflict, index) => {
         const hydratedConflict = hydratePersistedConflict(
@@ -1873,15 +1903,18 @@
         }
 
         const keys = Object.keys(status).sort();
+        const hasProcessingPrice = Object.hasOwn(status, "processingPriceCents");
+        const expectedKeys = hasProcessingPrice
+          ? ["observedPaymentStatus", "processingPriceCents", "variationNumber"]
+          : ["observedPaymentStatus", "variationNumber"];
 
         if (
-          keys.length !== 2 ||
-          keys[0] !== "observedPaymentStatus" ||
-          keys[1] !== "variationNumber"
+          keys.length !== expectedKeys.length ||
+          keys.some((key, index) => key !== expectedKeys[index])
         ) {
           fail(
             "INVALID_ARGUMENT",
-            `statuses[${index}] must contain exactly observedPaymentStatus and variationNumber.`,
+            `statuses[${index}] must contain observedPaymentStatus and variationNumber, with only an optional processingPriceCents.`,
           );
         }
 
@@ -1907,13 +1940,24 @@
           );
         }
 
+        if (hasProcessingPrice && !PAYMENT_FIXING_OBSERVED_STATUSES.has(observedPaymentStatus)) {
+          fail("INVALID_ARGUMENT", `statuses[${index}].processingPriceCents requires a processing/fixing status.`);
+        }
+
         seenVariationNumbers.add(variationNumber);
-        return { variationNumber, observedPaymentStatus };
+        return {
+          variationNumber,
+          observedPaymentStatus,
+          ...(hasProcessingPrice ? {
+            processingPriceCents: requireSafeInteger(status.processingPriceCents,
+              `statuses[${index}].processingPriceCents`, 1),
+          } : {}),
+        };
       });
       let updatedCount = 0;
       let ignoredCount = 0;
 
-      statuses.forEach(({ variationNumber, observedPaymentStatus }) => {
+      statuses.forEach(({ variationNumber, observedPaymentStatus, processingPriceCents }) => {
         const auction = getOrCreateAuction(
           state,
           streamId,
@@ -1941,7 +1985,24 @@
           return;
         }
 
-        if (auction.observedPaymentStatus === observedPaymentStatus) {
+        let processingPriceChanged = false;
+        if (processingPriceCents !== undefined) {
+          if (auction.processingPriceCents === undefined) {
+            auction.processingPriceCents = processingPriceCents;
+            processingPriceChanged = true;
+          } else if (
+            auction.processingPriceCents !== processingPriceCents &&
+            auction.processingPriceConflict !== true
+          ) {
+            // Keep the first observation for provenance, but no longer offer
+            // either value as a trustworthy prefill. This is not an accounting
+            // reconciliation conflict and must not alter stock or totals.
+            auction.processingPriceConflict = true;
+            processingPriceChanged = true;
+          }
+        }
+
+        if (auction.observedPaymentStatus === observedPaymentStatus && !processingPriceChanged) {
           return;
         }
 
@@ -2047,7 +2108,7 @@
       requireState(state);
 
       if (!isPlainRecord(input)) {
-        fail("INVALID_ARGUMENT", "A payment-error order query is required.");
+        fail("INVALID_ARGUMENT", "An unresolved-payment order query is required.");
       }
 
       const streamId = requireStreamId(input.streamId);
@@ -2063,13 +2124,10 @@
       );
 
       return stream.variations
-        .filter(
-          (auction) =>
-            auction.paymentStatus === "unknown" &&
-            PAYMENT_FIXING_OBSERVED_STATUSES.has(
-              auction.observedPaymentStatus,
-            ),
-        )
+        // These are real canonical variations, not future preset placeholders.
+        // Missing/unrecognized observations and price-less completion badges
+        // still need the same explicit recovery as recognized processing states.
+        .filter((auction) => auction.paymentStatus === "unknown")
         .map((auction) => {
           const inventoryItem = auction.sku === null
             ? null
@@ -2083,6 +2141,10 @@
             item: inventoryItem?.item ?? null,
             style: inventoryItem?.style ?? null,
             size: inventoryItem?.size ?? null,
+            ...(auction.processingPriceCents !== undefined ? {
+              processingPriceCents: auction.processingPriceConflict === true
+                ? null : auction.processingPriceCents,
+            } : {}),
           };
         })
         .sort((left, right) => left.variationNumber - right.variationNumber);
@@ -2092,7 +2154,7 @@
       requireState(state);
 
       if (!isPlainRecord(input)) {
-        fail("INVALID_ARGUMENT", "A payment-error resolution is required.");
+        fail("INVALID_ARGUMENT", "An unresolved-payment resolution is required.");
       }
 
       const key = validateAuctionKey(input);
@@ -2125,7 +2187,7 @@
       if (!auction) {
         fail(
           "PAYMENT_ORDER_NOT_RESOLVABLE",
-          "The payment-error variation does not exist.",
+          "The captured unresolved variation does not exist.",
         );
       }
 
@@ -2147,17 +2209,6 @@
         fail(
           "PAYMENT_RESOLUTION_CONFLICT",
           "The payment order already has a different terminal status.",
-        );
-      }
-
-      if (
-        !PAYMENT_FIXING_OBSERVED_STATUSES.has(
-          auction.observedPaymentStatus,
-        )
-      ) {
-        fail(
-          "PAYMENT_ORDER_NOT_RESOLVABLE",
-          "Only unresolved payment orders can be resolved after tracking ends.",
         );
       }
 

@@ -195,6 +195,10 @@ Implemented behavior includes:
 - Persisting processing, fixing, failed, and unrecognized as nonterminal observed statuses
   without changing money; a mapped canonical-unknown auction stays reserved regardless
   of which of those observations is latest.
+- Keeping a reliably captured processing-row auction price as separate optional
+  `processingPriceCents` metadata, never as confirmed `soldPriceCents`. Conflicting
+  auxiliary observations retain the first value and set sticky `processingPriceConflict`
+  to suppress prefilling, without changing payment truth or adding an accounting conflict.
 - Promoting captured terminal cancellation to an allocation result that preserves the
   mapping, releases its reservation, and contributes no sale or money.
 - Treating exact cancellation and priced completion as mutually exclusive terminal
@@ -357,6 +361,8 @@ Within that root, capture:
    maps its whole normalized text to an allowlisted status code or `unrecognized`;
 3. climbs at most 12 ancestors without crossing the Sold Items root; canonical completion
    additionally requires the parser to find the same variation and one US-dollar price;
+   a processing/fixing row can supply a separate positive `has won: $...` auction price
+   only within that same unambiguous association, never from a bid, shipping, or total;
 4. performs an immediate backfill scan, then coalesces root text and child-node changes
    with a 150 ms quiet delay and a non-resetting 1-second maximum wait;
 5. observes only the Sold Items root for sale changes, while route, page-resume, body,
@@ -399,18 +405,37 @@ the metric root, and retries transient failures with capped backoff. All three s
 capture paths discard their page-scoped outboxes when the route is exited or
 `document.body` is replaced; each independently backfills a newly discovered root.
 
-The page-to-worker protocol has exactly six event shapes:
+The page-to-worker protocol has seven event shapes, including one read-only context query:
 
 ```text
 { type: "observe_variations", variationNumbers: [37, 38, ...] }
 { type: "observe_bidding_variation", variationNumber: 39 }
 { type: "observe_bidding_price", variationNumber: 39, bidPriceCents: 2800 }
+{ type: "get_processing_price_context" }
 { type: "observe_payment_statuses", statuses: [
-    { variationNumber: 37, observedPaymentStatus: "payment_fixing" }, ...
+    { variationNumber: 37, observedPaymentStatus: "payment_fixing",
+      processingPriceCents: 700, processingPriceContext: "<opaque worker token>" }, ...
 ] }
 { type: "payment_complete", variationNumber: 37, soldPriceCents: 700 }
 { type: "observe_attributed_gmv", attributedGmvDisplay: "$4.64K" }
 ```
+
+`processingPriceCents` is optional positive safe-integer metadata paired with
+`processingPriceContext` on existing payment-status entries, allowed only for
+`payment_processing`, `order_processing`,
+`payment_fixing`, and legacy countdown-backed `payment_failed`. Missing or ambiguous
+prices do not suppress a valid status observation. Price-aware delivery deduplication
+permits a newly available price even when the status is unchanged; repeated identical
+observations remain idempotent. Up to two distinct price observations per variation and
+context survive deduplication/retries so a discrepancy reaches canonical conflict handling
+instead of disappearing under a latest-only value. No automatic payment decision is added.
+
+The new context query returns an opaque `processingPriceContext` string or null. The
+worker binds it to the active local stream, pinned baseline, sender tab, and dashboard
+document. Content obtains it before a fresh exact-row price scan; ordinary status capture
+does not wait for the query. The worker drops stale-token auxiliary price data while
+preserving the existing status path. Context tokens are transient, not saved order fields
+or proof of a TikTok stream identity. Capture does not supply its own stream/baseline IDs.
 
 The content script does not send a stream ID, raw badge or auction-card text, buyer data,
 product text, observation timestamp, source HTML, or any other DOM content. The bidding
@@ -433,6 +458,13 @@ same `(local stream ID, variation number)` record; inventory and gross profit co
 after an employee mapping also exists. An unpriced completed badge stays provisional and
 can still be followed by another observed status. A repeated event is a no-op, while a
 conflicting completed price preserves the first price and records a conflict.
+A processing-row price instead remains auxiliary canonical metadata scoped to that
+stream, pinned baseline, and variation. It changes neither payment status, stock,
+reservations, revenue, nor report accounting. The first valid value is retained; a
+different valid observation marks the auxiliary price conflicted and removes it from
+prefill eligibility, not from the unresolved-order list. A later automatic completed
+price remains authoritative even when it differs. Existing ended-session and terminal
+guards remain in force; this is not a new path to repair missed status capture.
 An Attributed GMV observation updates only that stream's latest display and is a no-op
 when it repeats the already saved value.
 An accepted bidding observation creates the variation if needed, makes it the stream's
@@ -480,6 +512,7 @@ TikTok-provided stream identity or automatically associate the page with a local
 | One canonical `Bids: $...` value appears in that same uniquely identified card | Replace the single stream-scoped transient bid and targeted-update the live panel | Implemented; sends integer cents paired with the variation; never becomes final price or report data |
 | Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
 | Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
+| One explicit auction-winner price appears on that exact processing/fixing row | Save separate processing-price metadata for the post-stream recovery input | Implemented; no completion or accounting effect, and conflicting values suppress prefill |
 | Legacy failed badge with an explicit countdown, or an unrecognized badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
 | Exact terminal `Payment failed`, `Canceled`, or `Cancelled` appears | Persist observed and canonical cancellation, retain any item link, and release its reservation | Implemented; no sale, revenue, cost, or profit is counted |
 | Exact green `Payment complete` row appears | Persist its final price as authoritative payment truth | Implemented |
@@ -524,6 +557,11 @@ either state word or a completeness badge; it presents the specific attention no
 End-readiness counts instead. Lifecycle `pending_end` remains internal recovery state.
 These fields describe captured-data completeness; they do not claim that TikTok rendered
 every historical Sold Items row.
+The existing End-readiness paragraph appends sorted, unique unresolved variation numbers
+beside their count, for example `unresolved orders — Count 3: var #5, 32, 98`.
+The count and list use the same recorded, nonterminal variation set; presets and queue
+previews are excluded. Authoritative snapshot refreshes update the open confirmation
+without moving focus or changing End eligibility. The existing paragraph wraps normally.
 
 The report retains these deliberately different measures:
 
@@ -643,12 +681,31 @@ and both clipboard paths share the report-edit/copy lock to prevent overlapping 
 The redundant quantity dropdown heading and full-table explanation were removed.
 The three screen-only correction sections have
 different authority boundaries.
-**Finish unresolved payments** exposes canonical-unresolved `payment_processing`,
-`order_processing`, `payment_fixing`, or legacy `payment_failed` orders. Newly captured
-terminal failures are canceled and excluded. Cancellation needs no price and releases the
-reservation; completion requires a seller-verified positive final price and commits the
-mapped unit. This canonical payment correction remains limited to the newest eligible
-report while no tracker stream is active and its baseline/stream are still current.
+**Finish unresolved payments** exposes every captured canonical-unknown variation,
+including `not_observed`, `unrecognized`, observed `payment_complete` without a final
+price, processing, fixing, and legacy `payment_failed`. Saved terminal completions and
+cancellations, uncaptured presets, and queue previews are excluded. Rows show variation,
+item, exact SKU, and size with unmapped fallbacks. Cancellation needs no price and releases
+the reservation; completion requires a seller-verified positive final price and commits
+the mapped unit. Canonical unknown records still store `soldPriceCents: null`. The worker
+may separately return a trustworthy saved `processingPriceCents` to prefill the editable
+input. No captured processing price, older records without the optional field, and a
+sticky `processingPriceConflict` leave the input blank. A live bid is never substituted.
+Same-context refreshes preserve an employee's typed draft rather than overwriting it with
+a newly returned price; drafts must not cross report/variation identity. Mark complete
+still validates and confirms the submitted price, while Mark canceled needs no price.
+
+This correction remains limited to the newest eligible ended report while no tracker
+stream is active and its baseline/stream are still current; listing and saving enforce
+those worker guards and the UI displays the reason when unavailable. Existing serialized
+commands revalidate payment truth and preserve terminal outcomes, including completed
+orders later reported canceled. The report reloads authoritative state after a failed save.
+Canonical payment persistence precedes report replacement; read-time repair now compares
+the saved unresolved count with all current canonical-unknown orders, retaining the legacy
+payment-error-count fallback for older reports. Both replacement paths preserve saved
+report costs and identity. Resolution recalculates notices, stock, accounting, and tables;
+it does not remove independent mapping or inventory-handoff guards. This recovery path
+neither diagnoses nor changes the automatic capture behavior behind missed updates.
 **Correct Item Mapping** changes completed/canceled variation mappings only in the
 selected finalized report. It requires no active tracker, no active bidding variation,
 no unresolved payments or pending reservations, and at least one editable variation.
@@ -913,7 +970,7 @@ Saved-report management remains hidden during an active session. Check capacity 
 Start: a capacity failure at End currently requires separate recovery/support to free
 space, since Retry alone cannot reduce library usage.
 
-Ended streams cannot be reopened in the tagger. The guarded payment-buffer correction is
+Ended streams cannot be reopened in the tagger. The guarded unresolved-payment correction is
 limited to the newest safe report; report-only SKU-cost correction is available on any
 finalized current or archived report.
 Employees should finish mapping corrections and wait for expected capture retries when
@@ -1051,6 +1108,17 @@ without changing the persisted schema. Version 5 adds the
 nullable, sanitized `attributedGmvDisplay` field to each stream. Version 6 adds the
 nullable `activeBiddingVariationNumber`, which must reference a variation in the same
 stream. Version 7 removes persisted manual unpaid decisions from the Live lifecycle.
+
+Version-7 variation records also accept optional `processingPriceCents` (positive safe
+integer) and `processingPriceConflict` (boolean, only with a saved processing price).
+These are auxiliary capture metadata, independent of `soldPriceCents`. Absent fields
+mean no available prefill; existing snapshots load without inventing a price or requiring
+a migration/version bump. The metadata survives ordinary persistence and End, and the
+guarded unresolved-order listing reads it from canonical state rather than adding prices
+to report accounting or exports. A disagreement keeps the first price plus the sticky
+conflict flag; it does not create a report reconciliation-conflict/handoff block.
+This compatibility is forward-loading old snapshots into the updated code, not a
+downgrade guarantee: older strict validators do not accept the new optional keys.
 
 Strict version-1 through version-6 snapshots are migrated in memory to detached
 version-7 state. Version-1 through version-3 legacy `inventory` becomes one

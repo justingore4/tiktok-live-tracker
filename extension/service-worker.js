@@ -1197,6 +1197,64 @@ async function getCanonicalReconciliationState() {
   return hydrateReconciliationResponse(response);
 }
 
+// Read-only, worker-lifetime tokens bind auxiliary processing prices to the
+// session/baseline and source document in which a fresh row scan was requested.
+// Ordinary status capture deliberately keeps its existing behavior.
+const processingPriceContexts = new Map();
+const MAX_PROCESSING_PRICE_CONTEXTS = 8;
+
+async function readProcessingPriceScope(sender) {
+  if (!Number.isSafeInteger(sender?.tab?.id) || sender.tab.id < 0 ||
+      typeof sender.documentId !== "string" || sender.documentId.length === 0) return null;
+  const { state: session } = await getStreamSessionResponse();
+  if (session.activeSession === null) return null;
+  const canonical = await getCanonicalReconciliationState();
+  const stream = canonical.streams.find((entry) => entry.streamId === session.activeSession.streamId);
+  const baseline = canonical.inventoryBaselines.find((entry) => entry.baselineId === canonical.activeInventoryBaselineId);
+  if (!stream || !baseline || baseline.inventory.length === 0 ||
+      stream.inventoryBaselineId !== baseline.baselineId) return null;
+  return {
+    documentKey: JSON.stringify([sender.tab.id, sender.documentId]),
+    tabId: sender.tab.id,
+    scopeKey: JSON.stringify([stream.streamId, baseline.baselineId]),
+  };
+}
+
+async function dispatchProcessingPriceCapture(command, sender) {
+  let scope = null;
+  try {
+    scope = await readProcessingPriceScope(sender);
+  } catch (_error) {
+    // Missing auxiliary context must never prevent ordinary status delivery.
+  }
+  for (const [key, entry] of processingPriceContexts) {
+    if (!scope || entry.scopeKey !== scope.scopeKey ||
+        (entry.tabId === scope.tabId && key !== scope.documentKey)) {
+      processingPriceContexts.delete(key);
+    }
+  }
+  if (command.type === captureProtocol.EVENT_TYPES.GET_PROCESSING_PRICE_CONTEXT) {
+    if (!scope) return { processingPriceContext: null };
+    let entry = processingPriceContexts.get(scope.documentKey);
+    if (!entry) {
+      entry = { ...scope, token: `processing-price:${globalThis.crypto.randomUUID()}` };
+      processingPriceContexts.set(scope.documentKey, entry);
+      while (processingPriceContexts.size > MAX_PROCESSING_PRICE_CONTEXTS) {
+        processingPriceContexts.delete(processingPriceContexts.keys().next().value);
+      }
+    }
+    return { processingPriceContext: entry.token };
+  }
+  const entry = scope ? processingPriceContexts.get(scope.documentKey) : null;
+  const statuses = command.statuses.map((status) => {
+    if (!Object.hasOwn(status, "processingPriceCents") ||
+        (entry && status.processingPriceContext === entry.token)) return status;
+    const { processingPriceCents: _price, processingPriceContext: _context, ...ordinaryStatus } = status;
+    return ordinaryStatus;
+  });
+  return captureEventIntegration.dispatch({ ...command, statuses });
+}
+
 async function getQuantityHandoffContext(reportId, sessionState) {
   if (sessionState.activeSession !== null) {
     failBoundary(streamReportProtocol, "ACTIVE_STREAM_ALREADY_EXISTS",
@@ -1361,8 +1419,11 @@ async function getReportWithPaymentRepair(command, sessionState) {
 
   const savedPaymentFixingCount =
     reportRecord.report?.totals?.paymentFixingCount;
+  const savedUnresolvedCount =
+    reportRecord.report?.totals?.unresolvedOrderCount;
+  const hasUnresolvedCount = Number.isSafeInteger(savedUnresolvedCount);
 
-  if (savedPaymentFixingCount === 0) {
+  if (hasUnresolvedCount ? savedUnresolvedCount === 0 : savedPaymentFixingCount === 0) {
     return reportRecord;
   }
 
@@ -1392,9 +1453,15 @@ async function getReportWithPaymentRepair(command, sessionState) {
     return reportRecord;
   }
 
-  const needsPaymentRepair =
-    Number.isSafeInteger(savedPaymentFixingCount) &&
-    savedPaymentFixingCount !== orders.length;
+  // Payment resolution commits canonical state first. A failed second report
+  // write must be repairable for every unresolved category, without redefining
+  // the saved paymentFixingCount metric or changing legacy report contracts.
+  const needsPaymentRepair = hasUnresolvedCount
+    ? savedUnresolvedCount !== orders.length
+    : Number.isSafeInteger(savedPaymentFixingCount) &&
+      savedPaymentFixingCount !== orders.filter((order) => [
+        "payment_processing", "order_processing", "payment_fixing", "payment_failed",
+      ].includes(order.observedPaymentStatus)).length;
 
   if (!needsPaymentRepair) {
     return reportRecord;
@@ -1410,17 +1477,21 @@ async function listPaymentFixingOrdersForReport(command, sessionState) {
   const reportRecord = await requireFinalizedReport(command.reportId);
   const latest = await reportCoordinator.getLatestFinalizedReport();
 
-  if (
-    sessionState.activeSession !== null ||
-    latest.reportId !== command.reportId
-  ) {
-    return { reportId: command.reportId, orders: [] };
+  if (sessionState.activeSession !== null) {
+    failBoundary(streamReportProtocol, "ACTIVE_STREAM_ALREADY_EXISTS",
+      "End the active tracker stream before correcting a saved report.");
+  }
+
+  if (latest.reportId !== command.reportId) {
+    failBoundary(streamReportProtocol, "REPORT_NOT_LATEST",
+      "Only the newest ended-stream report can resolve unfinished orders.");
   }
 
   const reconciliationState = await getCanonicalReconciliationState();
 
-  if (getReportCorrectionGuard(reportRecord, reconciliationState)) {
-    return { reportId: command.reportId, orders: [] };
+  const correctionGuard = getReportCorrectionGuard(reportRecord, reconciliationState);
+  if (correctionGuard) {
+    failBoundary(streamReportProtocol, correctionGuard.code, correctionGuard.message);
   }
 
   const orders = reconciliation.listPaymentFixingOrders(
@@ -1450,7 +1521,7 @@ async function resolvePaymentFixingOrderForReport(command, sessionState) {
     failBoundary(
       streamReportProtocol,
       "REPORT_NOT_LATEST",
-      "Only the newest ended-stream report can correct payment-error orders.",
+      "Only the newest ended-stream report can resolve unfinished orders.",
     );
   }
 
@@ -1468,6 +1539,10 @@ async function resolvePaymentFixingOrderForReport(command, sessionState) {
     );
   }
 
+  const alreadyResolved = reconciliationState.streams
+    .find((stream) => stream.streamId === reportRecord.report.metadata.streamId)
+    ?.variations.find((auction) => auction.variationNumber === command.variationNumber)
+    ?.paymentStatus === command.resolution;
   const reconciliationResponse =
     await stateCoordinator.resolvePaymentFixingOrder({
       streamId: reportRecord.report.metadata.streamId,
@@ -1475,6 +1550,13 @@ async function resolvePaymentFixingOrderForReport(command, sessionState) {
       resolution: command.resolution,
       soldPriceCents: command.soldPriceCents,
     });
+
+  if (alreadyResolved) {
+    // The canonical resolver still validates identical status/price retries.
+    // Repair a missing report write if necessary, but do not rebuild an already
+    // current report and erase mapping corrections made after the first save.
+    return getReportWithPaymentRepair(command, sessionState);
+  }
 
   return reportCoordinator.replaceFinalizedReport({
     reportId: command.reportId,
@@ -1831,8 +1913,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const command = validateMessage(message, boundary);
 
       validateSender(sender, command, boundary);
+      if (boundary.protocol === captureProtocol &&
+          command.type === captureProtocol.EVENT_TYPES.GET_PROCESSING_PRICE_CONTEXT) {
+        return dispatchProcessingPriceCapture(command, sender);
+      }
       await synchronizeRepairedPresetLiveProjection();
       try {
+        if (boundary.protocol === captureProtocol &&
+            command.type === captureProtocol.EVENT_TYPES.OBSERVE_PAYMENT_STATUSES &&
+            command.statuses.some((status) => Object.hasOwn(status, "processingPriceCents"))) {
+          return await dispatchProcessingPriceCapture(command, sender);
+        }
         return await dispatchBoundaryCommand(boundary, command);
       } finally {
         // Promotion can persist before its independent cleanup fails. Repair

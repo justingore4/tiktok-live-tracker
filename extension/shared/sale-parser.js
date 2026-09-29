@@ -78,9 +78,36 @@
     };
   }
 
+  function parseProcessingItemText(value) {
+    // Keep this auxiliary price stricter than the legacy completed-sale parser.
+    // Only the row's explicit auction-winner amount is evidence, never a bid,
+    // shipping charge, order total, or another arbitrary dollar amount.
+    const text = normalizeWhitespace(value).replace(
+      /(Variation\s*:\s*#\s*\d+)(?=(?:Payment\s+(?:processing|fixing|failed)|Order\s+processing))/gi,
+      "$1 ",
+    ).replace(/(\$[\d,.]+)(?=Variation\s*:)/gi, "$1 ");
+    const variations = [...text.matchAll(VARIATION_PATTERN)];
+    const winners = [...text.matchAll(/\bhas\s+won\s*:/gi)];
+    if (variations.length !== 1 || winners.length !== 1) return null;
+
+    const amountText = text.slice(winners[0].index + winners[0][0].length);
+    const amount = amountText.match(
+      /^\s*\$\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)(?=\s|$|Variation\s*:)/i,
+    );
+    if (!amount) return null;
+    const variationNumber = Number(variations[0][1]);
+    const processingPriceCents = parseMoneyToCents(amount[1]);
+    if (!Number.isSafeInteger(variationNumber) || variationNumber < 1 ||
+        !Number.isSafeInteger(processingPriceCents) || processingPriceCents <= 0) {
+      return null;
+    }
+    return { variationNumber, processingPriceCents };
+  }
+
   return {
     normalizeWhitespace,
     parseMoneyToCents,
+    parseProcessingItemText,
     parseSoldItemText,
   };
 });

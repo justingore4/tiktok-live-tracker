@@ -2508,13 +2508,16 @@
     const variations = Array.isArray(view?.variations)
       ? view.variations
       : [];
-    const unresolvedOrderCount = variations.filter(
-      (variation) =>
+    const unresolvedVariationNumbers = [...new Set(variations
+      .filter((variation) =>
         variation.recorded === true &&
+        Number.isSafeInteger(variation.variationNumber) &&
+        variation.variationNumber > 0 &&
         !["committed", "unmapped_completed", "canceled"].includes(
           variation.status,
-        ),
-    ).length;
+        ))
+      .map((variation) => variation.variationNumber))]
+      .sort((left, right) => left - right);
     const recountSkuCount = (Array.isArray(view?.inventory)
       ? view.inventory
       : []
@@ -2529,7 +2532,8 @@
         "active bidding variation",
         "active bidding variations",
       ],
-      [unresolvedOrderCount, "unresolved order", "unresolved orders"],
+      [unresolvedVariationNumbers.length, "unresolved order", "unresolved orders",
+        unresolvedVariationNumbers],
       [totals.pendingMappedCount, "pending mapped order", "pending mapped orders"],
       [totals.paymentFixingCount, "payment-error order", "payment-error orders"],
       [totals.unmappedCompletedCount, "completed sale without inventory", "completed sales without inventory"],
@@ -2537,8 +2541,10 @@
       [recountSkuCount, "SKU requiring a recount", "SKUs requiring a recount"],
     ]
       .filter(([count]) => Number.isSafeInteger(count) && count > 0)
-      .map(([count, singular, plural]) =>
-        `${count} ${count === 1 ? singular : plural}`,
+      .map(([count, singular, plural, variationNumbers]) =>
+        variationNumbers
+          ? `${count === 1 ? singular : plural} — Count ${count}: var #${variationNumbers.join(", ")}`
+          : `${count} ${count === 1 ? singular : plural}`,
       );
 
     return issues.length === 0

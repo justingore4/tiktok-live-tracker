@@ -282,7 +282,9 @@
                 reconciliationCoordinator.COMMAND_TYPES
                   .OBSERVE_PAYMENT_STATUSES,
               streamId,
-              statuses: event.statuses.map((status) => ({ ...status })),
+              // Context is authenticated by the worker before this integration;
+              // only the auxiliary price belongs in canonical reconciliation.
+              statuses: event.statuses.map(({ processingPriceContext: _context, ...status }) => status),
             };
             break;
           case captureProtocol.EVENT_TYPES.PAYMENT_COMPLETE:

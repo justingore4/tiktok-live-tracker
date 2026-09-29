@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   normalizeWhitespace,
   parseMoneyToCents,
+  parseProcessingItemText,
   parseSoldItemText,
 } = require("../extension/shared/sale-parser.js");
 
@@ -90,4 +91,28 @@ test("parses visually separate variation and completed badge siblings flattened 
 
 test("normalizes line breaks and repeated spaces", () => {
   assert.equal(normalizeWhitespace("  one\n\n two   three "), "one two three");
+});
+
+test("processing prices require the exact row's single explicit winning amount", () => {
+  for (const status of ["Payment processing...", "Order processing", "Payment fixing", "Payment failed"]) {
+    assert.deepEqual(parseProcessingItemText(
+      `Buyer has won: $1,234.50 Variation: #17${status}`,
+    ), { variationNumber: 17, processingPriceCents: 123450 });
+  }
+  assert.deepEqual(parseProcessingItemText(
+    "Buyer has won: $25Variation: #17 Payment processing Shipping: $5 Total: $30",
+  ), { variationNumber: 17, processingPriceCents: 2500 });
+});
+
+test("processing prices reject malformed, zero, ambiguous and unrelated monetary values", () => {
+  for (const amount of ["0", "0.00", "-5", "+5", "1,00", "5.999", "5.0.0", "5e3", "NaN", "9007199254740992"]) {
+    assert.equal(parseProcessingItemText(`Buyer has won: $${amount} Variation: #17 Payment processing`), null, amount);
+  }
+  for (const value of [
+    "Variation: #17 Payment processing Unit cost: $5 Shipping: $5 Total: $20 Bids: $10",
+    "Buyer has won: $20 Variation: #17 Payment processing Buyer has won: $30",
+    "Buyer has won: $20 Variation: #17 Payment processing Variation: #18",
+    "Buyer has won: $20 Variation: #0 Payment processing",
+    "Buyer has won: $20 Variation: #9007199254740992 Payment processing",
+  ]) assert.equal(parseProcessingItemText(value), null, value);
 });
