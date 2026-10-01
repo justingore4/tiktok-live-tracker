@@ -832,11 +832,11 @@
     );
 
     if (priceConflict) {
-      return `Payment price conflict for variation #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
+      return `Payment price conflict for SKU #${variation.variationNumber}. The first captured price, ${viewModel.formatUsdCents(priceConflict.retainedSoldPriceCents)}, was retained for review.`;
     }
 
     if (variation?.status === "canceled") {
-      return `Variation #${variation.variationNumber} was canceled. Any inventory reservation was released. You can still select a reference item without changing inventory or metrics.`;
+      return `SKU #${variation.variationNumber} was canceled. Any inventory reservation was released. You can still select a reference item without changing inventory or metrics.`;
     }
 
     if (variation?.observedPaymentStatus === "payment_complete") {
@@ -844,10 +844,10 @@
         ? " It was previously marked unpaid; review the warning."
         : "";
 
-      return `Payment complete captured for variation #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
+      return `Payment complete captured for SKU #${variation.variationNumber}${getCapturedPriceText(variation)}.${reviewDetail}`;
     }
 
-    return `Variation #${variation.variationNumber} TikTok payment status: ${variation?.observedPaymentStatusLabel ?? getObservedPaymentStatusLabel(undefined)}.`;
+    return `SKU #${variation.variationNumber} TikTok payment status: ${variation?.observedPaymentStatusLabel ?? getObservedPaymentStatusLabel(undefined)}.`;
   }
 
   function describeLiveRefresh(previous, view, includeExistingUpdates = true) {
@@ -880,8 +880,8 @@
 
     if (activeBiddingVariation && !wasPreviouslyBidding) {
       return activeBiddingVariation.selected
-        ? `Variation #${activeBiddingVariation.variationNumber} is now bidding. It is selected and ready to tag.`
-        : `Variation #${activeBiddingVariation.variationNumber} is now bidding. Variation #${view.selectedVariationNumber} remains selected.`;
+        ? `SKU #${activeBiddingVariation.variationNumber} is now bidding. It is selected and ready to tag.`
+        : `SKU #${activeBiddingVariation.variationNumber} is now bidding. SKU #${view.selectedVariationNumber} remains selected.`;
     }
 
     if (added.length === 1 && updated.length === 0) {
@@ -892,12 +892,12 @@
           : `TikTok payment: ${addedVariation?.observedPaymentStatusLabel ?? getObservedPaymentStatusLabel(undefined)}.`;
 
       return added[0] === view.selectedVariationNumber
-        ? `Captured variation #${added[0]} from Sold Items. ${paymentDetail} It is selected and ready to tag.`
-        : `Captured earlier variation #${added[0]} from Sold Items. ${paymentDetail} Variation #${view.selectedVariationNumber} remains selected.`;
+        ? `Captured SKU #${added[0]} from Sold Items. ${paymentDetail} It is selected and ready to tag.`
+        : `Captured earlier SKU #${added[0]} from Sold Items. ${paymentDetail} SKU #${view.selectedVariationNumber} remains selected.`;
     }
 
     if (added.length > 1 && updated.length === 0) {
-      return `Captured ${added.length} new Sold Items variations: ${added.map((number) => `#${number}`).join(", ")}. Now showing variation #${view.selectedVariationNumber}.`;
+      return `Captured ${added.length} new Sold Items SKUs: ${added.map((number) => `#${number}`).join(", ")}. Now showing SKU #${view.selectedVariationNumber}.`;
     }
 
     if (added.length === 0 && updated.length === 1) {
@@ -907,7 +907,7 @@
     }
 
     if (added.length > 0 || updated.length > 0) {
-      return `Live auction data updated ${added.length + updated.length} variations.`;
+      return `Live auction data updated ${added.length + updated.length} SKUs.`;
     }
 
     return "";
@@ -1165,13 +1165,13 @@
       const prestream = preset && queued.prestreamVariationNumber !== undefined;
       const description = preset
         ? prestream
-          ? `${display.description}. Pre-stream preset for variation #${queued.variationNumber}. No inventory is reserved.`
-          : `${display.description}. Preset for variation #${queued.variationNumber}.`
+          ? `${display.description}. Pre-stream preset for SKU #${queued.variationNumber}. No inventory is reserved.`
+          : `${display.description}. Preset for SKU #${queued.variationNumber}.`
         : display.description;
       queuedItemBadge.title = description;
       queuedItemTooltip.textContent = description;
       clearQueuedItemButton.setAttribute("aria-label", preset
-        ? `Clear queued ${prestream ? "pre-stream " : ""}preset for variation #${queued.variationNumber}: ${display.description}`
+        ? `Clear queued ${prestream ? "pre-stream " : ""}preset for SKU #${queued.variationNumber}: ${display.description}`
         : `Clear queued item: ${display.description}`);
       clearQueuedItemButton.dataset.sku = queued.sku;
       clearQueuedItemButton.dataset.source = queued.source;
@@ -1546,7 +1546,7 @@
     pendingPresetResumeSelection = null;
     selectedPresetVariationNumber = 1;
     variationNavigationGeneration += 1;
-    mappingAnnouncement.textContent = "Saved presets restored. Planning untracked variation #1.";
+    mappingAnnouncement.textContent = "Saved presets restored. Planning untracked SKU #1.";
     return true;
   }
 
@@ -1675,8 +1675,8 @@
         variationSearchInput.setCustomValidity("");
         variationSearchInput.removeAttribute("aria-invalid");
         mappingAnnouncement.textContent = hasLiveVariation
-          ? "Future presets were reset. Captured variations were preserved. Returned to the live item."
-          : "Future presets were reset. Waiting for a live auction variation.";
+          ? "Future presets were reset. Captured SKUs were preserved. Returned to the live item."
+          : "Future presets were reset. Waiting for a live auction SKU.";
       } else if (sequential) {
         const view = getActiveView();
         const target = findVariationOption(view, response.assignedVariationNumber);
@@ -1689,12 +1689,12 @@
           selectedPresetVariationNumber = response.assignedVariationNumber;
           variationNavigationGeneration += 1;
           mappingAnnouncement.textContent =
-            `Variation #${response.assignedVariationNumber} preset saved. Inventory changes only when captured.`;
+            `SKU #${response.assignedVariationNumber} preset saved. Inventory changes only when captured.`;
         }
       } else if (kind !== "resetPresets") {
         mappingAnnouncement.textContent = kind === "createPresets"
-          ? `Preset variations #1–#${snapshot.total} are ready. No inventory has been reserved.`
-          : `Variation #${values.variationNumber} preset ${values.sku === null ? "cleared" : "saved"}. Inventory changes only when captured.`;
+          ? `Preset SKUs #1–#${snapshot.total} are ready. No inventory has been reserved.`
+          : `SKU #${values.variationNumber} preset ${values.sku === null ? "cleared" : "saved"}. Inventory changes only when captured.`;
       }
       renderAll();
       scheduleNextItemQueueRefresh();
@@ -1744,11 +1744,11 @@
       entryContext.revision !== variationPresetsSnapshot.revision
       ? "The preset plan changed while you were entering a total. Reopen Preset items and try again."
       : highest > variationPresetsProtocol.MAX_PRESET_VARIATIONS
-      ? `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-variation preset limit. Normal tracking continues; another preset range cannot be created.`
+      ? `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-SKU preset limit. Normal tracking continues; another preset range cannot be created.`
       : !/^\d+$/.test(query) || !Number.isSafeInteger(total) || total < 1 ||
       total > variationPresetsProtocol.MAX_PRESET_VARIATIONS
       ? `Enter a whole number from 1 to ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}.`
-      : total < highest ? `Enter at least ${highest}, the highest captured variation.` : "";
+      : total < highest ? `Enter at least ${highest}, the highest captured SKU.` : "";
     variationPresetsInput.setCustomValidity(message);
     if (message) {
       variationPresetsInput.setAttribute("aria-invalid", "true");
@@ -1805,7 +1805,7 @@
       variationNavigationGeneration += 1;
       renderAll();
       mappingAnnouncement.textContent =
-        `Preset variations #1–#${created.total} are ready. Planning untracked variation #1. No inventory has been reserved.`;
+        `Preset SKUs #1–#${created.total} are ready. Planning untracked SKU #1. No inventory has been reserved.`;
     }
     variationPresetsButton.focus();
   }
@@ -2380,7 +2380,7 @@
       }
     } catch (error) {
       console.error(
-        "[TikTok Live Tracker] Variation listbox could not be hidden.",
+        "[TikTok Live Tracker] SKU listbox could not be hidden.",
         error,
       );
     }
@@ -2605,8 +2605,8 @@
     const issues = [
       [
         Number.isSafeInteger(view?.activeBiddingVariationNumber) ? 1 : 0,
-        "active bidding variation",
-        "active bidding variations",
+        "active bidding SKU",
+        "active bidding SKUs",
       ],
       [unresolvedVariationNumbers.length, "unresolved order", "unresolved orders",
         unresolvedVariationNumbers],
@@ -2619,7 +2619,7 @@
       .filter(([count]) => Number.isSafeInteger(count) && count > 0)
       .map(([count, singular, plural, variationNumbers]) =>
         variationNumbers
-          ? `${count === 1 ? singular : plural} — Count ${count}: var #${variationNumbers.join(", ")}`
+          ? `${count === 1 ? singular : plural} — Count ${count}: SKU #${variationNumbers.join(", ")}`
           : `${count} ${count === 1 ? singular : plural}`,
       );
 
@@ -3501,7 +3501,7 @@
     });
     const representativeEntry = preferredEntry ?? group.entries[0];
     const historyPreservedDescription = reviewingHistory
-      ? ` Variation ${view.selectedVariationNumber} will remain open.`
+      ? ` SKU ${view.selectedVariationNumber} will remain open.`
       : "";
 
     wrapper.dataset.pinned = String(pinned);
@@ -3551,8 +3551,8 @@
       button.setAttribute(
         "aria-label",
         multipleSizes
-          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Wait for a live auction variation before tagging.`
-          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Wait for a live auction variation before tagging.`,
+          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Wait for a live auction SKU before tagging.`
+          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Wait for a live auction SKU before tagging.`,
       );
     } else if (button.disabled) {
       const action = auction?.sku ? "correct" : "map";
@@ -3560,12 +3560,12 @@
       button.setAttribute(
         "aria-label",
         multipleSizes
-          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`
-          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Cannot ${action} variation ${variationNumber}.`,
+          ? `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}. Cannot ${action} SKU ${variationNumber}.`
+          : `${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. Cannot ${action} SKU ${variationNumber}.`,
       );
     } else if (multipleSizes) {
       const selectedDescription = selectedEntry
-        ? ` Size ${selectedEntry.size} is selected for variation ${variationNumber}.`
+        ? ` Size ${selectedEntry.size} is selected for SKU ${variationNumber}.`
         : "";
       const canceledDescription = canceled
         ? " This is a reference-only selection; inventory and metrics will not change."
@@ -3573,40 +3573,40 @@
 
       button.setAttribute(
         "aria-label",
-        `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}.${selectedDescription}${canceledDescription} Click to choose a size for variation ${variationNumber}.`,
+        `${itemName}, ${group.entries.length} sizes, ${stockAriaLabel}.${selectedDescription}${canceledDescription} Click to choose a size for SKU ${variationNumber}.`,
       );
     } else if (selected && canceled) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${representativeEntry?.size ?? ""}, is the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
+        `${itemName}, size ${representativeEntry?.size ?? ""}, is the reference item for canceled SKU ${variationNumber}, ${stockAriaLabel}. No inventory is changed. Click to unselect this reference item.`,
       );
     } else if (selected) {
       button.setAttribute(
         "aria-label",
-        `${itemName}, size ${representativeEntry?.size ?? ""}, is selected for variation ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
+        `${itemName}, size ${representativeEntry?.size ?? ""}, is selected for SKU ${variationNumber}, ${stockAriaLabel}. Click to unselect this item.`,
       );
     } else if (canceled) {
       button.setAttribute(
         "aria-label",
         auction?.sku
-          ? `Change canceled variation ${variationNumber} to reference ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. No inventory will be changed.`
-          : `Select ${itemName}, size ${representativeEntry?.size ?? ""}, as the reference item for canceled variation ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
+          ? `Change canceled SKU ${variationNumber} to reference ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}. No inventory will be changed.`
+          : `Select ${itemName}, size ${representativeEntry?.size ?? ""}, as the reference item for canceled SKU ${variationNumber}, ${stockAriaLabel}. No inventory will be changed.`,
       );
     } else if (auction?.sku) {
       button.setAttribute(
         "aria-label",
-        `Correct variation ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
+        `Correct SKU ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
       );
     } else {
       button.setAttribute(
         "aria-label",
-        `Map variation ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
+        `Map SKU ${variationNumber} to ${itemName}, size ${representativeEntry?.size ?? ""}, ${stockAriaLabel}.`,
       );
     }
 
     if (view.isReviewingQueuePreview === true) {
       button.setAttribute("aria-label", `${itemName}, ${multipleSizes ? `${group.entries.length} sizes` : `size ${representativeEntry?.size ?? ""}`}, ${stockAriaLabel}. ` +
-        (selected ? "This item is queued for the viewed variation. " : "") +
+        (selected ? "This item is queued for the viewed SKU. " : "") +
         "Read-only queue preview. Return to live item to change the queue, or use the Inventory queued-item clear button. No inventory is reserved by this preview.");
     } else if (view.isReviewingPreset === true && canTagSelectedVariation && selectionAllowed) {
       const sizeDescription = multipleSizes
@@ -3620,17 +3620,17 @@
         (multipleSizes ? "Choose the exact size after clicking. " : "") +
         "No inventory is reserved." +
         (queued && queuedPresentation.source === "preset"
-          ? ` Size ${queuedEntry.size || "not provided"} is queued by pre-stream preset for variation #${queuedPresentation.variationNumber}.`
+          ? ` Size ${queuedEntry.size || "not provided"} is queued by pre-stream preset for SKU #${queuedPresentation.variationNumber}.`
           : ""),
       );
     } else if (reviewingHistory && canUseCurrentContextAction) {
       const currentMappingDescription = mappedToCurrent
-        ? ` This item is also selected for current variation ${view.currentVariationNumber}. Right-click to unmap it from current variation ${view.currentVariationNumber}.`
+        ? ` This item is also selected for current SKU ${view.currentVariationNumber}. Right-click to unmap it from current SKU ${view.currentVariationNumber}.`
         : currentVariationMapped
-          ? ` Right-click to remap current variation ${view.currentVariationNumber} to this item.`
-          : ` Right-click to map this item to current variation ${view.currentVariationNumber}.`;
+          ? ` Right-click to remap current SKU ${view.currentVariationNumber} to this item.`
+          : ` Right-click to map this item to current SKU ${view.currentVariationNumber}.`;
       const queuedDescription = queued
-        ? " Queued for the next variation. Historical right-click does not change that queue."
+        ? " Queued for the next SKU. Historical right-click does not change that queue."
         : "";
 
       button.setAttribute(
@@ -3639,12 +3639,12 @@
       );
     } else if (queuedPresentation?.source === "preset") {
       const queuedDescription = queued
-        ? ` Size ${queuedEntry.size || "not provided"} is queued by preset for variation #${queuedPresentation.variationNumber}.`
+        ? ` Size ${queuedEntry.size || "not provided"} is queued by preset for SKU #${queuedPresentation.variationNumber}.`
         : "";
       const contextAction = currentVariationMapped
-        ? " Next-item queuing is unavailable while the next variation has a preset. Clear it with the Inventory queued-preset button."
+        ? " Next-item queuing is unavailable while the next SKU has a preset. Clear it with the Inventory queued-preset button."
         : canUseCurrentContextAction
-          ? ` Right-click to select this item for current variation ${view.currentVariationNumber}; the upcoming preset is unchanged.`
+          ? ` Right-click to select this item for current SKU ${view.currentVariationNumber}; the upcoming preset is unchanged.`
           : "";
       button.setAttribute("aria-label", `${button.getAttribute("aria-label")}${queuedDescription}${contextAction}`);
     } else if (queued) {
@@ -3652,25 +3652,25 @@
 
       if (canUseCurrentContextAction && currentVariationMapped) {
         contextAction =
-          ` Right-click to remove it from the next variation queue.${historyPreservedDescription}`;
+          ` Right-click to remove it from the next SKU queue.${historyPreservedDescription}`;
       } else if (canUseCurrentContextAction) {
         contextAction =
-          ` Right-click to select it for current variation ${view.currentVariationNumber}; it will remain queued for the next variation.${historyPreservedDescription}`;
+          ` Right-click to select it for current SKU ${view.currentVariationNumber}; it will remain queued for the next SKU.${historyPreservedDescription}`;
       }
 
       button.setAttribute(
         "aria-label",
-        `${button.getAttribute("aria-label")} Queued for the next variation.${contextAction}`,
+        `${button.getAttribute("aria-label")} Queued for the next SKU.${contextAction}`,
       );
     } else if (canUseCurrentContextAction && currentVariationMapped) {
       button.setAttribute(
         "aria-label",
-        `${button.getAttribute("aria-label")} Right-click to queue this item for the next variation.${historyPreservedDescription}`,
+        `${button.getAttribute("aria-label")} Right-click to queue this item for the next SKU.${historyPreservedDescription}`,
       );
     } else if (canUseCurrentContextAction) {
       button.setAttribute(
         "aria-label",
-        `${button.getAttribute("aria-label")} Right-click to select this item for current variation ${view.currentVariationNumber}.${historyPreservedDescription}`,
+        `${button.getAttribute("aria-label")} Right-click to select this item for current SKU ${view.currentVariationNumber}.${historyPreservedDescription}`,
       );
     }
 
@@ -3822,8 +3822,8 @@
   function getInventorySizeOptionActionDescription(entry, view, intent) {
     if (intent === "ordinary") {
       return entry.selected
-        ? `Unmap this size from variation ${view.selectedVariationNumber}`
-        : `Map variation ${view.selectedVariationNumber} to this size`;
+        ? `Unmap this size from SKU ${view.selectedVariationNumber}`
+        : `Map SKU ${view.selectedVariationNumber} to this size`;
     }
 
     if (intent === "preset_sequence") {
@@ -3842,21 +3842,21 @@
 
     if (reviewingHistory) {
       return entry.sku === getCurrentVariationMappedSku(view)
-        ? `Unmap this size from current variation ${view.currentVariationNumber}; the historical variation will stay open`
-        : `Map current variation ${view.currentVariationNumber} to this size; the historical variation will stay open`;
+        ? `Unmap this size from current SKU ${view.currentVariationNumber}; the historical SKU will stay open`
+        : `Map current SKU ${view.currentVariationNumber} to this size; the historical SKU will stay open`;
     }
 
     if (!isCurrentVariationMapped(view)) {
-      return `Map current variation ${view.currentVariationNumber} to this size`;
+      return `Map current SKU ${view.currentVariationNumber} to this size`;
     }
 
     if (getQueuedItemPresentation(view)?.source === "preset") {
-      return "Next-item queuing is unavailable while the next variation has a preset; clear it with the Inventory queued-preset button";
+      return "Next-item queuing is unavailable while the next SKU has a preset; clear it with the Inventory queued-preset button";
     }
 
     return entry.sku === queuedNextItemSku
-      ? "Remove this size from the next variation queue"
-      : "Queue this size for the next variation without changing the current mapping";
+      ? "Remove this size from the next SKU queue"
+      : "Queue this size for the next SKU without changing the current mapping";
   }
 
   function renderInventorySizeOptions(group, view, intent) {
@@ -3905,19 +3905,19 @@
 
       if (selected) {
         badges.append(createInventorySizeBadge("Selected", "selected"));
-        statusDescriptions.push("selected for the variation being viewed");
+        statusDescriptions.push("selected for the SKU being viewed");
       }
 
       if (mappedToCurrent) {
         badges.append(createInventorySizeBadge("Live", "current"));
-        statusDescriptions.push("mapped to the current live variation");
+        statusDescriptions.push("mapped to the current live SKU");
       }
 
       if (queued) {
         badges.append(createInventorySizeBadge("Queued", "queued"));
         statusDescriptions.push(queuedPresentation.source === "preset"
-          ? `queued by preset for variation #${queuedPresentation.variationNumber}`
-          : "queued for the next variation");
+          ? `queued by preset for SKU #${queuedPresentation.variationNumber}`
+          : "queued for the next SKU");
       }
 
       side.append(stockLabel);
@@ -4178,7 +4178,7 @@
         (!canChangeVariationPresets() || !isFuturePresetContextCurrent(presetContext))) return false;
     if (intent === "context" && !view?.isReviewingHistory &&
         isCurrentVariationMapped(view) && nextVariationHasPreset(view)) {
-      mappingAnnouncement.textContent = "The next variation already has a preset item. Next-item queuing is disabled.";
+      mappingAnnouncement.textContent = "The next SKU already has a preset item. Next-item queuing is disabled.";
       return false;
     }
     const group = findInventoryGroup(view, trigger.dataset.groupKey);
@@ -4412,7 +4412,7 @@
     } catch (error) {
       variationListbox.dataset.fallbackOpen = "true";
       console.error(
-        "[TikTok Live Tracker] Variation listbox could not enter the top layer.",
+        "[TikTok Live Tracker] SKU listbox could not enter the top layer.",
         error,
       );
     }
@@ -4507,7 +4507,7 @@
 
     if (variations.length === 0) {
       variationSelectorValue.textContent =
-        "Waiting for live auction variations";
+        "Waiting for live auction SKUs";
       variationSelector.removeAttribute("data-variation-number");
       variationSelector.setAttribute("aria-disabled", "true");
       variationSelector.tabIndex = -1;
@@ -4539,7 +4539,7 @@
         );
         variationSelector.dataset.variationNumber = String(selectedVariation.variationNumber);
       } else {
-        variationSelectorValue.textContent = "Waiting for live auction variations";
+        variationSelectorValue.textContent = "Waiting for live auction SKUs";
         variationSelector.removeAttribute("data-variation-number");
       }
       variationSelector.setAttribute("aria-disabled", "false");
@@ -4558,10 +4558,10 @@
       variations.some((variation) => variation.recorded) && view.isReviewingHistory;
 
     if (variations.length > 0) {
-      variationContext.textContent = "Live auction variations";
+      variationContext.textContent = "Live auction SKUs";
     } else {
       variationContext.textContent =
-        "Waiting for a live auction variation";
+        "Waiting for a live auction SKU";
     }
 
     returnToCurrentButton.classList.add("return-to-current-live");
@@ -4815,8 +4815,8 @@
         unavailable.eventKey === view.auction?.eventKey;
 
       return isCurrentVariation
-        ? `Inventory warning: ${itemLabel} does not have an available unit for variation #${view.variationNumber}.`
-        : `Inventory warning: another pending variation reserves ${itemLabel} without an available unit. Review pending tags.`;
+        ? `Inventory warning: ${itemLabel} does not have an available unit for SKU #${view.variationNumber}.`
+        : `Inventory warning: another pending SKU reserves ${itemLabel} without an available unit. Review pending tags.`;
     }
 
     return "";
@@ -4924,14 +4924,14 @@
     const selected = view.variations.find((variation) => variation.selected);
 
     if (!selected) {
-      return `Variation ${view.selectedVariationNumber}`;
+      return `SKU ${view.selectedVariationNumber}`;
     }
 
     const item = selected.item
       ? `, ${formatItemName(selected)}, size ${selected.size}`
       : ", no item selected";
 
-    return `Variation ${selected.variationNumber}, TikTok payment: ${selected.observedPaymentStatusLabel}${item}`;
+    return `SKU ${selected.variationNumber}, TikTok payment: ${selected.observedPaymentStatusLabel}${item}`;
   }
 
   function getSavedStatusText(snapshot) {
@@ -5498,13 +5498,13 @@
     if (action.type === "map_variation") {
       mappingAnnouncement.textContent =
         canceled
-          ? `Canceled variation ${variationNumber} reference item saved locally. Inventory and metrics were not changed.`
-          : `Variation ${variationNumber} mapping saved locally.`;
+          ? `Canceled SKU ${variationNumber} reference item saved locally. Inventory and metrics were not changed.`
+          : `SKU ${variationNumber} mapping saved locally.`;
     } else if (action.type === "unmap_variation") {
       mappingAnnouncement.textContent =
         canceled
-          ? `Canceled variation ${variationNumber} reference item cleared locally. Inventory and metrics were not changed.`
-          : `Variation ${variationNumber} item unselected and saved locally. No item is selected.`;
+          ? `Canceled SKU ${variationNumber} reference item cleared locally. Inventory and metrics were not changed.`
+          : `SKU ${variationNumber} item unselected and saved locally. No item is selected.`;
     }
   }
 
@@ -5665,11 +5665,11 @@
           variationSelector.focus();
           mappingAnnouncement.textContent = refreshCompleted
             ? liveRefreshAnnouncement || "Live auction data is up to date."
-            : "Live session data restored. You can continue with the selected auction variation.";
+            : "Live session data restored. You can continue with the selected auction SKU.";
         } else {
           streamSessionStatus.focus();
           mappingAnnouncement.textContent =
-            "Live tracking is ready. Waiting for a live auction variation.";
+            "Live tracking is ready. Waiting for a live auction SKU.";
         }
       } else if (liveRefreshAnnouncement) {
         mappingAnnouncement.textContent = liveRefreshAnnouncement;
@@ -5738,7 +5738,7 @@
         selectedVariationNumber < 1
       ) {
         mappingAnnouncement.textContent =
-          "Waiting for a live auction variation.";
+          "Waiting for a live auction SKU.";
         return;
       }
 
@@ -5754,7 +5754,7 @@
         if (inventorySizeMenuState) releaseInventorySizeMenu({ restoreFocus: false });
         renderAll();
         mappingAnnouncement.textContent =
-          `Queued variation #${selectedVariationNumber} is a read-only preview. Return to live item to change the queue, or use the Inventory queued-item clear button. No inventory is reserved by this preview.`;
+          `Queued SKU #${selectedVariationNumber} is a read-only preview. Return to live item to change the queue, or use the Inventory queued-item clear button. No inventory is reserved by this preview.`;
         return;
       }
       if (selectedOption?.preset === true) {
@@ -5764,7 +5764,7 @@
         selectedPresetVariationNumber = selectedVariationNumber;
         renderAll();
         mappingAnnouncement.textContent =
-          `Planning untracked variation #${selectedVariationNumber}. Select an item as a placeholder; stock is unchanged until capture. Live auctions continue updating.`;
+          `Planning untracked SKU #${selectedVariationNumber}. Select an item as a placeholder; stock is unchanged until capture. Live auctions continue updating.`;
         return;
       }
 
@@ -5781,7 +5781,7 @@
         : `Reviewing auction ${describeSelectedVariation(view)}. You are following the current auction, so the next live auction will open automatically.`;
     } catch (error) {
       mappingAnnouncement.textContent =
-        error?.message ?? "That variation could not be selected.";
+        error?.message ?? "That SKU could not be selected.";
     } finally {
       releaseVariationSelector({ restoreFocus: true });
     }
@@ -5881,9 +5881,9 @@
     const validNumber = /^\d+$/.test(query) && Number.isSafeInteger(number) && number > 0;
     const option = validNumber ? findVariationOption(getActiveView(), number) : null;
     const message = !validNumber
-      ? "Enter a whole variation number greater than zero."
+      ? "Enter a whole SKU number greater than zero."
       : !option?.recorded && !option?.preset && !option?.queuedPreview
-        ? `Variation #${number} has not been captured or preset in this tracker stream.`
+        ? `SKU #${number} has not been captured or preset in this tracker stream.`
         : "";
 
     variationSearchInput.setCustomValidity(message);
@@ -5945,7 +5945,7 @@
     if (getRecordedVariations(savedSnapshot.view).some((entry) =>
         entry.variationNumber > variationPresetsProtocol.MAX_PRESET_VARIATIONS)) {
       mappingAnnouncement.textContent =
-        `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-variation preset limit. Normal tracking continues; another preset range cannot be created.`;
+        `Capture has passed the ${variationPresetsProtocol.MAX_PRESET_VARIATIONS}-SKU preset limit. Normal tracking continues; another preset range cannot be created.`;
     }
   });
   variationPresetsResetButton.addEventListener("click", async (event) => {
@@ -6242,7 +6242,7 @@
     if (isCaptureInteractionLocked()) return;
     if (variationPresetsBusy || (isCurrentVariationMapped(view) &&
         (!variationPresetsReady || nextVariationHasPreset(view)))) {
-      mappingAnnouncement.textContent = "The next variation has a preset, or presets are still loading. Next-item queuing is unavailable.";
+      mappingAnnouncement.textContent = "The next SKU has a preset, or presets are still loading. Next-item queuing is unavailable.";
       return;
     }
     if (nextItemQueueMutationBusy) {
@@ -6293,15 +6293,15 @@
           ? `${formatItemName(mappedEntry)}, size ${mappedEntry.size}`
           : sku;
         const preservedHistory = latestView?.isReviewingHistory
-          ? ` Variation #${latestView.selectedVariationNumber} remains open.`
+          ? ` SKU #${latestView.selectedVariationNumber} remains open.`
           : "";
 
         mappingAnnouncement.textContent =
-          `Variation #${expectedVariationNumber} mapped to ${mappedName}.${preservedHistory}`;
+          `SKU #${expectedVariationNumber} mapped to ${mappedName}.${preservedHistory}`;
         scheduleCaptureRefresh();
       } else if (response.queuedSku === null) {
         mappingAnnouncement.textContent =
-          "The next-item queue was cleared. The current variation mapping was not changed.";
+          "The next-item queue was cleared. The current SKU mapping was not changed.";
       } else {
         const queuedEntry = latestView?.inventory.find(
           (entry) => entry.sku === response.queuedSku,
@@ -6311,7 +6311,7 @@
           : response.queuedSku;
 
         mappingAnnouncement.textContent =
-          `${queuedName} is queued for the next variation. The current variation mapping was not changed.`;
+          `${queuedName} is queued for the next SKU. The current SKU mapping was not changed.`;
       }
 
       scheduleNextItemQueueRefresh();
@@ -6376,10 +6376,10 @@
 
       if (response.status === "unmapped_current") {
         mappingAnnouncement.textContent =
-          `${mappedName} was unselected from current variation #${expectedVariationNumber}. Variation #${historicalVariationNumber} remains open.`;
+          `${mappedName} was unselected from current SKU #${expectedVariationNumber}. SKU #${historicalVariationNumber} remains open.`;
       } else {
         mappingAnnouncement.textContent =
-          `${mappedName} was mapped to current variation #${expectedVariationNumber}. Variation #${historicalVariationNumber} remains open.`;
+          `${mappedName} was mapped to current SKU #${expectedVariationNumber}. SKU #${historicalVariationNumber} remains open.`;
       }
 
       scheduleCaptureRefresh();
@@ -6389,7 +6389,7 @@
         expectedStreamId === mountedStreamId
       ) {
         mappingAnnouncement.textContent =
-          error?.message ?? "The current variation could not be mapped.";
+          error?.message ?? "The current SKU could not be mapped.";
       }
     } finally {
       if (mutationGeneration === nextItemQueueMutationGeneration) {
@@ -6426,7 +6426,7 @@
     ) {
       releaseInventorySizeMenu();
       mappingAnnouncement.textContent =
-        "The live variation changed while you were choosing a size. Open the item again to apply the size to the correct variation.";
+        "The live SKU changed while you were choosing a size. Open the item again to apply the size to the correct SKU.";
       return;
     }
 
@@ -6553,7 +6553,7 @@
     if (isCaptureInteractionLocked() && !getFuturePresetContext(view)) return;
     if (!hasSelectedEditableVariation(view)) {
       mappingAnnouncement.textContent =
-        "Wait for a captured live auction variation before selecting inventory.";
+        "Wait for a captured live auction SKU before selecting inventory.";
       return;
     }
 
@@ -6600,12 +6600,12 @@
 
     if (!hasSelectedEditableVariation(view)) {
       mappingAnnouncement.textContent =
-        "Wait for a captured live auction variation before selecting inventory.";
+        "Wait for a captured live auction SKU before selecting inventory.";
       return;
     }
 
     if (!view.isReviewingHistory && isCurrentVariationMapped(view) && nextVariationHasPreset(view)) {
-      mappingAnnouncement.textContent = "The next variation already has a preset item. Next-item queuing is disabled.";
+      mappingAnnouncement.textContent = "The next SKU already has a preset item. Next-item queuing is disabled.";
       return;
     }
 
@@ -6910,7 +6910,7 @@
         ? "No new SKUs were found. Nothing changed."
         : `Added ${addedSkus.length} new ${
             addedSkus.length === 1 ? "SKU" : "SKUs"
-          }. Existing variations and mappings were preserved.`;
+          }. Existing SKUs and mappings were preserved.`;
 
       showActiveStreamInventoryUpdateFeedback(message);
       mappingAnnouncement.textContent = message;

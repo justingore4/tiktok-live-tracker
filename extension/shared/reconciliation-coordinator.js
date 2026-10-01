@@ -266,7 +266,7 @@
         ) {
           fail(
             "INVALID_COMMAND",
-            "observe_variations requires a stream and 1 to 1000 unique positive variation numbers.",
+            "observe_variations requires a stream and 1 to 1000 unique positive SKU numbers.",
           );
         }
       }
@@ -325,7 +325,7 @@
         ) {
           fail(
             "INVALID_COMMAND",
-            "observe_bidding_variation requires a stream and positive variation number.",
+            "observe_bidding_variation requires a stream and positive SKU number.",
           );
         }
       }

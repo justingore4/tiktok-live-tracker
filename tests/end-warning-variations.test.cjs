@@ -44,7 +44,7 @@ test("End readiness retains unknown-data and zero-issues messages without an emp
 
 test("one unresolved captured order lists its variation beside the count", () => {
   assert.equal(readiness(view({ variations: [unresolved(98)] })),
-    "Report attention items: unresolved order — Count 1: var #98.");
+    "Report attention items: unresolved order — Count 1: SKU #98.");
 });
 
 test("unresolved variation numbers are numeric-sorted, unique, and counted from that same set", () => {
@@ -54,14 +54,14 @@ test("unresolved variation numbers are numeric-sorted, unique, and counted from 
   ] });
   const before = clone(snapshotView);
   assert.equal(readiness(snapshotView),
-    "Report attention items: unresolved orders — Count 3: var #5, 32, 98.");
+    "Report attention items: unresolved orders — Count 3: SKU #5, 32, 98.");
   assert.deepEqual(clone(snapshotView), before, "Formatting must not reorder or change the saved view");
 });
 
 test("all thirteen unresolved numbers remain inline without truncation", () => {
   const numbers = [194, 3, 156, 44, 5, 29, 159, 30, 149, 32, 93, 55, 98];
   assert.equal(readiness(view({ variations: numbers.map((number) => unresolved(number)) })),
-    "Report attention items: unresolved orders — Count 13: var #3, 5, 29, 30, 32, 44, 55, 93, 98, 149, 156, 159, 194.");
+    "Report attention items: unresolved orders — Count 13: SKU #3, 5, 29, 30, 32, 44, 55, 93, 98, 149, 156, 159, 194.");
 });
 
 test("finalized orders, uncaptured presets, and manual queue previews are excluded", () => {
@@ -75,7 +75,7 @@ test("finalized orders, uncaptured presets, and manual queue previews are exclud
     unresolved(22, { recorded: false }),
   ];
   assert.equal(readiness(view({ variations })),
-    "Report attention items: unresolved order — Count 1: var #5.");
+    "Report attention items: unresolved order — Count 1: SKU #5.");
   assert.equal(readiness(view({ variations: variations.slice(1) })),
     "No captured issues currently require attention.");
 });
@@ -85,7 +85,7 @@ test("adding unresolved numbers preserves every other existing End warning", () 
     variations: [unresolved(32)], activeBiddingVariationNumber: 32,
     inventory: [{ oversoldQuantity: 2 }, { oversoldQuantity: 0 }],
     totals: { pendingMappedCount: 2, paymentFixingCount: 1, unmappedCompletedCount: 3, conflictCount: 1 },
-  })), "Report attention items: 1 active bidding variation, unresolved order — Count 1: var #32, 2 pending mapped orders, 1 payment-error order, 3 completed sales without inventory, 1 data conflict, 1 SKU requiring a recount.");
+  })), "Report attention items: 1 active bidding SKU, unresolved order — Count 1: SKU #32, 2 pending mapped orders, 1 payment-error order, 3 completed sales without inventory, 1 data conflict, 1 SKU requiring a recount.");
 });
 
 function renderContext() {
@@ -140,17 +140,17 @@ test("authoritative controller refresh updates the open End warning as captured 
   const originalFocus = context.document.activeElement;
   await controller.start();
   const unsubscribe = controller.subscribe(context.renderSavedSnapshot);
-  assert.match(context.endReportReadiness.textContent, /Count 3: var #5, 32, 98/);
+  assert.match(context.endReportReadiness.textContent, /Count 3: SKU #5, 32, 98/);
   assert.match(context.endReportReadiness.textContent, /1 pending mapped order/);
 
   reconciliation.observePaymentStatuses(state, { streamId, statuses: [{ variationNumber: 32, observedPaymentStatus: "canceled" }] });
   await controller.refresh();
   assert.equal(context.endReportReadiness.textContent,
-    "Report attention items: unresolved orders — Count 2: var #5, 98.");
+    "Report attention items: unresolved orders — Count 2: SKU #5, 98.");
   reconciliation.recordPaymentComplete(state, { streamId, variationNumber: 5, soldPriceCents: 1000 });
   await controller.refresh();
   assert.equal(context.endReportReadiness.textContent,
-    "Report attention items: unresolved order — Count 1: var #98, 1 completed sale without inventory.");
+    "Report attention items: unresolved order — Count 1: SKU #98, 1 completed sale without inventory.");
   reconciliation.observePaymentStatuses(state, { streamId, statuses: [{ variationNumber: 98, observedPaymentStatus: "canceled" }] });
   reconciliation.mapVariation(state, { streamId, variationNumber: 5, sku: "SYNTHETIC-M" });
   await controller.refresh();

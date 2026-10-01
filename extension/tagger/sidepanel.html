@@ -409,14 +409,14 @@
       <div class="capture-health-row" hidden>
         <form id="variation-search-form" class="variation-search-form" novalidate inert>
           <input id="variation-search-input" type="text" inputmode="numeric"
-            placeholder="Var #" autocomplete="off" spellcheck="false"
-            aria-label="Find variation by number" aria-describedby="variation-search-help"
-            title="Enter a captured or preset variation number and press Enter." disabled>
-          <span id="variation-search-help" class="visually-hidden">Enter a captured or preset variation number and press Enter.</span>
+            placeholder="SKU #" autocomplete="off" spellcheck="false"
+            aria-label="Find SKU by number" aria-describedby="variation-search-help"
+            title="Enter a captured or preset SKU number and press Enter." disabled>
+          <span id="variation-search-help" class="visually-hidden">Enter a captured or preset SKU number and press Enter.</span>
         </form>
-        <span id="variation-step-controls" class="variation-step-controls" role="group" aria-label="Variation navigation" inert>
-          <button id="previous-variation" type="button" aria-label="Previous variation" disabled><span aria-hidden="true">‹</span></button>
-          <button id="next-variation" type="button" aria-label="Next variation" disabled><span aria-hidden="true">›</span></button>
+        <span id="variation-step-controls" class="variation-step-controls" role="group" aria-label="SKU navigation" inert>
+          <button id="previous-variation" type="button" aria-label="Previous SKU" disabled><span aria-hidden="true">‹</span></button>
+          <button id="next-variation" type="button" aria-label="Next SKU" disabled><span aria-hidden="true">›</span></button>
         </span>
         <span id="capture-health-badge" class="capture-health-badge"
           data-phase="not_tracking" role="status" aria-live="polite"
@@ -426,23 +426,23 @@
         <form id="variation-presets-form" class="variation-presets-form" novalidate hidden inert>
           <button id="variation-presets-button" type="button" disabled>Preset items</button>
           <input id="variation-presets-input" type="text" inputmode="numeric"
-            placeholder="Total vars" autocomplete="off" spellcheck="false"
-            aria-label="Total preset variations" aria-describedby="variation-presets-help" hidden disabled>
+            placeholder="Total SKUs" autocomplete="off" spellcheck="false"
+            aria-label="Total preset SKUs" aria-describedby="variation-presets-help" hidden disabled>
           <button id="variation-presets-reset-button" type="button" hidden disabled>Reset presets</button>
-          <span id="variation-presets-help" class="visually-hidden">Enter the total variation count, up to 1000. Enter saves; Escape cancels. Presets do not reserve stock until captured.</span>
+          <span id="variation-presets-help" class="visually-hidden">Enter the total SKU count, up to 1000. Enter saves; Escape cancels. Presets do not reserve stock until captured.</span>
         </form>
       </div>
 
       <section class="current-auction" aria-labelledby="current-auction-title">
         <div class="current-auction-copy">
           <p id="variation-context" class="visually-hidden">
-            Waiting for a live auction variation
+            Waiting for a live auction SKU
           </p>
           <div class="variation-picker">
-            <h2 id="current-auction-title">Variation</h2>
+            <h2 id="current-auction-title">SKU</h2>
             <div class="variation-select-shell">
               <span id="variation-selector-label" class="visually-hidden">
-                Choose a variation to review
+                Choose a SKU to review
               </span>
               <div
                 id="variation-selector"
@@ -456,7 +456,7 @@
                 aria-describedby="variation-context"
               >
                 <span id="variation-selector-value">
-                  Waiting for live auction variations
+                  Waiting for live auction SKUs
                 </span>
               </div>
               <div
@@ -484,7 +484,7 @@
         <div class="live-auction-heading">
           <div>
             <p class="eyebrow">Live auction</p>
-            <h2 id="live-auction-title">Variation # - Status | -</h2>
+            <h2 id="live-auction-title">SKU # - Status | -</h2>
           </div>
           <span class="live-auction-indicator" aria-hidden="true"></span>
         </div>
@@ -516,7 +516,7 @@
       >
         <div class="pending-heading">
           <h2 id="pending-mapping-title" tabindex="-1">
-            Variation <span data-field="mapped-variation">#&mdash;</span> Status |
+            SKU <span data-field="mapped-variation">#&mdash;</span> Status |
             <span id="mapped-item">-</span>
           </h2>
         </div>
@@ -589,7 +589,7 @@
             Paste the same Google Sheet link or ID used for this stream. Only
             brand-new SKU rows will be added. Every existing SKU, item, style,
             size, opening quantity, and unit cost must remain unchanged. Current
-            variations and mappings will be preserved.
+            SKUs and mappings will be preserved.
           </p>
           <label for="active-stream-inventory-sheet-reference">
             Google Sheet ID or sharing link

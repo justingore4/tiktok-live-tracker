@@ -356,7 +356,7 @@ test("inline correction follows inventory, precedes variations, and is print-hid
   assert.match(html, />Correct Item Mapping</);
   assert.doesNotMatch(
     html,
-    /Correct one completed or canceled variation|mapping-inventory-quantity/,
+    /Correct one completed or canceled SKU|mapping-inventory-quantity/,
   );
   assert.match(html, /<details id="mapping-correction-disclosure">/);
   assert.match(html, /for="mapping-variation"[\s\S]*?<select/);
@@ -434,13 +434,13 @@ test("load renders combined variation labels and exact Item plus Style groups", 
   document.querySelector("#mapping-correction-disclosure").open = true;
   assert.equal(availability.hidden, true);
   assert.equal(variation.children.length, 3);
-  assert.match(variation.children[0].textContent, /Variation #10/);
+  assert.match(variation.children[0].textContent, /SKU #10/);
   assert.match(variation.children[0].textContent, /Payment complete/);
   assert.match(variation.children[0].textContent, /\$20\.00/);
   assert.match(variation.children[0].textContent, /SHOE-8/);
-  assert.match(variation.children[1].textContent, /Variation #11/);
+  assert.match(variation.children[1].textContent, /SKU #11/);
   assert.match(variation.children[1].textContent, /Unmapped/);
-  assert.match(variation.children[2].textContent, /Variation #12/);
+  assert.match(variation.children[2].textContent, /SKU #12/);
   assert.match(variation.children[2].textContent, /Canceled/);
   assert.doesNotMatch(variation.children[2].textContent, /\$\d/);
   assert.equal(itemGroup.children.length, 4);
@@ -601,7 +601,7 @@ test("a late load cannot replace a newer report's correction state", async () =>
   assert.match(
     harness.document.querySelector("#mapping-variation").children[0]
       .textContent,
-    /Variation #20/,
+    /SKU #20/,
   );
 });
 
@@ -1021,7 +1021,7 @@ test("blocked and read-only eligibility disable controls with exact reasons", as
         eligibility: {
           status: "read_only",
           code: "NO_EDITABLE_VARIATIONS",
-          reason: "This report has no saved variations to edit.",
+          reason: "This report has no saved SKUs to edit.",
         },
         completedVariations: [],
         canceledVariations: [],

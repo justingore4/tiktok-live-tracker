@@ -229,7 +229,7 @@
           if (seenVariationNumbers.has(variationNumber)) {
             fail(
               "INVALID_CAPTURE_MESSAGE",
-              "statuses must contain unique variation numbers.",
+              "statuses must contain unique SKU numbers.",
             );
           }
 

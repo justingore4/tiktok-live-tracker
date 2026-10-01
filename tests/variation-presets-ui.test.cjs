@@ -134,7 +134,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
     renderInventory() {}, renderAll() { renders.push(context.getActiveView()); return context.getActiveView(); },
     releaseVariationSelector() {},
     releaseInventorySizeMenu() { context.inventorySizeMenuState = null; },
-    describeSelectedVariation(view) { return `Variation ${view.selectedVariationNumber}`; },
+    describeSelectedVariation(view) { return `SKU ${view.selectedVariationNumber}`; },
     persistentController: {
       async refresh() { return context.savedSnapshot; },
       selectVariation(number) {
@@ -176,7 +176,7 @@ function fixture({ total = null, view = baselineView() } = {}) {
         const captured = new Set(rawView.variations.filter((entry) => entry.recorded).map((entry) => entry.variationNumber));
         let number = command.variationNumber;
         while (number <= next.total && (assigned.has(number) || captured.has(number))) number++;
-        if (number > next.total) throw Object.assign(new Error("No more future variations."), { code: "NO_MORE_FUTURE_VARIATIONS" });
+        if (number > next.total) throw Object.assign(new Error("No more future SKUs."), { code: "NO_MORE_FUTURE_VARIATIONS" });
         next.assignments.push({ variationNumber: number, sku: command.sku });
         return { presets: next, assignedVariationNumber: number };
       }
@@ -336,7 +336,7 @@ test("successful initial pre-stream create immediately displays #1 and hides Ret
     assert.equal(c.returnToCurrentButton.hidden, true);
     assert.equal(c.variationPresetsResetButton.textContent, "Reset presets");
     assert.equal(c.variationPresetsButton.focused, true);
-    assert.match(c.mappingAnnouncement.textContent, /Planning untracked variation #1/);
+    assert.match(c.mappingAnnouncement.textContent, /Planning untracked SKU #1/);
     assert.equal(c.variationNavigationGeneration, 1);
     assert.equal(JSON.stringify(f.state), before);
     assert.equal(c.getActiveView().inventory[0].reservedQuantity, 0);
@@ -356,7 +356,7 @@ test("reopening or refreshing existing presets never auto-selects #1 or replaces
   c.variationPresetsClient.getPresets = async () => clone(c.variationPresetsSnapshot);
   c.scheduleVariationPresetsRefresh(); await settle();
   assert.equal(c.selectedPresetVariationNumber, null);
-  assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction variations");
+  assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction SKUs");
   assert.equal(c.returnToCurrentButton.hidden, true);
   c.selectVariationFromPicker(80);
   c.scheduleVariationPresetsRefresh(); await settle();
@@ -611,7 +611,7 @@ test("fresh pre-stream presets open at #1 without changing descending order, sel
     assert.equal(c.variationListbox.children[0].dataset.variationNumber, "200");
     assert.equal(c.variationListbox.children.at(-1).dataset.variationNumber, "1");
     assert.equal(c.variationListbox.children.some(row => row.getAttribute("aria-selected") === "true"), false);
-    assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction variations");
+    assert.equal(c.variationSelectorValue.textContent, "Waiting for live auction SKUs");
     assert.equal(JSON.stringify([f.state, c.variationPresetsSnapshot, c.getActiveView()]), before);
     assert.equal(f.calls.length, 0);
   }
@@ -1982,7 +1982,7 @@ test("zero-capture future size picker requires an exact SKU and does not invent 
   assert.equal(f.context.getActiveView().variations.some((entry) => entry.recorded), false);
   assert.equal(f.context.getActiveView().activeBiddingVariationNumber, null);
   assert.equal(f.state.streams[0].variations.length, 0);
-  assert.equal(f.context.mappingAnnouncement.textContent, "Future presets were reset. Waiting for a live auction variation.");
+  assert.equal(f.context.mappingAnnouncement.textContent, "Future presets were reset. Waiting for a live auction SKU.");
 });
 
 test("pre-stream canonical readiness still waits for the original capture lock and ignores old-session preset responses", async () => {
@@ -2057,7 +2057,7 @@ test("preset bubble and editor occupy only the existing third startup-row slot w
   const row = html.slice(html.indexOf('<div class="capture-health-row"'), html.indexOf('<section class="current-auction"'));
   assert.match(row, /id="variation-presets-button" type="button"/);
   assert.match(row, /id="variation-presets-input" type="text" inputmode="numeric"/);
-  assert.match(row, /aria-label="Total preset variations"/);
+  assert.match(row, /aria-label="Total preset SKUs"/);
   assert.match(row, /aria-describedby="variation-presets-help"/);
   assert.doesNotMatch(row, /<(?:button|input)[^>]*id="variation-presets-(?:button|input)"[^>]*\btitle=/);
   assert.match(row, /Escape cancels/);
@@ -2588,7 +2588,7 @@ test("final empty preset accepts its first left-click; subsequent clicks preserv
   await leftClick(f);
   assert.deepEqual(clone(f.context.variationPresetsSnapshot), saved);
   assert.equal(f.context.getActiveView().selectedVariationNumber, 200);
-  assert.equal(f.context.mappingAnnouncement.textContent, "No more future variations.");
+  assert.equal(f.context.mappingAnnouncement.textContent, "No more future SKUs.");
   assert.equal(saved.assignments.some((entry) => entry.variationNumber === 199), false);
   assert.deepEqual(f.selections, []);
 });
@@ -3167,7 +3167,7 @@ test("extension cannot exceed the existing 1000 cap and explains capture beyond 
   advanceLive(f, 1001);
   const before = JSON.stringify(f.rawView);
   await f.context.variationPresetsButton.dispatch("click");
-  assert.match(f.context.mappingAnnouncement.textContent, /1000-variation preset limit.*Normal tracking continues/);
+  assert.match(f.context.mappingAnnouncement.textContent, /1000-SKU preset limit.*Normal tracking continues/);
   f.context.variationPresetsInput.value = "1000";
   await f.context.variationPresetsForm.dispatch("submit");
   assert.equal(f.calls.length, 0);
@@ -3297,7 +3297,7 @@ test("a successful extension notification arriving before its acknowledgement st
   reply.resolve(completed); await pending;
   assert.equal(f.context.variationPresetsResetButton.textContent, "Reset presets");
   assert.equal(f.context.variationPresetsButton.focused, true);
-  assert.match(f.context.mappingAnnouncement.textContent, /Preset variations.*200 are ready/);
+  assert.match(f.context.mappingAnnouncement.textContent, /Preset SKUs.*200 are ready/);
 });
 
 test("the edit and reset controls remain separate and editing prefills the saved total", async () => {

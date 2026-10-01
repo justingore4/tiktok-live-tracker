@@ -234,10 +234,10 @@ test("storage errors are clear and do not replace a previously valid preset reco
   const h = harness();
   const saved = await h.create();
   h.memory.failNext("set");
-  await assert.rejects(h.assign(80), /Could not save variation presets/);
+  await assert.rejects(h.assign(80), /Could not save SKU presets/);
   assert.deepEqual(await h.snapshot(), saved);
   h.memory.failNext("get");
-  await assert.rejects(h.snapshot(), /Could not read saved variation presets/);
+  await assert.rejects(h.snapshot(), /Could not read saved SKU presets/);
   assert.deepEqual(await h.snapshot(), saved);
 });
 
@@ -370,7 +370,7 @@ test("failed growth and shrink saves preserve the whole authoritative range and 
   for (const total of [5, 20]) {
     const writes = h.memory.writes.length;
     h.memory.failNext("set");
-    await assert.rejects(h.client.createPresets({ ...h.expected(saved), total }), /Could not save variation presets/);
+    await assert.rejects(h.client.createPresets({ ...h.expected(saved), total }), /Could not save SKU presets/);
     assert.deepEqual(await h.snapshot(), saved);
     assert.equal(h.memory.writes.length, writes);
     assert.deepEqual(h.getState(), canonical);
@@ -562,7 +562,7 @@ test("guarded clear retains the saved assignment after persistence failure and r
     expectedActiveBiddingVariationNumber: 3,
   };
   h.memory.failNext("set");
-  await assert.rejects(h.client.setPresetItem(command), /Could not save variation presets/);
+  await assert.rejects(h.client.setPresetItem(command), /Could not save SKU presets/);
   assert.deepEqual(await h.snapshot(), displayed);
   const replacement = await h.assign(4, "TEE-OS");
   await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
@@ -627,7 +627,7 @@ test("pre-stream clear revalidates enabled source/target range and preserves pla
     ...h.expected(displayed), variationNumber: 2, sku: null, expectedPrestreamVariationNumber: 1,
   };
   h.memory.failNext("set");
-  await assert.rejects(h.client.setPresetItem(command), /Could not save variation presets/);
+  await assert.rejects(h.client.setPresetItem(command), /Could not save SKU presets/);
   assert.deepEqual(await h.snapshot(), displayed);
   const replacement = await h.assign(2, "TEE-OS");
   await assert.rejects(h.client.setPresetItem(command), { code: "PRESETS_CHANGED" });
@@ -681,7 +681,7 @@ test("preset save failure does not clear queue; clear failure keeps the durable 
   const h = harness();
   await h.create();
   h.memory.failNext("set");
-  await assert.rejects(h.assign(4), /Could not save variation presets/);
+  await assert.rejects(h.assign(4), /Could not save SKU presets/);
   assert.equal(h.getQueue(), "TEE-OS");
   h.failQueue();
   await assert.rejects(h.assign(4), /queue clear failure/);
@@ -726,7 +726,7 @@ test("failed reset preserves all saved future assignments", async () => {
   await h.create();
   const before = await h.assign(80);
   h.memory.failNext("set");
-  await assert.rejects(h.reset(before), /Could not save variation presets/);
+  await assert.rejects(h.reset(before), /Could not save SKU presets/);
   assert.deepEqual(await h.snapshot(), before);
 });
 
@@ -751,7 +751,7 @@ test("failed plan cleanup after durable mapping cannot duplicate deductions on r
   await h.assign(80);
   await h.capture(80, "payment_complete");
   h.memory.failNext("set");
-  await assert.rejects(h.synchronize(), /Could not save variation presets/);
+  await assert.rejects(h.synchronize(), /Could not save SKU presets/);
   assert.equal(reconciliation.getAuction(h.getState(), { streamId: STREAM, variationNumber: 80 }).sku, "LA-M");
   assert.equal(h.notices.some((entry) => entry.canonicalChanged), true);
   const writes = h.canonicalWrites.length;
@@ -931,7 +931,7 @@ test("final empty preset gets one assignment and no-more feedback never wraps, w
   const writes = h.memory.writes.length;
   const notices = h.notices.length;
   const canonical = h.getState();
-  await assert.rejects(h.assignNext(5, "TEE-OS"), { code: "NO_MORE_FUTURE_VARIATIONS", message: "No more future variations." });
+  await assert.rejects(h.assignNext(5, "TEE-OS"), { code: "NO_MORE_FUTURE_VARIATIONS", message: "No more future SKUs." });
   assert.deepEqual(await h.snapshot(), final.presets);
   assert.equal(h.memory.writes.length, writes);
   assert.equal(h.notices.length, notices);
@@ -1025,7 +1025,7 @@ test("sequential save failure preserves plans and queue; a failed queue clear re
   const h = harness();
   const before = await h.create();
   h.memory.failNext("set");
-  await assert.rejects(h.assignNext(4, "LA-M", before), /Could not save variation presets/);
+  await assert.rejects(h.assignNext(4, "LA-M", before), /Could not save SKU presets/);
   assert.deepEqual(await h.snapshot(), before);
   assert.equal(h.getQueue(), "TEE-OS");
   h.failQueue();
@@ -1229,12 +1229,12 @@ test("failed readiness or extension persistence keeps existing plans and does no
   await h.capture(101);
   const canonical = h.getState();
   h.memory.failNext("set");
-  await assert.rejects(h.synchronize(), /Could not save variation presets/);
+  await assert.rejects(h.synchronize(), /Could not save SKU presets/);
   assert.deepEqual(await h.presetStore.loadPresets(), original);
   assert.deepEqual(h.getState(), canonical);
   const ready = await h.snapshot();
   h.memory.failNext("set");
-  await assert.rejects(h.client.createPresets({ ...h.expected(ready), total: 200 }), /Could not save variation presets/);
+  await assert.rejects(h.client.createPresets({ ...h.expected(ready), total: 200 }), /Could not save SKU presets/);
   assert.deepEqual(await h.presetStore.loadPresets(), ready);
   assert.deepEqual(h.getState(), canonical);
   assert.equal(h.getQueue(), "TEE-OS");
@@ -1317,10 +1317,10 @@ test("pre-capture readiness preservation retries failed proof persistence before
   await h.create(100);
   await h.capture(101);
   h.memory.failNext("set");
-  await assert.rejects(h.synchronize(), /Could not save variation presets/);
+  await assert.rejects(h.synchronize(), /Could not save SKU presets/);
   const pending = h.getState();
   h.memory.failNext("set");
-  await assert.rejects(h.preserveReadiness(), /Could not save variation presets/);
+  await assert.rejects(h.preserveReadiness(), /Could not save SKU presets/);
   assert.deepEqual(h.getState(), pending, "a failed pre-capture latch cannot clear the only canonical live proof");
   assert.deepEqual(await h.preserveReadiness(), { changed: true });
   await h.capture(101, "payment_complete");

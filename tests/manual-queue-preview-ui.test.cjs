@@ -96,7 +96,7 @@ function fixture() {
     getFocusedInventorySku: () => null,
     getVariationOptionDisplay: row => selector.createOptionDisplay(row, { formatItemName: entry => `${entry.item}${entry.style ? ` - ${entry.style}` : ""}` }),
     createVariationOptionContent: display => ({ textContent: display.fullLabel }),
-    describeSelectedVariation: current => `Variation #${current.selectedVariationNumber}`,
+    describeSelectedVariation: current => `SKU #${current.selectedVariationNumber}`,
     scheduleVariationPresetsRefresh() { refreshes.push("presets"); },
     scheduleCaptureRefresh() { refreshes.push("capture"); },
     scheduleNextItemQueueRefresh() { refreshes.push("queue"); },

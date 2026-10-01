@@ -263,7 +263,7 @@
 
         if (!view || !Array.isArray(view.variations)) {
           throw new TypeError(
-            "An inventory ordering view with variations is required.",
+            "An inventory ordering view with SKUs is required.",
           );
         }
 

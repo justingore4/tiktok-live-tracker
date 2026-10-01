@@ -786,7 +786,7 @@
 
           if (variationNumbers.has(hydratedAuction.variationNumber)) {
             failInvalidState(
-              `${path}.variations contains duplicate variation ${hydratedAuction.variationNumber}.`,
+              `${path}.variations contains duplicate SKU ${hydratedAuction.variationNumber}.`,
             );
           }
 
@@ -807,7 +807,7 @@
 
           if (!variationNumbers.has(activeBiddingVariationNumber)) {
             failInvalidState(
-              `${path}.activeBiddingVariationNumber does not reference an existing variation.`,
+              `${path}.activeBiddingVariationNumber does not reference an existing SKU.`,
             );
           }
 
@@ -825,7 +825,7 @@
               activeBiddingVariationNumber = null;
             } else {
               failInvalidState(
-                `${path}.activeBiddingVariationNumber must reference an unobserved, nonterminal variation.`,
+                `${path}.activeBiddingVariationNumber must reference an unobserved, nonterminal SKU.`,
               );
             }
           }
@@ -1776,7 +1776,7 @@
       requireState(state);
 
       if (!input || typeof input !== "object" || Array.isArray(input)) {
-        fail("INVALID_ARGUMENT", "An observed-variations input is required.");
+        fail("INVALID_ARGUMENT", "An observed SKU list is required.");
       }
 
       const streamId = requireStreamId(input.streamId);
@@ -1788,7 +1788,7 @@
       ) {
         fail(
           "INVALID_ARGUMENT",
-          `variationNumbers must contain between 1 and ${MAX_OBSERVED_VARIATIONS} variation numbers.`,
+          `variationNumbers must contain between 1 and ${MAX_OBSERVED_VARIATIONS} SKU numbers.`,
         );
       }
 
@@ -1832,7 +1832,7 @@
       requireState(state);
 
       if (!isPlainRecord(input)) {
-        fail("INVALID_ARGUMENT", "A bidding-variation observation is required.");
+        fail("INVALID_ARGUMENT", "A bidding SKU observation is required.");
       }
 
       const streamId = requireStreamId(input.streamId);
@@ -1936,7 +1936,7 @@
         if (seenVariationNumbers.has(variationNumber)) {
           fail(
             "INVALID_ARGUMENT",
-            "statuses must not contain duplicate variation numbers.",
+            "statuses must not contain duplicate SKU numbers.",
           );
         }
 
@@ -2043,7 +2043,7 @@
       const auction = findAuction(state, key.streamId, key.variationNumber);
 
       if (!auction) {
-        fail("UNKNOWN_VARIATION", "The variation does not exist in this state.");
+        fail("UNKNOWN_VARIATION", "The SKU does not exist in this state.");
       }
 
       if (auction.sku === null) {
@@ -2187,7 +2187,7 @@
       if (!auction) {
         fail(
           "PAYMENT_ORDER_NOT_RESOLVABLE",
-          "The captured unresolved variation does not exist.",
+          "The captured unresolved SKU does not exist.",
         );
       }
 

@@ -228,7 +228,7 @@ test("validates variation options and requires an item-name formatter", () => {
   for (const option of [null, undefined, "168", [], 168]) {
     assert.throws(
       () => createOptionDisplay(option, { formatItemName }),
-      /variation option is required/i,
+      /SKU option is required/i,
     );
   }
 
@@ -237,7 +237,7 @@ test("validates variation options and requires an item-name formatter", () => {
       () => createOptionDisplay(createOption({ variationNumber }), {
         formatItemName,
       }),
-      /variation number must be a positive safe integer/i,
+      /SKU number must be a positive safe integer/i,
     );
   }
 

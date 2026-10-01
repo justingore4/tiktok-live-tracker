@@ -2277,7 +2277,7 @@ test("report notices use the approved concise text with dynamic counts and overs
   assert.deepEqual(
     document.querySelector("#report-warnings").children.map((item) => item.textContent),
     [
-      "A variation was still bidding when tracking ended. Count: 1.",
+      "A SKU was still bidding when tracking ended. Count: 1.",
       "Orders were still unresolved when tracking ended. Count: 12.",
       "Inventory reservations were still pending when tracking ended. Count: 3.",
       "Payments were still unresolved when tracking ended. Count: 40.",
@@ -2403,9 +2403,9 @@ test("stream variations start collapsed on screen and retain their printable hea
   assert.match(summary, /aria-controls="completed-sales-content"/);
   assert.match(summary, /<h2\s+id="sales-title"[^>]*>/);
   assert.equal((summary.match(/<h2\b/g) ?? []).length, 1);
-  assert.match(summary, /Stream variations/);
-  assert.match(summary, /Item variations this stream/);
-  assert.match(summary, /0 variations/);
+  assert.match(summary, /Stream SKUs/);
+  assert.match(summary, /Item SKUs this stream/);
+  assert.match(summary, /0 SKUs/);
   assert.match(summary, /id="sales-count"/);
   assert.equal((html.match(/id="completed-sales-content"/g) ?? []).length, 1);
   assert.equal((html.match(/id="completed-sales-rows"/g) ?? []).length, 1);
@@ -2470,7 +2470,7 @@ test("canceled orders disclosure follows stream variations and exposes only the 
   assert.match(table, /class="data-table canceled-orders-table"/);
   assert.deepEqual(
     [...table.matchAll(/<th\b[^>]*scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]),
-    ["Variation", "Status", "SKU", "Item", "Style", "Size"],
+    ["SKU #", "Status", "SKU", "Item", "Style", "Size"],
   );
   assert.doesNotMatch(canceledSection, /Sold price|Unit cost|Gross profit|<button|<input|<select/i);
   for (const id of [
@@ -3963,7 +3963,7 @@ test("item variation rows combine completed and canceled orders in variation ord
     rows[1].children.slice(6).map((cell) => cell.textContent),
     ["$15.00", "$6.00", "$9.00"],
   );
-  assert.equal(document.querySelector("#sales-count").textContent, "4 variations");
+  assert.equal(document.querySelector("#sales-count").textContent, "4 SKUs");
   assert.equal(document.querySelector("#sales-empty").hidden, true);
   assert.equal(document.querySelector("#variation-details-note").hidden, true);
 });
@@ -3991,12 +3991,12 @@ test("legacy reports retain canceled totals and explain unavailable row details"
     rows.map((row) => row.children[1].textContent),
     ["Completed", "Completed"],
   );
-  assert.equal(document.querySelector("#sales-count").textContent, "5 variations");
+  assert.equal(document.querySelector("#sales-count").textContent, "5 SKUs");
   assert.equal(document.querySelector("#sales-empty").hidden, true);
   assert.equal(document.querySelector("#variation-details-note").hidden, false);
   assert.match(
     document.querySelector("#variation-details-note").textContent,
-    /3 canceled variations[\s\S]*not saved[\s\S]*still included above/,
+    /3 canceled SKUs[\s\S]*not saved[\s\S]*still included above/,
   );
 
   const canceledOnlyDocument = new FakeDocument();
@@ -4013,7 +4013,7 @@ test("legacy reports retain canceled totals and explain unavailable row details"
     canceledOnlyDocument.querySelector("#completed-sales-rows").children.length,
     0,
   );
-  assert.equal(canceledOnlyDocument.querySelector("#sales-count").textContent, "1 variation");
+  assert.equal(canceledOnlyDocument.querySelector("#sales-count").textContent, "1 SKU");
   assert.equal(canceledOnlyDocument.querySelector("#sales-empty").hidden, true);
   assert.equal(canceledOnlyDocument.querySelector("#variation-details-note").hidden, false);
 });
@@ -4252,7 +4252,7 @@ test("legacy canceled-only rendering preserves saved totals without inventing or
       assert.equal(document.querySelector("#canceled-orders-note").hidden, false);
       assert.match(
         document.querySelector("#canceled-orders-note").textContent,
-        new RegExp(`${count} canceled variation${count === 1 ? "" : "s"}[\\s\\S]*not saved[\\s\\S]*still included above`),
+        new RegExp(`${count} canceled SKU${count === 1 ? "" : "s"}[\\s\\S]*not saved[\\s\\S]*still included above`),
       );
       assert.deepEqual(report, original);
     }
@@ -4602,11 +4602,11 @@ test("post-stream payment controls render only supplied unresolved rows and coll
   );
   assert.match(
     allText(rows),
-    /Variation #220[\s\S]*Payment failed - fixing period[\s\S]*Example tee - black - L \(SKU-A\)/,
+    /SKU #220[\s\S]*Payment failed - fixing period[\s\S]*Example tee - black - L \(SKU-A\)/,
   );
-  assert.match(allText(rows), /Variation #221[\s\S]*No inventory item selected/);
-  assert.match(allText(rows), /Variation #222[\s\S]*Payment processing/);
-  assert.match(allText(rows), /Variation #223[\s\S]*Order processing/);
+  assert.match(allText(rows), /SKU #221[\s\S]*No inventory item selected/);
+  assert.match(allText(rows), /SKU #222[\s\S]*Payment processing/);
+  assert.match(allText(rows), /SKU #223[\s\S]*Order processing/);
 
   const firstPriceInput = rows.children[0].children[1].children[1];
   firstPriceInput.value = "18.25";
@@ -5077,7 +5077,7 @@ test("report payment correction confirms, saves, refreshes totals, and removes t
   ]);
   assert.match(
     confirmations[0],
-    /variation #220 Payment complete at \$18\.25[\s\S]*permanently updates/,
+    /SKU #220 Payment complete at \$18\.25[\s\S]*permanently updates/,
   );
   assert.equal(document.querySelector("#payment-resolution-section").hidden, true);
   assert.match(
@@ -5188,7 +5188,7 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
   ]);
   assert.match(
     confirmations[0],
-    /variation #220 canceled[\s\S]*releases its inventory reservation/,
+    /SKU #220 canceled[\s\S]*releases its inventory reservation/,
   );
   assert.equal(document.querySelector("#payment-resolution-section").hidden, true);
   assert.equal(
@@ -5199,7 +5199,7 @@ test("report payment cancellation confirms, refreshes inventory, and removes the
     document.querySelector("#action-feedback").textContent,
     /marked canceled[\s\S]*Report totals and inventory were updated/,
   );
-  assert.equal(document.querySelector("#sales-count").textContent, "4 variations");
+  assert.equal(document.querySelector("#sales-count").textContent, "4 SKUs");
   const variationRows = document.querySelector("#completed-sales-rows").children;
   assert.deepEqual(
     variationRows.at(-1).children.map((cell) => cell.textContent),
@@ -5322,8 +5322,8 @@ test("saved processing prices prefill only their exact unresolved rows as editab
   assert.deepEqual(rows.map((row) => row.children[1].children[1].value),
     ["18.25", "0.01", "", "", "90071992547409.91"]);
   assert.equal(reportPage.parsePositiveUsdCents(rows[4].children[1].children[1].value), Number.MAX_SAFE_INTEGER);
-  assert.match(allText(rows[0]), /Variation #5.*SKU-A/);
-  assert.match(allText(rows[1]), /Variation #7.*No inventory item selected/);
+  assert.match(allText(rows[0]), /SKU #5.*SKU-A/);
+  assert.match(allText(rows[1]), /SKU #7.*No inventory item selected/);
   rows[0].children[2].click();
   rows[1].children[3].click();
   assert.equal(actions[0].soldPriceText, "18.25");
@@ -5481,7 +5481,7 @@ test("all new unresolved categories show accurate labels, blank prices, and both
         assert.match(allText(row), new RegExp(label));
         assert.match(allText(row), /Example tee - black - L \(SKU-A\)/);
         assert.equal(price.value, "");
-        assert.equal(price.attributes.get("aria-label"), "Sold price for variation 7");
+        assert.equal(price.attributes.get("aria-label"), "Sold price for SKU #7");
         if (resolution === "payment_complete") {
           for (const invalid of ["", "0", "-2", "1.005"]) {
             price.value = invalid;

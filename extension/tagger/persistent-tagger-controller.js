@@ -561,7 +561,7 @@
           if (!selection.ok) {
             fail(
               "INVALID_CANONICAL_PROJECTION",
-              "The newest saved variation could not be displayed.",
+              "The newest saved SKU could not be displayed.",
             );
           }
 

@@ -94,7 +94,7 @@ function fixture({ numbers = [500, 1, 25, 212], selected = 500, total = null } =
     savedSnapshot: { phase: "ready", busy: false, operation: "refresh", view },
     archivedReportsViewOpen: false, endConfirmationOpen: false,
     inventorySizeMenuState: null,
-    describeSelectedVariation: (selectedView) => `Variation ${selectedView.selectedVariationNumber}`,
+    describeSelectedVariation: (selectedView) => `SKU ${selectedView.selectedVariationNumber}`,
     variationListbox: { querySelectorAll() { assert.fail("Stepping must not read rendered dropdown options"); } },
     persistentController: {
       selectVariation(number) {
@@ -143,8 +143,8 @@ function fixture({ numbers = [500, 1, 25, 212], selected = 500, total = null } =
 }
 
 test("variation arrows are distinct accessible non-submit buttons in the existing tracker row", () => {
-  assert.match(html, /id="variation-step-controls"[^>]*role="group"[^>]*aria-label="Variation navigation"[^>]*inert/);
-  for (const [id, label] of [["previous-variation", "Previous variation"], ["next-variation", "Next variation"]]) {
+  assert.match(html, /id="variation-step-controls"[^>]*role="group"[^>]*aria-label="SKU navigation"[^>]*inert/);
+  for (const [id, label] of [["previous-variation", "Previous SKU"], ["next-variation", "Next SKU"]]) {
     assert.equal((html.match(new RegExp(`id="${id}"`, "g")) ?? []).length, 1);
     assert.match(html, new RegExp(`<button id="${id}" type="button" aria-label="${label}" disabled><span aria-hidden="true">`));
   }

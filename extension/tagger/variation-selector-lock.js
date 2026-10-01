@@ -15,7 +15,7 @@
       const { apply } = options;
 
       if (typeof apply !== "function") {
-        throw new TypeError("A variation selector render function is required.");
+        throw new TypeError("A SKU selector render function is required.");
       }
 
       let locked = false;

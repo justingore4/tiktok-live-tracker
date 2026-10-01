@@ -498,14 +498,14 @@ test("side panel exposes accessible Live lifecycle controls", () => {
     /id="inventory-import-confirmation-status"[\s\S]+role="status"[\s\S]+tabindex="-1"[\s\S]+aria-live="polite"/,
   );
   assert.doesNotMatch(html, /do not[\s\S]+start or end TikTok LIVE/i);
-  assert.match(html, /Waiting for a live auction variation/);
+  assert.match(html, /Waiting for a live auction SKU/);
   const endConfirmation = html.match(
     /id="stream-session-end-confirmation"[\s\S]*?id="stream-session-error"/,
   )?.[0];
   assert.ok(endConfirmation);
   assert.doesNotMatch(
     endConfirmation,
-    /stream-session-end-title|Create a local business report|Unresolved variations never block/,
+    /stream-session-end-title|Create a local business report|Unresolved SKUs never block/,
   );
   assert.doesNotMatch(endConfirmation, /\b(?:final|provisional)\b/i);
   assert.match(
@@ -579,7 +579,7 @@ test("side panel exposes accessible Live lifecycle controls", () => {
   assert.match(html, /id="pending-mapping"/);
   assert.match(
     html,
-    /id="pending-mapping-title"[^>]+tabindex="-1"[\s\S]*?Variation <span data-field="mapped-variation">#&mdash;<\/span>[\s\S]*?Status \|\s+<span id="mapped-item">-<\/span>/,
+    /id="pending-mapping-title"[^>]+tabindex="-1"[\s\S]*?SKU <span data-field="mapped-variation">#&mdash;<\/span>[\s\S]*?Status \|\s+<span id="mapped-item">-<\/span>/,
   );
   assert.match(html, /id="mapping-announcement"[\s\S]+role="status"/);
   assert.match(html, /id="state-warning"[^>]+role="status"/);
@@ -741,7 +741,7 @@ test("active streams expose an append-only Google Sheets inventory action", () =
   );
   assert.match(
     html,
-    /Only[\s\S]+brand-new SKU rows will be added[\s\S]+opening quantity[\s\S]+unit cost must remain unchanged[\s\S]+variations and mappings will be preserved/i,
+    /Only[\s\S]+brand-new SKU rows will be added[\s\S]+opening quantity[\s\S]+unit cost must remain unchanged[\s\S]+SKUs and mappings will be preserved/i,
   );
   assert.match(
     html,
@@ -759,7 +759,7 @@ test("active streams expose an append-only Google Sheets inventory action", () =
   );
   assert.match(
     actionSource,
-    /Added \$\{addedSkus\.length\} new[\s\S]+Existing variations and mappings were preserved/,
+    /Added \$\{addedSkus\.length\} new[\s\S]+Existing SKUs and mappings were preserved/,
   );
   assert.match(actionSource, /No new SKUs were found\. Nothing changed\./);
   assert.match(
@@ -1215,17 +1215,17 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(panelSource, /function getEndBlockingVariations\(\)/);
   assert.match(panelSource, /getRecordedVariations\(view\)/);
   assert.match(panelSource, /variation\.recorded/);
-  assert.match(panelSource, /Waiting for live auction variations/);
-  assert.match(panelSource, /variationContext\.textContent = "Live auction variations"/);
+  assert.match(panelSource, /Waiting for live auction SKUs/);
+  assert.match(panelSource, /variationContext\.textContent = "Live auction SKUs"/);
   assert.match(
     panelSource,
     /variationSelectorViewModel\.createOptionDisplay\(option,[\s\S]+formatItemName/,
   );
   assert.match(
     panelSource,
-    /Variation #\$\{activeBiddingVariation\.variationNumber\} is now bidding\. It is selected and ready to tag\./,
+    /SKU #\$\{activeBiddingVariation\.variationNumber\} is now bidding\. It is selected and ready to tag\./,
   );
-  assert.match(panelSource, /Wait for a live auction variation before tagging/);
+  assert.match(panelSource, /Wait for a live auction SKU before tagging/);
   assert.doesNotMatch(panelSource, /Prototype tagger current|live queue not connected/);
   assert.doesNotMatch(
     panelSource,
@@ -1308,7 +1308,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(workflowSource, /"canceled_order_mapped"|"canceled_mapping_corrected"/);
   assert.doesNotMatch(
     panelSource,
-    /Payment is complete, but this variation still needs an inventory item\./,
+    /Payment is complete, but this SKU still needs an inventory item\./,
   );
   assert.doesNotMatch(
     panelSource,
@@ -1343,11 +1343,11 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   );
   assert.match(
     panelSource,
-    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+    /Canceled SKU \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
   );
   assert.match(
     panelSource,
-    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
+    /Canceled SKU \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
   );
   assert.doesNotMatch(panelSource, /dataset\.lockedReason/);
   assert.doesNotMatch(styleSource, /data-locked-reason="canceled"/);
@@ -1358,7 +1358,7 @@ test("tagger UI routes employee changes through persistent Live commands", () =>
   assert.doesNotMatch(panelSource, /payment_completed_after_canceled/);
   assert.doesNotMatch(
     panelSource,
-    /Canceled variation \$\{view\.selectedVariationNumber\} is read-only/,
+    /Canceled SKU \$\{view\.selectedVariationNumber\} is read-only/,
   );
   assert.match(
     workflowSource,
@@ -1584,7 +1584,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     queueMutationSource,
-    /response\.status === "mapped_current"[\s\S]+Variation #\$\{expectedVariationNumber\} mapped to[\s\S]+scheduleCaptureRefresh\(\)/,
+    /response\.status === "mapped_current"[\s\S]+SKU #\$\{expectedVariationNumber\} mapped to[\s\S]+scheduleCaptureRefresh\(\)/,
   );
   assert.doesNotMatch(
     queueMutationSource,
@@ -1596,7 +1596,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     historyMappingSource,
-    /response\.status === "unmapped_current"[\s\S]+was unselected from current variation #\$\{expectedVariationNumber\}\. Variation #\$\{historicalVariationNumber\} remains open\.[\s\S]+was mapped to current variation #\$\{expectedVariationNumber\}\. Variation #\$\{historicalVariationNumber\} remains open\.[\s\S]+scheduleCaptureRefresh\(\)/,
+    /response\.status === "unmapped_current"[\s\S]+was unselected from current SKU #\$\{expectedVariationNumber\}\. SKU #\$\{historicalVariationNumber\} remains open\.[\s\S]+was mapped to current SKU #\$\{expectedVariationNumber\}\. SKU #\$\{historicalVariationNumber\} remains open\.[\s\S]+scheduleCaptureRefresh\(\)/,
   );
   assert.doesNotMatch(historyMappingSource, /response\.status === "unchanged"/);
   assert.doesNotMatch(
@@ -1609,11 +1609,11 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     panelSource,
-    /Right-click to select this item for current variation \$\{view\.currentVariationNumber\}/,
+    /Right-click to select this item for current SKU \$\{view\.currentVariationNumber\}/,
   );
   assert.match(
     panelSource,
-    /Right-click to unmap it from current variation \$\{view\.currentVariationNumber\}/,
+    /Right-click to unmap it from current SKU \$\{view\.currentVariationNumber\}/,
   );
   assert.doesNotMatch(
     panelSource,
@@ -1621,7 +1621,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     panelSource,
-    /Variation \$\{view\.selectedVariationNumber\} will remain open/,
+    /SKU \$\{view\.selectedVariationNumber\} will remain open/,
   );
   assert.match(panelSource, /nextItemQueueClient\.getQueueSnapshot\(\)/);
   assert.match(
@@ -1659,7 +1659,7 @@ test("inventory right click maps the current variation from history without chan
   );
   assert.match(
     panelSource,
-    /Queued for the next variation\.[\s\S]+Right-click to queue this item for the next variation\./,
+    /Queued for the next SKU\.[\s\S]+Right-click to queue this item for the next SKU\./,
   );
   assert.match(
     styleSource,
@@ -1899,7 +1899,7 @@ test("live upcoming preset uses the existing selected-plus-queued card state and
     assert.equal(card.button.dataset.sku, undefined, "A grouped item remains an exact-size picker");
     assert.match(card.button.getAttribute("aria-label"), /preset.*116|116.*preset/i);
     assert.match(card.button.getAttribute("aria-label"), /size L/i);
-    assert.doesNotMatch(card.button.getAttribute("aria-label"), /Right-click to remove it from the next variation queue/);
+    assert.doesNotMatch(card.button.getAttribute("aria-label"), /Right-click to remove it from the next SKU queue/);
   }
 });
 
@@ -1934,7 +1934,7 @@ test("pre-stream future card keeps planning gestures while showing exact-size ne
     assert.match(label, /size L/i);
     assert.match(label, /preset.*2|2.*preset/i);
     assert.match(label, /No inventory is reserved/);
-    assert.doesNotMatch(label, /Right-click to remove it from the next variation queue/);
+    assert.doesNotMatch(label, /Right-click to remove it from the next SKU queue/);
   }
 });
 
@@ -1961,7 +1961,7 @@ test("future preset card accessibility explains the swapped buttons and exact-si
       assert.match(label, /Left-click to fill this future preset if empty, otherwise fill and open the next empty future preset/);
       assert.match(label, /Right-click to change the viewed preset, or unselect the same item and size/);
       assert.match(label, /No inventory is reserved/);
-      assert.doesNotMatch(label, /Right-click to (?:map|remap|unmap)|Click to unselect this item|current variation 115/);
+      assert.doesNotMatch(label, /Right-click to (?:map|remap|unmap)|Click to unselect this item|current SKU 115/);
       if (sizes.length > 1) assert.match(label, /Choose the exact size after clicking/);
       assert.equal(label.includes("This item is selected for the viewed preset"), selectedSku !== null);
     }
@@ -2064,9 +2064,9 @@ test("grouped inventory card badges retain distinct exact-SKU selections and que
   assert.deepEqual(JSON.parse(card.button.dataset.variantSkus), ["TEE-S", "TEE-M", "TEE-L"]);
   assert.equal(card.button.getAttribute("role"), "combobox");
   assert.equal(card.button.getAttribute("aria-pressed"), null);
-  assert.match(card.button.getAttribute("aria-label"), /Size S is selected for variation 100/);
-  assert.match(card.button.getAttribute("aria-label"), /Queued for the next variation/);
-  assert.match(card.button.getAttribute("aria-label"), /selected for current variation 115/);
+  assert.match(card.button.getAttribute("aria-label"), /Size S is selected for SKU 100/);
+  assert.match(card.button.getAttribute("aria-label"), /Queued for the next SKU/);
+  assert.match(card.button.getAttribute("aria-label"), /selected for current SKU 115/);
 
   const unrelated = harness.render({
     sizes: ["S", "M", "L"],
@@ -2412,7 +2412,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
 
   assert.match(
     sizeActionDescriptionSource,
-    /intent === "ordinary"[\s\S]*?Unmap this size from variation[\s\S]*?Map variation[\s\S]*?if \(reviewingHistory\)[\s\S]*?Unmap this size from current variation[\s\S]*?Map current variation[\s\S]*?Remove this size from the next variation queue[\s\S]*?Queue this size for the next variation without changing the current mapping/,
+    /intent === "ordinary"[\s\S]*?Unmap this size from SKU[\s\S]*?Map SKU[\s\S]*?if \(reviewingHistory\)[\s\S]*?Unmap this size from current SKU[\s\S]*?Map current SKU[\s\S]*?Remove this size from the next SKU queue[\s\S]*?Queue this size for the next SKU without changing the current mapping/,
   );
   assert.match(
     sizeOptionsSource,
@@ -2456,7 +2456,7 @@ test("grouped multi-size inventory cards keep exact-SKU mapping and queue action
     [
       "state.streamId !== mountedStreamId",
       "releaseInventorySizeMenu()",
-      "The live variation changed while you were choosing a size",
+      "The live SKU changed while you were choosing a size",
       "return;",
       "if (!state || !view || !entry || !entry.selectionAllowed)",
       "const intent = state.intent",
@@ -2807,11 +2807,11 @@ test("canceled variation cards stay selectable for reference-only item changes",
   assert.match(clickSource, /persistentController\.unmapSelectedVariation/);
   assert.match(
     panelSource,
-    /Canceled variation \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
+    /Canceled SKU \$\{variationNumber\} reference item saved locally\. Inventory and metrics were not changed/,
   );
   assert.match(
     panelSource,
-    /Canceled variation \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
+    /Canceled SKU \$\{variationNumber\} reference item cleared locally\. Inventory and metrics were not changed/,
   );
 });
 
@@ -3298,16 +3298,16 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   assert.match(panelSource, /Checking live auction data/);
   assert.match(panelSource, /Live auction data updated/);
   assert.match(panelSource, /Retry live update/);
-  assert.match(panelSource, /Captured variation #/);
+  assert.match(panelSource, /Captured SKU #/);
   assert.match(
     panelSource,
-    /Captured variation #\$\{added\[0\]\} from Sold Items\. \$\{paymentDetail\} It is selected and ready to tag\./,
+    /Captured SKU #\$\{added\[0\]\} from Sold Items\. \$\{paymentDetail\} It is selected and ready to tag\./,
   );
   assert.match(panelSource, /variation\.observedPaymentStatus/);
   assert.match(panelSource, /variation\.soldPriceCents/);
   assert.match(panelSource, /variation\.conflicts/);
-  assert.match(panelSource, /Payment complete captured for variation #/);
-  assert.match(panelSource, /Payment price conflict for variation #/);
+  assert.match(panelSource, /Payment complete captured for SKU #/);
+  assert.match(panelSource, /Payment price conflict for SKU #/);
   assert.match(panelSource, /payment_completed_after_marked_unpaid/);
   assert.match(
     panelSource,
@@ -3315,13 +3315,13 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   );
   assert.doesNotMatch(panelSource, /\$\{context\} - TikTok:/);
   assert.match(panelSource, /added\[0\] === view\.selectedVariationNumber/);
-  assert.match(panelSource, /Captured earlier variation/);
+  assert.match(panelSource, /Captured earlier SKU/);
   assert.match(panelSource, /captureRefreshHadVariationFocus/);
   assert.match(panelSource, /pendingMapping\.contains\(document\.activeElement\)/);
   assert.match(panelSource, /focusOptions\.focusVariation = true/);
   assert.match(
     panelSource,
-    /Now showing variation #\$\{view\.selectedVariationNumber\}\./,
+    /Now showing SKU #\$\{view\.selectedVariationNumber\}\./,
   );
   assert.match(panelSource, /view\.isReviewingHistory/);
   assert.match(
@@ -3334,7 +3334,7 @@ test("tagger refreshes canonical Sold Items state from strict worker invalidatio
   );
   assert.doesNotMatch(
     panelSource,
-    /available in the variation menu now/,
+    /available in the SKU menu now/,
   );
   assert.doesNotMatch(panelSource, /message\.state|message\.streamId/);
 });

@@ -1,6 +1,6 @@
 # TikTok Live Tracker
 
-A private Chrome side-panel extension for tagging TikTok LIVE auction variations,
+A private Chrome side-panel extension for tagging TikTok LIVE auction SKUs,
 tracking inventory, and saving post-stream reports. It reads the visible TikTok
 dashboard and imports inventory from Google Sheets. Tracker state and reports stay
 in the local Chrome profile; there is no application backend or cross-device sync.
@@ -62,16 +62,20 @@ copy or CSV export to update the Sheet manually.
    Whenever the tracker opens—after Start, Resume, or retrying an initial load—it
    starts at the top, including before any auction is captured. Later updates keep
    your scroll position.
-5. Assign inventory items to variations as they appear. Review unresolved payments,
+5. Assign inventory items to SKUs as they appear. Review unresolved payments,
    unmapped sales, and stock warnings before ending.
 6. Choose **End Stream Tracking → End and create report** to save the report and
    end local tracking. This does not end the TikTok broadcast. If the report cannot
    be saved, tracking stays active; resolve the error and retry.
-   The existing warning lists unresolved variation numbers beside their count,
-   for example **Count 3: var #5, 32, 98**, and updates as capture finishes.
+   The existing warning lists unresolved SKU numbers beside their count,
+   for example **Count 3: SKU #5, 32, 98**, and updates as capture finishes.
 
 Closing the panel does not end the session. After reloading/updating the extension,
 refresh the TikTok dashboard to load its current capture scripts.
+Sold Items capture accepts numeric auction labels **Variation: #N** and **SKU: #N**.
+The tracker and reports use **SKU #N** for TikTok's numbered auction entry.
+This is distinct from an exact inventory SKU code such as `TEE-M`. Legacy
+`Variation: #N` capture and existing saved data remain supported.
 
 To append inventory during tracking, first update the same Sheet, then use
 **Add new SKUs from updated Sheet → Check and add**. Existing SKU values must remain
@@ -82,39 +86,39 @@ data in A:F beyond that limit is rejected, not silently truncated.
 
 ### Inventory controls
 
-- Enter a captured or preset variation number in **Var #** and press Enter to review it.
-  Typing alone does not switch variations.
-- Use **‹ / ›** beside Var # to move to the previous/next available variation,
+- Enter a captured or preset SKU number in **SKU #** and press Enter to review it.
+  Typing alone does not switch SKUs.
+- Use **‹ / ›** beside SKU # to move to the previous/next available SKU,
   including future presets. Missing numbers are skipped; arrows disable at either
   end or while controls are locked. Navigation does not change item assignments.
 - Search filters by SKU, item, style, or size. Cards group matching item/style rows;
   choosing a size still selects its exact SKU.
 - **X ran**, directly above a card's stock count, shows how many mapped auctions
   have already run for that item this stream, across all its sizes. It includes
-  pending and canceled orders, not just sales; the currently bidding variation and
+  pending and canceled orders, not just sales; the currently bidding SKU and
   uncaptured presets/queue previews do not count. Zero is hidden. Correcting or
   removing a mapping updates it. This label does not change stock or sales totals.
-- On a captured variation, left-click selects or unmaps the item being viewed.
-- On the live variation, right-click maps an unassigned variation; if it is already
+- On a captured SKU, left-click selects or unmaps the item being viewed.
+- On the live SKU, right-click maps an unassigned SKU; if it is already
   mapped, right-click toggles the next-item queue.
-- While viewing history, right-click targets the live/newest variation without
+- While viewing history, right-click targets the live/newest SKU without
   changing the historical selection or the queue.
-- The queue holds one SKU for the next genuinely newer bidding variation and does
+- The queue holds one inventory SKU for the next genuinely newer bidding auction and does
   not overwrite an existing mapping.
 - The red inventory-header badge shows that queued item even when search hides
   its card. Its **×** clears only the manual queue, not an item mapping.
-- A manual queue also appears as **#N-untracked-item** in the Variation dropdown.
+- A manual queue also appears as **#N-untracked-item** in the SKU dropdown.
   It reuses an empty next preset or adds one temporary entry without enabling presets.
-  You can view it through the dropdown, Var #, or arrows, but it is read-only:
+  You can view it through the dropdown, SKU #, or arrows, but it is read-only:
   use **Return to live item** to change the queue, or the header **×** to clear it.
   Unqueuing removes the temporary entry or restores the empty preset. If you were
   viewing a removed temporary entry, the tracker returns to live. No stock is
   reserved by the preview; real capture still uses the existing queue rules.
-- **Return to live item** resumes following the newest variation.
+- **Return to live item** resumes following the newest SKU.
 - Pins move cards to the front. Otherwise cards retain their original order;
   completing a sale does not reorder them.
 
-A mapped bidding or unresolved variation reserves one unit. A completed, priced sale
+A mapped bidding or unresolved SKU reserves one unit. A completed, priced sale
 counts toward revenue even if it has no item assigned, but inventory consumption,
 cost of goods, and gross profit require a mapping. A terminal cancellation releases
 the reservation. Newly captured **Payment failed**, **Canceled**, or **Cancelled**
@@ -126,8 +130,8 @@ explicit cancellation countdown, remain unresolved rather than being reclassifie
 ### Plan items ahead with presets
 
 After confirming inventory, start or resume the local tracker session. You can do
-this before TikTok LIVE begins. Choose **Preset items** above the Variation selector,
-even with no live auction or captured variations yet. Once local inventory and preset
+this before TikTok LIVE begins. Choose **Preset items** above the SKU selector,
+even with no live auction or captured SKUs yet. Once local inventory and preset
 data are loaded, you can click it during blue **Connecting** to ungray the tracker
 and plan while capture continues starting. During blue **Connecting**, the gray screen
 also lifts automatically after **1.3 seconds** once that local data is ready. This does
@@ -138,40 +142,40 @@ The badge stays unchanged; live/history
 mapping and manual queue actions remain locked until startup finishes. **Reload Site**
 also permits planning. Other save/error safeguards still apply. Enter
 the total numbered range for this stream and press Enter: **200 means #1–#200**, not
-200 additional variations. The preset-only limit is **1,000**; the total cannot be
-below the highest captured variation. Real capture can continue beyond the range.
+200 additional SKUs. The preset-only limit is **1,000**; the total cannot be
+below the highest captured SKU. Real capture can continue beyond the range.
 Before submitting, press Escape or click outside the total field to discard the
 draft and return to **Preset items** without saving.
 
-When you first save presets before any variations have been captured, **#1** opens
+When you first save presets before any SKUs have been captured, **#1** opens
 automatically so you can immediately select its item. If capture or your view changes
 while saving, the tracker keeps that newer view instead. **Resume stream tracking**
-also opens saved presets at **#1** if no variations have been captured yet.
+also opens saved presets at **#1** if no SKUs have been captured yet.
 Editing the preset total or ordinary updates won't reset a selection that still exists.
-Choose other **untracked** variations from the dropdown or Var #. Before the first
+Choose other **untracked** SKUs from the dropdown or SKU #. Before the first
 capture, an unselected dropdown opens at **#1**; an existing selection is preserved.
 Normal live/history behavior and the dropdown's newest-first order stay unchanged.
 These are planning placeholders: no stock is reserved or deducted and no order is
-added to reports until the variation is actually captured. Capture then applies the
+added to reports until the SKU is actually captured. Capture then applies the
 ordinary mapping/payment rules. **Return to live item** stays hidden until a real
-variation is captured. After that, it appears when reviewing an earlier variation
+SKU is captured. After that, it appears when reviewing an earlier SKU
 or future preset and resumes live following when clicked.
 
 While viewing a future preset, left-click an item to plan faster: if the current
 preset is empty, it receives the item and stays selected. Otherwise, the worker
 assigns the next higher empty, uncaptured preset and opens it after saving. Already
-assigned or captured variations are skipped. For multi-size items, choose the exact
+assigned or captured SKUs are skipped. For multi-size items, choose the exact
 size from the picker. Left-click never replaces or unassigns a future assignment.
 When no later empty preset remains, it makes no changes and announces **No more
-future variations.** Right-click changes the current future item without advancing;
+future SKUs.** Right-click changes the current future item without advancing;
 right-click the same item/size again to unselect it. Live and captured historical
 views retain their existing click behavior.
 
-A preset on the next variation disables next-item queuing and clears an existing
-conflicting queue. It does not disable right-click mapping of the live variation.
+A preset on the next SKU disables next-item queuing and clears an existing
+conflicting queue. It does not disable right-click mapping of the live SKU.
 An empty preset range alone does not disable queuing.
 
-While viewing the current live bidding variation, its immediately next preset item
+While viewing the current live bidding SKU, its immediately next preset item
 also appears red and **Queued**, including the Inventory-header badge. It never skips
 an empty next preset to show a later one. Multi-size cards identify the queued size.
 Use the header **×** to clear just that future assignment; its empty preset stays,
@@ -194,14 +198,14 @@ editing safeguards allow; no reset or live capture beyond the range is required.
 The number is always the new total: changing **10 to 20** keeps existing plans and
 adds #11–#20. Changing **10 to 5** keeps #1–#5 and removes the future placeholders
 and assignments above #5. Increasing it again does not restore removed assignments.
-Saving the same total makes no change. A total below the highest captured variation
+Saving the same total makes no change. A total below the highest captured SKU
 or outside **1–1,000** is rejected.
 
 If a smaller range removes the preset you were viewing, the tracker selects the
 last remaining preset before the first capture, or returns to live after capture
 has begun. A newer view or capture during saving takes priority. **Reset presets**
 still removes all uncaptured placeholders and assignments, preserves captured
-variations and mappings, and returns to live. Beyond variation #1,000, normal
+SKUs and mappings, and returns to live. Beyond SKU #1,000, normal
 tracking continues but the preset limit still applies.
 
 Presets survive
@@ -233,19 +237,25 @@ remain. Missing GMV does not block startup. There is no red badge or auto-hide t
 Setup and Resume/End-only screens do not show the row. Reduced-motion settings
 stop spinner rotation.
 
-If the active variation stops updating, reload the website or extension. See
+If the active SKU stops updating, reload the website or extension. See
 [startup-readiness details](docs/capture-development.md#capture-health-indicator).
+For this capture-label recovery during tracking, keep the same active local session
+and wait for in-progress saves to finish. Reload the existing extension (do not uninstall),
+refresh that same TikTok dashboard, open Sold Items, and choose **Resume stream tracking**
+if prompted. Unlike the routine release steps below, do not End, Start a new session,
+or reset inventory just to recapture. Only rendered rows can backfill; missing or
+virtualized rows may remain unavailable, and ended reports are not automatically repaired.
 
 ## Post-stream reports
 
 Reports include the saved name and tracking dates, notices, performance metrics,
-SKU results, variation details, and updated inventory. The default report name uses
+SKU results, SKU details, and updated inventory. The default report name uses
 the **tracking-start time**. Rename current reports in **STREAM REPORT RECORDS** or
 edit the name at the top of the report. Restore an archived report to the recent
 list before renaming it.
 
-Below **Stream Variations**, expand **Canceled orders** to see cancellation totals
-per exact SKU, with item and style, followed by the individual canceled variations.
+Below **Stream SKUs**, expand **Canceled orders** to see cancellation totals
+per exact SKU, with item and style, followed by the individual canceled SKUs.
 Different size-specific SKUs stay separate; cancellations without a selected SKU
 share an **Unmapped** summary row only when needed. Both tables are reference-only:
 no price, cost, or profit columns, and no changes to inventory or accounting totals.
@@ -283,8 +293,8 @@ individual cancellation details show an explanatory notice instead of guessed SK
   the selected batch block all downloads until the reports are renamed or deselected.
   Individual reports can be downloaded again; existing files are not overwritten.
 - Direct PDFs are generated locally with bundled libraries and include all report
-  tables and variation rows. No report data is uploaded for PDF generation.
-- **Print / Save as PDF** automatically expands **Stream Variations** and **Canceled
+  tables and SKU rows. No report data is uploaded for PDF generation.
+- **Print / Save as PDF** automatically expands **Stream SKUs** and **Canceled
   orders** for printing, then restores their previous screen state. Both start collapsed
   in the normal report. **Download PDF** also includes both sections in full.
   Chrome's **Save as PDF** suggests the saved report name, using the same filename
@@ -297,7 +307,7 @@ These actions have different effects:
 
 - **Finish unresolved payments** lists every captured order still awaiting a final
   outcome, including missing or unrecognized payment statuses. Each row shows its
-  variation and item/SKU/size. Verify the outcome, then **Mark complete** with a
+  SKU and item/SKU/size. Verify the outcome, then **Mark complete** with a
   positive final sold price or **Mark canceled** without entering a price. When
   captured, that exact order's processing-row auction price prefills the editable
   box; verify it before confirming. Older orders, missing prices, or conflicting
@@ -310,7 +320,7 @@ These actions have different effects:
   Captured completions and cancellations need no action; presets and queued previews
   are excluded. This does not change automatic payment outcomes, repair missed
   status capture, or allow reversing a completed sale.
-- **Correct Item Mapping** changes completed/canceled variation mappings in an
+- **Correct Item Mapping** changes completed/canceled SKU mappings in an
   eligible finalized report, with no active tracker or unresolved/pending report
   conditions. Changes apply to that saved report and its inventory export only,
   not the tracker's inventory, other reports, or future streams.

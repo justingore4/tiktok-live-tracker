@@ -348,7 +348,7 @@
         ) {
           return createRejectedResult(
             "UNKNOWN_VARIATION",
-            "That variation is not available in this stream history.",
+            "That SKU is not available in this stream history.",
           );
         }
 

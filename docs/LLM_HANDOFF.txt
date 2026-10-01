@@ -1,14 +1,20 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 29, 2026
+Snapshot date: September 30, 2026
 Repository branch at this update: main
-Most recent implementation commit at this snapshot: e6bb7fe
-Commit subject: Allow resizing preset totals without resetting retained assignments
-Current uncommitted implementation: current-stream "X ran" counts above inventory-card
-stock. See section 9. The documentation-only clarification of the maintainer's
-"git me commands" preference in AGENTS.md, README.md, and this handoff is also
-uncommitted; see section 2.
+Most recent implementation commit at this snapshot: 6e0670a
+Commit subject: Add per-item auction run counts and document Git command workflow
+Current uncommitted implementation: exact numeric Sold Items `SKU: #N` label
+compatibility alongside `Variation: #N`; see section 6. User-facing variation/var
+wording now uses SKU/SKUs throughout tracker controls, preset/queue feedback,
+accessibility, errors, End warnings, post-stream corrections and tables, and PDFs.
+Report auction columns use "SKU #" beside the inventory "SKU" column. This is
+display wording only: internal variation IDs/keys/selectors/protocols, inventory SKU
+matching, capture support for both label formats, and saved data stay unchanged.
+Seller-provided names and SKU codes are not rewritten. Current-stream "X ran"
+counts and the documentation clarification of "git me commands" are committed in
+6e0670a; see sections 9 and 2 respectively.
 Editable absolute preset totals with separate Preset items / Reset presets controls
 are committed in e6bb7fe; see section 9. All-captured-unresolved
 recovery, inline End-warning variation numbers, and saved processing-row price
@@ -30,7 +36,7 @@ The root AGENTS.md now provides shared Mac/Windows development rules; this addit
 does not change tracker behavior. Instruction loading on both devices remains a
 manual check.
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,254 passed, 0 failed
+Latest full synthetic test run: 2,282 passed, 0 failed
 Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
 
 PURPOSE AND HOW TO USE THIS FILE
@@ -317,11 +323,43 @@ shop.tiktok.com, but business capture itself uses the route guard.
 Sold Items detection in sale-candidate-locator.js requires:
 - A unique visible root with data-tid="m4b_space".
 - Payment elements with data-tid="m4b_tag".
-- An exact span label matching /^Variation\s*:\s*#\s*(\d+)$/i.
+- An exact span label matching /^(?:Variation|SKU)\s*:\s*#\s*(\d+)$/i after
+  whitespace normalization; its number must be a positive safe integer. The colon
+  and hash remain required. This numeric auction label is not an inventory SKU.
 - A safe row association with exactly one variation label and one payment tag,
   walking no more than 12 ancestors, without using the broad root as a sale row.
 - Ambiguous roots, rows, duplicate variation candidates, and unsafe associations
   fail closed. Do not replace this with broad whole-page substring matching.
+
+Numeric SKU-label compatibility (September 30):
+- Reported diagnostic evidence: one visible m4b_space root, zero exact old-form
+  Variation labels, and 37 generic m4b_tag elements. The screenshot showed numeric
+  SKU: #N auction labels. This supports the former Variation-only matcher as a
+  compatibility gap, but the actual current row HTML/element shape was not verified.
+  Tag counts are not order/completion counts. No buyer text is retained here.
+- sale-candidate-locator.js accepts exact Variation: #N OR SKU: #N in its existing
+  span selector for historical discovery and payment/price association. The shared
+  sale-parser.js completed-sale and processing-price paths recognize both, including
+  their supported flattened sibling-text boundaries. Case/whitespace variants work;
+  arbitrary inventory SKU strings, invalid numbers, missing colon/hash, and extra
+  label text do not become auction identities.
+- Existing unique Sold Items root, single-label/single-tag row association, ancestor
+  bounds, payment-status allowlist, final-price/processing-price safety, delivery and
+  retry scheduling, on-video capture, accounting, and saved-data contracts remain.
+  This does not change the "X ran" display or existing inventory/stock warnings.
+- capture-development.md's read-only root diagnostic counts both numeric spellings
+  separately and together without returning raw row text, buyer data, or DOM nodes.
+- For this active-session recovery, keep the SAME local stream and wait for any
+  in-progress saves to finish. Reload the existing extension (not uninstall), refresh
+  the same dashboard, open Sold Items, and Resume the existing session if prompted.
+  Do not End, Start a new session, or reset inventory just to recapture. This is distinct
+  from routine release guidance to finish tracking first. Rendered rows may backfill
+  through existing capture; a reload is not proof that every missed row was recovered.
+  Missing/virtualized rows remain a limitation; ended reports are not automatically
+  repaired, and terminal-state guards are not bypassed. Native row shape, association,
+  payment transitions, and end-to-end capture remain user-performed manual checks.
+  If visible numeric SKU labels still yield zero span matches, verify actual markup
+  with appropriate authorization rather than widening selectors or collecting raw rows.
 
 Accepted whole badge text, ignoring capitalization and normalized whitespace:
   Payment complete                         -> payment_complete
@@ -694,7 +732,7 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
   Assigned presets win. Empty presets are overlaid without duplicate entries or
   saved assignments; outside the range a single temporary row is used with no new
   preset total. A late queue after capture advances never relocates to a new target.
-  selectedQueuedVariationNumber is navigation-only. Dropdown/Var #/arrows can inspect
+  selectedQueuedVariationNumber is navigation-only. Dropdown/SKU #/arrows can inspect
   it; left/right/size/keyboard assignment paths reject read-only views and stale
   preview-origin cards. The header uses ordinary token-protected clearQueue, never
   preset clearing. Return to live preserves search clearing and live-follow rules.
@@ -704,18 +742,18 @@ The quantity-only handoff is an explicit read-only workflow, not a new import:
   Preview state stays out of canonical history/reports and is rebuilt on reopening.
 - Return to live item resumes follow-newest. Pins move cards to front; otherwise
   preserve original order. Completed sales do not cause reordering.
-- Compact previous/next arrows beside Var # navigate the nearest lower/higher
+- Compact previous/next arrows beside SKU # navigate the nearest lower/higher
   existing captured or preset number, including assigned presets. They skip gaps,
   never wrap or create entries, and disable at boundaries or with no selected entry.
   They reuse selectVariationFromPicker, including history/live-follow and future
   selection, announcements, inventory-filter clearing, and navigation-generation
-  safeguards. The Var # draft is preserved; Return to live still clears it.
+  safeguards. The SKU # draft is preserved; Return to live still clears it.
   Capture/session/save/queue/import/End guards are rechecked at click time. A future
   target also requires preset availability. Capture and queue/save lifecycle updates
   refresh disabled states; no timers or worker commands were added. Selection alone
   changes no mappings, reservations, payments, reports, or queue state.
   Both 20px buttons fit in the existing left grid track. The row stays 20px tall and
-  its 112px center slot is unchanged. Var # keeps its normal 64px width/28px inset;
+  its 112px center slot is unchanged. SKU # keeps its normal 64px width/28px inset;
   at narrow widths it shrinks and gives back the inset to reserve 46px for the arrows
   and gap. The arrow pair is centered between the search field's right edge and
   the visible badge's left edge. A border-box ResizeObserver supplies badge width
@@ -736,8 +774,8 @@ Current compact visual decisions:
   Clicking outside an unsaved total field discards its draft and restores the
   bubble without saving or moving focus. Inside clicks keep editing; an accepted
   in-flight save retains its context. Enter saves and Escape still cancels.
-  The Total vars input has no hover title; its accessible label/help remain intact.
-  Var # also finds preset placeholders. Future selection is display-only history
+  The Total SKUs input has no hover title; its accessible label/help remain intact.
+  SKU # also finds preset placeholders. Future selection is display-only history
   browsing. With no captured variations or selected preset, opening the dropdown
   highlights/scrolls #1 without committing it. Existing selections and explicit
   Home/End boundaries retain priority; the descending option order stays unchanged.
@@ -782,7 +820,7 @@ Current compact visual decisions:
   successful canonical workspace load/initialization/retry instead of racing mount,
   so availability does not depend on a later live capture notification. Existing
   refresh reads, stale-result guards, and save/session/error locks remain intact.
-  Empty future selections support Var #, ordinary and sequential exact-SKU planning,
+  Empty future selections support SKU #, ordinary and sequential exact-SKU planning,
   reset, and reopening; real capture alone activates reservations/accounting.
 - Startup planning override is panel-local, not stored. canUseVariationPresetData
   retains independent safeguards; isCapturePlanningLocked grants only the narrow
@@ -916,7 +954,7 @@ Current compact visual decisions:
   refreshes. No saved schemas, accounting, capture promotion, or queue consumption
   changes. Native Chrome checks remain user-performed only.
 - Main T logo/title are hidden inside active tracker; variations start near the top
-  with a slim centered startup row above. Keep its gap and Var # placement for all labels.
+  with a slim centered startup row above. Keep its gap and SKU # placement for all labels.
 - Setup/Resume retain T logo and title left, local session badge far right.
 - Removed LOCAL STREAM SESSION / Tracker stream headings in Start/Resume boxes.
 - Pre-stream inventory check is the single compact section heading, with dynamic
@@ -989,9 +1027,9 @@ Failure behavior matters:
 11. REPORT LIBRARY, CAPACITY, AND CORRECTIONS
 ------------------------------------------
 Canceled-order report display (updated September 22, 2026):
-- An initially collapsed Canceled orders section sits directly below Stream Variations.
+- An initially collapsed Canceled orders section sits directly below Stream SKUs.
 - Uses saved report.canceledOrders only, sorted by variation number, with six columns:
-  Variation, Status, SKU, Item, Style, Size. No sold-price, unit-cost, or profit columns.
+  SKU #, Status, SKU, Item, Style, Size. No sold-price, unit-cost, or profit columns.
 - Above those details, renderCanceledSkuSummary creates four safe-text columns: SKU,
   Item, Style, Canceled. Groups use exact SKU, one count per saved canceled variation,
   in deterministic SKU order. Different sizes stay separate. Saved blank styles stay
@@ -1136,7 +1174,7 @@ Do not bypass those guards or propagate report-only costs globally.
 
 The existing End confirmation now lists sorted, unique actual unresolved variation
 numbers inline beside their count, for example:
-  unresolved orders -- Count 3: var #5, 32, 98
+  unresolved orders -- Count 3: SKU #5, 32, 98
 Count and IDs come from the same canonical captured set; presets/queue placeholders
 are excluded. The existing snapshot refresh updates this line while confirmation
 is open. Layout, natural wrapping, other warnings, and End eligibility are unchanged.
@@ -1305,7 +1343,31 @@ Cross-platform notes:
 15. TESTS AND VERIFICATION STRATEGY
 ---------------------------------
 Baseline full command: node --test
-Latest full verification: 2,254 tests passed, 0 failed, on Windows (September 29, 2026).
+Latest full verification: 2,282 tests passed, 0 failed, on Windows (September 30, 2026).
+The extension-wide SKU terminology change passes tracker-focused 442/442,
+report/PDF/correction/client/download-focused 341/341, shared/worker-focused 578/578,
+and four new cross-surface terminology regressions. Those new checks cover static
+screen/accessibility copy, unchanged seller text and auction identities, and both
+legacy/current dashboard labels. Existing UI/error/PDF assertions now expect SKU
+wording without relaxing behavior checks. Full node --test and git diff --check pass.
+Native normal/narrow tracker labels, presets/queue/End feedback, correction dialogs,
+and print/direct/bulk PDF headings remain user-performed checks. No browser checks,
+real data access, commits, or pushes occurred.
+The earlier two-heading-only change passed live-auction/side-panel 55/55 and the
+then-current full suite 2,278/2,278.
+The numeric Sold Items SKU-label compatibility fix adds 24 regressions over 2,254:
+nine parser, nine locator, and six content cases, including actual worker integration.
+The seven-file parser/locator/content/client/integration/protocol/service-worker group
+passes 377/377. Coverage verifies both numeric label forms through discovery, payment,
+completed-sale and processing-price capture, including flattened boundaries and the
+existing fail-closed association/price safeguards. The documented count-only root
+diagnostic also passed an isolated synthetic smoke test for both labels and malformed,
+zero, negative, unsafe-integer, and arbitrary SKU values. No browser check or real
+tracker/Sheet data was accessed for implementation verification. Actual row markup,
+native capture/payment transitions, and same-session recovery remain manual checks.
+No commit or push was performed for this fix.
+
+The prior inventory-card "X ran" implementation passed 2,254 tests on September 29.
 The inventory-card "X ran" display adds 27 regressions over 2,227: 13 view-model,
 seven real storage/coordinator/controller integration, and seven card/render UI tests.
 The four-file focused group passes 105/105. Covers all ended outcomes, exclusion of
@@ -1588,6 +1650,7 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
 Recent commits at this documentation refresh, newest first:
+  6e0670a  Add per-item auction run counts and document Git command workflow
   e6bb7fe  Allow resizing preset totals without resetting retained assignments
   e2d1eff  Improve unresolved order recovery and prefill captured processing prices
   7540b1d  Accept quantity as inventory sheet header
@@ -1657,6 +1720,8 @@ delete them automatically or treat them as production dependency requirements.
 7. Do not commit/push/package a release or mutate real data unless requested.
 
 Previously committed implementation is preserved, including the quantity-only clipboard
-handoff in ae1fcc1 and the A:F-only inventory boundary in 6742457. Inspect current
-Git status for any later work.
+handoff in ae1fcc1, the A:F-only inventory boundary in 6742457, and "X ran" in 6e0670a.
+The numeric Sold Items SKU-label compatibility fix and extension-wide user-facing
+SKU terminology updates, with tests/documentation, are current uncommitted work.
+Inspect current Git status for any later work.
 There is no approved pending functional change to start automatically.

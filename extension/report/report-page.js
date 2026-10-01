@@ -75,7 +75,7 @@
     const ACTION_FEEDBACK_DURATION_MS = 4_000;
     const WARNING_MESSAGES = Object.freeze({
       active_bidding_at_end:
-        "A variation was still bidding when tracking ended.",
+        "A SKU was still bidding when tracking ended.",
       reconciliation_conflicts:
         "Order records contain conflicting information. Review these orders.",
       inventory_recount_required:
@@ -322,7 +322,7 @@
         {
           label: "Completed / Total sales",
           value: `${completedCount}/${totalSalesCount}`,
-          note: "Bidding variation excluded",
+          note: "Bidding SKU excluded",
         },
         {
           label: "Canceled orders",
@@ -680,7 +680,7 @@
           document,
           copy,
           "h3",
-          `Variation #${variationNumber}`,
+          `SKU #${variationNumber}`,
           "payment-resolution-order-title",
         );
         appendTextElement(
@@ -716,7 +716,7 @@
         row.paymentResolutionPrefill = priceInput.value;
         row.paymentResolutionPriceDirty = false;
         priceInput.addEventListener("input", () => { row.paymentResolutionPriceDirty = true; });
-        priceInput.setAttribute("aria-label", `Sold price for variation ${variationNumber}`);
+        priceInput.setAttribute("aria-label", `Sold price for SKU #${variationNumber}`);
         priceField.append(priceInput);
 
         completeButton.className = "primary-action complete-payment-action";
@@ -830,14 +830,14 @@
       replaceChildren(body, rows);
       const combinedTotal = sales.length + canceledCount;
       empty.hidden = combinedTotal !== 0;
-      empty.textContent = "No completed or canceled item variations were captured for this stream.";
-      count.textContent = `${combinedTotal} variation${combinedTotal === 1 ? "" : "s"}`;
+      empty.textContent = "No completed or canceled item SKUs were captured for this stream.";
+      count.textContent = `${combinedTotal} SKU${combinedTotal === 1 ? "" : "s"}`;
 
       const unavailableCanceledCount = canceledDetailsAvailable ? 0 : canceledCount;
       detailsNote.hidden = unavailableCanceledCount === 0;
       detailsNote.textContent = unavailableCanceledCount === 0
         ? ""
-        : `Individual item details for ${unavailableCanceledCount} canceled variation${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
+        : `Individual item details for ${unavailableCanceledCount} canceled SKU${unavailableCanceledCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
     function renderCanceledSkuSummary(document, orders) {
@@ -910,7 +910,7 @@
       detailsNote.hidden = unavailableCount === 0;
       detailsNote.textContent = unavailableCount === 0
         ? ""
-        : `Individual item details for ${unavailableCount} canceled variation${unavailableCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
+        : `Individual item details for ${unavailableCount} canceled SKU${unavailableCount === 1 ? "" : "s"} were not saved in this older report. The canceled total is still included above.`;
     }
 
     function formatPercentage(numerator, denominator) {
@@ -2127,10 +2127,10 @@
           ? getItemDescription(order)
           : "unmapped item";
         const confirmation = resolution === "payment_complete"
-          ? `Mark variation #${variationNumber} Payment complete at ${formatUsdCents(soldPriceCents)} for ${itemDescription}? This permanently updates this saved report and its inventory totals.`
+          ? `Mark SKU #${variationNumber} Payment complete at ${formatUsdCents(soldPriceCents)} for ${itemDescription}? This permanently updates this saved report and its inventory totals.`
           : order?.mapped
-            ? `Mark variation #${variationNumber} canceled? This permanently resolves the order and releases its inventory reservation.`
-            : `Mark variation #${variationNumber} canceled? This permanently resolves the order as canceled.`;
+            ? `Mark SKU #${variationNumber} canceled? This permanently resolves the order and releases its inventory reservation.`
+            : `Mark SKU #${variationNumber} canceled? This permanently resolves the order as canceled.`;
 
         if (
           typeof dependencies.confirm !== "function" ||
@@ -2148,7 +2148,7 @@
           request.locationSearch === location?.search && isQuantityReportLocationCurrent() &&
           isCurrentReportView(reportId, mutationSequence);
         setResolutionBusy(true);
-        resolutionFeedback(`Saving variation #${variationNumber}...`);
+        resolutionFeedback(`Saving SKU #${variationNumber}...`);
 
         try {
           const response = await client.resolvePaymentFixingOrder({
@@ -2174,7 +2174,7 @@
           const outcome = resolution === "payment_complete"
             ? "Payment complete"
             : "canceled";
-          const successMessage = `Variation #${variationNumber} was marked ${outcome}. Report totals and inventory were updated.`;
+          const successMessage = `SKU #${variationNumber} was marked ${outcome}. Report totals and inventory were updated.`;
           feedback(successMessage);
           resolutionFeedback(successMessage);
 

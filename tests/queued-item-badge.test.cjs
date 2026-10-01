@@ -568,7 +568,7 @@ test("upcoming preset header shows the exact next SKU and size despite inventory
     assert.equal(c.queuedItemLabel.textContent, "LA hoodie-M");
     assert.equal(c.clearQueuedItemButton.disabled, false);
     assert.match(c.queuedItemTooltip.textContent, /LA hoodie, size M/);
-    assert.match(c.queuedItemTooltip.textContent, /preset|variation #?11/i);
+    assert.match(c.queuedItemTooltip.textContent, /preset|SKU #?11/i);
     assert.match(c.clearQueuedItemButton.getAttribute("aria-label"), /clear.*preset.*11/i);
   }
   assert.equal(c.queuedNextItemSku, null);
@@ -970,7 +970,7 @@ test("pre-stream planned-next badge uses the selected preset plus one and stays 
     c.renderQueuedItemBadge(c.getActiveView());
     assert.equal(c.queuedItemSlot.hidden, false);
     assert.equal(c.queuedItemLabel.textContent, "LA hoodie-M");
-    assert.match(c.queuedItemTooltip.textContent, /Pre-stream preset for variation #2\. No inventory is reserved\./);
+    assert.match(c.queuedItemTooltip.textContent, /Pre-stream preset for SKU #2\. No inventory is reserved\./);
     assert.match(c.clearQueuedItemButton.getAttribute("aria-label"), /clear.*preset.*2/i);
     assert.equal(c.clearQueuedItemButton.disabled, false);
     assert.equal(c.clearQueuedItemButton.dataset.prestreamVariationNumber, "1");
@@ -1168,7 +1168,7 @@ test("pre-stream multi-size picker shows only the exact upcoming size as Queued 
   for (const option of c.inventorySizeListbox.children) {
     assert.equal(allBadges(option).filter(badge => badge.textContent === "Queued").length, option.dataset.sku === "TEE-L" ? 1 : 0);
     assert.equal(option.getAttribute("aria-selected"), String(option.dataset.sku === "TEE-S"));
-    if (option.dataset.sku === "TEE-L") assert.match(option.getAttribute("aria-label"), /queued by preset for variation #2/i);
+    if (option.dataset.sku === "TEE-L") assert.match(option.getAttribute("aria-label"), /queued by preset for SKU #2/i);
     assert.match(option.getAttribute("aria-label"), /no inventory is reserved/i);
   }
   assert.equal(JSON.stringify(f.view), original);

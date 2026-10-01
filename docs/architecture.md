@@ -335,6 +335,9 @@ Variation: #250
 Payment complete
 ```
 
+The numeric auction label may instead be `SKU: #250`. Both label spellings identify
+the same kind of `variationNumber`; neither supplies an inventory SKU or item mapping.
+
 ### Current capture pipeline — implemented
 
 The extension makes its isolated content script available only on the exact
@@ -356,7 +359,9 @@ none reads Sold Items rows or supplies payment/final-price truth.
 Within that root, capture:
 
 1. finds `span` elements whose complete whitespace-normalized text matches
-   `Variation: #N` and records each positive integer variation;
+   `Variation: #N` or `SKU: #N` and records each positive safe-integer variation.
+   Matching is case-insensitive, allows whitespace around the required colon/hash,
+   and rejects arbitrary SKU strings, missing punctuation, and extra label text;
 2. associates an exact `[data-tid="m4b_tag"]` with one row-local variation label and
    maps its whole normalized text to an allowlisted status code or `unrecognized`;
 3. climbs at most 12 ancestors without crossing the Sold Items root; canonical completion
@@ -375,6 +380,12 @@ Within that root, capture:
    Route exit or body replacement discards that outbox; a replacement root is scanned
    from scratch, and canonical persistence makes repeated scans and worker restarts
    idempotent.
+
+The Sold Items locator and shared completed-sale/processing-price parsers use the same
+two numeric label spellings, including supported flattened sibling-text boundaries.
+The unique root, `span` selector, single-label/single-payment-tag association, ancestor
+limit, exact payment statuses, and price ambiguity checks remain unchanged. This is a
+label compatibility fix, not a broader inventory-SKU or whole-page text matcher.
 
 The current-bidding path is independently fail-closed. It requires exactly one visible
 element with the `auction-pin-card` class token and exactly one visible descendant whose
@@ -503,6 +514,12 @@ authority. Canonical deduplication occurs in reconciliation storage under
 `(streamId, variationNumber)`, so a full refresh can safely backfill visible rows while
 the same local tracker stream remains active. Capture does not supply a verified
 TikTok-provided stream identity or automatically associate the page with a local session.
+For active-session label recovery, keep the same local stream, wait for saves to finish,
+reload the existing extension without uninstalling, refresh the same dashboard, and open
+Sold Items. Resume the existing session if prompted; do not End, Start another session,
+or reset inventory for recapture. This differs from a routine release after finished
+tracking. Recovery requires relevant rows to be rendered; ended reports are not
+automatically repaired by a reload.
 
 ### Capture events and remaining live signals
 
@@ -510,7 +527,7 @@ TikTok-provided stream identity or automatically associate the page with a local
 | --- | --- | --- |
 | One `#N` value appears in the unique visible on-video `auction-pin-card` | Create/activate that bidding variation under the worker-resolved stream and select it in the open tagger | Implemented; sends only the number; selecting inventory for it immediately creates a reservation |
 | One canonical `Bids: $...` value appears in that same uniquely identified card | Replace the single stream-scoped transient bid and targeted-update the live panel | Implemented; sends integer cents paired with the variation; never becomes final price or report data |
-| Exact `Variation: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented |
+| Exact numeric `Variation: #N` or `SKU: #N` appears in Sold Items | Persist an unmapped, unknown-payment auction under the active local stream | Implemented; this is an auction number, not an inventory SKU |
 | Exact processing or fixing payment badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending |
 | One explicit auction-winner price appears on that exact processing/fixing row | Save separate processing-price metadata for the post-stream recovery input | Implemented; no completion or accounting effect, and conflicting values suppress prefill |
 | Legacy failed badge with an explicit countdown, or an unrecognized badge appears | Persist its sanitized observed status and update the open tagger | Implemented; a mapped unit remains pending until completion or cancellation |
@@ -558,7 +575,7 @@ End-readiness counts instead. Lifecycle `pending_end` remains internal recovery 
 These fields describe captured-data completeness; they do not claim that TikTok rendered
 every historical Sold Items row.
 The existing End-readiness paragraph appends sorted, unique unresolved variation numbers
-beside their count, for example `unresolved orders — Count 3: var #5, 32, 98`.
+beside their count, for example `unresolved orders — Count 3: SKU #5, 32, 98`.
 The count and list use the same recorded, nonterminal variation set; presets and queue
 previews are excluded. Authoritative snapshot refreshes update the open confirmation
 without moving focus or changing End eligibility. The existing paragraph wraps normally.
@@ -601,7 +618,7 @@ The report retains these deliberately different measures:
   aggregate canceled count but may not contain these row details.
 
 The report page combines the completed-sale rows and available canceled-order references
-in one collapsed **Item variations this stream** disclosure under the **Stream variations**
+in one collapsed **Item SKUs this stream** disclosure under the **Stream SKUs**
 eyebrow. Its count is completed plus canceled variations, including legacy aggregate
 cancellations whose row details are unavailable, and a **Status** column distinguishes the
 two outcomes. Canceled rows expose reference identity only: sold price, unit cost, and
@@ -613,7 +630,7 @@ canceling or failing to open the print dialog does not leave the sections expand
 
 A separate, initially collapsed **Canceled orders** disclosure directly below Stream
 variations filters the same saved `canceledOrders` collection into six reference-only
-columns: Variation, Status, SKU, Item, Style, and Size. Rows are sorted by variation
+columns: SKU #, Status, SKU, Item, Style, and Size. Rows are sorted by variation
 number, and use the same safe-text rendering and unmapped fallbacks as the combined
 table, which remains unchanged. Above those details, a four-column summary shows
 **SKU, Item, Style, Canceled**, grouping only the saved canceled-order references by
@@ -735,14 +752,19 @@ capture can only report facts that reached durable reconciliation state before E
 ## 5. Employee tagger — Live session implemented
 
 The tagger is a Chrome side-panel interface. The employee can browse variations in the
-dropdown or find an existing captured/preset number with **Var #**, and selects inventory
+dropdown or find an existing captured/preset number with **SKU #**, and selects inventory
 through item cards and exact-size choices rather than typing a hidden SKU.
+User-facing tracker, report, accessibility, validation, and PDF wording uses SKU/SKUs
+for these numbered auctions. The report column **SKU #** distinguishes the auction
+number from the adjacent **SKU** inventory code. Internal variation IDs, selectors,
+protocol fields, persisted schemas, and legacy capture-label support remain unchanged;
+this terminology change does not rewrite seller-provided item names or SKU codes.
 The adjacent **‹ / ›** buttons select the nearest lower/higher existing number through
 the same selection workflow. They include assigned and empty future presets, skip missing
 numbers, and never wrap, extend a range, or change assignments. No selected entry or no
 neighbor disables the relevant arrow. Current capture/preset/save/session safeguards
 apply to both rendering and click handling. The row and badge center stay fixed; only
-the Var # field's width/inset compress when needed to fit the arrows at narrow widths.
+the SKU # field's width/inset compress when needed to fit the arrows at narrow widths.
 
 The Chrome side panel is a single **Live session** employee workspace. It requires a
 persistent local active stream, restores the last durable reconciliation state, persists
@@ -750,7 +772,7 @@ mapping corrections, and displays loading, saving, success, and retryable error 
 
 Before Start, Live session presents Google Sheets inventory import followed by the local
 Start controls. Once a stream is started or resumed, the logo/title header is hidden and
-the compact capture-health row sits above the Variation selector. Inventory and
+the compact capture-health row sits above the SKU selector. Inventory and
 Performance Metrics use single-line section headings. The Local stream session section
 is the last substantive section and shows a small status dot plus
 `Tracker Active | Started [formatted session start]`, followed by **End Stream Tracking**.
@@ -1334,8 +1356,8 @@ comes from the normal canonical view immediately and is also synchronized into t
 transient record so its cost/profit survives panel reopening after bidding ends. Reviewing
 history never rebinds the panel to the selected historical record.
 The panel stays mounted during an active local tracker stream. Before any detected auction
-it shows `Variation # -` and dashes. A new canonical marker immediately replaces the prior
-heading with `Variation #N` and clears its values until the first valid bid arrives. When
+it shows `SKU # -` and dashes. A new canonical marker immediately replaces the prior
+heading with `SKU #N` and clears its values until the first valid bid arrives. When
 that marker clears, the panel keeps the last variation, bid, mapped unit cost, and derived
 profit with a muted indicator until the next marker arrives. It never labels the retained
 display as a previous auction, and reviewing history never rebinds it to the selected
@@ -1426,7 +1448,7 @@ because an old queue survived a newer capture or failed consumption.
 through the dropdown, exact search, or arrows marks its SKU for display only and
 disables all inventory assignment routes, including stale cards and size/keyboard
 events. Actual live identity/bid and accounting remain unchanged. Return to live
-clears that selection and the Var # input normally. Existing `clearQueue` handles ×.
+clears that selection and the SKU # input normally. Existing `clearQueue` handles ×.
 Queue refreshes re-render the selector; clearing restores an underlying empty preset
 or removes the temporary row. Only a still-selected obsolete preview returns to live;
 if its number was captured it becomes normal held-history selection instead. Later
@@ -1592,7 +1614,7 @@ session, report, and queue schemas remain unchanged.
 **Preset items** remains visible at its existing size to the left of a separate
 **Reset presets** button whenever presets are enabled. Opening it replaces the left
 button with the total editor, prefilled with the current saved total; reset stays visible.
-The pair may wrap together at narrow panel widths without overlapping Var #, navigation
+The pair may wrap together at narrow panel widths without overlapping SKU #, navigation
 arrows, or the capture badge. Reset remains a distinct action, not a prerequisite for
 editing a total. Existing startup/save/error guards apply before and during live tracking.
 
@@ -2008,6 +2030,9 @@ One live stream established the current product-dashboard route, exact variation
 and unique visible `[data-tid="m4b_space"]` Sold Items boundary. Later streams must still
 answer these questions; offline fixtures alone cannot complete the validation:
 
+- Does the newer visible numeric `SKU: #N` label retain the existing exact `span` and
+  safe row association? A September 30 screenshot and reported root/tag counts support
+  the label change, but do not verify the current row HTML or successful native capture.
 - Do processing (including ellipses) and terminal `Payment failed` retain the reported
   meaning and safe row association across accounts? Does a legacy active countdown
   remain distinguishable without reading unrelated text?

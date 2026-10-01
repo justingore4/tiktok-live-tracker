@@ -338,7 +338,7 @@
       ) {
         fail(
           "INVALID_CLIENT_COMMAND",
-          "Payment resolution requires a valid report, variation, outcome, and final sold price.",
+          "Payment resolution requires a valid report, SKU number, outcome, and final sold price.",
         );
       }
 

@@ -119,7 +119,7 @@ function fixture() {
       },
     },
     releaseVariationSelector(options) { releaseCalls.push(options); },
-    describeSelectedVariation: (current) => `Variation ${current.selectedVariationNumber}`,
+    describeSelectedVariation: (current) => `SKU ${current.selectedVariationNumber}`,
     document: { activeElement: null },
   };
   context.captureHealthBadge.dataset.phase = "active";
@@ -153,8 +153,8 @@ test("variation-number input occupies the existing tracker-only health row with 
   assert.ok(row);
   assert.match(row, /<form[^>]*id="variation-search-form"/);
   assert.match(row, /<input[^>]*id="variation-search-input"/);
-  assert.match(row, /placeholder="Var #"/);
-  assert.match(row, /aria-label="Find variation by number"/);
+  assert.match(row, /placeholder="SKU #"/);
+  assert.match(row, /aria-label="Find SKU by number"/);
   assert.match(row, /inputmode="numeric"/);
   assert.match(row, /id="capture-health-badge"/);
   assert.equal((html.match(/id="variation-search-input"/g) ?? []).length, 1);
@@ -183,9 +183,9 @@ test("existing startup-row height and spacing stay unchanged while Reload Site r
 
 test("step buttons occupy the left row slot with accessible names and remain outside reports", () => {
   const row = html.slice(html.indexOf('<div class="capture-health-row"'), html.indexOf('<section class="current-auction"'));
-  assert.match(row, /id="variation-step-controls"[^>]*role="group"[^>]*aria-label="Variation navigation"[^>]*inert/);
-  assert.match(row, /id="previous-variation" type="button" aria-label="Previous variation" disabled/);
-  assert.match(row, /id="next-variation" type="button" aria-label="Next variation" disabled/);
+  assert.match(row, /id="variation-step-controls"[^>]*role="group"[^>]*aria-label="SKU navigation"[^>]*inert/);
+  assert.match(row, /id="previous-variation" type="button" aria-label="Previous SKU" disabled/);
+  assert.match(row, /id="next-variation" type="button" aria-label="Next SKU" disabled/);
   assert.ok(row.indexOf('id="variation-search-form"') < row.indexOf('id="previous-variation"'));
   assert.ok(row.indexOf('id="next-variation"') < row.indexOf('id="capture-health-badge"'));
   assert.match(row, /title="Start stream tracking to initialize dashboard capture\.">Not tracking<\/span>\s*<span id="capture-health-description"/,

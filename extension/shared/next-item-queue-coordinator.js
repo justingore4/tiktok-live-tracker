@@ -460,14 +460,14 @@
         if (currentVariationNumber === null) {
           fail(
             "NO_CURRENT_VARIATION",
-            "Wait for a captured live auction variation before queuing an item.",
+            "Wait for a captured live auction SKU before queuing an item.",
           );
         }
 
         if (command.expectedVariationNumber !== currentVariationNumber) {
           fail(
             "CURRENT_VARIATION_CHANGED",
-            "The live variation changed before the item could be queued.",
+            "The live SKU changed before the item could be queued.",
           );
         }
 
@@ -504,7 +504,7 @@
           if (resultingAuction?.sku !== command.sku) {
             fail(
               "CURRENT_MAPPING_NOT_CONFIRMED",
-              "The current variation item selection could not be confirmed.",
+              "The current SKU item selection could not be confirmed.",
             );
           }
 
@@ -561,14 +561,14 @@
         if (currentVariationNumber === null) {
           fail(
             "NO_CURRENT_VARIATION",
-            "Wait for a captured live auction variation before selecting an item.",
+            "Wait for a captured live auction SKU before selecting an item.",
           );
         }
 
         if (command.expectedVariationNumber !== currentVariationNumber) {
           fail(
             "CURRENT_VARIATION_CHANGED",
-            "The live variation changed before the item could be selected.",
+            "The live SKU changed before the item could be selected.",
           );
         }
 
@@ -606,7 +606,7 @@
           ) {
             fail(
               "CURRENT_UNMAPPING_NOT_CONFIRMED",
-              "The current variation item removal could not be confirmed.",
+              "The current SKU item removal could not be confirmed.",
             );
           }
 
@@ -630,7 +630,7 @@
         if (resultingAuction?.sku !== command.sku) {
           fail(
             "CURRENT_MAPPING_NOT_CONFIRMED",
-            "The current variation item selection could not be confirmed.",
+            "The current SKU item selection could not be confirmed.",
           );
         }
 

@@ -33,6 +33,14 @@ Live inspection on August 8, 2026 confirmed:
   analytics boundary. Its label is the complete own text `Attributed GMV`, and its
   primary value can be exact (for example `$4,087.01`) or compact (for example `$4.64K`).
 
+September 30, 2026 evidence is narrower: the user-reported diagnostic found one visible
+Sold Items root, zero exact `Variation: #N` labels, and 37 generic payment tags; the
+screenshot showed numeric `SKU: #N` auction labels. This supports a label compatibility
+gap in the former Variation-only matcher. It does not establish the current label's
+HTML element or full row association, and no post-fix native browser capture was verified.
+The current code accepts either numeric label spelling within the existing `span`/root
+boundary; arbitrary inventory SKU strings are not auction identities.
+
 The unequal variation/tag counts matter: capture cannot treat every `m4b_tag` as an
 auction payment. It associates a tag with exactly one row-local variation label. Unknown
 nonempty tag text is reduced to `unrecognized`; raw tag text is never transmitted or
@@ -90,7 +98,8 @@ outside `/streamer/live/product/dashboard`. On that route, its Sold Items path:
 1. requires exactly one visible `[data-tid="m4b_space"]` Sold Items root;
 2. fails closed and retries when zero, multiple, or unsafe roots are found;
 3. scans only that root for `span` text matching the complete normalized pattern
-   `Variation: #N`;
+   `Variation: #N` or `SKU: #N`, case-insensitively with whitespace around the required
+   colon/hash; N must be a positive safe integer, not an arbitrary inventory SKU;
 4. scans only that root for exact `[data-tid="m4b_tag"]` elements, associates each with
    one exact row-local variation label, and converts its whole normalized text to an
    allowlisted status code or `unrecognized`;
@@ -106,6 +115,12 @@ outside `/streamer/live/product/dashboard`. On that route, its Sold Items path:
 The lifecycle check can locate the root from the page, but no sale labels, prices, or
 payment badges are parsed outside the unique root. There is no fallback body scan for
 individual sales.
+
+Both spellings also pass through the shared completed-sale and processing-price parsers,
+including their supported flattened sibling-text boundaries. Extra label text and
+missing punctuation remain invalid. Existing row ambiguity rejection, single-label/tag
+association, and price checks are retained. The Sold Items root, `span` selector,
+ancestor limit, payment-status allowlist, and scheduling are unchanged.
 
 An independent Attributed GMV path requires exactly one visible `#guide-Step-2` root.
 The previously observed lowercase `#guide-step-2` spelling is an explicit fallback; no
@@ -274,13 +289,13 @@ TikTok did not render or the extension did not durably receive cannot be reconst
 the report. Compatible legacy reports retain the aggregate canceled count but may not have
 canceled row details.
 
-The collapsed **Item variations this stream** disclosure, under the **Stream variations**
+The collapsed **Item SKUs this stream** disclosure, under the **Stream SKUs**
 eyebrow, combines completed and canceled rows in variation-number order and shows their
 combined count. Its **Status** column identifies the outcome. Completed rows keep mapped
 and unmapped sale detail; canceled rows keep only mapped or unmapped reference identity,
 show no price, unit cost, or gross profit, and never affect inventory or any metric.
 The separate **Canceled orders** disclosure below it lists only cancellations, with
-an exact-SKU count summary (SKU, Item, Style, Canceled) above the existing Variation,
+an exact-SKU count summary (SKU, Item, Style, Canceled) above the existing SKU #,
 Status, SKU, Item, Style, and Size details. Size-specific SKUs stay separate. One
 Unmapped summary row appears last only for detail rows lacking a SKU; missing legacy
 details never become an invented Unmapped count. Empty/legacy reports hide the summary
@@ -411,7 +426,7 @@ An accepted live-bid change instead emits a dedicated data-free `live_bid_change
 notification. The panel performs only a lightweight transient read and targeted update of
 the live auction values; it does not refetch the full reconciliation snapshot or rerender
 inventory for each bid. The panel stays visible while the Live tracker is active and while
-history is selected. It begins at `Variation # -` with dashes, clears prior values as soon
+history is selected. It begins at `SKU # -` with dashes, clears prior values as soon
 as a new marker is captured, and retains that auction's last display with a muted indicator
 after the marker clears. Mapping/remapping/unmapping recomputes unit cost and pre-fee live
 gross profit (`bid - cost`) without changing business accounting. Sold Items remains
@@ -573,7 +588,7 @@ distribution; reassess Google's requirements before expanding the audience.
    already-active stream.
    Before Start, confirm Google Sheets inventory appears before the local Start controls.
    After Start or Resume, confirm the logo/title header is hidden and the compact
-   capture-health row sits above Variation. Inventory and Performance Metrics should
+   capture-health row sits above SKU. Inventory and Performance Metrics should
    have single-line headings. The final substantive section should show the status dot
    and `Tracker Active | Started [formatted session start]`, followed by
    **End Stream Tracking**. There should be no separate Active pill, persistence
@@ -661,9 +676,9 @@ distribution; reassess Google's requirements before expanding the audience.
    Reloading the extension itself must also clear it. Chrome's normal context menu should
    remain available everywhere except directly on an inventory card.
    Before the first auction, confirm the compact **Live auction** panel shows
-   `Variation # -` and dashes. While bids arrive rapidly, confirm it reaches the newest
+   `SKU # -` and dashes. While bids arrive rapidly, confirm it reaches the newest
    visible price without stepping through stale queued values. On a new variation, verify
-   its heading switches to `Variation #N` immediately and shows dashes until the first
+   its heading switches to `SKU #N` immediately and shows dashes until the first
    valid `Bids: $...` value rather than reusing the prior auction's data. Current bid must
    remain visible while unmapped, with dashes for unit cost and live gross profit. Map,
    remap, and unmap the active variation and confirm those two fields recompute immediately.
@@ -749,7 +764,7 @@ distribution; reassess Google's requirements before expanding the audience.
     unmapped, conflicting, or oversold attention count without a Final/Provisional label,
     and offers two full-width buttons: **Keep stream active** above **End and create report**.
     The unresolved count must include its sorted unique variation numbers inline, such as
-    **Count 3: var #5, 32, 98**, excluding uncaptured presets and queued previews. Check
+    **Count 3: SKU #5, 32, 98**, excluding uncaptured presets and queued previews. Check
     one and thirteen unresolved variations, normal wrapping at narrow widths, and no
     empty list when all orders resolve. Leave the confirmation open while an order resolves:
     its number and the count should update without moving focus or changing other warnings.
@@ -763,7 +778,7 @@ distribution; reassess Google's requirements before expanding the audience.
     attention notices, captured performance totals, mapped and unmapped completed rows,
     exact-SKU table, combined item-and-style top performers across sizes, and ties. Confirm
     neither the report nor its side-panel archive link shows Final/Provisional wording.
-    Confirm **Item variations this stream** starts collapsed and expands on activation.
+    Confirm **Item SKUs this stream** starts collapsed and expands on activation.
     Confirm **Correct SKU Unit Cost** is the final report section.
     The stream-variation count must
     remain visible in both table states and equal completed plus canceled totals. Confirm
@@ -777,7 +792,7 @@ distribution; reassess Google's requirements before expanding the audience.
     values. Pending, canceled, unmapped, and unsold entries must not appear in that table.
     Verify its updated inventory table includes every baseline SKU. Use **Print / Save as
     PDF** and Chrome's **Save as PDF** destination to save a durable copy outside the
-    extension while both **Item variations this stream** and **Canceled orders** are
+    extension while both **Item SKUs this stream** and **Canceled orders** are
     collapsed. Verify both sections include all available rows, with only the six
     reference columns in the canceled-only section. After printing or canceling, verify
     both return to their prior screen states. Repeat with one section open, including
@@ -926,26 +941,36 @@ or persistence mutation.
 ### Read-only root diagnostic
 
 If the active message is missing or capture is not restoring variations, run this
-read-only diagnostic in the dashboard Console:
+read-only diagnostic in the dashboard Console. It returns only counts and visibility,
+not raw row text, buyer information, or DOM elements:
 
 ```js
-[...document.querySelectorAll('[data-tid="m4b_space"]')].map(
-  (root, index) => ({
+[...document.querySelectorAll('[data-tid="m4b_space"]')].map((root, index) => {
+  const labels = [...root.querySelectorAll("span")]
+    .map((element) => element.textContent.replace(/\s+/g, " ").trim()
+      .match(/^(Variation|SKU)\s*:\s*#\s*(\d+)$/i))
+    .filter((match) => match && Number.isSafeInteger(Number(match[2])) &&
+      Number(match[2]) > 0);
+  return {
     index,
-    variationCount: [...root.querySelectorAll("span")].filter((element) =>
-      /^Variation\s*:\s*#\s*\d+$/i.test(element.textContent.trim()),
-    ).length,
+    variationCount: labels.length,
+    variationLabelCount: labels.filter((match) => /^Variation$/i.test(match[1])).length,
+    numericSkuLabelCount: labels.filter((match) => /^SKU$/i.test(match[1])).length,
     paymentTagCount: root.querySelectorAll('[data-tid="m4b_tag"]').length,
     visible:
       root.getBoundingClientRect().width > 0 &&
       root.getBoundingClientRect().height > 0,
-  }),
-);
+  };
+});
 ```
 
-Expected: exactly one object has `visible: true`, and its variation count agrees with
-the rendered Sold Items list. `paymentTagCount` may be larger; it is not a completion
-count.
+Expected: exactly one object has `visible: true`. `variationCount` includes both numeric
+label spellings; the separate counts distinguish them. Counts describe matching rendered
+labels, not unique persisted orders or successful row associations. `paymentTagCount`
+may be larger and is not a completion count. Share only this count output, not raw rows.
+If visible numeric SKU labels still yield zero matches, their current element/markup
+may differ from the supported `span` boundary; that remains a manual verification
+question, not permission to widen selectors or dump buyer-containing row HTML.
 
 Do not paste scripts that modify the dashboard DOM during a real sale. Offline automated
 tests provide synthetic DOM coverage.
@@ -969,6 +994,15 @@ With the current tracker-owned stream identity, follow these rules:
   new baseline and a future stream.
 - A full dashboard refresh during that same LIVE is safe: visible rows are backfilled and
   canonical duplicates are ignored.
+- After installing the numeric `SKU: #N` compatibility fix, reload the extension and
+  dashboard so the new capture scripts run. For this active-session recovery, keep the
+  same local stream and wait for in-progress saves to finish. Reload the existing
+  extension without uninstalling, refresh that same dashboard, open Sold Items, and
+  Resume the existing session if prompted. Do not End, Start another session, or reset
+  inventory just to recapture; the routine release advice to finish tracking first is
+  not this recovery procedure. Backfill still depends on rows being rendered, so absent
+  or virtualized rows may remain unavailable. Reloading cannot automatically repair an
+  ended report or bypass terminal-state guards.
 - There is no visible queue-drained indicator. When practical, keep the local tracker
   stream active until expected payment transitions appear and capture delivery has had
   time to finish or retry. If a tracker delivery error appears, leaving the session active
@@ -1058,7 +1092,7 @@ Sheets network access, an OAuth client, or a live stream.
 
 The existing capture-health files now implement startup readiness, not continuous
 health monitoring. The active, resumed tracker keeps its centered 20px badge row,
-6px gap, 10px typography, and adjacent Var # search. Setup, Resume/End-only, archived,
+6px gap, 10px typography, and adjacent SKU # search. Setup, Resume/End-only, archived,
 and report screens remain unaffected. Blue Connecting and yellow Loading keep
 their decorative spinner; reduced motion stops its rotation.
 
@@ -1141,7 +1175,7 @@ latching, document/session changes, stale messages, Reload Site accessibility, a
 
 Remaining manual checks: normal/narrow Chrome layout; startup with empty Sold
 Items; initial catch-up; dashboard refresh; panel reopening; and green remaining
-unchanged through later metric glitches or disconnection. Verify Var # placement,
+unchanged through later metric glitches or disconnection. Verify SKU # placement,
 scrolling, End controls, and independent busy safeguards using synthetic data.
 Hover the active badge at normal and narrow widths: its single-sentence tooltip
 must remain centered in the badge row and wrap within the row without moving controls.
@@ -1190,10 +1224,10 @@ strict messages, storage, capture promotion, queue precedence, reset, and recove
 For a manual UI check, verify the existing badge row at normal and narrow panel
 widths with **Preset items**, its inline input, and **Reset presets**. After enabling
 presets, the original-sized **Preset items** control must remain to the left of the
-separate reset button; opening it must prefill the current saved total. Var # and the
+separate reset button; opening it must prefill the current saved total. SKU # and the
 capture badge must not overlap the controls. The editor replaces only the left button;
 reset remains visible, and the pair can wrap together at narrow widths. Enter 200, plan multiple future items, browse
-one by Var #, and use Return to live after an actual variation has been captured. Check that
+one by SKU #, and use Return to live after an actual variation has been captured. Check that
 planning changes neither stock nor metrics, while actual capture applies the normal
 payment/mapping rules. Reload and confirm same-stream plans remain.
 
@@ -1231,7 +1265,7 @@ Manual queue dropdown previews have synthetic projection, UI/client/worker, navi
 and race coverage. For manual Chrome checks, queue an exact SKU while live #10 is
 mapped and no preset is assigned to #11. Confirm #11-untracked-item appears once
 whether presets are disabled, enabled with an empty #11, or end at #10. Select it
-using dropdown, Var #, and arrows; inventory cards/size/keyboard actions must not
+using dropdown, SKU #, and arrows; inventory cards/size/keyboard actions must not
 edit it, and live bid/current mapping stay unchanged. Return to live to replace the
 queue, or clear with header ×. A temporary row disappears; an overlaid empty preset
 remains editable. Capture #11 or skip to #13 and verify the old preview is not moved
@@ -1271,16 +1305,16 @@ background refresh must not prevent #1 selection when no intervening change occu
 For a pre-stream view with no selected variation, open the dropdown: it should
 highlight/scroll to #1 without changing selection merely by opening. Existing future
 selections and explicit Home/End navigation take priority; the list remains newest-first.
-Verify exact Var # lookup, and input clearing when Return to live is available and used.
-Check **‹ / ›** beside Var #: move one available number lower/higher through captured
+Verify exact SKU # lookup, and input clearing when Return to live is available and used.
+Check **‹ / ›** beside SKU #: move one available number lower/higher through captured
 and future entries, including already-assigned presets. Missing numbers are skipped;
 boundaries and an unselected waiting view disable navigation rather than wrapping or
-creating entries. Typed Var # drafts stay intact. Verify ordinary history/live following,
+creating entries. Typed SKU # drafts stay intact. Verify ordinary history/live following,
 future browsing through capture updates, and no mapping, queue, or accounting changes.
 Yellow Loading regardless of planning opt-in, saving, queue changes, End confirmation, and unavailable preset state must
 block the affected navigation and recover when their existing safeguards clear.
 Check 320px and normal-width panels: both 20px arrow buttons stay in the original 20px
-row, the badge remains centered, and the Var # field gives back its inset/width as needed
+row, the badge remains centered, and the SKU # field gives back its inset/width as needed
 without overlap or horizontal scrolling. Native keyboard activation should remain on
 an enabled arrow; reaching a boundary returns focus through the existing selector workflow.
 Before submitting a total, Escape or an outside click must discard the draft and restore
@@ -1294,7 +1328,7 @@ preset snapshot cannot leave the control disabled indefinitely. Failed saved-sta
 loads, unconfirmed inventory, and other busy locks remain blocked. During blue
 Connecting, opt in using Preset items (or Reset presets when already
 enabled): the field/action should work and the tint disappear, but the badge/spinner
-must not change. Test creation, automatic #1, Var #, arrows, dropdown, inventory search,
+must not change. Test creation, automatic #1, SKU #, arrows, dropdown, inventory search,
 Show all items, exact sizes, right-click toggles, and sequential left-click planning.
 Captured live/history mapping, manual queue actions, pins, and imports must stay blocked.
 Valid future assignment must still clear a conflicting automatic next-item queue.

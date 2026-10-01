@@ -185,6 +185,7 @@ function createStatusRow({
   soldPrice = "48.00",
   badgeText = "Payment processing",
   nestedBadgeText = false,
+  labelName = "Variation",
 } = {}) {
   const row = element({ name: `status-row-${variationNumber}` });
   const summary = element({
@@ -193,7 +194,7 @@ function createStatusRow({
   });
   const variationLabel = element({
     name: "variation-label",
-    ownText: `Variation: #${variationNumber}`,
+    ownText: `${labelName}: #${variationNumber}`,
     tagName: "SPAN",
   });
   const badge = element({ dataTid: "m4b_tag", name: "payment-tag" });
@@ -403,6 +404,140 @@ test("extracts only whole Variation labels without returning row text", () => {
   assert.equal(located[0].label, first);
   assert.equal(located[1].label, second);
   assert.equal(Object.hasOwn(located[0], "text"), false);
+});
+
+test("discovers whole SKU auction labels alongside legacy labels without changing selectors", () => {
+  const root = element({ dataTid: "m4b_space" });
+  const labels = ["SKU: #11", "  sKu \n: # 12  ", "Variation: #10"];
+  labels.forEach(ownText => root.append(element({ ownText, tagName: "SPAN" })));
+  const ignored = [
+    "SKU: TEE-M", "SKU: #TEE-M", "SKU: 13", "SKU #14", "#15",
+    "Product SKU: #16", "SKU: #17 extra", "SKU: #18-XL", "SKU: #19.5",
+    "SKU: #0", "SKU: #-20", "SKU: #9007199254740992", "SKUs: #21",
+  ];
+  ignored.forEach(ownText => root.append(element({ ownText, tagName: "SPAN" })));
+  root.append(element({ ownText: "SKU: #22", tagName: "DIV" }));
+  assert.deepEqual(locateObservedVariations(root).map(row => row.variationNumber), [11, 12, 10]);
+  assert.equal(locatePaymentStatuses(root, parser).length, 0, "A label alone does not infer a payment");
+  assert.equal(VARIATION_LABEL_SELECTOR, "span", "No speculative element-selector expansion");
+});
+
+test("both auction label formats preserve exact completed, pending, canceled, failed and unknown statuses", () => {
+  for (const labelName of ["Variation", "SKU"]) {
+    for (const [badgeText, expectedStatus, priceKind] of [
+      ["Payment complete", "payment_complete", "sold"],
+      ["Payment processing...", "payment_processing", "processing"],
+      ["Order processing", "order_processing", "processing"],
+      ["Payment fixing", "payment_fixing", "processing"],
+      ["Payment failed", "canceled", null],
+      ["Canceled", "canceled", null],
+      ["Cancelled", "canceled", null],
+      ["Unrecognized synthetic status", "unrecognized", null],
+    ]) {
+      const fixture = createStatusRow({ variationNumber: 38, soldPrice: "25.00", labelName, badgeText });
+      const [status] = locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser);
+      assert.equal(status.variationNumber, 38, labelName);
+      assert.equal(status.observedPaymentStatus, expectedStatus, badgeText);
+      assert.equal(status.soldPriceCents, priceKind === "sold" ? 2500 : null);
+      assert.equal(status.processingPriceCents, priceKind === "processing" ? 2500 : undefined);
+      assert.equal(Object.hasOwn(status, "text"), false);
+      assert.equal(Object.hasOwn(status, "buyer"), false);
+    }
+  }
+});
+
+test("mixed-format neighboring rows associate each price with its own auction rather than inventory SKU text", () => {
+  const oldRow = createStatusRow({ variationNumber: 31, soldPrice: "17.00", badgeText: "Payment complete" });
+  const newRow = createStatusRow({ variationNumber: 32, soldPrice: "23.00", badgeText: "Payment complete", labelName: "SKU" });
+  newRow.summary.append(element({ ownText: " Inventory SKU: TEE-M ", tagName: "SPAN" }));
+  const root = element({ dataTid: "m4b_space" }).append(oldRow.row, newRow.row);
+  assert.deepEqual(locateObservedVariations(root).map(row => row.variationNumber), [31, 32]);
+  for (let scan = 0; scan < 2; scan += 1) {
+    assert.deepEqual(locatePaymentStatuses(root, parser).map(row => [row.variationNumber, row.soldPriceCents]),
+      [[31, 1700], [32, 2300]]);
+  }
+});
+
+test("mixed or repeated exact auction identifiers and duplicate payment tags remain ambiguous", () => {
+  for (const extraLabel of ["SKU: #38", "Variation: #38", "Variation: #39", "SKU: #39"]) {
+    const fixture = createStatusRow({ variationNumber: 38, labelName: "SKU", badgeText: "Payment complete" });
+    fixture.row.append(element({ ownText: extraLabel, tagName: "SPAN" }));
+    assert.deepEqual(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser), [], extraLabel);
+  }
+  const fixture = createStatusRow({ labelName: "SKU" });
+  fixture.row.append(element({ dataTid: "m4b_tag", ownText: "Payment complete" }));
+  assert.deepEqual(locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser), []);
+});
+
+test("separate duplicate auction candidates with old and new labels do not supply payment truth", () => {
+  const root = element({ dataTid: "m4b_space" }).append(
+    createStatusRow({ variationNumber: 38, badgeText: "Payment complete" }).row,
+    createStatusRow({ variationNumber: 38, labelName: "SKU", badgeText: "Payment failed" }).row,
+  );
+  assert.deepEqual(locatePaymentStatuses(root, parser), []);
+});
+
+test("SKU labels keep price association within the nearest unique row and never borrow adjacent prices", () => {
+  for (const badgeText of ["Payment complete", "Payment processing..."]) {
+    const target = createStatusRow({ variationNumber: 38, labelName: "SKU", badgeText });
+    target.summary.ownText = "Synthetic product ";
+    const adjacent = createStatusRow({ variationNumber: 39, badgeText, soldPrice: "99.00" });
+    const boundary = element({ dataTid: "m4b_space" }).append(target.row, adjacent.row);
+    const missing = locatePaymentStatuses(boundary, parser).find(row => row.variationNumber === 38);
+    assert.equal(missing.soldPriceCents, null);
+    assert.equal(missing.processingPriceCents, undefined);
+    // The price can be a sibling of the narrower item/status association,
+    // but only its own enclosing single-order container is eligible.
+    const outer = element({ ownText: "Synthetic buyer has won: $23.00 " }).append(target.row);
+    boundary.children = [];
+    boundary.append(outer, adjacent.row);
+    const found = locatePaymentStatuses(boundary, parser).find(row => row.variationNumber === 38);
+    assert.equal(found.soldPriceCents, badgeText === "Payment complete" ? 2300 : null);
+    assert.equal(found.processingPriceCents, badgeText === "Payment complete" ? undefined : 2300);
+  }
+});
+
+test("SKU labeled failure preserves the legacy countdown veto and only cancels when its detail disappears", () => {
+  const fixture = createStatusRow({ labelName: "SKU", badgeText: "Payment failed", soldPrice: "23.00" });
+  const countdown = element({ ownText: "Transaction will cancel in 00:00" });
+  fixture.row.append(countdown);
+  const { boundary } = withinBoundary(fixture.row);
+  const [pending] = locatePaymentStatuses(boundary, parser);
+  assert.equal(pending.observedPaymentStatus, "payment_failed");
+  assert.equal(pending.soldPriceCents, null);
+  assert.equal(pending.processingPriceCents, 2300);
+  fixture.row.children = fixture.row.children.filter(node => node !== countdown);
+  const [canceled] = locatePaymentStatuses(boundary, parser);
+  assert.equal(canceled.observedPaymentStatus, "canceled");
+  assert.equal(canceled.soldPriceCents, null);
+  assert.equal(canceled.processingPriceCents, undefined);
+});
+
+test("SKU statuses remain captured without usable or unambiguous winner prices", () => {
+  for (const badgeText of ["Payment complete", "Payment processing..."]) {
+    for (const priceText of ["No winner amount ", "Synthetic buyer has won: $0 ",
+      "Synthetic buyer has won: $23 Synthetic buyer has won: $25 "]) {
+      const fixture = createStatusRow({ labelName: "SKU", badgeText });
+      fixture.summary.ownText = priceText;
+      const [status] = locatePaymentStatuses(withinBoundary(fixture.row).boundary, parser);
+      assert.equal(status.observedPaymentStatus, badgeText === "Payment complete" ? "payment_complete" : "payment_processing");
+      assert.equal(status.soldPriceCents, null);
+      assert.equal(status.processingPriceCents, undefined);
+    }
+  }
+});
+
+test("new SKU label mutations trigger scoped rescans without requiring a payment tag", () => {
+  const boundary = element({ dataTid: "m4b_space" });
+  const value = text("SKU: #38");
+  const label = element({ tagName: "SPAN" }).append(value);
+  boundary.append(label);
+  assert.equal(mutationsMayAffectSale([childListRecord([label])], boundary), true);
+  value.value = "SKU: #39";
+  assert.equal(mutationsMayAffectSale([{ type: "characterData", target: value }], boundary), true);
+  assert.deepEqual(locateObservedVariations(boundary).map(row => row.variationNumber), [39]);
+  const outside = element({ tagName: "SPAN", ownText: "SKU: #40" });
+  assert.equal(mutationsMayAffectSale([childListRecord([outside])], boundary), false);
 });
 
 test("classifies exact row-local payment tags without exposing their text", () => {

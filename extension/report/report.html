@@ -307,7 +307,7 @@
                 <legend class="visually-hidden">Choose a corrected item mapping</legend>
                 <div class="mapping-correction-form">
                   <label class="mapping-correction-field" for="mapping-variation">
-                    <span>Variation</span>
+                    <span>SKU #</span>
                     <select
                       id="mapping-variation"
                       aria-describedby="mapping-correction-availability mapping-correction-feedback"
@@ -391,10 +391,10 @@
             >
               <h2 id="sales-title" class="completed-sales-summary-heading">
                 <span class="completed-sales-title-copy">
-                  <span class="eyebrow">Stream variations</span>
-                  <span class="completed-sales-title">Item variations this stream</span>
+                  <span class="eyebrow">Stream SKUs</span>
+                  <span class="completed-sales-title">Item SKUs this stream</span>
                 </span>
-                <span id="sales-count" class="section-count">0 variations</span>
+                <span id="sales-count" class="section-count">0 SKUs</span>
               </h2>
             </summary>
             <div id="completed-sales-content" class="completed-sales-content">
@@ -405,11 +405,11 @@
               >
                 <table class="data-table sales-table">
                   <caption>
-                    Completed and canceled TikTok item variations captured during this tracker stream. Canceled item mappings are reference-only and do not affect inventory or metrics.
+                    Completed and canceled TikTok item SKUs captured during this tracker stream. Canceled item mappings are reference-only and do not affect inventory or metrics.
                   </caption>
                   <thead>
                     <tr>
-                      <th scope="col">Variation</th>
+                      <th scope="col">SKU #</th>
                       <th scope="col">Status</th>
                       <th scope="col">SKU</th>
                       <th scope="col">Item</th>
@@ -423,7 +423,7 @@
                   <tbody id="completed-sales-rows"></tbody>
                 </table>
               </div>
-              <p id="sales-empty" class="empty-copy" hidden>No completed or canceled item variations were captured for this stream.</p>
+              <p id="sales-empty" class="empty-copy" hidden>No completed or canceled item SKUs were captured for this stream.</p>
               <p id="variation-details-note" class="empty-copy" hidden></p>
             </div>
           </details>
@@ -442,7 +442,7 @@
             >
               <h2 id="canceled-orders-title" class="completed-sales-summary-heading">
                 <span class="completed-sales-title-copy">
-                  <span class="eyebrow">Canceled variations</span>
+                  <span class="eyebrow">Canceled SKUs</span>
                   <span class="completed-sales-title">Canceled orders</span>
                 </span>
                 <span id="canceled-orders-count" class="section-count">0 canceled orders</span>
@@ -478,11 +478,11 @@
               >
                 <table class="data-table canceled-orders-table">
                   <caption>
-                    Canceled variations from this saved report. Item mappings are reference-only and do not affect inventory or metrics.
+                    Canceled SKUs from this saved report. Item mappings are reference-only and do not affect inventory or metrics.
                   </caption>
                   <thead>
                     <tr>
-                      <th scope="col">Variation</th>
+                      <th scope="col">SKU #</th>
                       <th scope="col">Status</th>
                       <th scope="col">SKU</th>
                       <th scope="col">Item</th>

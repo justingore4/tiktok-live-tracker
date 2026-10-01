@@ -97,7 +97,7 @@ test("inventory header has one static title and inline polite count before its e
   );
   assert.equal((html.match(/id="inventory-title"/g) ?? []).length, 1);
   assert.equal((html.match(/id="result-count"/g) ?? []).length, 1);
-  assert.doesNotMatch(header, /eyebrow|Waiting for a live auction variation|Select Variation|inventory items/);
+  assert.doesNotMatch(header, /eyebrow|Waiting for a live auction SKU|Select SKU|inventory items/);
   assert.match(
     header,
     /id="add-active-stream-skus"\s+class="text-action"\s+type="button"\s+aria-expanded="false"\s+aria-controls="active-stream-inventory-update-form"\s+hidden\s*>\s*Add new SKUs from updated Sheet/,

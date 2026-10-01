@@ -89,7 +89,7 @@
         variationPresetsCoordinator !== undefined &&
         (!variationPresetsCoordinator || typeof variationPresetsCoordinator.synchronize !== "function")
       ) {
-        throw new TypeError("A valid variation-presets coordinator is required.");
+        throw new TypeError("A valid SKU-presets coordinator is required.");
       }
 
       if (

@@ -155,7 +155,7 @@
       return { ...context, state, stream, snapshot, changed };
     }
     function checkExpected(command, context) {
-      if (!context.stream) fail("NO_ACTIVE_STREAM", "Start or resume tracking before using variation presets.");
+      if (!context.stream) fail("NO_ACTIVE_STREAM", "Start or resume tracking before using SKU presets.");
       if (command.expectedStreamId !== context.snapshot.streamId || command.expectedBaselineId !== context.snapshot.baselineId) {
         fail("PRESET_CONTEXT_CHANGED", "The displayed stream or inventory baseline changed. Review the tracker and try again.");
       }
@@ -167,7 +167,7 @@
         // A queued-preset clear belongs to the exact live auction that exposed
         // it. Skipping ahead or finishing bidding may leave the plan/revision
         // unchanged, so the ordinary configuration guard alone is insufficient.
-        fail("PRESET_LIVE_VARIATION_CHANGED", "The live variation changed. Review the upcoming item and try again.");
+        fail("PRESET_LIVE_VARIATION_CHANGED", "The live SKU changed. Review the upcoming item and try again.");
       }
       if (Object.prototype.hasOwnProperty.call(command, "expectedPrestreamVariationNumber") &&
           (context.stream.variations.length !== 0 || context.stream.activeBiddingVariationNumber !== null ||
@@ -187,7 +187,7 @@
       const { snapshot, stream, baseline } = context;
       if (command.type === protocol.COMMAND_TYPES.CREATE_PRESETS) {
         const highest = stream.variations.reduce((value, entry) => Math.max(value, entry.variationNumber), 0);
-        if (command.total < highest) fail("PRESET_TOTAL_BELOW_CAPTURED", `The total cannot be lower than captured variation #${highest}.`);
+        if (command.total < highest) fail("PRESET_TOTAL_BELOW_CAPTURED", `The total cannot be lower than captured SKU #${highest}.`);
         // The total is an absolute range, not an increment. Check the current
         // capture floor before even an unchanged-total acknowledgement, and
         // preserve the revision on a genuine no-op.
@@ -206,9 +206,9 @@
         const { extensionAvailable: _extensionAvailable, ...configuration } = snapshot;
         return save({ ...configuration, revision: revision(), total: null, assignments: [] });
       }
-      if (command.variationNumber > snapshot.total) fail("OUTSIDE_PRESET_RANGE", "This variation is outside the preset range.");
+      if (command.variationNumber > snapshot.total) fail("OUTSIDE_PRESET_RANGE", "This SKU is outside the preset range.");
       if (stream.variations.some((entry) => entry.variationNumber === command.variationNumber)) {
-        fail("VARIATION_ALREADY_CAPTURED", "This variation was captured. Select it again to change its actual mapping.");
+        fail("VARIATION_ALREADY_CAPTURED", "This SKU was captured. Select it again to change its actual mapping.");
       }
       if (command.sku !== null && !baseline.inventory.some((entry) => entry.sku === command.sku)) {
         fail("UNKNOWN_SKU", "The selected item is not in this stream's inventory baseline.");
@@ -223,7 +223,7 @@
           targetVariationNumber += 1;
         }
         if (targetVariationNumber > snapshot.total) {
-          fail("NO_MORE_FUTURE_VARIATIONS", "No more future variations.");
+          fail("NO_MORE_FUTURE_VARIATIONS", "No more future SKUs.");
         }
       }
       const previous = snapshot.assignments.find((entry) => entry.variationNumber === targetVariationNumber)?.sku ?? null;

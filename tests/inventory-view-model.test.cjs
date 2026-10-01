@@ -311,7 +311,7 @@ test("inventory ordering validates group and view boundaries", () => {
   for (const view of [undefined, null, {}, { variations: null }]) {
     assert.throws(
       () => controller.order([], view),
-      /An inventory ordering view with variations is required/,
+      /An inventory ordering view with SKUs is required/,
     );
   }
   for (const group of [null, {}, { key: 1, entries: [] }, { key: "A" }]) {

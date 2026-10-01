@@ -19,6 +19,9 @@ const captureEventRegistry = require(
 );
 const captureProtocol = require("../extension/shared/capture-protocol.js");
 const captureClientModule = require("../extension/capture/capture-client.js");
+const reconciliation = require("../extension/shared/reconciliation.js");
+const reconciliationStorage = require("../extension/shared/reconciliation-storage.js");
+const streamSessionStorage = require("../extension/shared/stream-session-storage.js");
 const contentSource = fs.readFileSync(
   path.join(__dirname, "..", "extension", "capture", "content.js"),
   "utf8",
@@ -217,18 +220,18 @@ function createBody(name = "body") {
 function createSaleRow(text) {
   const paymentComplete = /\bPayment\s+complete\b/i.test(text);
   const status = paymentComplete ? "Payment complete" : "Awaiting payment";
-  const variationMatch = text.match(/\bVariation\s*:\s*#\s*(\d+)\b/i);
+  const variationMatch = text.match(/\b(?:Variation|SKU)\s*:\s*#\s*(\d+)\b/i);
   const summaryValue = text
     .replace(/\bPayment\s+complete\b/gi, "")
     .replace(/\bAwaiting\s+payment\b/gi, "")
-    .replace(/\bVariation\s*:\s*#\s*\d+\b/gi, "")
+    .replace(/\b(?:Variation|SKU)\s*:\s*#\s*\d+\b/gi, "")
     .trim();
   const row = new FakeElement({ name: "sale-row" });
   const summary = new FakeElement({ name: "sale-summary" });
   const summaryText = new FakeText(`${summaryValue} `);
   const variationLabel = new FakeElement({
     name: "variation-label",
-    ownText: variationMatch ? `Variation: #${variationMatch[1]} ` : "",
+    ownText: variationMatch ? `${variationMatch[0]} ` : "",
     tagName: "SPAN",
   });
   const statusTag = new FakeElement({
@@ -303,12 +306,12 @@ function createBiddingAuctionCard(variationNumber = 237, bidPrice = null) {
 }
 
 function setSaleSummary(sale, text) {
-  const variationMatch = text.match(/\bVariation\s*:\s*#\s*(\d+)\b/i);
+  const variationMatch = text.match(/\b(?:Variation|SKU)\s*:\s*#\s*(\d+)\b/i);
   sale.summaryText.textContent = `${text
-    .replace(/\bVariation\s*:\s*#\s*\d+\b/gi, "")
+    .replace(/\b(?:Variation|SKU)\s*:\s*#\s*\d+\b/gi, "")
     .trim()} `;
   sale.variationLabel.ownText = variationMatch
-    ? `Variation: #${variationMatch[1]} `
+    ? `${variationMatch[0]} `
     : "";
 }
 
@@ -763,6 +766,94 @@ async function flushAsync(turns = 6) {
   }
 }
 
+// The existing content/client harness can deliver to the actual worker and all
+// its imported coordinators, using only synthetic in-memory Chrome storage.
+function createCanonicalCaptureWorker() {
+  const streamId = "local-stream:11111111-1111-4111-8111-111111111111";
+  const baselineId = "inventory-baseline:22222222-2222-4222-8222-222222222222";
+  const extensionId = "synthetic-content-worker";
+  const state = reconciliation.createEmptyReconciliationState();
+  reconciliation.createInventoryBaseline(state, {
+    baselineId, sourceFingerprint: "fnv1a64:1111111111111111",
+    inventory: [{ sku: "SYNTHETIC-TEE-M", item: "Synthetic tee", style: "blue", size: "M",
+      quantityOnHandAtImport: 10, unitCostCents: 200 }],
+  });
+  reconciliation.pinStreamToInventoryBaseline(state, { streamId });
+  const storage = {
+    [reconciliationStorage.STORAGE_KEY]: {
+      schemaVersion: reconciliationStorage.STORAGE_SCHEMA_VERSION, reconciliationState: state,
+    },
+    [streamSessionStorage.STORAGE_KEY]: {
+      schemaVersion: streamSessionStorage.STORAGE_SCHEMA_VERSION,
+      sessionState: { version: 1, activeSession: { streamId,
+        startedAt: "2026-09-30T00:00:00.000Z", identitySource: "local_session" } },
+    },
+  };
+  const sessionStorage = {};
+  const errors = [];
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  let uuid = 10;
+
+  function open(documentId = "synthetic-dashboard-first-load") {
+    let context;
+    let listener;
+    const inWorker = (value) => vm.runInContext(
+      `JSON.parse(${JSON.stringify(JSON.stringify(value))})`, context,
+    );
+    const area = (values) => ({
+      async get(key) { return inWorker(Object.hasOwn(values, key) ? { [key]: values[key] } : {}); },
+      async set(next) { Object.assign(values, clone(next)); },
+      async remove(key) { delete values[key]; },
+      async setAccessLevel() {},
+    });
+    const forbidden = () => { throw new Error("Synthetic capture must not access credentials or network"); };
+    context = vm.createContext({
+      AbortController, TextEncoder, URL, setTimeout, clearTimeout,
+      crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` },
+      console: { error: (...args) => errors.push(args.map(String)) },
+      fetch: forbidden,
+      chrome: {
+        identity: { getAuthToken: forbidden, removeCachedAuthToken: forbidden },
+        storage: { local: area(storage), session: area(sessionStorage) },
+        sidePanel: { async setPanelBehavior() {} },
+        tabs: { onRemoved: { addListener() {} }, onUpdated: { addListener() {} } },
+        runtime: {
+          id: extensionId, getURL: (name) => `chrome-extension://${extensionId}/${name}`,
+          getManifest: () => ({ oauth2: { client_id: "synthetic.apps.googleusercontent.com" } }),
+          onMessage: { addListener(callback) { listener = callback; } },
+          async sendMessage() {},
+        },
+      },
+      importScripts(...names) {
+        for (const name of names) {
+          const filename = path.join(__dirname, "..", "extension", name);
+          vm.runInContext(fs.readFileSync(filename, "utf8"), context, { filename });
+        }
+      },
+    });
+    const filename = path.join(__dirname, "..", "extension", "service-worker.js");
+    vm.runInContext(fs.readFileSync(filename, "utf8"), context, { filename });
+    const dashboard = { id: extensionId, frameId: 0, tab: { id: 123 }, documentId,
+      url: `${DASHBOARD_ORIGIN}${DASHBOARD_PATH}` };
+    const panel = { id: extensionId, url: `chrome-extension://${extensionId}/tagger/sidepanel.html` };
+    const send = (message, sender = dashboard) => new Promise((resolve) => {
+      assert.equal(listener(inWorker(message), inWorker(sender), (response) => resolve(clone(response))), true);
+    });
+    const command = async (value) => {
+      const response = await send({ channel: "tiktok-live-tracker.reconciliation", version: 1,
+        command: value }, panel);
+      assert.equal(response.ok, true, JSON.stringify(response));
+      return response.data;
+    };
+    return {
+      send,
+      map: (variationNumber) => command({ type: "map_variation", streamId, variationNumber, sku: "SYNTHETIC-TEE-M" }),
+      state: async () => (await command({ type: "get_state" })).state,
+    };
+  }
+  return { open, streamId, storage, errors };
+}
+
 function assertSinglePrimitiveLog(entry, pattern) {
   assert.equal(entry.length, 1);
   assert.equal(typeof entry[0], "string");
@@ -985,6 +1076,200 @@ test("observes exact pending Variation labels without requiring a payment tag", 
     ],
   ]);
   assert.doesNotMatch(JSON.stringify(syncLogs), /Buyer|title|streamId/i);
+});
+
+test("midstream backfill accepts mixed SKU and Variation labels without leaking raw row text", async () => {
+  const rows = [
+    createSaleRow("Synthetic Buyer has won: $7.00 SKU: #44 Payment complete"),
+    createSaleRow("Synthetic Buyer has won: $8.00 Variation: #43 Payment complete"),
+    createSaleRow("Synthetic Buyer has won: $9.00 sKu : # 42 Payment complete"),
+    createSaleRow("SKU: #41 Awaiting payment"),
+  ];
+  rows[3].row.children = [rows[3].summary];
+  rows[0].summary.append(new FakeElement({ tagName: "SPAN", ownText: "Synthetic product | " }));
+  const harness = createHarness({ rows, scanOnRequest: true });
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44, 43, 42, 41] },
+    { type: "payment_complete", variationNumber: 44, soldPriceCents: 700 },
+    { type: "payment_complete", variationNumber: 43, soldPriceCents: 800 },
+    { type: "payment_complete", variationNumber: 42, soldPriceCents: 900 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(harness.captureMessages), /Synthetic|Buyer|product|SKU|Variation|title|row/);
+  latestCaptureObserver(harness).trigger([{ type: "childList", target: harness.currentRoot() }]);
+  harness.dispatchWindow("pageshow");
+  harness.tickIntervals();
+  harness.runContent();
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 4);
+  assert.equal(harness.completedSaleLogs().length, 3);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("switching label aliases and replacing the Sold Items root retain sale deduplication", async () => {
+  const sale = createSaleRow("Synthetic Buyer has won: $7 SKU: #44 Payment complete");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true });
+  await flushAsync();
+  setSaleSummary(sale, "Synthetic Buyer has won: $7 Variation: #44");
+  const firstObserver = latestCaptureObserver(harness);
+  firstObserver.trigger([{ type: "childList", target: sale.summary }]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 2);
+
+  const oldRoot = harness.currentRoot();
+  const replacement = new FakeElement({ dataTid: "m4b_space", name: "replacement-sold-items" }).append(
+    createSaleRow("Synthetic Buyer has won: $7 SKU: #44 Payment complete").row,
+    createSaleRow("Synthetic Buyer has won: $8 SKU: #45 Payment complete").row,
+  );
+  harness.currentBody().children = harness.currentBody().children.filter((node) => node !== oldRoot);
+  oldRoot.parentElement = null;
+  oldRoot.parentNode = null;
+  harness.currentBody().append(replacement);
+  harness.tickIntervals();
+  await flushAsync();
+  assert.equal(firstObserver.connected, false);
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44] },
+    { type: "payment_complete", variationNumber: 44, soldPriceCents: 700 },
+    { type: "observe_variations", variationNumbers: [45] },
+    { type: "payment_complete", variationNumber: 45, soldPriceCents: 800 },
+  ]);
+  firstObserver.trigger([{ type: "characterData", target: sale.summaryText }]);
+  latestCaptureObserver(harness).trigger([{ type: "childList", target: replacement }]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, 4);
+  assert.equal(harness.completedSaleLogs().length, 2);
+});
+
+test("SKU rows preserve canceled aliases, terminal failure, and the countdown failure exception", async () => {
+  const rows = ["Canceled", "Cancelled", "Payment failed", "Payment failed"].map((label, index) => {
+    const sale = createSaleRow(`Synthetic Buyer has won: $7 SKU: #${40 + index} Awaiting payment`);
+    setPaymentText(sale, label);
+    return sale;
+  });
+  const countdown = new FakeElement({ ownText: "Transaction will cancel in 00:00" });
+  rows[3].row.append(countdown);
+  const harness = createHarness({ rows, scanOnRequest: true });
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [40, 41, 42, 43] },
+    { type: "observe_payment_statuses", statuses: [
+      { variationNumber: 40, observedPaymentStatus: "canceled" },
+      { variationNumber: 41, observedPaymentStatus: "canceled" },
+      { variationNumber: 42, observedPaymentStatus: "canceled" },
+      { variationNumber: 43, observedPaymentStatus: "payment_failed" },
+    ] },
+  ]);
+  assert.equal(harness.timeouts.size, 0);
+  rows[3].row.children = rows[3].row.children.filter((child) => child !== countdown);
+  countdown.parentElement = null;
+  countdown.parentNode = null;
+  latestCaptureObserver(harness).trigger([{ type: "childList", target: rows[3].row }]);
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.at(-1).event, {
+    type: "observe_payment_statuses", statuses: [{ variationNumber: 43, observedPaymentStatus: "canceled" }],
+  });
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.captureMessages.some(({ event }) => event.type === "payment_complete"), false);
+});
+
+test("SKU processing winner prices are auxiliary, context-bound, and deduplicated across label aliases", async () => {
+  const sale = createSaleRow("Synthetic Buyer has won: $18.25 SKU: #44 Awaiting payment");
+  setPaymentText(sale, "Payment processing...");
+  const harness = createHarness({ rows: [sale], scanOnRequest: true,
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "synthetic-context" } }),
+  });
+  await flushAsync();
+  assert.deepEqual(processingPricePayloads(harness), [{ variationNumber: 44,
+    observedPaymentStatus: "payment_processing", processingPriceCents: 1825, processingPriceContext: "synthetic-context" }]);
+  const count = harness.captureMessages.length;
+  setSaleSummary(sale, "Synthetic Buyer has won: $18.25 Variation: #44");
+  latestCaptureObserver(harness).trigger([{ type: "childList", target: sale.summary }]);
+  await flushAsync();
+  assert.equal(harness.captureMessages.length, count);
+  assert.equal(harness.completedSaleLogs().length, 0);
+  assert.equal(harness.captureMessages.some(({ event }) => event.type === "payment_complete"), false);
+  assert.doesNotMatch(JSON.stringify(harness.captureMessages), /Synthetic Buyer|has won|SKU|Variation/);
+});
+
+test("mixed aliases in one row and multiple payment tags never produce guessed payments or prices", async () => {
+  const different = createSaleRow("Synthetic Buyer has won: $7 SKU: #44 Payment complete");
+  different.summary.append(new FakeElement({ tagName: "SPAN", ownText: " Variation: #45" }));
+  const same = createSaleRow("Synthetic Buyer has won: $8 SKU: #46 Payment complete");
+  same.summary.append(new FakeElement({ tagName: "SPAN", ownText: " Variation: #46" }));
+  const processing = createSaleRow("Synthetic Buyer has won: $9 SKU: #47 Awaiting payment");
+  setPaymentText(processing, "Payment processing");
+  processing.summary.append(new FakeElement({ tagName: "SPAN", ownText: " Variation: #48" }));
+  const multipleTags = createSaleRow("Synthetic Buyer has won: $10 SKU: #49 Payment complete");
+  multipleTags.row.append(new FakeElement({ dataTid: "m4b_tag", ownText: "Payment processing" }));
+  const lookalike = { row: new FakeElement().append(new FakeElement({ tagName: "SPAN",
+    ownText: "Synthetic product SKU: #999" }), new FakeElement({ dataTid: "m4b_tag", ownText: "Payment complete" })) };
+  const harness = createHarness({ rows: [different, same, processing, multipleTags, lookalike],
+    processingPriceContextHandler: async () => ({ ok: true, data: { processingPriceContext: "synthetic-context" } }),
+  });
+  await flushAsync();
+  assert.deepEqual(harness.captureMessages.map(({ event }) => event), [
+    { type: "observe_variations", variationNumbers: [44, 45, 46, 47, 48, 49] },
+  ]);
+  assert.equal(harness.processingPriceContextRequests.length, 0);
+  assert.equal(harness.completedSaleLogs().length, 0);
+});
+
+test("SKU capture crosses the actual content/client/worker path with unchanged inventory and accounting rules", async () => {
+  const canonical = createCanonicalCaptureWorker();
+  const worker = canonical.open();
+  for (const number of [41, 42, 43, 44, 45, 46]) await worker.map(number);
+  const rows = () => {
+    const result = [
+      createSaleRow("Synthetic Buyer has won: $7 Variation: #41 Payment complete"),
+      createSaleRow("Synthetic Buyer has won: $8 SKU: #42 Payment complete"),
+      createSaleRow("Synthetic Buyer has won: $9 SKU: #43 Awaiting payment"),
+      createSaleRow("Synthetic Buyer has won: $10 SKU: #44 Awaiting payment"),
+      createSaleRow("Synthetic Buyer has won: $11 SKU: #45 Awaiting payment"),
+      createSaleRow("SKU: #46 Payment complete"),
+    ];
+    setPaymentText(result[2], "Payment processing...");
+    setPaymentText(result[3], "Payment failed");
+    setPaymentText(result[4], "Payment failed");
+    result[4].row.append(new FakeElement({ ownText: "Transaction will cancel in 04:42" }));
+    return result;
+  };
+  const harness = createHarness({ rows: rows(), scanOnRequest: true,
+    captureResponseHandler: (message) => worker.send(message),
+    processingPriceContextHandler: (message) => worker.send(message) });
+  await flushAsync(30);
+  const saved = await worker.state();
+  const summary = reconciliation.calculateSummary(saved, { streamId: canonical.streamId });
+  assert.equal(summary.totals.completedPaymentCount, 2);
+  assert.equal(summary.totals.committedSalesCount, 2);
+  assert.equal(summary.totals.canceledOrderCount, 1);
+  assert.equal(summary.totals.pendingMappedCount, 3);
+  assert.equal(summary.totals.completedGmvCents, 1500);
+  assert.equal(summary.totals.committedRevenueCents, 1500);
+  assert.equal(summary.totals.costOfGoodsCents, 400);
+  assert.equal(summary.totals.profitCents, 1100);
+  assert.equal(summary.inventory[0].remainingQuantity, 8);
+  assert.equal(summary.inventory[0].reservedQuantity, 3);
+  assert.equal(summary.inventory[0].availableToTagQuantity, 5);
+  const captured = saved.streams.find((stream) => stream.streamId === canonical.streamId).variations;
+  assert.equal(captured.find((row) => row.variationNumber === 43).processingPriceCents, 900);
+  assert.equal(captured.find((row) => row.variationNumber === 45).processingPriceCents, 1100);
+  assert.equal(reconciliation.getAuction(saved, { streamId: canonical.streamId, variationNumber: 46 }).paymentStatus, "unknown");
+  assert.doesNotMatch(JSON.stringify(canonical.storage), /Synthetic Buyer|has won|Transaction will cancel|SKU:|Variation:/);
+  latestCaptureObserver(harness).trigger([{ type: "childList", target: harness.currentRoot() }]);
+  await flushAsync(20);
+  assert.deepEqual(await worker.state(), saved);
+
+  const restartedWorker = canonical.open("synthetic-dashboard-after-reload");
+  const reloaded = createHarness({ rows: rows(),
+    captureResponseHandler: (message) => restartedWorker.send(message),
+    processingPriceContextHandler: (message) => restartedWorker.send(message) });
+  await flushAsync(30);
+  assert.equal(reloaded.captureMessages.filter(({ event }) => event.type === "payment_complete").length, 2);
+  assert.deepEqual(await restartedWorker.state(), saved, "fresh DOM backfill and worker restart do not double-count");
+  assert.deepEqual(canonical.errors, []);
+  assert.deepEqual(harness.errors, []);
+  assert.deepEqual(reloaded.errors, []);
 });
 
 test("forwards observation before completed payment and only once per fingerprint", async () => {

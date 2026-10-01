@@ -283,7 +283,7 @@ test("real worker failed resize persistence preserves assignments and total toge
     const before = await worker.assign(10);
     const canonical = await worker.state();
     h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
-    await assert.rejects(worker.presetClient.createPresets({ ...expected(before), total }), /Could not save variation presets/);
+    await assert.rejects(worker.presetClient.createPresets({ ...expected(before), total }), /Could not save SKU presets/);
     assert.deepEqual(await worker.presets(), before);
     assert.deepEqual(await worker.state(), canonical);
     const reopened = h.open();
@@ -309,7 +309,7 @@ test("worker FIFO protects captured assignments when capture wins a shrinking ra
       assert.equal(results[1].error.code, "PRESETS_CHANGED");
       assert.equal(captured.sku, "SYNTH-B");
       assert.equal((await worker.presets()).total, 10);
-      await assert.rejects(worker.create(5), /captured variation #8/);
+      await assert.rejects(worker.create(5), /captured SKU #8/);
     } else {
       assert.equal(results[1].ok, true);
       assert.equal(captured.sku, null);
@@ -886,7 +886,7 @@ test("sequential end-of-range feedback never wraps, overwrites, queues, or write
   const before = clone(h.values);
   const writes = h.writes.length;
   await assert.rejects(worker.sequential(5, "SYNTH-A", saved.presets), {
-    code: "NO_MORE_FUTURE_VARIATIONS", message: "No more future variations.",
+    code: "NO_MORE_FUTURE_VARIATIONS", message: "No more future SKUs.",
   });
   assert.deepEqual(h.values, before);
   assert.equal(h.writes.length, writes);
@@ -1308,7 +1308,7 @@ test("queued-preset clear preserves an authoritative plan on failed save and aft
   };
   const canonical = await worker.state();
   h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
-  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save variation presets/);
+  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save SKU presets/);
   assert.equal(h.failedWrites.length, 1);
   assert.deepEqual(await worker.presets(), displayed);
   const replacement = await worker.assign(2, "SYNTH-B");
@@ -1442,7 +1442,7 @@ test("pre-stream clear rejects out-of-range sources and preserves authoritative 
   };
   const canonical = await worker.state();
   h.failNext(({ items }) => Object.hasOwn(items ?? {}, presetStorage.STORAGE_KEY));
-  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save variation presets/);
+  await assert.rejects(worker.presetClient.setPresetItem(command), /Could not save SKU presets/);
   assert.deepEqual(await worker.presets(), displayed);
   assert.equal(h.failedWrites.length, 1);
   const replacement = await worker.assign(2, "SYNTH-B");

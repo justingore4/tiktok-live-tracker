@@ -396,7 +396,7 @@ function getMessageBoundary(message) {
     if (variationPresetsProtocol.isPresetsChangedNotification(message)) return null;
     return {
       coordinator: variationPresetsCoordinator,
-      label: "variation-presets",
+      label: "SKU-presets",
       protocol: variationPresetsProtocol,
     };
   }
@@ -1137,7 +1137,7 @@ async function dispatchNextItemQueueCommand(command) {
     if (current === command.expectedVariationNumber && typeof auction?.sku === "string" &&
         presets.assignments.some((entry) => entry.variationNumber === current + 1)) {
       failBoundary(nextItemQueueProtocol, "NEXT_VARIATION_PRESET",
-        "The next variation already has a preset item. Queuing is disabled for that variation.");
+        "The next SKU already has a preset item. Queuing is disabled for that SKU.");
     }
   }
   const response = await nextItemQueueCoordinator.dispatch(command);

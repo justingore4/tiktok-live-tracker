@@ -66,7 +66,7 @@
         return {
           hidden: true,
           variationNumber: null,
-          variationLabel: "Variation # - Status | -",
+          variationLabel: "SKU # - Status | -",
           currentBid: UNAVAILABLE,
           unitCost: UNAVAILABLE,
           grossProfit: UNAVAILABLE,
@@ -126,8 +126,8 @@
         hidden: false,
         variationNumber,
         variationLabel: variationNumber === null
-          ? "Variation # - Status | -"
-          : `Variation #${variationNumber} Status | ${itemLabel}`,
+          ? "SKU # - Status | -"
+          : `SKU #${variationNumber} Status | ${itemLabel}`,
         currentBid: hasBid
           ? formatUsdCents(bidPriceCents)
           : UNAVAILABLE,

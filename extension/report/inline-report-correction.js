@@ -118,7 +118,7 @@
     function formatVariationOption(data, variation) {
       const completed = variation.expectedStatus === "payment_complete";
       const parts = [
-        `Variation #${variation.variationNumber}`,
+        `SKU #${variation.variationNumber}`,
         completed ? "Payment complete" : "Canceled",
       ];
 
@@ -349,7 +349,7 @@
         }
 
         if (!variation) {
-          return "Choose a saved variation.";
+          return "Choose a saved SKU number.";
         }
 
         if (selectedSku === undefined) {
@@ -439,7 +439,7 @@
           ));
 
         if (options.length === 0) {
-          options.push(createOption(document, "", "No editable variations", {
+          options.push(createOption(document, "", "No editable SKUs", {
             disabled: true,
           }));
         }
@@ -623,7 +623,7 @@
         );
 
         if (!variation) {
-          setFeedback("That variation is unavailable.", true);
+          setFeedback("That SKU number is unavailable.", true);
           return;
         }
 
@@ -793,7 +793,7 @@
         let savedData = null;
         let saveConfirmed = false;
         busy = true;
-        setFeedback(`Saving variation #${variation.variationNumber}...`);
+        setFeedback(`Saving SKU #${variation.variationNumber}...`);
         renderControlState();
 
         try {
@@ -828,7 +828,7 @@
           });
           busy = true;
           setFeedback(
-            `Variation #${change.variationNumber} was saved. Refreshing the report...`,
+            `SKU #${change.variationNumber} was saved. Refreshing the report...`,
           );
           renderControlState();
 
@@ -847,7 +847,7 @@
             }
 
             const message =
-              `Variation #${change.variationNumber} was saved, but the report ` +
+              `SKU #${change.variationNumber} was saved, but the report ` +
               "could not refresh. Reload the report to display its updated totals.";
             setFeedback(message, true);
             announce(message);
@@ -863,7 +863,7 @@
             ? " The reference changed; inventory and metrics were unchanged."
             : " Inventory, metrics, and the Google Sheets handoff were updated.";
           const message =
-            `Variation #${change.variationNumber} was ${action}.${suffix}`;
+            `SKU #${change.variationNumber} was ${action}.${suffix}`;
           setFeedback(message);
           announce(message);
         } catch (error) {
@@ -872,7 +872,7 @@
           }
 
           const message = saveConfirmed
-            ? `Variation #${change.variationNumber} was saved, but the report ` +
+            ? `SKU #${change.variationNumber} was saved, but the report ` +
               "could not refresh. Reload the report to display its updated totals."
             : error?.message ??
               "The mapping correction could not be saved. Your selection was kept.";

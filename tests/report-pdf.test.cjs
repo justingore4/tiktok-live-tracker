@@ -82,8 +82,8 @@ test("PDF presentation preserves older report fallbacks, canceled detail notices
   assert.notEqual(model.name, reportPage.formatTimestamp(record.report.metadata.endedAt));
   assert.equal(model.started, reportPage.formatTimestamp(record.report.metadata.startedAt));
   assert.equal(model.ended, reportPage.formatTimestamp(record.report.metadata.endedAt));
-  assert.equal(model.tables[2].count, "1 variation");
-  assert.equal(model.tables[2].note, "Individual item details for 1 canceled variation were not saved in this older report. The canceled total is still included above.");
+  assert.equal(model.tables[2].count, "1 SKU");
+  assert.equal(model.tables[2].note, "Individual item details for 1 canceled SKU were not saved in this older report. The canceled total is still included above.");
   assert.equal(model.tables[3].count, "1 canceled order");
   assert.equal(model.tables[3].note, model.tables[2].note);
   assert.deepEqual(model.tables[3].rows, []);
@@ -107,9 +107,9 @@ test("PDF canceled-only rows include every reference mapping in variation order 
   const model = pdf.createReportPresentation(deepFreeze(record));
   const table = model.tables.find((entry) => entry.key === "canceled");
   assert.equal(table.title, "Canceled orders");
-  assert.equal(table.eyebrow, "Canceled variations");
+  assert.equal(table.eyebrow, "Canceled SKUs");
   assert.equal(table.count, "3 canceled orders");
-  assert.deepEqual(table.headers, ["Variation", "Status", "SKU", "Item", "Style", "Size"]);
+  assert.deepEqual(table.headers, ["SKU #", "Status", "SKU", "Item", "Style", "Size"]);
   assert.deepEqual(table.rows.map((row) => row[0].text), ["#4", "#8", "#12"]);
   assert.deepEqual(table.rows[2].map((cell) => cell.text), [
     "#12", "Canceled", "SKU-0001", "Café winter collection", "Long-sleeve tee - limited edition", "OS",
@@ -206,7 +206,7 @@ test("empty and legacy direct PDFs omit the SKU summary heading without replacin
     assert.ok(texts.includes("Canceled orders"));
     const content = texts.join(" ");
     assert.equal(content.includes("No canceled orders were captured for this stream."), !legacy);
-    assert.equal(content.includes("Individual item details for 1 canceled variation"), legacy);
+    assert.equal(content.includes("Individual item details for 1 canceled SKU"), legacy);
   }
 });
 

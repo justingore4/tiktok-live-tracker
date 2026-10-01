@@ -253,7 +253,7 @@
         ) {
           fail(
             "INVALID_CLIENT_COMMAND",
-            "Each correction must contain one unique terminal variation.",
+            "Each correction must contain one unique terminal SKU number.",
           );
         }
 
@@ -508,7 +508,7 @@
         !Array.isArray(value) ||
         value.length > protocol.MAX_OFFLINE_MAPPING_CHANGES
       ) {
-        fail("INVALID_RESPONSE", "Report editor variations are invalid.");
+        fail("INVALID_RESPONSE", "Report editor SKUs are invalid.");
       }
 
       const completed = expectedStatus === "payment_complete";
@@ -627,7 +627,7 @@
         (eligibility.status === "read_only" &&
           editableVariationCount !== 0)
       ) {
-        fail("INVALID_RESPONSE", "Offline report variations are inconsistent.");
+        fail("INVALID_RESPONSE", "Offline report SKUs are inconsistent.");
       }
 
       return {

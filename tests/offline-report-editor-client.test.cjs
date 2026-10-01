@@ -280,7 +280,7 @@ test("strictly rejects malformed or overexposed editor responses", async () => {
     eligibility: {
       status: "read_only",
       code: "NO_EDITABLE_VARIATIONS",
-      reason: "This report has no saved variations to edit.",
+      reason: "This report has no saved SKUs to edit.",
     },
   });
   const invalidBlockedCode = createEditorData({
@@ -350,7 +350,7 @@ test("accepts blocked and legacy read-only sanitized editor states", async () =>
       eligibility: {
         status: "read_only",
         code: "NO_EDITABLE_VARIATIONS",
-        reason: "This report has no saved variations to edit.",
+        reason: "This report has no saved SKUs to edit.",
       },
       canceledDetailsAvailable: false,
       completedVariations: [],
@@ -425,12 +425,12 @@ test("rejects matching save targets returned with unavailable eligibility", asyn
     {
       status: "blocked",
       code: "ACTIVE_BIDDING_AT_END",
-      reason: "The report ended with an active bidding variation.",
+      reason: "The report ended with an active bidding SKU.",
     },
     {
       status: "read_only",
       code: "NO_EDITABLE_VARIATIONS",
-      reason: "This report has no saved variations to edit.",
+      reason: "This report has no saved SKUs to edit.",
     },
   ];
 

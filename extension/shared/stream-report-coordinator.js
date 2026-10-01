@@ -555,7 +555,7 @@
           return {
             status: "blocked",
             code: "ACTIVE_BIDDING_AT_END",
-            reason: "The report ended with an active bidding variation.",
+            reason: "The report ended with an active bidding SKU.",
           };
         }
 
@@ -594,7 +594,7 @@
             status: "read_only",
             code: "NO_EDITABLE_VARIATIONS",
             reason:
-              "This report has no saved completed or canceled variations to edit.",
+              "This report has no saved completed or canceled SKUs to edit.",
           };
         }
 

@@ -34,7 +34,7 @@
         let response;
         try { response = await runtime.sendMessage(message); }
         catch (_error) {
-          throw new VariationPresetsClientError("RUNTIME_MESSAGE_FAILED", "Could not reach the variation preset service.");
+          throw new VariationPresetsClientError("RUNTIME_MESSAGE_FAILED", "Could not reach the SKU preset service.");
         }
         if (response?.ok === false && exactKeys(response, ["ok", "error"]) &&
             exactKeys(response.error, ["code", "message"]) &&
@@ -72,7 +72,7 @@
           }
           return JSON.parse(JSON.stringify(response.data));
         } catch (_error) {
-          throw new VariationPresetsClientError("INVALID_RESPONSE", "The variation preset service returned an invalid response.");
+          throw new VariationPresetsClientError("INVALID_RESPONSE", "The SKU preset service returned an invalid response.");
         }
       });
       tail = result.catch(() => undefined);

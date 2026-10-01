@@ -13,7 +13,9 @@
 
     const SOLD_ITEMS_ROOT_SELECTOR = '[data-tid="m4b_space"]';
     const VARIATION_LABEL_SELECTOR = "span";
-    const VARIATION_LABEL_PATTERN = /^Variation\s*:\s*#\s*(\d+)$/i;
+    // TikTok's Sold Items auction number may use either label. This is not
+    // an inventory SKU: retain the whole-span, colon/hash, and numeric contract.
+    const VARIATION_LABEL_PATTERN = /^(?:Variation|SKU)\s*:\s*#\s*(\d+)$/i;
     const PAYMENT_TAG_SELECTOR = '[data-tid="m4b_tag"]';
     const PAYMENT_COMPLETE_TEXT = "Payment complete";
     const PAYMENT_COMPLETE_NORMALIZED = PAYMENT_COMPLETE_TEXT.toLowerCase();

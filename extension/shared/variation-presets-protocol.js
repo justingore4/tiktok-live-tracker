@@ -74,7 +74,7 @@
       fail(`Enter a whole-number preset total between 1 and ${MAX_PRESET_VARIATIONS}.`);
     }
     if (command.type === COMMAND_TYPES.SET_PRESET_ITEM || command.type === COMMAND_TYPES.ASSIGN_NEXT_PRESET_ITEM) {
-      if (!isTotal(command.variationNumber)) fail("The preset variation number is invalid.");
+      if (!isTotal(command.variationNumber)) fail("The preset SKU number is invalid.");
       if (command.sku !== null && !isIdentity(command.sku)) fail("The preset item must be an exact SKU or null.");
       if (command.type === COMMAND_TYPES.ASSIGN_NEXT_PRESET_ITEM && command.sku === null) {
         fail("Sequential preset assignment requires an exact SKU.");
@@ -83,12 +83,12 @@
           !Number.isSafeInteger(command.expectedActiveBiddingVariationNumber) ||
           command.expectedActiveBiddingVariationNumber < 1 ||
           command.variationNumber !== command.expectedActiveBiddingVariationNumber + 1)) {
-        fail("Clearing an upcoming preset requires its exact preceding live bidding variation.");
+        fail("Clearing an upcoming preset requires its exact preceding live bidding SKU.");
       }
       if (hasPrestreamGuard && (command.sku !== null ||
           !isTotal(command.expectedPrestreamVariationNumber) ||
           command.variationNumber !== command.expectedPrestreamVariationNumber + 1)) {
-        fail("Clearing an upcoming pre-stream preset requires its exact preceding preset variation.");
+        fail("Clearing an upcoming pre-stream preset requires its exact preceding preset SKU.");
       }
     }
     return command;
@@ -125,7 +125,7 @@
       if (!hasExactKeys(assignment, ["variationNumber", "sku"]) ||
           !isTotal(assignment.variationNumber) || assignment.variationNumber > snapshot.total ||
           assignment.variationNumber <= previous || !isIdentity(assignment.sku)) {
-        fail("Preset assignments must contain unique, ordered variation numbers and exact SKUs.");
+        fail("Preset assignments must contain unique, ordered SKU numbers and exact inventory SKUs.");
       }
       previous = assignment.variationNumber;
     }

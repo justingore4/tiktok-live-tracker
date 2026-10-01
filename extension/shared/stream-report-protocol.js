@@ -162,7 +162,7 @@
         ) {
           fail(
             "INVALID_MAPPING_CHANGES",
-            "Each mapping correction must contain one unique variation, supported status, expected SKU, and replacement SKU.",
+            "Each mapping correction must contain one unique SKU number, supported status, expected inventory SKU, and replacement inventory SKU.",
           );
         }
 

@@ -1779,7 +1779,7 @@
         if (seenVariationNumbers.has(change.variationNumber)) {
           fail(
             "INVALID_ARGUMENT",
-            `Variation ${change.variationNumber} appears more than once in the correction batch.`,
+            `SKU ${change.variationNumber} appears more than once in the correction batch.`,
           );
         }
 
@@ -1849,7 +1849,7 @@
 
         correctionSafeInteger(
           soldPriceCents - unitCostCents,
-          `Variation ${sale.variationNumber} gross profit`,
+          `SKU ${sale.variationNumber} gross profit`,
           { signed: true },
         );
         aggregate.soldQuantity += 1n;
@@ -2084,7 +2084,7 @@
 
           fail(
             "UNKNOWN_VARIATION",
-            `Report does not contain terminal variation ${change.variationNumber}.`,
+            `Report does not contain terminal SKU ${change.variationNumber}.`,
           );
         }
 
@@ -2096,7 +2096,7 @@
         ) {
           fail(
             "STALE_REPORT_MAPPING",
-            `Variation ${change.variationNumber} no longer matches the expected report mapping.`,
+            `SKU ${change.variationNumber} no longer matches the expected report mapping.`,
           );
         }
       });

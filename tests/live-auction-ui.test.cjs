@@ -28,7 +28,7 @@ test("live auction display stays hidden only without an available Live workspace
   const inactive = createDisplay({ view: null });
 
   assert.equal(inactive.hidden, true);
-  assert.equal(inactive.variationLabel, "Variation # - Status | -");
+  assert.equal(inactive.variationLabel, "SKU # - Status | -");
   assert.equal(inactive.remainingInventory, "\u2014");
   assert.equal(Object.hasOwn(inactive, "note"), false);
 
@@ -44,7 +44,7 @@ test("live auction remains visible with a neutral empty state before capture", (
     {
       hidden: false,
       variationNumber: null,
-      variationLabel: "Variation # - Status | -",
+      variationLabel: "SKU # - Status | -",
       currentBid: "\u2014",
       unitCost: "\u2014",
       grossProfit: "\u2014",
@@ -61,7 +61,7 @@ test("live auction waits safely until a matching bid and mapping arrive", () => 
   assert.deepEqual(waiting, {
     hidden: false,
     variationNumber: 225,
-    variationLabel: "Variation #225 Status | -",
+    variationLabel: "SKU #225 Status | -",
     currentBid: "\u2014",
     unitCost: "\u2014",
     grossProfit: "\u2014",
@@ -91,7 +91,7 @@ test("live auction waits safely until a matching bid and mapping arrive", () => 
   assert.equal(stale.unitCost, "\u2014");
   assert.equal(stale.grossProfit, "\u2014");
   assert.equal(stale.remainingInventory, "\u2014");
-  assert.equal(stale.variationLabel, "Variation #225 Status | -");
+  assert.equal(stale.variationLabel, "SKU #225 Status | -");
 });
 
 test("live auction always shows a matching bid before inventory is mapped", () => {
@@ -108,7 +108,7 @@ test("live auction always shows a matching bid before inventory is mapped", () =
   assert.equal(display.grossProfit, "\u2014");
   assert.equal(display.remainingInventory, "\u2014");
   assert.equal(display.state, "unmapped");
-  assert.equal(display.variationLabel, "Variation #225 Status | -");
+  assert.equal(display.variationLabel, "SKU #225 Status | -");
   assert.equal(Object.hasOwn(display, "note"), false);
 });
 
@@ -172,7 +172,7 @@ test("live profit uses the active auction mapping while history is selected", ()
   assert.equal(breakEven.profitTone, "neutral");
 
   for (const display of [positive, negative, breakEven]) {
-    assert.equal(display.variationLabel, "Variation #225 Status | korea vulture - tee");
+    assert.equal(display.variationLabel, "SKU #225 Status | korea vulture - tee");
     assert.equal(display.remainingInventory, "81 remaining");
     assert.equal(Object.hasOwn(display, "note"), false);
   }
@@ -202,7 +202,7 @@ test("live auction retains its final display until a new active variation", () =
     },
   });
 
-  assert.equal(retained.variationLabel, "Variation #225 Status | korea vulture - tee");
+  assert.equal(retained.variationLabel, "SKU #225 Status | korea vulture - tee");
   assert.equal(retained.currentBid, "$28.00");
   assert.equal(retained.unitCost, "$12.00");
   assert.equal(retained.grossProfit, "+$16.00");
@@ -226,7 +226,7 @@ test("live auction retains its final display until a new active variation", () =
     },
   });
 
-  assert.equal(nextActive.variationLabel, "Variation #226 Status | -");
+  assert.equal(nextActive.variationLabel, "SKU #226 Status | -");
   assert.equal(nextActive.currentBid, "\u2014");
   assert.equal(nextActive.unitCost, "\u2014");
   assert.equal(nextActive.grossProfit, "\u2014");
@@ -258,7 +258,7 @@ test("active mapping is authoritative over a stale retained unit cost", () => {
   assert.equal(unmapped.grossProfit, "\u2014");
   assert.equal(unmapped.remainingInventory, "\u2014");
   assert.equal(unmapped.state, "unmapped");
-  assert.equal(unmapped.variationLabel, "Variation #225 Status | -");
+  assert.equal(unmapped.variationLabel, "SKU #225 Status | -");
 });
 
 test("live auction title follows remapping and supports items without a style", () => {
@@ -282,10 +282,10 @@ test("live auction title follows remapping and supports items without a style", 
     },
   });
 
-  assert.equal(mapped.variationLabel, "Variation #225 Status | korea vulture - tee");
+  assert.equal(mapped.variationLabel, "SKU #225 Status | korea vulture - tee");
   assert.equal(mapped.unitCost, "$12.00");
   assert.equal(mapped.remainingInventory, "81 remaining");
-  assert.equal(remapped.variationLabel, "Variation #225 Status | Backpack");
+  assert.equal(remapped.variationLabel, "SKU #225 Status | Backpack");
   assert.equal(remapped.unitCost, "$0.00");
   assert.equal(remapped.remainingInventory, "2 remaining");
   assert.equal(remapped.currentBid, "\u2014");
@@ -322,11 +322,11 @@ test("retained titles use only matching mapping identities and never a historica
     liveAuction,
   });
 
-  assert.equal(retained.variationLabel, "Variation #225 Status | Live item - hoodie");
+  assert.equal(retained.variationLabel, "SKU #225 Status | Live item - hoodie");
   assert.equal(retained.remainingInventory, "4 remaining");
-  assert.equal(unknown.variationLabel, "Variation #225 Status | -");
+  assert.equal(unknown.variationLabel, "SKU #225 Status | -");
   assert.equal(unknown.remainingInventory, "\u2014");
-  assert.equal(unmapped.variationLabel, "Variation #225 Status | -");
+  assert.equal(unmapped.variationLabel, "SKU #225 Status | -");
   assert.equal(unmapped.remainingInventory, "\u2014");
 });
 
@@ -373,7 +373,7 @@ test("live inventory follows exact size SKUs, mapping changes, and valid fresh q
   }
 });
 
-test("side panel places a compact live auction panel directly after Variation", () => {
+test("side panel places a compact live auction panel directly after the SKU selector", () => {
   const directory = path.join(__dirname, "..", "extension", "tagger");
   const html = fs.readFileSync(path.join(directory, "sidepanel.html"), "utf8");
   const css = fs.readFileSync(path.join(directory, "sidepanel.css"), "utf8");
@@ -389,7 +389,8 @@ test("side panel places a compact live auction panel directly after Variation", 
     html.match(/<section\s+id="live-auction"[\s\S]*?>/)?.[0] ?? "",
     /\shidden/,
   );
-  assert.match(html, /id="live-auction-title">Variation # - Status \| -</);
+  assert.match(html, /id="current-auction-title">SKU<\/h2>/);
+  assert.match(html, /id="live-auction-title">SKU # - Status \| -</);
   assert.match(html, />\s*Current bid\s*</);
   assert.match(html, />\s*Unit cost\s*</);
   assert.match(html, />\s*Live gross profit\s*</);

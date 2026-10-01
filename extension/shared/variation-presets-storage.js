@@ -38,7 +38,7 @@
       let values;
       try { values = await storageArea.get(STORAGE_KEY); }
       catch (cause) {
-        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_READ_FAILED", "Could not read saved variation presets.", cause);
+        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_READ_FAILED", "Could not read saved SKU presets.", cause);
       }
       if (!isPlainRecord(values)) {
         throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_READ_FAILED", "Preset storage returned an invalid response.");
@@ -56,14 +56,14 @@
       const presets = normalize(value);
       try { await storageArea.set({ [STORAGE_KEY]: { schemaVersion: STORAGE_SCHEMA_VERSION, presets } }); }
       catch (cause) {
-        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_WRITE_FAILED", "Could not save variation presets. Please try again.", cause);
+        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_WRITE_FAILED", "Could not save SKU presets. Please try again.", cause);
       }
       return normalize(presets);
     }
     async function clearPresets() {
       try { await storageArea.remove(STORAGE_KEY); }
       catch (cause) {
-        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_WRITE_FAILED", "Could not clear saved variation presets.", cause);
+        throw new VariationPresetsStorageError("VARIATION_PRESETS_STORAGE_WRITE_FAILED", "Could not clear saved SKU presets.", cause);
       }
     }
     return Object.freeze({ loadPresets, savePresets, clearPresets });

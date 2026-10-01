@@ -19,11 +19,11 @@
 
     function requireOption(option) {
       if (!option || typeof option !== "object" || Array.isArray(option)) {
-        throw new TypeError("A variation option is required.");
+        throw new TypeError("A SKU option is required.");
       }
 
       if (!Number.isSafeInteger(option.variationNumber) || option.variationNumber < 1) {
-        throw new TypeError("The variation number must be a positive safe integer.");
+        throw new TypeError("The SKU number must be a positive safe integer.");
       }
 
       return option;
