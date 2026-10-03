@@ -1,14 +1,18 @@
 TIKTOK LIVE TRACKER - LLM / DEVELOPER HANDOFF
 ==========================================
 
-Snapshot date: September 30, 2026
+Snapshot date: October 3, 2026
 Repository branch at this update: main
-Most recent implementation commit at this snapshot: 6e0670a
-Commit subject: Add per-item auction run counts and document Git command workflow
-Current uncommitted implementation: exact numeric Sold Items `SKU: #N` label
-compatibility alongside `Variation: #N`; see section 6. User-facing variation/var
-wording now uses SKU/SKUs throughout tracker controls, preset/queue feedback,
-accessibility, errors, End warnings, post-stream corrections and tables, and PDFs.
+Most recent implementation commit at this snapshot: 0ad2c73
+Commit subject: Support TikTok SKU labels and update tracker and report wording
+Current uncommitted work: none at this refresh. The documentation-only commit after
+0ad2c73 adds the root CLAUDE.md (Claude Code-only instructions) and refreshes this
+handoff; it makes no tracker, extension, or test changes.
+Exact numeric Sold Items `SKU: #N` label compatibility alongside `Variation: #N`
+(section 6) and the extension-wide SKU wording below are committed in 0ad2c73.
+User-facing variation/var wording now uses SKU/SKUs throughout tracker controls,
+preset/queue feedback, accessibility, errors, End warnings, post-stream corrections
+and tables, and PDFs.
 Report auction columns use "SKU #" beside the inventory "SKU" column. This is
 display wording only: internal variation IDs/keys/selectors/protocols, inventory SKU
 matching, capture support for both label formats, and saved data stay unchanged.
@@ -33,11 +37,15 @@ boundary, including G+ exclusion and existing inventory, row-bound, quantity-han
 and read-only safeguards, is committed in 6742457.
 Inspect current git status before staging anything.
 The root AGENTS.md now provides shared Mac/Windows development rules; this addition
-does not change tracker behavior. Instruction loading on both devices remains a
-manual check.
+does not change tracker behavior. The root CLAUDE.md is its Claude Code counterpart:
+it imports AGENTS.md and adds Claude-specific guidance, also without changing tracker
+behavior. Instruction loading on both devices remains a manual check (Codex: ask which
+instructions loaded; Claude Code: run /memory).
 Manifest version: 1.0.0
-Latest full synthetic test run: 2,282 passed, 0 failed
-Preparation environment: Windows, PowerShell, Node v24.19.0, npm 11.17.0
+Latest full synthetic test run: 2,282 passed, 0 failed (macOS, October 3, 2026, at
+0ad2c73; the same count passed on Windows on September 30 before that commit)
+Preparation environment: macOS, zsh, Node v26.8.2, npm 11.19.1 (previous update:
+Windows, PowerShell, Node v24.19.0, npm 11.17.0)
 
 PURPOSE AND HOW TO USE THIS FILE
 -------------------------------
@@ -1585,12 +1593,14 @@ dependency or part of the shipped extension. Inspect the script before running: 
 writes known synthetic PDF/PNG/text outputs under tmp/pdfs; do not overwrite wanted
 QA artifacts without considering ownership.
 
-Windows execution was freshly verified. The user previously reported Mac testing/
-packaging working after the realpath fix and a full stream without gaps or post-stream
-errors after the payment/startup changes. Those are user-reported checks, not assistant
-execution or proof of every later preset/UI change. No fresh macOS execution or live
-dashboard/Chrome UI verification occurred for this documentation refresh. Do not claim
-either platform's browser behavior is fully verified by Node.
+Windows execution was verified on September 30. On October 3 the full node --test
+suite also passed on macOS (2,282/2,282, Node v26.8.2) at 0ad2c73; packaging was not
+run. The user previously reported Mac testing/packaging working after the realpath
+fix and a full stream without gaps or post-stream errors after the payment/startup
+changes. Those are user-reported checks, not assistant execution or proof of every
+later preset/UI change. No live dashboard/Chrome UI verification occurred for this
+documentation refresh. Do not claim either platform's browser behavior is fully
+verified by Node.
 
 16. KNOWN ISSUES, LIMITATIONS, AND VERIFICATION
 ---------------------------------------------
@@ -1649,7 +1659,10 @@ the distinction between accepted limitation, confirmed code gap, and hypothesis.
 
 17. RECENT HISTORY AND CLEANUP RECORD
 -----------------------------------
-Recent commits at this documentation refresh, newest first:
+Recent commits at this documentation refresh, newest first. The documentation-only
+commit that follows 0ad2c73 (root CLAUDE.md plus this handoff refresh) cannot list
+its own hash; see git log.
+  0ad2c73  Support TikTok SKU labels and update tracker and report wording
   6e0670a  Add per-item auction run counts and document Git command workflow
   e6bb7fe  Allow resizing preset totals without resetting retained assignments
   e2d1eff  Improve unresolved order recovery and prefill captured processing prices
@@ -1722,6 +1735,6 @@ delete them automatically or treat them as production dependency requirements.
 Previously committed implementation is preserved, including the quantity-only clipboard
 handoff in ae1fcc1, the A:F-only inventory boundary in 6742457, and "X ran" in 6e0670a.
 The numeric Sold Items SKU-label compatibility fix and extension-wide user-facing
-SKU terminology updates, with tests/documentation, are current uncommitted work.
+SKU terminology updates, with tests/documentation, are committed in 0ad2c73.
 Inspect current Git status for any later work.
 There is no approved pending functional change to start automatically.
